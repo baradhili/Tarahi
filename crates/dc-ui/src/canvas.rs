@@ -2262,7 +2262,7 @@ fn draw_scrollbars(
 /// first frame; egui reports `drag_started` on the same frame it
 /// reports `dragged`, so the first call below always latches.
 fn grab_offset(ui: &Ui, r: &egui::Response, at_start: f32) -> f32 {
-    let id = egui::Id::new(("dc-scroll-grab", r.id));
+    let id = egui::Id::unique(("dc-scroll-grab", r.id));
     if r.drag_started() || ui.ctx().memory(|m| m.data.get_temp::<f32>(id).is_none()) {
         ui.ctx().memory_mut(|m| m.data.insert_temp(id, at_start));
     }
@@ -2271,7 +2271,7 @@ fn grab_offset(ui: &Ui, r: &egui::Response, at_start: f32) -> f32 {
 
 /// Clear the latched grab offset once the drag is over.
 fn grab_offset_clear(ui: &Ui, r: &egui::Response) {
-    let id = egui::Id::new(("dc-scroll-grab", r.id));
+    let id = egui::Id::unique(("dc-scroll-grab", r.id));
     if !r.dragged() {
         ui.ctx().memory_mut(|m| m.data.remove::<f32>(id));
     }
