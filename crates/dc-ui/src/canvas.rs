@@ -2164,12 +2164,22 @@ fn draw_scrollbars(
         Vec2::new(hg.len, track.height()),
     );
     p.rect_filled(hthumb, 3.0, thumb_of(&hr));
-    if hr.dragged() {
+    if hr.dragged() || hr.drag_stopped() {
         if let Some(pos) = hr.interact_pointer_pos() {
-            // The grab offset (pointer − thumb leading edge) is latched
-            // at drag start (PR #284 review): grabbing the thumb's
-            // middle must not jump the view by half a thumb.
-            let off = grab_offset(ui, &hr, pos.x - track.left() - hg.pos);
+            // The grab offset (pointer − thumb leading edge) is
+            // latched at drag start FROM THE PRESS POSITION (CodeRabbit
+            // local review): egui reports drag_started only after the
+            // 6 px threshold, so measuring from the current frame would
+            // swallow the movement before it. The release frame applies
+            // its final position with the stored offset before cleanup,
+            // so movement+release in one frame still lands (local
+            // review finding 2).
+            let off = grab_offset(
+                ui,
+                &hr,
+                ui.input(|i| i.pointer.press_origin()).unwrap_or(pos).x - track.left(),
+                hg.pos,
+            );
             view.pan.x = content_origin.x
                 + pan_from_thumb(
                     pos.x - track.left() - off,
@@ -2223,10 +2233,17 @@ fn draw_scrollbars(
         Vec2::new(track.width(), vg.len),
     );
     p.rect_filled(vthumb, 3.0, thumb_of(&vr));
-    if vr.dragged() {
+    if vr.dragged() || vr.drag_stopped() {
         if let Some(pos) = vr.interact_pointer_pos() {
-            // The latched grab offset, as on the horizontal bar.
-            let off = grab_offset(ui, &vr, pos.y - track.top() - vg.pos);
+            // The latched grab offset, as on the horizontal bar (from
+            // the press position; the release frame applies its final
+            // position before the cleanup below).
+            let off = grab_offset(
+                ui,
+                &vr,
+                ui.input(|i| i.pointer.press_origin()).unwrap_or(pos).y - track.top(),
+                vg.pos,
+            );
             view.pan.y = content_origin.y
                 + pan_from_thumb(
                     pos.y - track.top() - off,
@@ -2265,10 +2282,15 @@ fn draw_scrollbars(
 /// the thumb's leading edge, track-local px). Latched at the drag's
 /// first frame; egui reports `drag_started` on the same frame it
 /// reports `dragged`, so the first call below always latches.
-fn grab_offset(ui: &Ui, r: &egui::Response, at_start: f32) -> f32 {
+fn grab_offset(ui: &Ui, r: &egui::Response, press_track_pos: f32, thumb_pos: f32) -> f32 {
     let id = egui::Id::unique(("dc-scroll-grab", r.id));
     if r.drag_started() || ui.ctx().memory(|m| m.data.get_temp::<f32>(id).is_none()) {
-        ui.ctx().memory_mut(|m| m.data.insert_temp(id, at_start));
+        // Latched from the PRESS position, not the current drag frame
+        // (CodeRabbit local review): egui only reports drag_started
+        // once the pointer passes the drag threshold (>6 px), so
+        // movement before that frame is real dragging — measuring the
+        // offset from the current position would silently swallow it.
+        ui.ctx().memory_mut(|m| m.data.insert_temp(id, press_track_pos - thumb_pos));
     }
     ui.ctx().memory(|m| m.data.get_temp::<f32>(id).unwrap_or(0.0))
 }
