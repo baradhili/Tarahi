@@ -2233,10 +2233,19 @@ pub(crate) fn resolve_text_block(
             if v.is_empty() || v == "0" {
                 return None;
             }
-            let glyph = match v.parse::<u8>() {
-                Ok(n @ 1..=7) => BulletGlyph::Round(n),
-                Ok(_) => return None, // out-of-range numeric: no bullet
-                Err(_) => BulletGlyph::Str(v),
+            // A custom BulletString takes PRECEDENCE over the numeric
+            // style ([MS-VSDX], PR #284 review round 3): the string
+            // can ride along a nonzero numeric Bullet, and the round
+            // set must not swallow it.
+            let custom = para_cell("BulletString")
+                .and_then(|c| c.v.clone())
+                .map(|st| st.trim().to_string())
+                .filter(|st| !st.is_empty());
+            let glyph = match (custom, v.parse::<u8>()) {
+                (Some(st), _) => BulletGlyph::Str(st),
+                (None, Ok(n @ 1..=7)) => BulletGlyph::Round(n),
+                (None, Ok(_)) => return None, // out-of-range numeric: no bullet
+                (None, Err(_)) => BulletGlyph::Str(v),
             };
             // BulletFont: a family name, else inherit the paragraph
             // font (numeric legacy indexes and 0 both inherit).
