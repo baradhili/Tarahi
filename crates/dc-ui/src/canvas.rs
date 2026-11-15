@@ -242,8 +242,13 @@ pub fn thumb_geom(
     let len = (track_len * frac).clamp(THUMB_MIN.min(track_len), track_len);
     let (min, max) = pan_range_axis(view_px, page_px, zoom);
     let span = (track_len - len).max(0.0);
+    // Standard scrollbar direction (PR #284 review): pan = MAX means
+    // the page's top/left corner sits at the margin band — the view
+    // is at the document's START, so the thumb belongs at the track's
+    // start; pan = MIN (the page's far corner visible) puts it at the
+    // end.
     let t = if max > min {
-        ((pan_axis - min) / (max - min)).clamp(0.0, 1.0)
+        ((max - pan_axis) / (max - min)).clamp(0.0, 1.0)
     } else {
         0.0
     };
@@ -266,9 +271,9 @@ pub fn pan_from_thumb(
     if max <= min {
         return min;
     }
-    let g = thumb_geom(track_len, view_px, page_px, zoom, min);
+    let g = thumb_geom(track_len, view_px, page_px, zoom, max);
     let span = (track_len - g.len).max(1.0);
-    min + (thumb_pos / span).clamp(0.0, 1.0) * (max - min)
+    max - (thumb_pos / span).clamp(0.0, 1.0) * (max - min)
 }
 
 /// The canvas's scrollbar bands (#283): (horizontal, vertical). The
@@ -2747,9 +2752,11 @@ mod tests {
         );
         let back = pan_from_thumb(g.pos, track, view_px, page_px, zoom);
         assert!((back - mid).abs() < 1e-3, "round trip: {back} vs {mid}");
-        // Ends: thumb pos 0 → min pan, thumb at its right end → max.
-        assert_eq!(pan_from_thumb(0.0, track, view_px, page_px, zoom), min);
+        // Ends (standard direction, PR #284 review): thumb at the
+        // track's start → MAX pan (the page's start corner at the
+        // margin band), thumb at the far end → MIN pan.
+        assert_eq!(pan_from_thumb(0.0, track, view_px, page_px, zoom), max);
         let end = pan_from_thumb(track, track, view_px, page_px, zoom);
-        assert!((end - max).abs() < 1e-3, "thumb dragged to the end: {end}");
+        assert!((end - min).abs() < 1e-3, "thumb dragged to the end: {end}");
     }
 }
