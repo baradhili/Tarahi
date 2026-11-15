@@ -580,10 +580,16 @@ fn window_title_tracks_document_and_dirty_state() {
         );
     h.run();
     h.run();
+    // The RAW tracked title asserts clean (#280): the title is a
+    // NATIVE surface — the WM's font paints Fluent's bidi-isolation
+    // marks as tofu — so `sync_window_title` strips them via
+    // `i18n::to_native_surface` before pushing. (The old test-side
+    // strip_bidi here masked the bug: the shipped title carried
+    // tofu either side of the 1 while the test passed.)
     assert_eq!(
-        common::strip_bidi(&h.state().debug_window_title_for_test()),
+        h.state().debug_window_title_for_test(),
         "Drawing1 - Tarahi",
-        "an unsaved blank drawing titles the OS window"
+        "an unsaved blank drawing titles the OS window, no isolation marks"
     );
 
     // Any edit flips the dirty marker into the title; undoing it all
@@ -591,7 +597,7 @@ fn window_title_tracks_document_and_dirty_state() {
     tab_menu_pick(&mut h, "Page-1", "Insert Page");
     h.run();
     assert_eq!(
-        common::strip_bidi(&h.state().debug_window_title_for_test()),
+        h.state().debug_window_title_for_test(),
         "Drawing1 - Tarahi *",
         "the dirty marker reaches the OS window title"
     );

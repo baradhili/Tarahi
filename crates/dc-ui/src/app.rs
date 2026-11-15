@@ -8287,7 +8287,12 @@ impl App {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| crate::i18n::strs().msg_drawing_n(1));
-        let title = format!("{name} - Tarahi{}", if self.dirty { " *" } else { "" });
+        // The OS title bar is a NATIVE surface (#280): the WM's font
+        // has no glyphs for Fluent's bidi-isolation marks and paints
+        // them as tofu — strip them at the boundary
+        // (`i18n::to_native_surface`).
+        let dirty_mark = if self.dirty { " *" } else { "" };
+        let title = crate::i18n::to_native_surface(&format!("{name} - Tarahi{dirty_mark}"));
         if self.window_title != title {
             self.window_title = title.clone();
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));

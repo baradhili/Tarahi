@@ -73,6 +73,26 @@ pub fn set_language_ephemeral(lang: L10n) {
     set_current(lang);
 }
 
+/// The NATIVE-SURFACE boundary (GitHub #280): Fluent wraps every
+/// placeable in bidi-isolation marks (`use_isolating: true` — on
+/// build-wide since #257 item 3 re-enabled it for the RTL chrome).
+/// Inside egui the marks are zero-width and shape away, but a string
+/// that LEAVES egui meets the window manager's font, which has no
+/// glyph for U+2066–U+2069 and paints tofu — the fresh-document
+/// window title (`drawing-n = Drawing{ $n }`) showed it either side
+/// of the 1. This strips the isolation marks (FSI/PDI/LRI/RLI) at
+/// that boundary and must wrap every Fluent output handed to a
+/// non-egui surface — the OS window title today; the OS clipboard is
+/// NOT one (it carries shape text, never catalog output). Do NOT
+/// apply to text that stays inside egui: the marks are load-bearing
+/// inside RTL sentences (#257) and stripping them there would change
+/// run ordering.
+pub fn to_native_surface(text: &str) -> String {
+    text.chars()
+        .filter(|c| !matches!(c, '\u{2066}'..='\u{2069}'))
+        .collect()
+}
+
 /// The RTL language set (#257 item 3): the shell chrome mirrors for
 /// these. Arabic/Hebrew catalogs join the set with their folders.
 const RTL_LANGS: &[L10n] = &[L10n::Fa];
@@ -251,6 +271,44 @@ mod tests {
         let path = tmp.path().join("language.json");
         std::fs::write(&path, r#"{"version":1,"language":"zz"}"#).unwrap();
         assert_eq!(parse_from(&path), None);
+    }
+
+    /// #280: Fluent wraps every placeable in bidi-isolation marks
+    /// (`use_isolating`, on build-wide since #257). Inside egui they
+    /// shape away; on a NATIVE surface (the OS window title) the WM's
+    /// font paints them as tofu. The boundary strips exactly
+    /// U+2066–U+2069 and nothing else, for every shipped catalog.
+    #[test]
+    fn native_surface_strips_bidi_isolation_marks() {
+        let isolates = |s: &str| {
+            s.chars().any(|c| ('\u{2066}'..='\u{2069}').contains(&c))
+        };
+        // The source really carries the marks — the fresh-document
+        // name is the witnessed tofu case.
+        let drawing1 = strs_for(L10n::En).msg_drawing_n(1);
+        assert!(
+            isolates(&drawing1),
+            "Fluent isolates the placeable: {drawing1:?}"
+        );
+        // The boundary strips them and keeps every other character.
+        assert_eq!(to_native_surface(&drawing1), "Drawing1");
+        // A full title composes clean in EVERY shipped catalog (fa's
+        // whole-chrome isolation is the sharpest case; es joins the
+        // set with #282).
+        for lang in [L10n::En, L10n::De, L10n::Fa, L10n::Es] {
+            let name = strs_for(lang).msg_drawing_n(1);
+            let title = to_native_surface(&format!("{name} - Tarahi"));
+            assert!(
+                !isolates(&title),
+                "{lang:?} title carries isolation marks: {title:?}"
+            );
+            assert!(title.ends_with(" - Tarahi"));
+        }
+        // Non-isolation characters pass through untouched — including
+        // the OTHER bidi controls (LRM/RLM), which Fluent does not
+        // emit and which have their own jobs.
+        let mixed = "a\u{200e}b\u{200f}c".to_string();
+        assert_eq!(to_native_surface(&mixed), mixed);
     }
 
     #[test]
