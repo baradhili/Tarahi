@@ -2684,31 +2684,38 @@ fn emit_text(
             BulletGlyph::Str(glyph) => bface.width_in(glyph, b.size),
         };
         // Positive IndFirst indents the bullet; negative outdents it
-        // (the hanging-indent case) past the margin.
-        let x = left_x + tb.ind_first;
-        let bullet_end = x + adv;
+        // (the hanging-indent case) past the margin. The stop math
+        // runs in TEXT-AREA coordinates (offsets from `left_x` — PR
+        // review, wave 4): TextPosAfterBullet, IndLeft and the
+        // DefaultTabStop grid are all offsets from the text-area left
+        // edge, so comparing them against an absolute x would shift
+        // every decision by the left inset.
+        let bullet_off = tb.ind_first;
+        let bullet_end_off = bullet_off + adv;
         // The measured placement rule (#231): TextPosAfterBullet —
         // when it lies past the bullet's start — IS the stop outright
         // (Visio does not take it as a minimum with the tab grid);
         // otherwise the fallback candidates race: the hanging indent
-        // (IndLeft, when IndFirst is negative) and the next
-        // DefaultTabStop multiple, whichever comes first. A bullet
-        // reaching past the stop pushes the text to its end.
-        let stop = if b.pos_after > x {
+        // (IndLeft, when IndFirst is negative — the text may sit at
+        // the margin left of the outdented bullet, never clamped to
+        // the bullet) and the next DefaultTabStop multiple, whichever
+        // comes first. A bullet reaching past the stop pushes the
+        // text to its end.
+        let stop_off = if b.pos_after > bullet_off {
             b.pos_after
         } else {
             let mut s = f64::INFINITY;
             if tb.ind_first < 0.0 {
-                s = s.min(tb.ind_left.max(x));
+                s = s.min(tb.ind_left);
             }
-            let tab = (bullet_end / b.tab_stop).ceil() * b.tab_stop;
+            let tab = (bullet_end_off / b.tab_stop).ceil() * b.tab_stop;
             s.min(tab)
         };
-        let stop = stop.max(bullet_end);
+        let stop_off = stop_off.max(bullet_end_off);
         BulletLayout {
             spec: b.clone(),
-            x,
-            text_x: stop,
+            x: left_x + bullet_off,
+            text_x: left_x + stop_off,
         }
     });
     // Paragraph indents for the wrap: a bulleted paragraph's first
@@ -2817,6 +2824,11 @@ fn emit_text(
     // greek bars, whose Latin ascent/slots make this byte-identical
     // to the old advance-by-slot form).
     let mut top = first_baseline - first_size * 0.8;
+    // The #229 background rect spans the LINES, not the block: its y
+    // starts at the first line's slot top (PR review, wave 4 — the
+    // block top would hang the rect above middle/top-aligned text).
+    // Saved before the emission loop advances `top`.
+    let bkgnd_top = top;
     if greeked {
         // Greek bars (#124 item 2): one neutral-gray rect per line,
         // anchored like the tspan it replaces (left/center/right).
@@ -2889,6 +2901,14 @@ fn emit_text(
             let line_size = effective_cs_size(&tb);
             let y = top + line_size * 0.8
                 - script.map_or(0.0, |(_, shift)| shift * line_size);
+            // The RTL line's laid-out extent joins the #229 background
+            // union too (PR review, wave 4) — an all-RTL block must
+            // still paint its text background.
+            let span = (vx, vx + lw);
+            bkgnd_span = Some(match bkgnd_span {
+                Some((a, b)) => (a.min(span.0), b.max(span.1)),
+                None => span,
+            });
             (content, vx, attrs, String::new(), y)
         } else {
             // This line's baseline FIRST (the bullet glyph hangs off
@@ -2902,13 +2922,27 @@ fn emit_text(
             let line_size = size;
             let y = top + line_size * 0.8
                 - script.map_or(0.0, |(_, shift)| shift * line_size);
-            // LTR line placement: the default band anchor, with the
-            // #231 overrides — a bulleted paragraph's first line
-            // starts AT the computed tab stop (always a left anchor
-            // there: the stop is an absolute x), and wrapped lines
-            // start at the IndLeft band.
+            // LTR line placement: every line lays out in an indented
+            // band — a bulleted paragraph's first line carries
+            // bullet+gap+text as ONE unit anchored at the tab stop
+            // (left-anchored override there: the stop is an absolute
+            // x), other first lines take IndFirst and wrapped lines
+            // take IndLeft (#231, PR review wave 4: the wrap reserves
+            // exactly these offsets, so the paint must honor them).
+            // Under the inherited `end` anchor a tspan's x is where
+            // the glyphs END — halign 2 keeps the anchor and derives
+            // the left edge from the line width.
             let line_w = face.width_in(&line.text, paint_size);
             let bulleted = line.first_of_para && bullet_layout.is_some();
+            let band_off = if bulleted {
+                // The unit math below places the line outright.
+                0.0
+            } else if line.first_of_para {
+                tb.ind_first.max(0.0)
+            } else {
+                tb.ind_left
+            };
+            let band_lo = left_x + band_off;
             let (lx, line_left) = if bulleted {
                 let bl = bullet_layout.as_ref().unwrap();
                 // Centered/right-aligned first lines align
@@ -2924,20 +2958,12 @@ fn emit_text(
                     _ => left_x + ((tw - ins_l - ins_r) - unit_w) / 2.0,
                 };
                 (unit_x + (bl.text_x - bl.x), unit_x)
-            } else if !line.first_of_para
-                && (bullet_layout.is_some() || tb.ind_left.abs() > 1e-12)
-            {
-                // A wrapped line of an indented paragraph: its band
-                // starts at IndLeft (bullet paragraphs wrap at the
-                // hanging indent too).
-                let lo = left_x + tb.ind_left;
-                match halign {
-                    0 | 3 => (lo, lo),
-                    2 => (right_x - face.width_in(&line.text, paint_size), right_x - line_w),
-                    _ => (lo + (tw - ins_l - ins_r - tb.ind_left) / 2.0, lo),
-                }
             } else {
-                (x, x)
+                match halign {
+                    0 | 3 => (band_lo, band_lo),
+                    2 => (right_x, right_x - line_w),
+                    _ => ((band_lo + right_x) / 2.0, band_lo),
+                }
             };
             // The bullet glyph itself — path bullets for the built-in
             // round set (viewer-proof, #231), a text glyph for custom
@@ -2956,7 +2982,12 @@ fn emit_text(
                         bx = bl.x,
                         by = y,
                         fs = bl.spec.size,
-                        ff = font_family_attr(bl.spec.font.as_deref()),
+                        // BulletFont absent → the PARAGRAPH face paints
+                        // the bullet — the same face the advance was
+                        // measured with (PR review, wave 4): passing
+                        // bare None here would paint the Calibri
+                        // default chain over a Courier New paragraph.
+                        ff = font_family_attr(bl.spec.font.as_deref().or(tb.font.as_deref())),
                         g = escape_text(glyph),
                     ),
                 }
@@ -3045,7 +3076,7 @@ fn emit_text(
             format!(
                 r##"<rect x="{x:.4}" y="{y:.4}" width="{w:.4}" height="{h:.4}" fill="#{r:02x}{g:02x}{b:02x}" fill-opacity="{o:.3}" stroke="none"/>"##,
                 x = lo,
-                y = top_edge,
+                y = bkgnd_top,
                 w = hi - lo,
                 h = total_h,
                 o = alpha as f64 / 255.0,
@@ -9205,6 +9236,37 @@ mod tests {
         let rect_at = out.find("<rect").expect("a rect");
         let text_at = out.find("<text").expect("a text");
         assert!(rect_at < text_at, "background below text: {out}");
+        // Geometry (PR review wave 4): the rect spans the LINES — its
+        // y is the FIRST LINE SLOT's top (middle-aligned here:
+        // top_edge −1 + (th − total_h)/2 = −0.5833), not the block
+        // top (−1), and its x is the line's LEFT edge (0.1 = the left
+        // inset), not the centered anchor (1.0).
+        let rect = &out[rect_at..text_at];
+        assert!(rect.contains(r#"x="0.1000""#), "rect at the line's left edge: {rect}");
+        assert!(rect.contains(r#"y="-0.5833""#), "rect at the first line slot: {rect}");
+        let rect_w: f64 = rect
+            .split(r#"width=""#)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|v| v.parse().ok())
+            .expect("a rect width");
+        assert!(
+            (rect_w - 0.3420).abs() < 2e-3,
+            "the rect spans the widest laid-out line: {rect_w}"
+        );
+        // An all-RTL block (explicit RLE) paints its background too —
+        // the span joins the union from the RTL branch (PR review).
+        let mut s = Shape::default();
+        s.sheet.text = Some("\u{202B}\u{0633}\u{0644}\u{0627}\u{0645}".into());
+        s.sheet.set_cell("Width", Cell::value("2.0"));
+        s.sheet.set_cell("TextBkgnd", Cell::value("1"));
+        let chain = [&s];
+        let mut out = String::new();
+        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        assert!(
+            out.contains(r##"fill="#000000""##) && out.contains("<rect"),
+            "an all-RTL block paints its text background: {out}"
+        );
     }
 
     /// #231: a bulleted paragraph's text starts at the computed tab
@@ -9219,6 +9281,11 @@ mod tests {
             let mut s = Shape::default();
             s.sheet.text = Some("bulleted".into());
             s.sheet.set_cell("Width", Cell::value("4.0"));
+            // Zero L/R margins: the text-area left edge sits at 0, so
+            // the tab-stop offsets below assert in TEXT-AREA
+            // coordinates exactly as the #231 witness reports them.
+            s.sheet.set_cell("LeftMargin", Cell::value("0"));
+            s.sheet.set_cell("RightMargin", Cell::value("0"));
             s.sheet.children.push(SheetChild::Section(Section {
                 name: "Paragraph".into(),
                 rows: vec![Row {
@@ -9241,9 +9308,10 @@ mod tests {
             emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &mut out);
             out
         };
-        // Built-in style 1 draws a PATH dot (never a text glyph).
+        // Built-in style 1 draws a PATH dot (never a text glyph), at
+        // the line start (bullet offset 0 with zero margins).
         let out = emit_bullet("1", &[]);
-        assert!(out.contains(r#"<path transform="#), "path bullet: {out}");
+        assert!(out.contains(r#"<path transform="translate(0.0000,"#), "path bullet: {out}");
         // The text starts AT the tab stop — left-anchored past the
         // bullet (DefaultTabStop 0.5 default).
         let tx: f64 = out
@@ -9256,11 +9324,16 @@ mod tests {
             (tx - 0.5).abs() < 1e-3,
             "after-bullet text sits on the 0.5 tab stop: {tx}"
         );
-        // The measured rule: TextPosAfterBullet 0.1 with the bullet
-        // starting at 0 does NOT apply from the bullet's box — the
-        // next tab stop (0.5) wins; TextPosAfterBullet 0.6 (past the
-        // stop) wins outright.
-        let early: f64 = emit_bullet("1", &[("TextPosAfterBullet", "0.1")])
+        // The measured rule (the #231 witness verbatim): IndFirst
+        // 0.25 with TextPosAfterBullet 0.1 — TPAB does not lie past
+        // the bullet's start (0.25), so it is rejected and the next
+        // tab stop (0.5) wins; Visio does not add TPAB to IndFirst
+        // (that would read 0.35). TextPosAfterBullet 0.6 past the
+        // bullet's start wins outright.
+        let early: f64 = emit_bullet(
+            "1",
+            &[("IndFirst", "0.25"), ("TextPosAfterBullet", "0.1")],
+        )
             .split(r#"<tspan x=""#)
             .nth(1)
             .and_then(|rest| rest.split('"').next())
