@@ -189,7 +189,13 @@ const SCROLL_MARGIN_IN: f32 = 0.5;
 /// page centers, clamping is a no-op there, and the thumb draws
 /// full-length (a fit view).
 pub fn pan_range_axis(view_px: f32, page_px: f32, zoom: f32) -> (f32, f32) {
-    let m = SCROLL_MARGIN_IN * 96.0 * zoom;
+    // The margin scales with zoom (page-relative inches), but never
+    // exceeds half the visible axis (PR #284 review): at zoom 8 the
+    // raw 0.5 in is 384 px — on a small axis max pan would push the
+    // page's edge fully off-view. Half the axis keeps ≥ half the
+    // viewport over the page at every endpoint while preserving the
+    // margin untouched whenever it fits.
+    let m = (SCROLL_MARGIN_IN * 96.0 * zoom).min(view_px * 0.5);
     let (min, max) = (view_px - page_px - m, m);
     if min <= max {
         (min, max)
