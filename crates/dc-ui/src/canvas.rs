@@ -200,23 +200,27 @@ pub struct ExtentInches {
     pub size: (f64, f64),
 }
 
-/// The extent for one page: the union of the paper and the landed
-/// layers (plus background-page underlays). With no off-page content
-/// this is exactly the paper, so pre-#283 behavior is unchanged.
+/// The extent for one page: the union of the paper and every DRAWING
+/// bound passed in (PR #284 review round 4 — bounds come from the
+/// DOCUMENT's shapes via the app's `shape_rect`, NOT from the landed
+/// layer quads: composite omits off-screen shapes and shapes without
+/// a ready texture, so a texture-based extent could shrink when the
+/// user pans away and clamp the scroll path back to an off-page
+/// shape). With no off-page content this is exactly the paper, so
+/// pre-#283 behavior is unchanged.
 pub fn content_extent(
     page: &PageGeom,
-    layers: &[crate::layers::ShapeQuad],
-    underlays: &[crate::layers::ShapeQuad],
+    bounds: &[(f64, f64, f64, f64)],
 ) -> ExtentInches {
     let mut min_x = 0.0f64;
     let mut min_y = 0.0f64;
     let mut max_x = page.w_in;
     let mut max_y = page.h_in;
-    for q in layers.iter().chain(underlays.iter()) {
-        min_x = min_x.min(q.bbox.0);
-        min_y = min_y.min(q.bbox.1);
-        max_x = max_x.max(q.bbox.0 + q.bbox.2);
-        max_y = max_y.max(q.bbox.1 + q.bbox.3);
+    for b in bounds {
+        min_x = min_x.min(b.0);
+        min_y = min_y.min(b.1);
+        max_x = max_x.max(b.0 + b.2);
+        max_y = max_y.max(b.1 + b.3);
     }
     ExtentInches {
         corner: (min_x, min_y),
@@ -243,8 +247,14 @@ pub fn pan_range_axis(view_px: f32, extent_px: f32, corner_px: f32, zoom: f32) -
     if min <= max {
         (min, max)
     } else {
+        // PINNED (the whole extent fits the view): a fully unbounded
+        // pan can park the page off-screen (Greptile, PR #284 round
+        // 4), but the old re-center also fought in-flight gestures.
+        // The bound is a half-viewport around the centered fit
+        // position — generous panning room, and the page stays at
+        // least partly visible at every endpoint.
         let c = (view_px - corner_px - extent_px) / 2.0;
-        (c, c)
+        (c - view_px / 2.0, c + view_px / 2.0)
     }
 }
 
@@ -304,13 +314,17 @@ pub fn thumb_geom(
     zoom: f32,
     pan_axis: f32,
 ) -> ThumbGeom {
-    let frac = if extent_px > 0.0 {
-        (view_px / extent_px).clamp(0.0, 1.0)
+    // The thumb fraction is the viewport's share of the FULL
+    // scrollable span (travel + viewport, PR #284 review round 4):
+    // sizing from the bare extent left a full-length thumb on axes
+    // that still had a margin-sized travel range, so drags jumped.
+    let (min, max) = pan_range_axis(view_px, extent_px, corner_px, zoom);
+    let frac = if max > min {
+        (view_px / ((max - min) + view_px)).clamp(0.0, 1.0)
     } else {
         1.0
     };
     let len = (track_len * frac).clamp(THUMB_MIN.min(track_len), track_len);
-    let (min, max) = pan_range_axis(view_px, extent_px, corner_px, zoom);
     let span = (track_len - len).max(0.0);
     // Standard scrollbar direction (PR #284 review): pan = MAX means
     // the page's top/left corner sits at the margin band — the view
@@ -858,6 +872,10 @@ pub fn show(
     view: &mut View,
     page: &PageGeom,
     layers: &[crate::layers::ShapeQuad],
+    // #284 review round 4: every drawing shape's bbox (page-DOWN
+    // inches) — the scroll extent's source of truth, independent of
+    // texture readiness.
+    extent_bounds: &[(f64, f64, f64, f64)],
     sel_rect: Option<Rect>,   // primary selection (page-inches, y-down)
     extra_sel_rects: &[Rect], // other multi-selection members
     member_hl: &[Rect],       // #156: selected container's members (page-inches, y-down)
@@ -1021,7 +1039,7 @@ pub fn show(
     // The scrollable EXTENT (paper ∪ landed content, PR #284 review
     // round 2): off-page shapes must stay reachable, so the clamp and
     // the scrollbars cover the whole drawing, not just the paper.
-    let extent_in = content_extent(page, layers, underlays);
+    let extent_in = content_extent(page, extent_bounds);
     let ppi = view.px_per_in();
     let extent_px = Vec2::new(
         extent_in.size.0 as f32 * ppi,
@@ -2880,9 +2898,15 @@ mod tests {
     fn pan_range_bounds_the_view_to_page_plus_margin() {
         let zoom = 1.0;
         let m = SCROLL_MARGIN_IN * 96.0;
-        // A page smaller than the view: the range pins (page centers).
+        // A page smaller than the view: the range is PINNED to a
+        // half-viewport around the centered fit position (Greptile
+        // round 4: fully unbounded pan could park the page
+        // off-screen).
         let (min, max) = pan_range_axis(800.0, 400.0, 0.0, zoom);
-        assert_eq!((min, max), ((800.0 - 400.0) / 2.0, (800.0 - 400.0) / 2.0));
+        assert_eq!(
+            (min, max),
+            ((800.0 - 400.0) / 2.0 - 400.0, (800.0 - 400.0) / 2.0 + 400.0)
+        );
         // A page larger than the view: margin bands on both ends.
         let (min, max) = pan_range_axis(500.0, 1200.0, 0.0, zoom);
         assert_eq!(min, 500.0 - 1200.0 - m);
@@ -2905,15 +2929,23 @@ mod tests {
         let m = SCROLL_MARGIN_IN * 96.0;
         assert_eq!(clamped.x, origin.x + m, "max pan = the margin band");
         assert_eq!(clamped.y, origin.y + (view.y - page.y - m), "min pan");
-        // A page that fits: the axis is PINNED — pan passes through
-        // untouched (nothing can be off-screen; the re-centered pin
-        // would fight in-flight gestures, PR #284 review round 2).
+        // A page that fits: the axis is PINNED to a half-viewport
+        // around the centered fit position (Greptile round 4 — fully
+        // unbounded pan parked the page off-screen; the old re-center
+        // fought in-flight gestures).
         let small = Vec2::new(400.0, 300.0);
         let clamped = clamp_pan(Vec2::new(-1234.0, 4321.0), origin, view, small, Vec2::ZERO, 1.0);
+        let c0x = (view.x - small.x) / 2.0;
+        let c0y = (view.y - small.y) / 2.0;
         assert_eq!(
-            clamped,
-            Vec2::new(-1234.0, 4321.0),
-            "a pinned axis passes pan through untouched"
+            clamped.x,
+            origin.x + c0x - view.x / 2.0,
+            "x pinned at the bound"
+        );
+        assert_eq!(
+            clamped.y,
+            origin.y + c0y + view.y / 2.0,
+            "y pinned at the bound"
         );
     }
 
@@ -2926,10 +2958,14 @@ mod tests {
         let view_px = 500.0;
         let page_px = 1200.0;
         let zoom = 1.0;
-        // A fitted view (extent fits): full-length thumb.
-        let fit = thumb_geom(track, 400.0, 300.0, 0.0, zoom, 0.0);
-        assert_eq!(fit.len, track, "fit view → full track");
-        assert_eq!(fit.pos, 0.0);
+        // A fitted view (extent fits): the thumb is the viewport's
+        // share of the bounded span (span = 2×view → half-length),
+        // riding at the track's start while pan sits at the fit
+        // position's upper bound.
+        // At the pinned center (c0 = 50): the thumb rides mid-track.
+        let fit = thumb_geom(track, 400.0, 300.0, 0.0, zoom, 50.0);
+        assert_eq!(fit.len, track / 2.0, "fit view → half track (bounded pan)");
+        assert_eq!(fit.pos, track / 4.0, "the fit-centered pan rides mid-track");
         // A scrolled view: the thumb sits mid-track and round-trips.
         let (min, max) = pan_range_axis(view_px, page_px, 0.0, zoom);
         let mid = (min + max) / 2.0;

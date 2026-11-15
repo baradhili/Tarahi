@@ -10026,6 +10026,28 @@ impl App {
                     .zoom_to_selection(rect, content, origin.to_vec2(), &geom);
             }
         }
+        // #284 review round 4: the scroll extent covers every
+        // top-level drawing shape — including off-page and
+        // never-rastered ones — computed from the DOCUMENT (per
+        // `self.shape_rect`), not the landed layer quads: composite
+        // omits off-screen shapes and unready textures, so a
+        // texture-based extent could shrink mid-pan and strand
+        // off-page work. Page-DOWN inches for the canvas.
+        let geom_pre = self.page_geom();
+        let extent_bounds: Vec<(f64, f64, f64, f64)> = self
+            .ed()
+            .and_then(|editor| {
+                let page = editor.doc.pages.get(self.page_idx)?;
+                let pid = page.id;
+                Some(
+                    page.shapes
+                        .iter()
+                        .filter_map(|sh| self.shape_rect(&editor.doc, pid, sh))
+                        .map(|(x, y, w, h)| (x, geom_pre.h_in - (y + h), w, h))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or_default();
         let App {
             view, ed, page_idx, ..
         } = self;
@@ -10086,6 +10108,7 @@ impl App {
             view,
             &geom,
             &quads,
+            &extent_bounds,
             sel_rect,
             &extra_rects,
             &member_hl,
