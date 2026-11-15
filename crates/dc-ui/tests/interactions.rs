@@ -1586,7 +1586,14 @@ fn line_body_drag_translates_endpoints() {
         beg.x + (end.x - beg.x) * 0.25,
         beg.y + (end.y - beg.y) * 0.25,
     );
+    let (z_pre, pan_x_pre, pan_y_pre) = h.state().debug_view_for_test();
     drag_naturally(&mut h, quarter, egui::vec2(50.0, 30.0));
+    let (z_post, pan_x_post, pan_y_post) = h.state().debug_view_for_test();
+    if std::env::var_os("DC_EXTENT_DEBUG").is_some() {
+        eprintln!(
+            "[line dbg] zoom {z_pre}->{z_post} pan ({pan_x_pre},{pan_y_pre})->({pan_x_post},{pan_y_post})"
+        );
+    }
 
     let zoom = h.state().debug_zoom();
     let ppi = 96.0 * zoom;

@@ -14147,6 +14147,8 @@ impl App {
         let (min, max) = canvas::pan_range_axis(
             content.y,
             geom.h_in as f32 * self.view.px_per_in(),
+            0.0, // the PAPER edges are the jump's semantic target; the
+                 // extent clamp (corner ≤ 0) never tightens this
             self.view.zoom,
         );
         self.view.pan.y = origin.y + if top { max } else { min };

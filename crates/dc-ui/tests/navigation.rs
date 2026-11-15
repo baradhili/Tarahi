@@ -136,6 +136,7 @@ fn ctrl_wheel_zooms_without_scrolling_the_wheel_step() {
         origin,
         content,
         page_px,
+        egui::Vec2::ZERO, // a blank drawing has no off-page content
         z_after,
     );
     let got = egui::vec2(px_after, py_after);
