@@ -605,6 +605,10 @@ page-width = Seitenbreite
 paint-formatting-onto-shape-to = Formatierung auf Form { $to } übertragen
 painter-cells = { $n } Formatierungszellen an Form { $to } kopiert
 painter-cells-sticky = { $n } Formatierungszellen an Form { $to } kopiert (weitere Formen anklicken, Esc beendet)
+pan = Verschieben
+pan-off = Verschiebetool aus
+pan-tip = Verschiebetool — die Seite ziehen, um die Ansicht zu bewegen (Esc kehrt zum Zeiger zurück)
+
 paragraph = Absatz
 paste = Einfügen
 pick-an-output-file-first = Zuerst eine Ausgabedatei wählen
@@ -1686,6 +1690,11 @@ painter-cells = { $n } formatting cells copied to shape { $to }
 # $n (Number) - argument
 # $to (Number) - argument
 painter-cells-sticky = { $n } formatting cells copied to shape { $to } (click more shapes, Esc to finish)
+# $what - argument
+pan = Pan
+pan-off = pan tool off
+pan-tip = Pan tool — drag the page to move the view (Esc returns to the pointer)
+
 paragraph = Paragraph
 paste = Paste
 pick-an-output-file-first = Pick an output file first
@@ -2783,6 +2792,10 @@ painter-cells = { $n } celdas de formato copiadas a la forma { $to }
 # $n - argumento
 # $to - argumento
 painter-cells-sticky = { $n } celdas de formato copiadas a la forma { $to } (haga clic en más formas, Esc para terminar)
+pan = Panorámica
+pan-off = herramienta de panorámica desactivada
+pan-tip = Herramienta Panorámica — arrastre la página para mover la vista (Esc vuelve al puntero)
+
 paragraph = Párrafo
 paste = Pegar
 pick-an-output-file-first = Elija primero un archivo de salida
@@ -3828,6 +3841,10 @@ page-width = عرض صفحه
 paint-formatting-onto-shape-to = اعمال قالب‌بندی روی شکل { $to }
 painter-cells = { $n } سلول قالب‌بندی به شکل { $to } رونویسی شد
 painter-cells-sticky = { $n } سلول قالب‌بندی به شکل { $to } رونویسی شد (روی شکل‌های بیشتر کلیک کنید، Esc برای پایان)
+pan = جابه‌جایی
+pan-off = ابزار جابه‌جایی خاموش است
+pan-tip = ابزار جابه‌جایی — برای حرکت دادن نما، صفحه را بکشید (Esc به اشاره‌گر بازمی‌گردد)
+
 paragraph = بند
 paste = چسباندن
 pick-an-output-file-first = نخست یک پروندهٔ خروجی برگزینید

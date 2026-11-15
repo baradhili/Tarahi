@@ -656,6 +656,11 @@ painter-cells = { $n } formatting cells copied to shape { $to }
 # $n (Number) - argument
 # $to (Number) - argument
 painter-cells-sticky = { $n } formatting cells copied to shape { $to } (click more shapes, Esc to finish)
+# $what - argument
+pan = Pan
+pan-off = pan tool off
+pan-tip = Pan tool — drag the page to move the view (Esc returns to the pointer)
+
 paragraph = Paragraph
 paste = Paste
 pick-an-output-file-first = Pick an output file first

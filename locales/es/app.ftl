@@ -654,6 +654,10 @@ painter-cells = { $n } celdas de formato copiadas a la forma { $to }
 # $n - argumento
 # $to - argumento
 painter-cells-sticky = { $n } celdas de formato copiadas a la forma { $to } (haga clic en más formas, Esc para terminar)
+pan = Panorámica
+pan-off = herramienta de panorámica desactivada
+pan-tip = Herramienta Panorámica — arrastre la página para mover la vista (Esc vuelve al puntero)
+
 paragraph = Párrafo
 paste = Pegar
 pick-an-output-file-first = Elija primero un archivo de salida

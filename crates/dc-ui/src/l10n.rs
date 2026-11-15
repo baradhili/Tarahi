@@ -3817,6 +3817,27 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "pan",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "pan-off",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "pan-tip",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "paragraph",
         attribute: None,
         vars: &[],
@@ -6343,10 +6364,10 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..44846,
-            Self::En => 44846..88347,
-            Self::Es => 88347..136231,
-            Self::Fa => 136231..193279,
+            Self::De => 0..44998,
+            Self::En => 44998..88635,
+            Self::Es => 88635..136689,
+            Self::Fa => 136689..193980,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -8542,6 +8563,16 @@ impl L10nLanguage {
         _args.set("n", n.into());
         _args.set("to", to.into());
         self.0.msg("painter-cells-sticky", Some(_args)).unwrap()
+    }
+    /// $what - argument
+    pub fn msg_pan(&self) -> String {
+        self.0.msg("pan", None).unwrap()
+    }
+    pub fn msg_pan_off(&self) -> String {
+        self.0.msg("pan-off", None).unwrap()
+    }
+    pub fn msg_pan_tip(&self) -> String {
+        self.0.msg("pan-tip", None).unwrap()
     }
     pub fn msg_paragraph(&self) -> String {
         self.0.msg("paragraph", None).unwrap()

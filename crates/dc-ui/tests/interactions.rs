@@ -611,7 +611,13 @@ fn right_click_menu_flips_near_right_edge() {
     // the right of a shape placed here. High on the canvas so the
     // menu fits below (see test above).
     assert!(canvas.right() >= 1250.0, "canvas reaches the client edge");
-    let to = egui::pos2(canvas.right() - 6.0, canvas.top() + 80.0);
+    // #283: the vertical scrollbar owns the rightmost 14 px band —
+    // the drop lands just inside the CONTENT edge, still near enough
+    // to the screen edge to exercise the menu flip.
+    let to = egui::pos2(
+        canvas.right() - dc_ui::canvas::SCROLLBAR - 6.0,
+        canvas.top() + 80.0,
+    );
     click_at(&mut h, from, egui::PointerButton::Primary);
     click_at(&mut h, to, egui::PointerButton::Primary);
     click_at(&mut h, to, egui::PointerButton::Secondary);
@@ -1204,19 +1210,39 @@ fn wheel_zoom_anchors_on_the_selection() {
                                               // the selection anchor differ.
     let center = h.state().debug_shape_screen_rect(shape).unwrap().center();
     drag_naturally(&mut h, center, egui::vec2(-180.0, -120.0));
+    // Zoom IN a few steps first (#283): the scroll EXTENT bounds pan
+    // to the page plus a margin band, so an anchored zoom reached
+    // straight from the fitted view can push pan past the bound — the
+    // clamp then moves the view exactly like Visio's scroll range
+    // does. The stationary-anchor property is asserted in the
+    // interior of the extent: page overflowing the view, one
+    // ctrl+wheel-out step (its anchored pan moves INWARD, away from
+    // every bound).
+    for _ in 0..3 {
+        h.hover_at(h.state().debug_canvas_rect().center());
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 120.0),
+            modifiers: egui::Modifiers::CTRL,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+        });
+        h.run();
+    }
     let before = h.state().debug_shape_screen_rect(shape).unwrap();
     let zoom0 = h.state().debug_zoom();
     let drift = before.center().to_vec2() - h.state().debug_canvas_rect().center().to_vec2();
     assert!(
-        drift.length() > 100.0,
-        "the shape sits off-center: {drift:?}"
+        drift.length() > 60.0,
+        "the shape sits off-center (the selection anchor must differ from the hover anchor): {drift:?}"
     );
-    // Wheel IN while hovering the canvas center (not the shape).
+    // Ctrl+wheel OUT, hovering AWAY from the shape: the zoom anchors
+    // at the SELECTION's center (not the hover, #237).
     h.hover_at(h.state().debug_canvas_rect().center());
     h.event(egui::Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
-        delta: egui::vec2(0.0, 120.0),
-        modifiers: egui::Modifiers::NONE,
+        delta: egui::vec2(0.0, -120.0),
+        modifiers: egui::Modifiers::CTRL,
         phase: egui::TouchPhase::Move,
         source: egui::MouseWheelSource::Wheel,
     });
@@ -1228,7 +1254,7 @@ fn wheel_zoom_anchors_on_the_selection() {
         before.center(),
         after.center()
     );
-    assert!(h.state().debug_zoom() > zoom0, "the zoom changed");
+    assert!(h.state().debug_zoom() < zoom0, "the zoom changed");
 }
 
 /// #237: the zoom-to-selection affordance (Shift+Z / the View ▸ Zoom
@@ -1240,7 +1266,12 @@ fn zoom_to_selection_centers_the_selection() {
     h.run();
     let (_, shape) = place_master(&mut h, 2);
     let center = h.state().debug_shape_screen_rect(shape).unwrap().center();
-    drag_naturally(&mut h, center, egui::vec2(-180.0, -120.0));
+    // A small offset: the zoom-to-selection centers the shape, and
+    // the #283 scroll extent bounds the pan to page+margin — a shape
+    // dragged to the page's far left cannot CENTER without leaving
+    // the range (the clamp binds, Visio's Zoom Selected behaves the
+    // same near the paper edge).
+    drag_naturally(&mut h, center, egui::vec2(30.0, -20.0));
     // Shift+Z — the keyboard affordance (Ctrl+Shift+Z is redo).
     h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Z);
     h.run();
@@ -4460,6 +4491,11 @@ fn drag_moves_the_shape_live_under_the_cursor() {
         1,
         "the dragged shape must ghost live under the cursor (#96)"
     );
+    // The ghost IS the live preview (snap included) — remember where
+    // it showed, the release must land exactly there (#96; #283
+    // review: the raw-pixel-delta form drifted when the scrollbar
+    // bands moved the fit bucket and the drag's snap aligned).
+    let ghost = h.state().debug_drag_ghost_rect_for_test().expect("ghost rect");
     ctx_menu_snapshot(&mut h, "dc_ui_drag_live_feedback");
     h.event(b(from + egui::vec2(60.0, -40.0), false));
     h.run();
@@ -4473,11 +4509,11 @@ fn drag_moves_the_shape_live_under_the_cursor() {
         .debug_shape_screen_rect(shape)
         .expect("after move");
     assert!(
-        (r2.center().x - (from.x + 60.0)).abs() <= 1.5
-            && (r2.center().y - (from.y - 40.0)).abs() <= 1.5,
+        (r2.center().x - ghost.center().x).abs() <= 1.5
+            && (r2.center().y - ghost.center().y).abs() <= 1.5,
         "the shape must land where the ghost showed: {:?} vs {:?}",
         r2.center(),
-        from + egui::vec2(60.0, -40.0)
+        ghost.center()
     );
 }
 
@@ -7917,16 +7953,28 @@ fn multi_document_open_adds_and_switches() {
     // on A, switch to B (B keeps its own zoom), switch back: A's zoom
     // returns, and A's placed shape selection is still the selection.
     h.hover_at(h.state().debug_canvas_rect().center());
+    // #283: the canvas wheel zooms under the Ctrl/Cmd modifier now —
+    // plain wheel scrolls the view.
     h.event(egui::Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
         delta: egui::vec2(0.0, 120.0),
-        modifiers: egui::Modifiers::NONE,
+        modifiers: egui::Modifiers::CTRL,
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Wheel,
+    });
+    // A second step: a blank B re-fits at the same zoom one step
+    // lands on, so the per-document-state assertion needs A clearly
+    // past it.
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, 120.0),
+        modifiers: egui::Modifiers::CTRL,
         phase: egui::TouchPhase::Move,
         source: egui::MouseWheelSource::Wheel,
     });
     h.run();
     let zoom_a = h.state().debug_zoom();
-    assert!(zoom_a > 0.4, "A zoomed in: {zoom_a}");
+    assert!(zoom_a > 0.5, "A zoomed in: {zoom_a}");
     h.query_all_by_label_contains("Window")
         .find(|n| strip_bidi(&format!("{:?}", n)).contains("Window 3"))
         .expect("the Window switcher")

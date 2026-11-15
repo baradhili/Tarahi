@@ -162,6 +162,8 @@ pub enum Action {
     SnapGlue,
     PointerTool,
     ConnectorTool,
+    /// #283: the Pan tool (Home ▸ Tools) — a plain drag moves the view.
+    PanTool,
     AlignLeft,
     AlignHCenter,
     AlignRight,
@@ -347,6 +349,9 @@ pub enum Icon {
     Translate,
     /// #149: the context-menu mini-toolbar's Flip flyout.
     FlipVertical,
+    /// #283: the Pan tool (MDI hand-back-right-outline, the hand
+    /// Visio's pan reads as).
+    Hand,
 }
 
 impl Icon {
@@ -417,6 +422,7 @@ impl Icon {
             Icon::Picture => "picture",
             Icon::OnlinePic => "onlinepic",
             Icon::Orientation => "orientation",
+            Icon::Hand => "hand",
             Icon::Pointer => "pointer",
             Icon::TextBox => "textbox",
             Icon::NewPage => "newpage",
@@ -1475,6 +1481,32 @@ impl Icon {
                     let pt = |a: f32| c + Vec2::new(a.cos() * rx, a.sin() * ry);
                     p.line_segment([pt(a0), pt(a1)], Stroke::new(1.6, blue));
                 }
+            }
+            Icon::Hand => {
+                // open-hand fallback (the MDI hand-back-right-outline
+                // glyph ships): four finger stubs over a rounded palm
+                // with an out-thumbed heel.
+                let fingers = [
+                    (-4.5, -4.0, -4.5, -6.5),
+                    (-1.5, -4.0, -1.5, -7.5),
+                    (1.5, -4.0, 1.5, -7.0),
+                    (4.5, -4.0, 4.5, -5.5),
+                ];
+                for (x0, y0, x1, y1) in fingers {
+                    p.line_segment(
+                        [c + Vec2::new(x0, y0), c + Vec2::new(x1, y1)],
+                        stroke(blue),
+                    );
+                }
+                p.rect_filled(
+                    Rect::from_min_size(c + Vec2::new(-6.0, -1.0), Vec2::new(12.0, 8.0)),
+                    2.5,
+                    blue,
+                );
+                p.line_segment(
+                    [c + Vec2::new(-6.0, 2.0), c + Vec2::new(-8.5, -2.0)],
+                    stroke(blue),
+                );
             }
             Icon::ConnPoint => {
                 // square with an × — the connection-point glyph

@@ -169,11 +169,162 @@ pub struct PageGeom {
 
 pub const RULER: f32 = 22.0;
 
+/// The scrollbar band width (#283) — the horizontal bar sits on the
+/// canvas's bottom edge, the vertical bar on the right edge (LEFT
+/// under the #257 RTL mirror). The drawable content area shrinks by
+/// these bands before the ruler inset (`content_area`), so fit math,
+/// wheel anchors and hit tests all see the same area the bars leave.
+pub const SCROLLBAR: f32 = 14.0;
+const THUMB_MIN: f32 = 24.0;
+/// Scroll margin (#283): page-relative space (inches) the view may
+/// scroll past each paper edge — Visio's scrollbars always leave a
+/// strip of workspace visible around the page.
+const SCROLL_MARGIN_IN: f32 = 0.5;
+
+/// The scrollable pan range for one axis, in page-relative screen px
+/// (#283): `pan` is the screen offset of the page's top-left corner,
+/// so the axis range is `[view − page − margin, margin]` — the
+/// visible window may show at most `margin` beyond each paper edge.
+/// When the whole extent already fits (min > max) the range PINS: the
+/// page centers, clamping is a no-op there, and the thumb draws
+/// full-length (a fit view).
+pub fn pan_range_axis(view_px: f32, page_px: f32, zoom: f32) -> (f32, f32) {
+    let m = SCROLL_MARGIN_IN * 96.0 * zoom;
+    let (min, max) = (view_px - page_px - m, m);
+    if min <= max {
+        (min, max)
+    } else {
+        let c = (view_px - page_px) / 2.0;
+        (c, c)
+    }
+}
+
+/// Clamp a pan onto the scrollable extent (both axes; `origin` is the
+/// content area's top-left — pan is in absolute screen px). One
+/// authoritative clamp point per frame covers every pan write: wheel
+/// scroll, thumb drags, middle/command/tool drags, zoom writes and
+/// views restored from the per-document persistence (#192 4b).
+pub fn clamp_pan(pan: Vec2, origin: Pos2, view_px: Vec2, page_px: Vec2, zoom: f32) -> Vec2 {
+    let (min_x, max_x) = pan_range_axis(view_px.x, page_px.x, zoom);
+    let (min_y, max_y) = pan_range_axis(view_px.y, page_px.y, zoom);
+    Vec2::new(
+        origin.x + (pan.x - origin.x).clamp(min_x, max_x),
+        origin.y + (pan.y - origin.y).clamp(min_y, max_y),
+    )
+}
+
+/// One scrollbar thumb's geometry inside its track (track-local px).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThumbGeom {
+    /// Thumb start along the track.
+    pub pos: f32,
+    pub len: f32,
+}
+
+/// Thumb geometry for one axis (#283): the thumb's length is the
+/// visible fraction of the scrollable extent (a fitted view fills the
+/// whole track), and its position follows `pan_axis` across the pan
+/// range. The margin scales with zoom so the thumb never jitters
+/// across the 1/384 raster buckets (`apply_fit`'s hysteresis note).
+pub fn thumb_geom(
+    track_len: f32,
+    view_px: f32,
+    page_px: f32,
+    zoom: f32,
+    pan_axis: f32,
+) -> ThumbGeom {
+    let extent = page_px + 2.0 * SCROLL_MARGIN_IN * 96.0 * zoom;
+    let frac = if extent > 0.0 {
+        (view_px / extent).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let len = (track_len * frac).clamp(THUMB_MIN.min(track_len), track_len);
+    let (min, max) = pan_range_axis(view_px, page_px, zoom);
+    let span = (track_len - len).max(0.0);
+    let t = if max > min {
+        ((pan_axis - min) / (max - min)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    ThumbGeom {
+        pos: t * span,
+        len,
+    }
+}
+
+/// The pan a thumb position (track-local px) maps back to, one axis —
+/// the inverse of [`thumb_geom`] (a round trip is exact).
+pub fn pan_from_thumb(
+    thumb_pos: f32,
+    track_len: f32,
+    view_px: f32,
+    page_px: f32,
+    zoom: f32,
+) -> f32 {
+    let (min, max) = pan_range_axis(view_px, page_px, zoom);
+    if max <= min {
+        return min;
+    }
+    let g = thumb_geom(track_len, view_px, page_px, zoom, min);
+    let span = (track_len - g.len).max(1.0);
+    min + (thumb_pos / span).clamp(0.0, 1.0) * (max - min)
+}
+
+/// The canvas's scrollbar bands (#283): (horizontal, vertical). The
+/// horizontal bar spans the bottom edge; the vertical bar hugs the
+/// right edge — the LEFT edge under the #257 RTL mirror — and stops
+/// above the horizontal bar (the corner stays canvas).
+fn scrollbar_rects(canvas_rect: Rect) -> (Rect, Rect) {
+    let rtl = crate::i18n::rtl();
+    let h = Rect::from_min_max(
+        Pos2::new(canvas_rect.left(), canvas_rect.bottom() - SCROLLBAR),
+        Pos2::new(canvas_rect.right(), canvas_rect.bottom()),
+    );
+    let v = Rect::from_min_max(
+        if rtl {
+            Pos2::new(canvas_rect.left(), canvas_rect.top())
+        } else {
+            Pos2::new(canvas_rect.right() - SCROLLBAR, canvas_rect.top())
+        },
+        if rtl {
+            Pos2::new(
+                canvas_rect.left() + SCROLLBAR,
+                canvas_rect.bottom() - SCROLLBAR,
+            )
+        } else {
+            Pos2::new(canvas_rect.right(), canvas_rect.bottom() - SCROLLBAR)
+        },
+    );
+    (h, v)
+}
+
+/// The drawable canvas inside the scrollbar bands (`content_area`
+/// insets the rulers on top of this).
+fn inner_canvas_rect(canvas_rect: Rect) -> Rect {
+    let rtl = crate::i18n::rtl();
+    Rect::from_min_max(
+        Pos2::new(
+            canvas_rect.left() + if rtl { SCROLLBAR } else { 0.0 },
+            canvas_rect.top(),
+        ),
+        Pos2::new(
+            canvas_rect.right() - if rtl { 0.0 } else { SCROLLBAR },
+            canvas_rect.bottom() - SCROLLBAR,
+        ),
+    )
+}
+
 /// The drawable content area of a canvas rect: (origin, size), the
 /// origin shifted past the rulers when they are showing, minus the
 /// page margin `show`/`apply_fit`/`zoom_to_rect` all keep. Shared so
 /// the fit math and the text-edit zoom (#22) target the same pixels.
 pub fn content_area(canvas_rect: Rect, show_rulers: bool) -> (Pos2, Vec2) {
+    // #283: the scrollbar bands shrink the drawable area first — the
+    // bars overlay the canvas's bottom and side edges exactly like
+    // Visio's, and every consumer of the content area (fit math,
+    // wheel anchors, the GUI overlay) must see the same region.
+    let canvas_rect = inner_canvas_rect(canvas_rect);
     // #257 item 3: an RTL chrome carries the vertical ruler band on
     // the canvas's RIGHT edge (the mirrored-corner reading of the
     // Office RTL ruler pair). The origin stays AT the canvas's left
@@ -292,6 +443,10 @@ pub struct CanvasOut {
     /// Ctrl/Cmd+click: follow the hit shape's first hyperlink (#28).
     pub ctrl_click: bool,
     pub zoom_changed: bool,
+    /// #283 review: the live move-drag ghost quads in SCREEN px (the
+    /// exact `quad_to_screen` mapping) — the #96 "lands where the
+    /// ghost showed" contract asserts against these, snap included.
+    pub drag_ghost_rects: Vec<Rect>,
 }
 
 /// A selection-frame corner, in screen orientation (y-down).
@@ -638,6 +793,7 @@ pub fn show(
     connector_tool: bool,     // #108: the Connector Tool is active
     lasso_tool: bool,         // #110: the Lasso Select tool is active
     freeform_tool: bool,      // #132: the Freeform tool is active
+    pan_tool: bool,           // #283: the Pan tool is active (hand cursor, drag pans)
     stencil_hover: bool,
     // #202: the selected 1D shape's geometry carries a curve row —
     // the selection layer then skips its begin→end chord stroke (the
@@ -677,6 +833,7 @@ pub fn show(
         shift_click: false,
         ctrl_click: false,
         zoom_changed: false,
+        drag_ghost_rects: Vec::new(),
     };
     let avail = ui.available_size();
     let (canvas_r, resp) = ui.allocate_exact_size(avail, Sense::click_and_drag());
@@ -685,15 +842,33 @@ pub fn show(
     // Content area origin (below/right of rulers).
     let (content_origin, content) = content_area(canvas_r, view.show_rulers);
 
-    // Wheel zoom — a manual zoom: leaves fit mode so later resizes
-    // keep the user's view. With an active selection the anchor is the
-    // selection's center (the union of the primary + multi-select
-    // rects — the selection is what the user is working on, #237);
-    // without one the hovered point anchors, as before.
+    // Wheel semantics (Visio 2016 parity, #283): Ctrl/Cmd+wheel
+    // ZOOMS — anchored at the hover point, or at the selection's
+    // center when a selection is active (#237) — and plain wheel
+    // scrolls the view (the reporter's exact ask). egui 0.37 does the
+    // modifier routing itself and hands the two signals over
+    // SEPARATELY: under its `zoom_modifier` (COMMAND — Ctrl on
+    // Windows/Linux, Cmd on macOS) the scroll delta is zeroed and the
+    // step arrives as `zoom_factor_delta`, so the branches are
+    // mutually exclusive by construction and Ctrl never both zooms
+    // and scrolls. Shift+wheel and trackpad horizontal scrolls arrive
+    // as `smooth_scroll_delta.x` (`horizontal_scroll_modifier` =
+    // SHIFT). The zoom keeps the canvas's fixed 1.1 steps keyed off
+    // the delta's direction (egui's own factor is a continuous
+    // exp() — the discrete step preserves the established wheel feel
+    // and the selection-anchor behavior #237/#218 tested). Scroll and
+    // zoom are manual: both leave fit mode. The same command modifier
+    // gates the drag pan below — a press gesture, untouched here.
     if let Some(hp) = resp.hover_pos() {
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll != 0.0 {
-            let factor = if scroll > 0.0 { 1.1 } else { 1.0 / 1.1 };
+        let (delta, zoom_step) =
+            ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
+        if zoom_step != 1.0 {
+            // The factor IS egui's smoothed step (`zoom_factor_delta`
+            // = exp(scroll_zoom_speed × delta)): it already decays
+            // across frames as the wheel delta smooths out, so
+            // applying it directly keeps one wheel notch one step —
+            // quantizing a fixed 1.1 per frame would turn every
+            // decaying residual into another full step.
             // The anchor's screen position uses the PRE-zoom ppi — the
             // selection's on-screen center before this step.
             let old_ppi = view.px_per_in();
@@ -714,13 +889,20 @@ pub fn show(
                 .filter(|a| canvas_r.contains(*a))
                 .unwrap_or(hp);
             let old = view.zoom;
-            view.zoom = (view.zoom * factor).clamp(0.1, 8.0);
+            view.zoom = (view.zoom * zoom_step).clamp(0.1, 8.0);
             let k = view.zoom / old;
             // Keep the anchor point stationary — the hovered pixel, or
             // the selection's center when a selection is active.
             view.pan = anchor.to_vec2() - (anchor.to_vec2() - view.pan) * k;
             view.fit_mode = false;
             out.zoom_changed = true;
+        } else if delta.x != 0.0 || delta.y != 0.0 {
+            // Scroll (#283): the page's screen offset follows the
+            // delta exactly like an egui ScrollArea's content —
+            // positive y (wheel up) moves the page down the screen.
+            // Clamped to the scrollable extent at this frame's end.
+            view.pan += delta;
+            view.fit_mode = false;
         }
     }
 
@@ -733,12 +915,25 @@ pub fn show(
         out.zoom_changed = true;
     }
 
-    // Middle-drag or space-drag pans — manual: leaves fit mode.
+    // Pan gestures — manual: leaves fit mode. Middle-drag, the
+    // Ctrl/Cmd+drag fallback (a press gesture: the arming block below
+    // keeps it from starting a marquee or a move), and — while the
+    // Pan tool is active — a plain left drag (#283). The old comment
+    // called this "space-drag"; the gesture has been the command
+    // modifier since it landed.
     let pan_drag = resp.dragged_by(egui::PointerButton::Middle)
-        || (ui.input(|i| i.modifiers.command) && resp.dragged());
+        || (ui.input(|i| i.modifiers.command) && resp.dragged())
+        || (pan_tool && resp.dragged());
     if pan_drag {
         view.pan += resp.drag_delta();
         view.fit_mode = false;
+    }
+    // Cursor feedback (#283): the Pan tool reads as a hand, and any
+    // live pan gesture grabs.
+    if pan_drag {
+        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grabbing);
+    } else if pan_tool && resp.hovered() {
+        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grab);
     }
 
     // ---- gesture arming, on the PRESS frame (see module note) ----
@@ -809,7 +1004,14 @@ pub fn show(
     let primary_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
     let primary_released = ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
 
-    if primary_pressed && resp.contains_pointer() && !interaction_lock {
+    if primary_pressed
+        && resp.contains_pointer()
+        && !interaction_lock
+        // The Pan tool (#283) owns the gesture: a press never arms a
+        // marquee, a move-drag, a connector, a guide or an arrow
+        // click — dragging pans, clicking does nothing.
+        && !pan_tool
+    {
         // `press_origin` is where this press began (set by the press
         // event itself), so it is always Some on this frame.
         let p = ui
@@ -1562,6 +1764,7 @@ pub fn show(
     for q in drag.ghosts.iter().chain(handle_ghosts.iter()) {
         draw_ghost(q);
     }
+    out.drag_ghost_rects = drag.ghosts.iter().map(quad_to_screen).collect();
     {
         let dashed = Stroke::new(1.2, t.selection);
         for r in &outlines {
@@ -1802,9 +2005,10 @@ pub fn show(
         p.add(egui::Shape::line(pts, Stroke::new(w, j.color)));
     }
 
-    // Rulers.
+    // Rulers — on the bars-shrunk rect: the bands stop at the
+    // scrollbars exactly like Visio's layout (#283).
     if view.show_rulers {
-        draw_rulers(&p, canvas_r, view, page, out.page_rect, &t);
+        draw_rulers(&p, inner_canvas_rect(canvas_r), view, page, out.page_rect, &t);
     }
 
     // Mouse position in page coords (y-up) for the status bar.
@@ -1855,7 +2059,161 @@ pub fn show(
             }
         }
     }
+
+    // ---- scrollbars (#283) -----------------------------------------
+    // Drawn last (topmost), allocated after the canvas so their rects
+    // own the clicks and drags that land in the bands. Thumb drags
+    // and track page-jumps write `pan` like any other gesture.
+    let page_px = Vec2::new(
+        page.w_in as f32 * view.px_per_in(),
+        page.h_in as f32 * view.px_per_in(),
+    );
+    draw_scrollbars(ui, canvas_r, view, content_origin, content, &page_px, &t);
+
+    // The frame's authoritative clamp (#283): every pan write above —
+    // wheel scroll, thumb drags and page-jumps, middle/command/tool
+    // drags, zoom writes, restored views — lands inside the
+    // scrollable extent, so the page can never be thrown off-screen
+    // (the report's second defect) and a restored pan is sane.
+    view.pan = clamp_pan(view.pan, content_origin, content, page_px, view.zoom);
     out
+}
+
+/// The scrollbars themselves (#283): track + thumb per axis, thumb
+/// drag, and track click (a Visio-style page jump — the thumb centers
+/// on the clicked point). Colors follow the egui visuals so the bars
+/// sit right in both shell themes; a fitted view draws full-length
+/// thumbs (nothing to scroll, layout stays stable across the
+/// fit→manual transition).
+#[allow(clippy::too_many_arguments)] // the rects, state, extents and tokens
+fn draw_scrollbars(
+    ui: &mut Ui,
+    canvas_r: Rect,
+    view: &mut View,
+    content_origin: Pos2,
+    content: Vec2,
+    page_px: &Vec2,
+    t: &ShellTokens,
+) {
+    let (hbar_r, vbar_r) = scrollbar_rects(canvas_r);
+    // The painter is cloned (Arc-backed, cheap) — the responses below
+    // claim their rects BEFORE the thumbs paint over them, so the
+    // thumbs can read hover/drag state. The colors are SHELL tokens:
+    // the track reads as the ruler band's chrome surface and the
+    // thumb as the page-edge gray — both clearly visible over the
+    // desk in the light and dark themes (the egui visuals' near-white
+    // fills rendered the bars invisible, PR-review pass on #283).
+    let p = ui.painter().clone();
+    let track_fill = t.ruler_bg;
+    let thumb_of = |r: &egui::Response| {
+        let base = t.page_edge;
+        if r.dragged() {
+            base.gamma_multiply(0.75)
+        } else if r.hovered() {
+            base.gamma_multiply(0.88)
+        } else {
+            base
+        }
+    };
+
+    // Horizontal.
+    let track = Rect::from_min_max(
+        Pos2::new(hbar_r.left() + 2.0, hbar_r.top() + 2.0),
+        Pos2::new(hbar_r.right() - 2.0, hbar_r.bottom() - 2.0),
+    );
+    // The response comes FIRST — the thumb's fill reads its hover and
+    // drag state, so the interaction must be claimed before painting.
+    let hr = ui.allocate_rect(hbar_r, Sense::click_and_drag());
+    p.rect_filled(hbar_r, 2.0, track_fill);
+    let hg = thumb_geom(
+        track.width(),
+        content.x,
+        page_px.x,
+        view.zoom,
+        view.pan.x - content_origin.x,
+    );
+    let hthumb = Rect::from_min_size(
+        Pos2::new(track.left() + hg.pos, track.top()),
+        Vec2::new(hg.len, track.height()),
+    );
+    p.rect_filled(hthumb, 3.0, thumb_of(&hr));
+    if hr.dragged() {
+        if let Some(pos) = hr.interact_pointer_pos() {
+            view.pan.x = content_origin.x
+                + pan_from_thumb(
+                    pos.x - track.left(),
+                    track.width(),
+                    content.x,
+                    page_px.x,
+                    view.zoom,
+                );
+            view.fit_mode = false;
+        }
+    } else if hr.clicked() {
+        if let Some(pos) = hr.interact_pointer_pos() {
+            // Page jump: the thumb centers on the clicked point.
+            let g = thumb_geom(
+                track.width(),
+                content.x,
+                page_px.x,
+                view.zoom,
+                view.pan.x - content_origin.x,
+            );
+            let span = (track.width() - g.len).max(1.0);
+            let target = (pos.x - track.left() - g.len / 2.0).clamp(0.0, span);
+            view.pan.x = content_origin.x
+                + pan_from_thumb(target, track.width(), content.x, page_px.x, view.zoom);
+            view.fit_mode = false;
+        }
+    }
+
+    // Vertical.
+    let track = Rect::from_min_max(
+        Pos2::new(vbar_r.left() + 2.0, vbar_r.top() + 2.0),
+        Pos2::new(vbar_r.right() - 2.0, vbar_r.bottom() - 2.0),
+    );
+    let vr = ui.allocate_rect(vbar_r, Sense::click_and_drag());
+    p.rect_filled(vbar_r, 2.0, track_fill);
+    let vg = thumb_geom(
+        track.height(),
+        content.y,
+        page_px.y,
+        view.zoom,
+        view.pan.y - content_origin.y,
+    );
+    let vthumb = Rect::from_min_size(
+        Pos2::new(track.left(), track.top() + vg.pos),
+        Vec2::new(track.width(), vg.len),
+    );
+    p.rect_filled(vthumb, 3.0, thumb_of(&vr));
+    if vr.dragged() {
+        if let Some(pos) = vr.interact_pointer_pos() {
+            view.pan.y = content_origin.y
+                + pan_from_thumb(
+                    pos.y - track.top(),
+                    track.height(),
+                    content.y,
+                    page_px.y,
+                    view.zoom,
+                );
+            view.fit_mode = false;
+        }
+    } else if vr.clicked() {
+        if let Some(pos) = vr.interact_pointer_pos() {
+            let g = thumb_geom(
+                track.height(),
+                content.y,
+                page_px.y,
+                view.zoom,
+                view.pan.y - content_origin.y,
+            );
+            let span = (track.height() - g.len).max(1.0);
+            let target = (pos.y - track.top() - g.len / 2.0).clamp(0.0, span);
+            view.pan.y = content_origin.y
+                + pan_from_thumb(target, track.height(), content.y, page_px.y, view.zoom);
+            view.fit_mode = false;
+        }
+    }
 }
 
 fn draw_rulers(
@@ -2322,5 +2680,76 @@ mod tests {
             view.wants_refit(Vec2::ZERO, Vec2::new(800.0, 900.0)),
             "and follows again"
         );
+    }
+
+    // ---- scrollbar math (#283) ------------------------------------
+
+    /// The scrollable range: the view may show at most one margin
+    /// band past each paper edge, and an extent that fits pins to the
+    /// centered form (min == max).
+    #[test]
+    fn pan_range_bounds_the_view_to_page_plus_margin() {
+        let zoom = 1.0;
+        let m = SCROLL_MARGIN_IN * 96.0;
+        // A page smaller than the view: the range pins (page centers).
+        let (min, max) = pan_range_axis(800.0, 400.0, zoom);
+        assert_eq!((min, max), ((800.0 - 400.0) / 2.0, (800.0 - 400.0) / 2.0));
+        // A page larger than the view: margin bands on both ends.
+        let (min, max) = pan_range_axis(500.0, 1200.0, zoom);
+        assert_eq!(min, 500.0 - 1200.0 - m);
+        assert_eq!(max, m);
+        // The margin scales with zoom (it is page-relative space).
+        let (min2, max2) = pan_range_axis(500.0, 1200.0, 2.0);
+        assert!((max2 - 2.0 * m).abs() < 1e-4);
+        assert!(min2 < min);
+    }
+
+    /// Clamping writes through: an unbounded drag cannot throw the
+    /// page off-screen (the report's second defect), and the pinned
+    /// form centers.
+    #[test]
+    fn clamp_pan_bounds_every_axis_and_pins_small_pages() {
+        let origin = Pos2::new(30.0, 22.0);
+        let view = Vec2::new(800.0, 600.0);
+        let page = Vec2::new(1200.0, 900.0);
+        let clamped = clamp_pan(Vec2::new(999.0, -9999.0), origin, view, page, 1.0);
+        let m = SCROLL_MARGIN_IN * 96.0;
+        assert_eq!(clamped.x, origin.x + m, "max pan = the margin band");
+        assert_eq!(clamped.y, origin.y + (view.y - page.y - m), "min pan");
+        // A page that fits: any pan lands exactly on the centered pin.
+        let small = Vec2::new(400.0, 300.0);
+        let clamped = clamp_pan(Vec2::new(-1234.0, 4321.0), origin, view, small, 1.0);
+        assert_eq!(clamped.x, origin.x + (view.x - small.x) / 2.0);
+        assert_eq!(clamped.y, origin.y + (view.y - small.y) / 2.0);
+    }
+
+    /// The thumb round-trips: pan → geometry → pan is exact, the
+    /// thumb fills the track on a fitted view, and drag extents stay
+    /// inside the track.
+    #[test]
+    fn thumb_geom_round_trips_and_fills_when_fitted() {
+        let track = 600.0;
+        let view_px = 500.0;
+        let page_px = 1200.0;
+        let zoom = 1.0;
+        // A fitted view (extent fits): full-length thumb.
+        let fit = thumb_geom(track, 400.0, 300.0, zoom, 0.0);
+        assert_eq!(fit.len, track, "fit view → full track");
+        assert_eq!(fit.pos, 0.0);
+        // A scrolled view: the thumb sits mid-track and round-trips.
+        let (min, max) = pan_range_axis(view_px, page_px, zoom);
+        let mid = (min + max) / 2.0;
+        let g = thumb_geom(track, view_px, page_px, zoom, mid);
+        assert!(g.len < track);
+        assert!(
+            (g.pos - (track - g.len) / 2.0).abs() < 1e-4,
+            "mid-range pan → mid-track thumb: {g:?}"
+        );
+        let back = pan_from_thumb(g.pos, track, view_px, page_px, zoom);
+        assert!((back - mid).abs() < 1e-3, "round trip: {back} vs {mid}");
+        // Ends: thumb pos 0 → min pan, thumb at its right end → max.
+        assert_eq!(pan_from_thumb(0.0, track, view_px, page_px, zoom), min);
+        let end = pan_from_thumb(track, track, view_px, page_px, zoom);
+        assert!((end - max).abs() < 1e-3, "thumb dragged to the end: {end}");
     }
 }

@@ -223,18 +223,19 @@ fn far_off_screen_layers_release_their_textures() {
     let center = h.state().debug_canvas_rect().center();
     h.hover_at(center);
     h.step();
-    // Zoom in hard — the canvas wheel applies one 1.1x step per frame
-    // (clamped at 8x). At 8x the visible window plus the 2in evict
-    // margin is a couple of inches tall around the page center: the
-    // bottom-row grid (5in below the anchor) must release, the center
-    // shape must keep its texture.
+    // Zoom in hard — #283: the canvas wheel zooms under the Ctrl/Cmd
+    // modifier (plain wheel scrolls the view), each event applying
+    // egui's smoothed step (clamped at 8x). At 8x the visible window
+    // plus the 2in evict margin is a couple of inches tall around the
+    // page center: the bottom-row grid (5in below the anchor) must
+    // release, the center shape must keep its texture.
     for _ in 0..30 {
         h.event(egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
             delta: egui::vec2(0.0, 120.0),
             phase: egui::TouchPhase::Move,
             source: egui::MouseWheelSource::Unknown,
-            modifiers: egui::Modifiers::NONE,
+            modifiers: egui::Modifiers::CTRL,
         });
         h.step();
     }
@@ -255,7 +256,7 @@ fn far_off_screen_layers_release_their_textures() {
             delta: egui::vec2(0.0, -120.0),
             phase: egui::TouchPhase::Move,
             source: egui::MouseWheelSource::Unknown,
-            modifiers: egui::Modifiers::NONE,
+            modifiers: egui::Modifiers::CTRL,
         });
         h.step();
     }
