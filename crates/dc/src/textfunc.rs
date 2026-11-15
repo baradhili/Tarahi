@@ -80,9 +80,13 @@ impl SheetTextMeasure {
     /// the 18-fractional-bit grid FIRST, then the spacing multiplier
     /// (default 120 %) — no further rounding (the measured 6/8/10/12
     /// pt corrections are the raw size-grid residues × spacing).
+    /// The slot uses the NOMINAL size (PR #284 review: a
+    /// `script_reduce` factor here measured TEXTHEIGHT at ~2/3 of the
+    /// laid-out height for Pos blocks, saving short TxtHeight boxes —
+    /// #230's decision is slots stay nominal, only glyph measurement
+    /// reduces).
     fn q_line_height(&self) -> f64 {
-        let drawn = self.tb.font_size * self.script_reduce();
-        let q = crate::textmetrics::quantize18(drawn);
+        let q = crate::textmetrics::quantize18(self.tb.font_size);
         let spacing = if self.tb.font_size > 0.0 {
             self.tb.line_height / self.tb.font_size
         } else {
@@ -98,9 +102,12 @@ impl SheetTextMeasure {
         if !rtl {
             return self.q_line_height();
         }
-        let drawn = self.tb.font_size * self.script_reduce();
-        let cs = self.tb.cs_size.unwrap_or(self.tb.font_size) * self.script_reduce();
-        let ratio = if drawn > 0.0 { cs / drawn } else { 1.0 };
+        let cs = self.tb.cs_size.unwrap_or(self.tb.font_size);
+        let ratio = if self.tb.font_size > 0.0 {
+            cs / self.tb.font_size
+        } else {
+            1.0
+        };
         self.q_line_height() * ratio.max(1.0)
     }
 
@@ -284,7 +291,7 @@ pub fn text_edit_macro(doc: &Document, scope: &Scope, text: &str) -> Macro {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vsdx::model::{Cell, Shape};
+    use vsdx::model::{Cell, Shape, SheetChild};
 
     fn text_aware_shape() -> Shape {
         let mut s = Shape::default();
@@ -393,6 +400,30 @@ mod tests {
         );
         // An empty width composes nothing.
         assert_eq!(m.text_width(""), Some(0.0));
+    }
+
+    /// #230 + PR #284 review: TEXTHEIGHT's line slots stay NOMINAL
+    /// under Character.Pos — only glyph measurement reduces — or a
+    /// superscript block's refreshed TxtHeight box would be ~2/3 of
+    /// the laid-out height.
+    #[test]
+    fn pos_slots_stay_nominal() {
+        let doc = Document::default();
+        let mut s = text_aware_shape();
+        s.sheet.children.push(SheetChild::Section(vsdx::Section {
+            name: "Character".into(),
+            rows: vec![vsdx::Row {
+                cells: vec![("Pos".to_string(), Cell::value("1"))],
+                ..vsdx::Row::default()
+            }],
+            ..vsdx::Section::default()
+        }));
+        let m = SheetTextMeasure::new(&doc, &s, &[&s], "");
+        let qh = m.q_line_height();
+        assert!(
+            (qh - 1.2 * crate::textmetrics::quantize18(m.tb.font_size)).abs() < 1e-12,
+            "the Pos slot quantizes the NOMINAL size: {qh}"
+        );
     }
 
     /// #234: the 18-fractional-bit size grid reproduces the measured
