@@ -146,7 +146,7 @@ impl SheetTextMeasure {
         let first_off = if self.tb.bullet.is_some() {
             crate::svg::bullet_stop_offset_in(&self.tb).unwrap_or(0.0).max(0.0)
         } else {
-            self.tb.ind_first.max(0.0)
+            crate::svg::unbulleted_first_offset_in(&self.tb)
         };
         crate::svg::wrap_block_text(
             &face,

@@ -2935,7 +2935,7 @@ fn emit_text(
                 // The unit math below places the line outright.
                 0.0
             } else if line.first_of_para {
-                tb.ind_first.max(0.0)
+                unbulleted_first_offset_in(&tb)
             } else {
                 tb.ind_left
             };
@@ -3159,6 +3159,16 @@ fn hex_rgb(color: &str) -> (u8, u8, u8) {
         }
         _ => (0, 0, 0),
     }
+}
+
+/// The UNBULLETED first-line indent in inches (PR #284 review round
+/// 3, per the IndFirst/IndLeft docs): IndLeft is the base indent for
+/// every line and IndFirst adjusts the FIRST line relative to it —
+/// floored at 0. Consumed by the wrap (`first_off`), the paint band
+/// and the TEXTHEIGHT measure together, so all three stay on one
+/// layout.
+pub(crate) fn unbulleted_first_offset_in(tb: &TextBlock) -> f64 {
+    (tb.ind_left + tb.ind_first).max(0.0)
 }
 
 /// The measured #231 tab-stop rule, shared by the renderer and the
