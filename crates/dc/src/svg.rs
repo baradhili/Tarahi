@@ -2989,17 +2989,23 @@ fn emit_text(
             let pre = if bulleted {
                 let bl = bullet_layout.as_ref().unwrap();
                 let by = y - 0.28 * bl.spec.size;
+                // The bullet rides the unit shift: centered and
+                // right-aligned first lines re-place the whole
+                // [bullet .. text] run (PR #284 review — the text
+                // moved via unit_x while the bullet stayed at the
+                // unshifted bl.x, stranding it at the margin).
+                let bullet_x = line_left;
                 match &bl.spec.glyph {
                     // Paths go outside <text> (see `bullet_paths`).
                     BulletGlyph::Round(kind) => {
                         bullet_paths.push_str(&bullet_glyph_svg(
-                            *kind, bl.x, by, bl.spec.size, &color,
+                            *kind, bullet_x, by, bl.spec.size, &color,
                         ));
                         String::new()
                     }
                     BulletGlyph::Str(glyph) => format!(
                         r#"<tspan x="{bx:.4}" y="{by:.4}" font-size="{fs:.4}"{ff}>{g}</tspan>"#,
-                        bx = bl.x,
+                        bx = bullet_x,
                         by = y,
                         fs = bl.spec.size,
                         // BulletFont absent → the PARAGRAPH face paints
