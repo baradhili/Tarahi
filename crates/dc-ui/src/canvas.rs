@@ -940,6 +940,18 @@ pub fn show(
     } else if pan_tool && resp.hovered() {
         ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grab);
     }
+    // The extent clamp runs HERE (PR #284 review): after the frame's
+    // wheel/pan writes and BEFORE gesture arming, hit tests and
+    // painting — the painted frame, every page-space conversion, and
+    // the View the app stores must all agree. A delta that crosses a
+    // bound therefore clamps this frame, with no overshoot-then-snap
+    // back. (The scrollbar writes below happen after the paint by
+    // widget order; their clamp is at the end of show().)
+    let page_px_early = Vec2::new(
+        page.w_in as f32 * view.px_per_in(),
+        page.h_in as f32 * view.px_per_in(),
+    );
+    view.pan = clamp_pan(view.pan, content_origin, content, page_px_early, view.zoom);
 
     // ---- gesture arming, on the PRESS frame (see module note) ----
     // Handles in screen coords; a press inside HANDLE_GRAB of one wins
@@ -2075,11 +2087,11 @@ pub fn show(
     );
     draw_scrollbars(ui, canvas_r, view, content_origin, content, &page_px, &t);
 
-    // The frame's authoritative clamp (#283): every pan write above —
-    // wheel scroll, thumb drags and page-jumps, middle/command/tool
-    // drags, zoom writes, restored views — lands inside the
-    // scrollable extent, so the page can never be thrown off-screen
-    // (the report's second defect) and a restored pan is sane.
+    // The clamp for the scrollbar writes above (their widget order is
+    // inherently post-paint): the STORED view stays inside the extent
+    // — the page can never be thrown off-screen (the report's second
+    // defect) and a restored pan is sane. Zoom writes landed before
+    // the early clamp; scrollbar drags clamp here for the next frame.
     view.pan = clamp_pan(view.pan, content_origin, content, page_px, view.zoom);
     out
 }
