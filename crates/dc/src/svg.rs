@@ -2969,7 +2969,16 @@ fn emit_text(
                 match halign {
                     0 | 3 => (band_lo, band_lo),
                     2 => (right_x, right_x - line_w),
-                    _ => ((band_lo + right_x) / 2.0, band_lo),
+                    // Centered: the anchor is the band's midpoint —
+                    // the line's LEFT edge (what the #229 background
+                    // spans) sits half a line width left of it (PR
+                    // #284 review: recording band_lo painted the
+                    // background at the margin, leaving connector
+                    // lines visible through the centered text).
+                    _ => {
+                        let cx = (band_lo + right_x) / 2.0;
+                        (cx, cx - line_w / 2.0)
+                    }
                 }
             };
             // The bullet glyph itself — path bullets for the built-in
@@ -9249,13 +9258,15 @@ mod tests {
         let rect_at = out.find("<rect").expect("a rect");
         let text_at = out.find("<text").expect("a text");
         assert!(rect_at < text_at, "background below text: {out}");
-        // Geometry (PR review wave 4): the rect spans the LINES — its
-        // y is the FIRST LINE SLOT's top (middle-aligned here:
-        // top_edge −1 + (th − total_h)/2 = −0.5833), not the block
-        // top (−1), and its x is the line's LEFT edge (0.1 = the left
-        // inset), not the centered anchor (1.0).
+        // Geometry (PR review wave 4, center-edge fix PR #284): the
+        // rect spans the LINES — its y is the FIRST LINE SLOT's top
+        // (middle-aligned here: top_edge −1 + (th − total_h)/2 =
+        // −0.5833), and its x is the centered line's LEFT edge:
+        // band [0.1, 1.9] centers at 1.0, so the text (0.342 wide)
+        // starts at 0.829 — the background sits BEHIND the text, not
+        // at the left margin.
         let rect = &out[rect_at..text_at];
-        assert!(rect.contains(r#"x="0.1000""#), "rect at the line's left edge: {rect}");
+        assert!(rect.contains(r#"x="0.8290""#), "rect behind the centered text: {rect}");
         assert!(rect.contains(r#"y="-0.5833""#), "rect at the first line slot: {rect}");
         let rect_w: f64 = rect
             .split(r#"width=""#)
