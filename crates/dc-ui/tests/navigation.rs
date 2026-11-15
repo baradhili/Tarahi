@@ -106,30 +106,42 @@ fn ctrl_wheel_zooms_without_scrolling_the_wheel_step() {
     h.run();
     h.run();
     zoom_into_page(&mut h);
-    let (z_before, _, _) = h.state().debug_view_for_test();
+    let (z_before, px_before, py_before) = h.state().debug_view_for_test();
     let canvas = h.state().debug_canvas_rect();
     let c = canvas.center();
     wheel_at(&mut h, c, 0.0, -10.0, true);
     h.run();
     h.run();
-    let (z_after, _, py_after) = h.state().debug_view_for_test();
+    let (z_after, px_after, py_after) = h.state().debug_view_for_test();
     assert!(
         z_after < z_before,
         "ctrl+wheel-down zooms out: {z_before} → {z_after}"
     );
-    // The scroll-clamp bound for the post-zoom state: a fired scroll
-    // branch would clamp pan exactly onto it.
+    // The EXACT anchored-pan expectation (PR #284 review round 2): a
+    // zoom step anchored at the hover point keeps that point
+    // stationary — pan' = anchor − (anchor − pan) × k with k =
+    // z_after / z_before — then the extent clamp applies. Any fired
+    // scroll would offset pan from this anchored value, so comparing
+    // both axes pins exclusivity behaviorally instead of a bound.
     let (origin, content) = dc_ui::canvas::content_area(canvas, h.state().debug_show_rulers());
-    let (min, _) = dc_ui::canvas::pan_range_axis(
-        content.y,
-        11.0 * 96.0 * z_after,
+    let k = z_after / z_before;
+    let anchor = c.to_vec2();
+    let pan_before = egui::vec2(px_before, py_before);
+    let page_px = egui::vec2(
+        215.9 / 25.4 * 96.0 * z_after,
+        279.4 / 25.4 * 96.0 * z_after,
+    );
+    let expected = dc_ui::canvas::clamp_pan(
+        anchor - (anchor - pan_before) * k,
+        origin,
+        content,
+        page_px,
         z_after,
     );
+    let got = egui::vec2(px_after, py_after);
     assert!(
-        py_after > origin.y + min + 0.5,
-        "ctrl+wheel must not scroll pan to the bound: {} vs {}",
-        py_after,
-        origin.y + min
+        (got - expected).length() < 1.5,
+        "ctrl+wheel pans exactly per the anchored zoom (no scroll added): {got:?} vs {expected:?}"
     );
 }
 
