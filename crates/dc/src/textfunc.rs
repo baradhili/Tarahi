@@ -281,7 +281,13 @@ pub fn text_edit_macro(doc: &Document, scope: &Scope, text: &str) -> Macro {
                     match vsdx::formula::eval_measured(&f, &env, &measure) {
                         Ok(v) => {
                             if let Some(n) = v.as_f64() {
-                                if n.is_finite() && n > 0.0 {
+                                // A finite ZERO is a valid measurement
+                                // (PR #284 review round 4): clearing a
+                                // label must refresh the cached width
+                                // down to 0, not leave the stale value.
+                                // Negatives and non-finites keep the
+                                // cached V.
+                                if n.is_finite() && n >= 0.0 {
                                     refreshed.push((name.to_string(), n));
                                 }
                             }
@@ -581,6 +587,57 @@ mod tests {
             s.cell("TxtHeight").unwrap().v
         );
         assert_eq!(restored.text, None);
+    }
+
+    /// PR #284 review round 4: a finite zero measurement refreshes
+    /// the cache — clearing a label drops the cached TxtWidth to 0
+    /// instead of leaving the stale value.
+    #[test]
+    fn clearing_the_label_refreshes_the_width_to_zero() {
+        let mut doc = Document::default();
+        // A BARE TEXTWIDTH formula: the fixture's default
+        // MAX(Width, TEXTWIDTH) would mask the zero behind Width.
+        let mut shape = text_aware_shape();
+        shape.sheet.set_cell(
+            "TxtWidth",
+            Cell {
+                v: Some("1.0".into()),
+                f: Some("TEXTWIDTH(TheText)".into()),
+                ..Cell::default()
+            },
+        );
+        doc.pages.push(vsdx::model::Page {
+            id: 0,
+            shapes: vec![shape],
+            ..vsdx::model::Page::default()
+        });
+        let scope = Scope::Shape { page: 0, shape: 0 };
+        // First an edit with content (caches a positive width)…
+        let mut m = text_edit_macro(&doc, &scope, "some text");
+        m.apply(&mut doc).unwrap();
+        let w: f64 = doc.pages[0].shapes[0]
+            .sheet
+            .cell("TxtWidth")
+            .unwrap()
+            .v
+            .clone()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(w > 0.0, "the label cached a positive width: {w}");
+        // …then clearing it: the refresh must land the ZERO.
+        let mut m = text_edit_macro(&doc, &scope, "");
+        m.apply(&mut doc).unwrap();
+        let w: f64 = doc.pages[0].shapes[0]
+            .sheet
+            .cell("TxtWidth")
+            .unwrap()
+            .v
+            .clone()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(w, 0.0, "the cleared label refreshed the cache to zero");
     }
 
     /// A formula-free block (plain `V` cells, no `F`) never gets
