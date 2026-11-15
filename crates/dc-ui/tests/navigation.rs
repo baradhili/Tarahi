@@ -166,13 +166,17 @@ fn scrollbar_thumb_drag_and_track_click_move_the_view() {
     });
     h.run();
     let (_, _, py1) = h.state().debug_view_for_test();
+    // Standard scrollbar direction (PR #284 review): dragging the
+    // thumb DOWN scrolls DOWN — pan.y decreases (the page moves up
+    // the screen).
     assert!(
-        py1 > py0,
-        "dragging the v-thumb downward pans down the page: {py0} → {py1}"
+        py1 < py0,
+        "dragging the v-thumb downward scrolls down: {py0} → {py1}"
     );
 
-    // A track click ABOVE the thumb page-jumps up (the thumb centers
-    // on the click, Visio's track behavior).
+    // A track click ABOVE the thumb page-jumps UP (the thumb centers
+    // on the click, Visio's track behavior): scrolling up increases
+    // pan.y.
     h.hover_at(egui::pos2(bar_x, canvas.top() + 10.0));
     h.event(egui::Event::PointerButton {
         pos: egui::pos2(bar_x, canvas.top() + 10.0),
@@ -189,7 +193,7 @@ fn scrollbar_thumb_drag_and_track_click_move_the_view() {
     h.run();
     let (_, _, py2) = h.state().debug_view_for_test();
     assert!(
-        py2 < py1,
+        py2 > py1,
         "a track click above the thumb jumps the view up: {py1} → {py2}"
     );
 }

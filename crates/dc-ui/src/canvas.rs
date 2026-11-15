@@ -2144,9 +2144,13 @@ fn draw_scrollbars(
     p.rect_filled(hthumb, 3.0, thumb_of(&hr));
     if hr.dragged() {
         if let Some(pos) = hr.interact_pointer_pos() {
+            // The grab offset (pointer − thumb leading edge) is latched
+            // at drag start (PR #284 review): grabbing the thumb's
+            // middle must not jump the view by half a thumb.
+            let off = grab_offset(ui, &hr, pos.x - track.left() - hg.pos);
             view.pan.x = content_origin.x
                 + pan_from_thumb(
-                    pos.x - track.left(),
+                    pos.x - track.left() - off,
                     track.width(),
                     content.x,
                     page_px.x,
@@ -2154,21 +2158,27 @@ fn draw_scrollbars(
                 );
             view.fit_mode = false;
         }
-    } else if hr.clicked() {
-        if let Some(pos) = hr.interact_pointer_pos() {
-            // Page jump: the thumb centers on the clicked point.
-            let g = thumb_geom(
-                track.width(),
-                content.x,
-                page_px.x,
-                view.zoom,
-                view.pan.x - content_origin.x,
-            );
-            let span = (track.width() - g.len).max(1.0);
-            let target = (pos.x - track.left() - g.len / 2.0).clamp(0.0, span);
-            view.pan.x = content_origin.x
-                + pan_from_thumb(target, track.width(), content.x, page_px.x, view.zoom);
-            view.fit_mode = false;
+    } else {
+        grab_offset_clear(ui, &hr);
+        if hr.clicked() {
+            if let Some(pos) = hr.interact_pointer_pos() {
+                // Page jump — TRACK clicks only (PR #284 review): a
+                // press on the thumb is a drag start, never a jump.
+                if !hthumb.contains(pos) {
+                    let g = thumb_geom(
+                        track.width(),
+                        content.x,
+                        page_px.x,
+                        view.zoom,
+                        view.pan.x - content_origin.x,
+                    );
+                    let span = (track.width() - g.len).max(1.0);
+                    let target = (pos.x - track.left() - g.len / 2.0).clamp(0.0, span);
+                    view.pan.x = content_origin.x
+                        + pan_from_thumb(target, track.width(), content.x, page_px.x, view.zoom);
+                    view.fit_mode = false;
+                }
+            }
         }
     }
 
@@ -2193,9 +2203,11 @@ fn draw_scrollbars(
     p.rect_filled(vthumb, 3.0, thumb_of(&vr));
     if vr.dragged() {
         if let Some(pos) = vr.interact_pointer_pos() {
+            // The latched grab offset, as on the horizontal bar.
+            let off = grab_offset(ui, &vr, pos.y - track.top() - vg.pos);
             view.pan.y = content_origin.y
                 + pan_from_thumb(
-                    pos.y - track.top(),
+                    pos.y - track.top() - off,
                     track.height(),
                     content.y,
                     page_px.y,
@@ -2203,21 +2215,47 @@ fn draw_scrollbars(
                 );
             view.fit_mode = false;
         }
-    } else if vr.clicked() {
-        if let Some(pos) = vr.interact_pointer_pos() {
-            let g = thumb_geom(
-                track.height(),
-                content.y,
-                page_px.y,
-                view.zoom,
-                view.pan.y - content_origin.y,
-            );
-            let span = (track.height() - g.len).max(1.0);
-            let target = (pos.y - track.top() - g.len / 2.0).clamp(0.0, span);
-            view.pan.y = content_origin.y
-                + pan_from_thumb(target, track.height(), content.y, page_px.y, view.zoom);
-            view.fit_mode = false;
+    } else {
+        grab_offset_clear(ui, &vr);
+        if vr.clicked() {
+            if let Some(pos) = vr.interact_pointer_pos() {
+                // Track clicks only — thumb presses are drag starts.
+                if !vthumb.contains(pos) {
+                    let g = thumb_geom(
+                        track.height(),
+                        content.y,
+                        page_px.y,
+                        view.zoom,
+                        view.pan.y - content_origin.y,
+                    );
+                    let span = (track.height() - g.len).max(1.0);
+                    let target = (pos.y - track.top() - g.len / 2.0).clamp(0.0, span);
+                    view.pan.y = content_origin.y
+                        + pan_from_thumb(target, track.height(), content.y, page_px.y, view.zoom);
+                    view.fit_mode = false;
+                }
+            }
         }
+    }
+}
+
+/// The latched thumb grab offset for one bar (pointer position minus
+/// the thumb's leading edge, track-local px). Latched at the drag's
+/// first frame; egui reports `drag_started` on the same frame it
+/// reports `dragged`, so the first call below always latches.
+fn grab_offset(ui: &Ui, r: &egui::Response, at_start: f32) -> f32 {
+    let id = egui::Id::new(("dc-scroll-grab", r.id));
+    if r.drag_started() || ui.ctx().memory(|m| m.data.get_temp::<f32>(id).is_none()) {
+        ui.ctx().memory_mut(|m| m.data.insert_temp(id, at_start));
+    }
+    ui.ctx().memory(|m| m.data.get_temp::<f32>(id).unwrap_or(0.0))
+}
+
+/// Clear the latched grab offset once the drag is over.
+fn grab_offset_clear(ui: &Ui, r: &egui::Response) {
+    let id = egui::Id::new(("dc-scroll-grab", r.id));
+    if !r.dragged() {
+        ui.ctx().memory_mut(|m| m.data.remove::<f32>(id));
     }
 }
 
