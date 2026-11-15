@@ -3009,7 +3009,13 @@ fn emit_text(
                         String::new()
                     }
                     BulletGlyph::Str(glyph) => format!(
-                        r#"<tspan x="{bx:.4}" y="{by:.4}" font-size="{fs:.4}"{ff}>{g}</tspan>"#,
+                        // The bullet tspan anchors ITSELF "start" at
+                        // bullet_x (PR #284 review round 4): left
+                        // open, it would inherit the element's
+                        // middle/end anchor and shift the glyph left
+                        // by half (or all) of its width away from the
+                        // laid-out bullet position.
+                        r#"<tspan x="{bx:.4}" y="{by:.4}" text-anchor="start" font-size="{fs:.4}"{ff}>{g}</tspan>"#,
                         bx = bullet_x,
                         by = y,
                         fs = bl.spec.size,
@@ -9460,6 +9466,36 @@ mod tests {
         );
         // Bullet 0: no bullet machinery at all.
         assert!(!emit_bullet("0", &[]).contains("<path"));
+
+        // The centered paragraph's custom bullet: the element anchor
+        // is middle, the bullet tspan must override to start.
+        let doc = Document::default();
+        let mut s = Shape::default();
+        s.sheet.text = Some("bulleted".into());
+        s.sheet.set_cell("Width", Cell::value("4.0"));
+        s.sheet.set_cell("LeftMargin", Cell::value("0"));
+        s.sheet.set_cell("RightMargin", Cell::value("0"));
+        s.sheet.children.push(SheetChild::Section(Section {
+            name: "Paragraph".into(),
+            rows: vec![Row {
+                cells: vec![
+                    ("Bullet".to_string(), Cell::value("–")),
+                    // NO HorzAlign cell → the default center.
+                ],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        let chain = [&s];
+        let mut out = String::new();
+        emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        // The element anchor is middle; only the bullet tspan pins
+        // "start" (the main text tspan's override carries no
+        // font-size, so this substring matches the bullet alone).
+        assert!(
+            out.contains(r#"text-anchor="start" font-size"#),
+            "the centered custom bullet pins its own start anchor: {out}"
+        );
     }
 
     /// #235 terminal-NBSP hang: a trailing no-break space never
