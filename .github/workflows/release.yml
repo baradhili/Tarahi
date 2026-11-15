@@ -122,6 +122,18 @@ jobs:
           # The AppImage FILE name must match the desktop entry's
           # application name (Name=Tarahi) — the catalog test rejects
           # diagramcraft_*.AppImage for it (#261).
+          #
+          # Update information (#281): linuxdeploy forwards
+          # UPDATE_INFORMATION to appimagetool, which embeds the
+          # AppImageUpdate metadata AND emits the matching .zsync next
+          # to the AppImage (shipped by Collect artifacts below). The
+          # zsync pattern is a GLOB against the release assets, so the
+          # versioned file name works unchanged. `latest` resolves
+          # against the latest NON-prerelease GitHub release — if a
+          # release ever ships marked prerelease, AppImageUpdate would
+          # keep resolving the previous stable one (channel decision
+          # to revisit then, per the #281 caveat).
+          UPDATE_INFORMATION="gh-releases-zsync|baradhili|Tarahi|latest|Tarahi_*_x86_64.AppImage" \
           OUTPUT="Tarahi_${{ steps.ver.outputs.version }}_x86_64.AppImage" /tmp/linuxdeploy \
             --appdir AppDir \
             -e target/release/tarahi \
@@ -134,6 +146,10 @@ jobs:
           cp target/debian/*.deb dist/
           cp Tarahi_*_amd64.rpm dist/
           cp Tarahi_*_x86_64.AppImage dist/
+          # The zsync sidecar (#281): AppImageUpdate deltas download
+          # through it; without it the embedded update information
+          # points at nothing.
+          cp Tarahi_*_x86_64.AppImage.zsync dist/
           ls -la dist/
       - uses: actions/upload-artifact@v7
         with:
