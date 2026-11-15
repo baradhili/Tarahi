@@ -19,7 +19,7 @@ static LANG_LOCK: Mutex<()> = Mutex::new(());
 
 /// The shipped catalogs — every one must satisfy every structural
 /// check. A new language is a folder here plus its `language-name`.
-const LOCALES: &[&str] = &["en", "de", "fa"];
+const LOCALES: &[&str] = &["en", "de", "fa", "es"];
 
 /// Panic-safe: restores English even when an assertion fails mid-test,
 /// so a leaked German setting can't flip parallel tests in this binary.
@@ -570,6 +570,31 @@ fn language_switch_renders_german_shell() {
     // must come from the catalog, not hardcoded English.
     harness.get_by_label_contains("Datei");
     harness.snapshot("i18n_german_shell");
+}
+
+/// Same harness, Spanish catalog (#282 batch 1): a Latin-script
+/// locale rides the shipped font floor unchanged — the golden pins
+/// the translated chrome and the longer Spanish strings' fit.
+#[test]
+fn language_switch_renders_spanish_shell() {
+    let _guard = LANG_LOCK.lock().unwrap();
+    let _english = EnglishOnDrop;
+    dc_ui::i18n::pin_english();
+    let mut app = App::with_blank();
+    dc_ui::i18n::set_language_ephemeral(dc_ui::i18n::L10n::Es);
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_ui(move |ui| {
+            dc_ui::theme::install_for(ui.ctx(), egui::ThemePreference::Light);
+            app.draw(ui);
+        });
+    harness.run();
+    harness.run();
+    // The Spanish catalog's File tab — the chrome must come from the
+    // catalog, not hardcoded English.
+    harness.get_by_label_contains("Archivo");
+    harness.snapshot("i18n_spanish_shell");
 }
 
 /// Same harness, Persian catalog: the Arabic-script glyphs render
