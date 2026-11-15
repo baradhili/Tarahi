@@ -122,9 +122,11 @@ impl SheetTextMeasure {
     /// same as the renderer), keeping each line's direction so the
     /// height sums the same per-line slots the renderer paints. The
     /// wrap runs at the DRAWN size (#230) and honors the paragraph
-    /// indents (#231); bullets stay out of the composition (their
-    /// tab-stop placement is paint-side — unwitnessed against
-    /// TEXTHEIGHT).
+    /// indents AND the bullet tab offset (#231, PR #284 review): the
+    /// renderer narrows a bulleted paragraph's first line to the
+    /// computed tab stop, so the measure must wrap at the same width
+    /// or a bulleted multi-line block's TxtHeight disagrees with the
+    /// laid-out lines.
     fn lines_at(&self, text: &str, width: f64) -> Vec<crate::svg::WrapLine> {
         let face =
             crate::textmetrics::resolve(self.tb.font.as_deref(), self.tb.bold, self.tb.italic);
@@ -137,6 +139,15 @@ impl SheetTextMeasure {
             crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic);
         let red = self.script_reduce();
         let usable = (width - self.tb.insets.0 - self.tb.insets.1).max(0.02);
+        // The first-line offset the RENDERER lays out (inches): the
+        // bullet's tab stop for a bulleted block, max(IndFirst, 0)
+        // otherwise — the shared rule in `svg::bullet_stop_offset_in`
+        // keeps the measure and the paint on one layout.
+        let first_off = if self.tb.bullet.is_some() {
+            crate::svg::bullet_stop_offset_in(&self.tb).unwrap_or(0.0).max(0.0)
+        } else {
+            self.tb.ind_first.max(0.0)
+        };
         crate::svg::wrap_block_text(
             &face,
             text,
@@ -145,7 +156,7 @@ impl SheetTextMeasure {
             &cs_face,
             self.tb.cs_size.unwrap_or(self.tb.font_size) * red,
             &cs_fallback,
-            self.tb.ind_first.max(0.0),
+            first_off,
             self.tb.ind_left,
         )
     }
@@ -400,6 +411,64 @@ mod tests {
         );
         // An empty width composes nothing.
         assert_eq!(m.text_width(""), Some(0.0));
+    }
+
+    /// #231 + PR #284 review: a bulleted block's TEXTHEIGHT wraps at
+    /// the TAB-STOP-narrowed first line, the same layout the renderer
+    /// paints — text that fits one line at the full width but wraps
+    /// when the bullet pushes the first line to the tab stop measures
+    /// two lines.
+    #[test]
+    fn bulleted_height_wraps_at_the_tab_stop() {
+        let doc = Document::default();
+        let mut s = text_aware_shape();
+        // Tab stop 0.5 in; the bullet pushes the first line's text
+        // start to 0.5 — the second word then wraps.
+        s.sheet.children.push(SheetChild::Section(vsdx::Section {
+            name: "Paragraph".into(),
+            rows: vec![vsdx::Row {
+                cells: vec![
+                    ("Bullet".to_string(), Cell::value("1")),
+                    ("HorzAlign".to_string(), Cell::value("0")),
+                ],
+                ..vsdx::Row::default()
+            }],
+            ..vsdx::Section::default()
+        }));
+        let m = SheetTextMeasure::new(&doc, &s, &[&s], "");
+        let text = "word ".repeat(10) + "word";
+        let text = text.as_str();
+        // Fixture preconditions (deterministic): the text fits one
+        // line at the full usable width but NOT at the tab-stop
+        // narrowed width — the wrap is purely the bullet offset's
+        // doing.
+        let usable_plain = 4.0 - m.tb.insets.0 - m.tb.insets.1;
+        let stop = crate::svg::bullet_stop_offset_in(&m.tb).unwrap();
+        let usable_bulleted = usable_plain - stop;
+        let face = crate::textmetrics::resolve(m.tb.font.as_deref(), false, false);
+        let w = face.width_in(text, m.tb.font_size);
+        assert!(
+            w <= usable_plain && w > usable_bulleted,
+            "fixture: {w:.3} must fit {usable_plain:.3} but overflow {usable_bulleted:.3}"
+        );
+        let h = m.text_height(text, 4.0).unwrap();
+        // One line of the same block WITHOUT the bullet, for the
+        // single-line height reference.
+        let mut plain = text_aware_shape();
+        plain.sheet.children.push(SheetChild::Section(vsdx::Section {
+            name: "Paragraph".into(),
+            rows: vec![vsdx::Row {
+                cells: vec![("HorzAlign".to_string(), Cell::value("0"))],
+                ..vsdx::Row::default()
+            }],
+            ..vsdx::Section::default()
+        }));
+        let mp = SheetTextMeasure::new(&doc, &plain, &[&plain], "");
+        let h_plain = mp.text_height(text, 4.0).unwrap();
+        assert!(
+            h > h_plain,
+            "the bulleted first line wraps: {h} vs one-line {h_plain}"
+        );
     }
 
     /// #230 + PR #284 review: TEXTHEIGHT's line slots stay NOMINAL

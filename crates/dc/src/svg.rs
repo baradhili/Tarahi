@@ -2682,48 +2682,14 @@ fn emit_text(
         text_x: f64,
     }
     let bullet_layout = tb.bullet.as_ref().map(|b| {
-        let bface = crate::textmetrics::resolve(
-            b.font.as_deref().or(tb.font.as_deref()),
-            tb.bold,
-            tb.italic,
-        );
-        let adv = match &b.glyph {
-            // The built-in round bullets draw as paths in a fixed em
-            // box (see `bullet_glyph_svg`); the advance is that box's
-            // width — a documented approximation, the corpus masters
-            // never pin these numerically.
-            BulletGlyph::Round(_) => 0.36 * b.size,
-            BulletGlyph::Str(glyph) => bface.width_in(glyph, b.size),
-        };
         // Positive IndFirst indents the bullet; negative outdents it
-        // (the hanging-indent case) past the margin. The stop math
-        // runs in TEXT-AREA coordinates (offsets from `left_x` — PR
-        // review, wave 4): TextPosAfterBullet, IndLeft and the
-        // DefaultTabStop grid are all offsets from the text-area left
-        // edge, so comparing them against an absolute x would shift
-        // every decision by the left inset.
+        // (the hanging-indent case) past the margin. The stop rule
+        // lives in `bullet_stop_offset_in` — shared with the
+        // TEXTHEIGHT measure, which wraps at the same first-line
+        // offset (PR #284 review) — and returns a TEXT-AREA offset in
+        // INCHES; this function emits in the same inch space.
         let bullet_off = tb.ind_first;
-        let bullet_end_off = bullet_off + adv;
-        // The measured placement rule (#231): TextPosAfterBullet —
-        // when it lies past the bullet's start — IS the stop outright
-        // (Visio does not take it as a minimum with the tab grid);
-        // otherwise the fallback candidates race: the hanging indent
-        // (IndLeft, when IndFirst is negative — the text may sit at
-        // the margin left of the outdented bullet, never clamped to
-        // the bullet) and the next DefaultTabStop multiple, whichever
-        // comes first. A bullet reaching past the stop pushes the
-        // text to its end.
-        let stop_off = if b.pos_after > bullet_off {
-            b.pos_after
-        } else {
-            let mut s = f64::INFINITY;
-            if tb.ind_first < 0.0 {
-                s = s.min(tb.ind_left);
-            }
-            let tab = (bullet_end_off / b.tab_stop).ceil() * b.tab_stop;
-            s.min(tab)
-        };
-        let stop_off = stop_off.max(bullet_end_off);
+        let stop_off = bullet_stop_offset_in(&tb).unwrap_or(bullet_off);
         BulletLayout {
             spec: b.clone(),
             x: left_x + bullet_off,
@@ -3172,6 +3138,46 @@ fn hex_rgb(color: &str) -> (u8, u8, u8) {
         }
         _ => (0, 0, 0),
     }
+}
+
+/// The measured #231 tab-stop rule, shared by the renderer and the
+/// TEXTHEIGHT measure (PR #284 review — the measure must wrap at the
+/// same first-line width the renderer lays out): TextPosAfterBullet
+/// when it lies past the bullet's start (outright — Visio does not
+/// take it as a minimum with the tab grid), else the hanging indent
+/// (IndLeft when IndFirst is negative) and the next DefaultTabStop
+/// multiple, whichever comes first; a bullet reaching past the stop
+/// pushes the text to its end. Returns the stop as a TEXT-AREA
+/// offset in INCHES, `None` for a non-bulleted block.
+pub(crate) fn bullet_stop_offset_in(tb: &TextBlock) -> Option<f64> {
+    let b = tb.bullet.as_ref()?;
+    let bullet_off = tb.ind_first;
+    let adv = match &b.glyph {
+        // The built-in round bullets draw as paths in a fixed em box
+        // (see `bullet_glyph_svg`); the advance is that box's width —
+        // a documented approximation.
+        BulletGlyph::Round(_) => 0.36 * b.size,
+        BulletGlyph::Str(glyph) => {
+            let bface = crate::textmetrics::resolve(
+                b.font.as_deref().or(tb.font.as_deref()),
+                tb.bold,
+                tb.italic,
+            );
+            bface.width_in(glyph, b.size)
+        }
+    };
+    let bullet_end_off = bullet_off + adv;
+    let stop = if b.pos_after > bullet_off {
+        b.pos_after
+    } else {
+        let mut s = f64::INFINITY;
+        if tb.ind_first < 0.0 {
+            s = s.min(tb.ind_left);
+        }
+        let tab = (bullet_end_off / b.tab_stop).ceil() * b.tab_stop;
+        s.min(tab)
+    };
+    Some(stop.max(bullet_end_off))
 }
 
 /// The built-in round bullet's drawn glyph as a PATH (#231): Word's
