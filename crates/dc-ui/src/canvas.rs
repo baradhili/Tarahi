@@ -188,14 +188,18 @@ const SCROLL_MARGIN_IN: f32 = 0.5;
 /// When the whole extent already fits (min > max) the range PINS: the
 /// page centers, clamping is a no-op there, and the thumb draws
 /// full-length (a fit view).
+/// The effective scroll margin for one axis (#283): page-relative
+/// inches scaled by zoom, but never more than half the visible axis
+/// (PR #284 review: at zoom 8 the raw 0.5 in is 384 px — on a small
+/// axis max pan would push the page's edge fully off-view, and — the
+/// round-2 follow-up — thumb_geom must size the thumb with the SAME
+/// capped margin or the thumb misstates the visible fraction).
+fn scroll_margin(view_px: f32, zoom: f32) -> f32 {
+    (SCROLL_MARGIN_IN * 96.0 * zoom).min(view_px * 0.5)
+}
+
 pub fn pan_range_axis(view_px: f32, page_px: f32, zoom: f32) -> (f32, f32) {
-    // The margin scales with zoom (page-relative inches), but never
-    // exceeds half the visible axis (PR #284 review): at zoom 8 the
-    // raw 0.5 in is 384 px — on a small axis max pan would push the
-    // page's edge fully off-view. Half the axis keeps ≥ half the
-    // viewport over the page at every endpoint while preserving the
-    // margin untouched whenever it fits.
-    let m = (SCROLL_MARGIN_IN * 96.0 * zoom).min(view_px * 0.5);
+    let m = scroll_margin(view_px, zoom);
     let (min, max) = (view_px - page_px - m, m);
     if min <= max {
         (min, max)
@@ -239,7 +243,7 @@ pub fn thumb_geom(
     zoom: f32,
     pan_axis: f32,
 ) -> ThumbGeom {
-    let extent = page_px + 2.0 * SCROLL_MARGIN_IN * 96.0 * zoom;
+    let extent = page_px + 2.0 * scroll_margin(view_px, zoom);
     let frac = if extent > 0.0 {
         (view_px / extent).clamp(0.0, 1.0)
     } else {
