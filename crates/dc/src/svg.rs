@@ -2998,7 +2998,16 @@ fn emit_text(
             } else {
                 String::new()
             };
-            let span = (line_left, line_left + line_w);
+            // The laid-out line spans bullet .. gap .. text: a
+            // bulleted first line's right edge is the TEXT's end (the
+            // anchor), not bullet_x + width (PR #284 review, round 2 —
+            // the gap and the tab offset were left outside the #229
+            // background).
+            let span = if bulleted {
+                (line_left, lx + line_w)
+            } else {
+                (line_left, line_left + line_w)
+            };
             bkgnd_span = Some(match bkgnd_span {
                 Some((a, b)) => (a.min(span.0), b.max(span.1)),
                 None => span,
