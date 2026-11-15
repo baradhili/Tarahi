@@ -2815,6 +2815,13 @@ fn emit_text(
     };
 
     let mut body = String::new();
+    // #231 path bullets live OUTSIDE the <text> element (PR #284
+    // review: SVG's content model allows only character data and
+    // tspan/textPath inside text — usvg drops a <path> there, so the
+    // built-in bullets reserved their gap but painted nothing). They
+    // are emitted just before the <text>, inside the same transform
+    // group; custom-string bullets stay in `body` (tspans are legal).
+    let mut bullet_paths = String::new();
     // Baselines ride each line's OWN ascent: the running coordinate is
     // the next line's slot TOP (the first baseline already sits
     // `first_size × 0.8` below the block's band top), and line i's
@@ -2974,8 +2981,12 @@ fn emit_text(
                 let bl = bullet_layout.as_ref().unwrap();
                 let by = y - 0.28 * bl.spec.size;
                 match &bl.spec.glyph {
+                    // Paths go outside <text> (see `bullet_paths`).
                     BulletGlyph::Round(kind) => {
-                        bullet_glyph_svg(*kind, bl.x, by, bl.spec.size, &color)
+                        bullet_paths.push_str(&bullet_glyph_svg(
+                            *kind, bl.x, by, bl.spec.size, &color,
+                        ));
+                        String::new()
                     }
                     BulletGlyph::Str(glyph) => format!(
                         r#"<tspan x="{bx:.4}" y="{by:.4}" font-size="{fs:.4}"{ff}>{g}</tspan>"#,
@@ -3087,6 +3098,7 @@ fn emit_text(
     if flipped || net_txt_deg.abs() > 1e-6 {
         let _ = writeln!(out, r#"<g transform="{}">"#, escape_attr(&transform));
         let _ = write!(out, "{bkgnd_rect}");
+        let _ = write!(out, "{bullet_paths}");
         let _ = writeln!(
             out,
             r#"<text{d} text-anchor="{a}" xml:space="preserve" {f}>{b}</text>"#,
@@ -3098,6 +3110,7 @@ fn emit_text(
         let _ = writeln!(out, "</g>");
     } else {
         let _ = write!(out, "{bkgnd_rect}");
+        let _ = write!(out, "{bullet_paths}");
         let _ = writeln!(
             out,
             r#"<text{d} text-anchor="{a}" xml:space="preserve" {f}>{b}</text>"#,
@@ -9312,6 +9325,17 @@ mod tests {
         // the line start (bullet offset 0 with zero margins).
         let out = emit_bullet("1", &[]);
         assert!(out.contains(r#"<path transform="translate(0.0000,"#), "path bullet: {out}");
+        // The path is a SIBLING of <text>, not a child (PR #284
+        // review: SVG's text content model has no place for shapes —
+        // usvg drops a <path> inside <text>, and the bullet would
+        // reserve its gap but paint nothing).
+        let path_at = out.find("<path").expect("a path");
+        let text_open_at = out.find("<text").expect("a text");
+        let text_close_at = out.rfind("</text>").expect("the text close");
+        assert!(
+            path_at < text_open_at || path_at > text_close_at,
+            "the bullet path must live outside the text element: {out}"
+        );
         // The text starts AT the tab stop — left-anchored past the
         // bullet (DefaultTabStop 0.5 default).
         let tx: f64 = out
