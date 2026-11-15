@@ -31,6 +31,19 @@ use dc_core::{Command, Macro, Scope, SetCellCache, SetText};
 use vsdx::formula::TextMeasure;
 use vsdx::model::{Document, Shape};
 
+/// #234 composed slack: every NONEMPTY composed text adds exactly
+/// 0.00005 in (witnessed on a corpus master's TxtHeight 0.15005 in);
+/// empty blocks compose without it. An empty displayed `fld` is still
+/// composed text (fields ride #267 — the rule lands here for the
+/// plain-text composition).
+const COMPOSED_SLACK: f64 = 0.00005;
+
+/// The trim set measure and render share (#148's trailing-break trim,
+/// #235's keep-the-NBSP): explicit breaks, spaces and tabs — a
+/// trailing NO-BREAK SPACE is composed content (it hangs past the
+/// margin), so the blanket `str::trim_end` would eat it.
+const TRAILING_TRIM: [char; 4] = ['\r', '\n', ' ', '\t'];
+
 /// The measurement context for one shape's text block: everything
 /// `TEXTWIDTH`/`TEXTHEIGHT` need, resolved exactly as the renderer
 /// resolves it.
@@ -55,9 +68,56 @@ impl SheetTextMeasure {
         }
     }
 
+    /// The #230 script reduction of the block's family (1.0 for
+    /// unwitnessed families / Pos 0) — composed metrics measure at
+    /// the DRAWN size.
+    fn script_reduce(&self) -> f64 {
+        crate::svg::script_metrics(self.tb.font.as_deref(), self.tb.pos)
+            .map_or(1.0, |(r, _)| r)
+    }
+
+    /// The composed line slot (#234): the font size quantized onto
+    /// the 18-fractional-bit grid FIRST, then the spacing multiplier
+    /// (default 120 %) — no further rounding (the measured 6/8/10/12
+    /// pt corrections are the raw size-grid residues × spacing).
+    fn q_line_height(&self) -> f64 {
+        let drawn = self.tb.font_size * self.script_reduce();
+        let q = crate::textmetrics::quantize18(drawn);
+        let spacing = if self.tb.font_size > 0.0 {
+            self.tb.line_height / self.tb.font_size
+        } else {
+            1.2
+        };
+        (q * spacing).max(q)
+    }
+
+    /// The per-line slot twin of `svg::line_slot_height` on the
+    /// composed sizes (an RTL line under a larger complex-script size
+    /// takes the proportionally taller slot — PR #269 review).
+    fn q_slot(&self, rtl: bool) -> f64 {
+        if !rtl {
+            return self.q_line_height();
+        }
+        let drawn = self.tb.font_size * self.script_reduce();
+        let cs = self.tb.cs_size.unwrap_or(self.tb.font_size) * self.script_reduce();
+        let ratio = if drawn > 0.0 { cs / drawn } else { 1.0 };
+        self.q_line_height() * ratio.max(1.0)
+    }
+
+    /// #234 whitespace collapse: a whitespace-only node carrying BOTH
+    /// a newline and a space (and no other character) is excluded
+    /// from composition entirely — width and height collapse.
+    fn collapsed(raw: &str) -> bool {
+        raw.chars().all(char::is_whitespace) && raw.contains('\n') && raw.contains(' ')
+    }
+
     /// The wrapped lines at `width` block inches (insets subtracted,
     /// same as the renderer), keeping each line's direction so the
-    /// height sums the same per-line slots the renderer paints.
+    /// height sums the same per-line slots the renderer paints. The
+    /// wrap runs at the DRAWN size (#230) and honors the paragraph
+    /// indents (#231); bullets stay out of the composition (their
+    /// tab-stop placement is paint-side — unwitnessed against
+    /// TEXTHEIGHT).
     fn lines_at(&self, text: &str, width: f64) -> Vec<crate::svg::WrapLine> {
         let face =
             crate::textmetrics::resolve(self.tb.font.as_deref(), self.tb.bold, self.tb.italic);
@@ -68,15 +128,18 @@ impl SheetTextMeasure {
         let cs_face = crate::textmetrics::resolve(cs_chain, self.tb.bold, self.tb.italic);
         let cs_fallback =
             crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic);
+        let red = self.script_reduce();
         let usable = (width - self.tb.insets.0 - self.tb.insets.1).max(0.02);
         crate::svg::wrap_block_text(
             &face,
             text,
-            self.tb.font_size,
+            self.tb.font_size * red,
             usable,
             &cs_face,
-            self.tb.cs_size.unwrap_or(self.tb.font_size),
+            self.tb.cs_size.unwrap_or(self.tb.font_size) * red,
             &cs_fallback,
+            self.tb.ind_first.max(0.0),
+            self.tb.ind_left,
         )
     }
 }
@@ -89,46 +152,64 @@ impl TextMeasure for SheetTextMeasure {
     fn text_width(&self, text: &str) -> Option<f64> {
         let face =
             crate::textmetrics::resolve(self.tb.font.as_deref(), self.tb.bold, self.tb.italic);
-        // TEXTWIDTH = the text's bare advance width (CodeRabbit
-        // cross-check against Visio's own caches: DBUML_M's
-        // `TEXTWIDTH(TheText)` on 'PK\r\n' at 10 pt caches 0.17536 in
-        // = Segoe UI's bare P+K, no insets; the trailing break never
-        // widens a line — measure trimmed like `emit_text`, #148).
-        let text = text.trim_end();
+        // TEXTWIDTH = the COMPOSED width (#234): the size quantized
+        // onto the 18-fractional-bit grid, per-glyph advances rounded
+        // onto that grid, PLUS one terminal-run space advance (from
+        // the final run, even though it paints no glyph) and the
+        // 0.00005 composed allowance. The trailing break never
+        // widens a line — measure trimmed like `emit_text` (#148);
+        // the trailing NBSP survives the trim (#235) and rides the
+        // composition. (The old bare-advance form — e.g. DBUML_M's
+        // 10 pt 'PK\r\n' eyeballed as Segoe UI's bare P+K — predates
+        // the measured rules; Visio's composition always carries the
+        // terminal space.)
+        let text = text.trim_end_matches(TRAILING_TRIM);
+        if text.is_empty() {
+            return Some(0.0);
+        }
+        let q = crate::textmetrics::quantize18(self.tb.font_size * self.script_reduce());
         let mut best = 0.0;
         for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
-            let w = face.width_in(para, self.tb.font_size);
+            let w =
+                face.composed_width_in(para, q) + face.space_advance_in(q);
             if w > best {
                 best = w;
             }
         }
-        Some(best)
+        Some(best + COMPOSED_SLACK)
     }
 
     fn text_height(&self, text: &str, width: f64) -> Option<f64> {
-        // TEXTHEIGHT = the SUM of the wrapped lines' slots + the
-        // block's top and bottom insets (corpus gold: DBUML_M's
-        // all-zero-margin 'PK\r\n' caches exactly 1.2 em — no insets
+        // TEXTHEIGHT = the SUM of the wrapped lines' composed slots +
+        // the block's top and bottom insets + the 0.00005 composed
+        // slack for NONEMPTY text (#234; corpus gold: DBUML_M's
+        // all-zero-margin 'PK\r\n' caches 1.2 em-scale — no insets
         // added; TIMELN's default-T/B-margins shape caches 1 line +
         // 2×0.0555). The wrap runs against the width minus the
         // LEFT/RIGHT insets — the same usable width `emit_text` wraps
-        // at, and the same per-line slots it paints (an RTL line
-        // under a larger ComplexScriptSize takes a taller slot — PR
-        // #269 review), so the refreshed cache and the rendered lines
-        // cannot disagree.
-        let text = text.trim_end();
+        // at (an RTL line under a larger ComplexScriptSize takes a
+        // taller slot — PR #269 review). Quantization moves a slot by
+        // ≲ 2e-6 in against the painted slots (#234 measures on the
+        // grid, paint keeps raw) — documented, invisible.
+        let trimmed = text.trim_end_matches(TRAILING_TRIM);
         let ins_tb = self.tb.insets.2 + self.tb.insets.3;
-        let lines_h = if text.is_empty() {
-            // An empty block still composes one line (the corpus's
-            // bare "\r\n" texts measure one line height, #148).
-            self.tb.line_height
-        } else {
-            self.lines_at(text, width)
-                .iter()
-                .map(|l| crate::svg::line_slot_height(&self.tb, l.rtl))
-                .sum::<f64>()
-        };
-        Some(lines_h + ins_tb)
+        if trimmed.is_empty() {
+            // An empty block still composes one line — INDEPENDENT of
+            // the wrap width (#234), and WITHOUT the slack (the
+            // witness: 0.15, not 0.15005-style sums on empties).
+            // The #234 collapse: a whitespace-only node carrying a
+            // newline AND a space composes nothing at all.
+            if Self::collapsed(text) {
+                return Some(0.0);
+            }
+            return Some(self.q_line_height() + ins_tb);
+        }
+        let lines_h = self
+            .lines_at(trimmed, width)
+            .iter()
+            .map(|l| self.q_slot(l.rtl))
+            .sum::<f64>();
+        Some(lines_h + ins_tb + COMPOSED_SLACK)
     }
 }
 
@@ -228,9 +309,11 @@ mod tests {
         s
     }
 
-    /// The evaluator-level semantics the corpus gold pinned (#148):
-    /// a trailing CRLF adds no line; an empty text composes one line;
-    /// height scales with wrapped line count.
+    /// The evaluator-level semantics the corpus gold pinned (#148)
+    /// plus the #234 composed rules: a trailing CRLF adds no line; an
+    /// empty text composes one line WITHOUT the slack; nonempty text
+    /// adds the 0.00005 slack and measures on the 18-fractional-bit
+    /// grid; a whitespace-only newline+space node collapses.
     #[test]
     fn measure_matches_the_corpus_line_semantics() {
         let doc = Document::default();
@@ -245,27 +328,44 @@ mod tests {
             (ins_tb - 0.111).abs() < 1e-9,
             "fixture uses default T/B insets"
         );
+        // The composed slot (#234): quantized size × 120 % spacing.
+        let qh = m.q_line_height();
+        assert!(
+            (qh - 1.2 * crate::textmetrics::quantize18(m.tb.font_size)).abs() < 1e-12,
+            "the composed slot is the grid-quantized size times the spacing"
+        );
         let h1 = m.text_height(&format!("{one}\r\n"), 2.0).unwrap();
         let h1_plain = m.text_height(one, 2.0).unwrap();
         assert_eq!(h1, h1_plain, "trailing CRLF adds no line (#148)");
-        assert!((h1 - (m.tb.line_height + ins_tb)).abs() < 1e-12);
-        // Empty text still composes one line (plus the same insets).
-        assert_eq!(m.text_height("", 2.0), Some(m.tb.line_height + ins_tb));
+        assert!(
+            (h1 - (qh + ins_tb + COMPOSED_SLACK)).abs() < 1e-12,
+            "one line + insets + the composed slack (#234): {h1}"
+        );
+        // Empty text still composes one line — WITHOUT the slack
+        // (the #234 witness: empties compose bare).
+        assert_eq!(m.text_height("", 2.0), Some(qh + ins_tb));
         assert_eq!(
             m.text_height("\r\n", 2.0),
-            Some(m.tb.line_height + ins_tb),
+            Some(qh + ins_tb),
             "a bare break is one empty paragraph — one line (#148)"
         );
-        // Two visual lines add exactly ONE more line height.
+        // The #234 collapse: a whitespace-only node carrying a
+        // newline AND a space composes nothing.
+        assert_eq!(m.text_height("\n   ", 2.0), Some(0.0));
+        assert_eq!(m.text_width("\n   "), Some(0.0));
+        // …while a node with a newline but NO space keeps the
+        // one-line composition (#148's bare-break gold).
+        assert_eq!(m.text_height("\n\n", 2.0), Some(qh + ins_tb));
+        // Two visual lines add exactly ONE more composed slot.
         let h2 = m.text_height(&format!("{one}\r\n{one}\r\n"), 2.0).unwrap();
-        assert!((h2 - h1 - m.tb.line_height).abs() < 1e-12);
+        assert!((h2 - h1 - qh).abs() < 1e-12);
         // A narrow block wraps the same words into more lines.
         let wide = m.text_height("one two three four", 4.0).unwrap();
         let narrow = m.text_height("one two three four", 0.6).unwrap();
         assert!(narrow > wide, "narrow={narrow} wide={wide}");
         // Zero-margin blocks (DBUML's 'PK\r\n' masters, all four
-        // margins explicit 0) add NOTHING: exactly n line heights —
-        // the corpus's 1.2004 em single-line gold.
+        // margins explicit 0) add NOTHING beyond the composition:
+        // exactly one slot + the slack.
         let mut z = text_aware_shape();
         for n in ["LeftMargin", "RightMargin", "TopMargin", "BottomMargin"] {
             z.sheet.set_cell(n, Cell::value("0"));
@@ -273,16 +373,47 @@ mod tests {
         let chain_z = [&z];
         let mz = SheetTextMeasure::new(&doc, &z, &chain_z, "");
         assert!((mz.tb.insets.2 + mz.tb.insets.3).abs() < 1e-12);
+        let zq = mz.q_line_height();
         assert!(
-            (mz.text_height("PK\r\n", 1.0).unwrap() - mz.tb.line_height).abs() < 1e-12,
-            "zero margins: exactly one line height"
+            (mz.text_height("PK\r\n", 1.0).unwrap() - (zq + COMPOSED_SLACK)).abs() < 1e-12,
+            "zero margins: exactly one composed slot + slack"
         );
-        // Width measures the widest paragraph, untrimmed never wider.
-        assert!(m.text_width(one).unwrap() > 0.0);
+        // Width measures the widest composed paragraph — nonempty
+        // text carries the terminal-run space + slack, so it is
+        // strictly wider than the bare shaped advance (#234), and the
+        // trailing break never widens a line (#148).
+        let bare = crate::textmetrics::resolve(m.tb.font.as_deref(), false, false)
+            .width_in(one, m.tb.font_size);
+        let w = m.text_width(one).unwrap();
+        assert!(w > bare, "composed {w} > bare {bare}");
         assert_eq!(
             m.text_width(&format!("{one}\r\n")).unwrap(),
-            m.text_width(one).unwrap()
+            w,
+            "the trailing break never widens a line"
         );
+        // An empty width composes nothing.
+        assert_eq!(m.text_width(""), Some(0.0));
+    }
+
+    /// #234: the 18-fractional-bit size grid reproduces the measured
+    /// 120 %-spacing height corrections exactly — their grid-unit
+    /// residues at 6/8/10/12 pt are −0.4, −0.1333, +0.1333, +0.4
+    /// steps of 2^-18 in.
+    #[test]
+    fn size_grid_matches_the_measured_spacing_corrections() {
+        for (pt, corr) in [
+            (6.0, -0.000001525879),
+            (8.0, -0.000000508626),
+            (10.0, 0.000000508626),
+            (12.0, 0.000001525879),
+        ] {
+            let size = pt / 72.0;
+            let got = crate::textmetrics::quantize18(size) * 1.2 - size * 1.2;
+            assert!(
+                (got - corr).abs() < 1e-10,
+                "{pt} pt at 120 %: {got} vs measured {corr}"
+            );
+        }
     }
 
     /// The macro: caches refresh in the same undo step, formulas stay

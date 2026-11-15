@@ -1925,6 +1925,58 @@ pub struct TextBlock {
     /// Effective `ComplexScriptSize` in inches (the spec's `0 → Size`,
     /// `<0 → |v|·Size/100` semantics already applied; `None` = Size).
     pub cs_size: Option<f64>,
+    /// Character `Pos` of the first row (0 normal, 1 superscript, 2
+    /// subscript — #230). Run-granular Pos (`<cp>` markers, stripped
+    /// by the parser) rides the run work in #267; the whole block
+    /// follows the first row like every other first-row cell.
+    pub pos: i32,
+    /// Paragraph `IndFirst` in inches (first-line indent; negative =
+    /// hanging indent, #231). Corpus default 0.
+    pub ind_first: f64,
+    /// Paragraph `IndLeft` in inches — wrapped lines start here
+    /// (#231). Corpus default 0.
+    pub ind_left: f64,
+    /// #231 bullet layout (first Paragraph row granularity);
+    /// `None` = not bulleted.
+    pub bullet: Option<BulletSpec>,
+    /// #229 text background: the resolved fill color and its alpha
+    /// (0–255, from TextBkgndTrans's percent transparency). `None`
+    /// paints nothing — TextBkgnd 0/255, or 100 % transparency.
+    pub text_bkgnd: Option<(String, u8)>,
+}
+
+/// A bulleted block's glyph spec (#231): the built-in round styles
+/// 1–7 draw as paths (viewer-proof — a text glyph changes face with
+/// the viewer's fonts); a custom bullet string draws as text in its
+/// own face.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BulletGlyph {
+    /// Built-in style 1–7 (Word's round set, drawn as • o ▪ ❑ ❖ ➢ ✓).
+    Round(u8),
+    /// A custom bullet string (drawn as a text glyph).
+    Str(String),
+}
+
+/// The cells behind one bulleted block (#231, first Paragraph row).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BulletSpec {
+    pub glyph: BulletGlyph,
+    /// BulletFont — the bullet's own face family; `None` inherits the
+    /// paragraph font (the measured rule: BulletFont 0 inherits).
+    pub font: Option<String>,
+    /// Bullet size in inches: BulletFontSize < 0 is a percentage of
+    /// the text size (default −100 % = the text size); ≥ 0 is an
+    /// absolute size in Char.Size inches (the > 100 % case stays an
+    /// open question on #231 — unwitnessed).
+    pub size: f64,
+    /// `TextPosAfterBullet` in inches, ABSOLUTE from the line start —
+    /// Visio 2021 does not add it to IndFirst despite the documented
+    /// formula (measured on #231: IndFirst 0.25 + TextPosAfterBullet
+    /// 0.1 starts the text at the 0.5 tab stop, not 0.35).
+    pub pos_after: f64,
+    /// `DefaultTabStop` (document sheet; 0.5 in default) — the
+    /// tab-stop grid the after-bullet text snaps to.
+    pub tab_stop: f64,
 }
 
 /// Resolve one shape's [`TextBlock`] through the instance → master
@@ -2132,6 +2184,106 @@ pub(crate) fn resolve_text_block(
         }
     });
 
+    // Character.Pos (#230): first-row granularity — the parser strips
+    // the `<cp>` run markers, so per-run Pos arrives with the run work
+    // (#267) and the whole block follows row 0 like color/bold/italic.
+    let pos = char_cell(doc, s, chain, "Pos")
+        .and_then(|c| c.numeric())
+        .unwrap_or(0.0) as i32;
+
+    // Paragraph indents (#231) from the same first Paragraph row the
+    // HorzAlign above reads.
+    let ind_first = para_row
+        .and_then(|r| r.cell("IndFirst"))
+        .and_then(|c| c.numeric())
+        .unwrap_or(0.0);
+    let ind_left = para_row
+        .and_then(|r| r.cell("IndLeft"))
+        .and_then(|c| c.numeric())
+        .unwrap_or(0.0);
+
+    // #231 bullet machinery: a Bullet cell 1–7 (Word's round set) or a
+    // non-numeric string (custom bullet) arms it; 0/empty stays off.
+    let bullet = para_row
+        .and_then(|r| r.cell("Bullet"))
+        .and_then(|b| {
+            let v = b.v.as_deref().unwrap_or("").trim().to_string();
+            if v.is_empty() || v == "0" {
+                return None;
+            }
+            let glyph = match v.parse::<u8>() {
+                Ok(n @ 1..=7) => BulletGlyph::Round(n),
+                Ok(_) => return None, // out-of-range numeric: no bullet
+                Err(_) => BulletGlyph::Str(v),
+            };
+            // BulletFont: a family name, else inherit the paragraph
+            // font (numeric legacy indexes and 0 both inherit).
+            let font = para_row
+                .and_then(|r| r.cell("BulletFont"))
+                .and_then(|c| c.v.clone())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty() && v.parse::<f64>().is_err());
+            // BulletFontSize: negative = percent of the text size
+            // (default −100 %), ≥ 0 = absolute inches.
+            let pct = para_row
+                .and_then(|r| r.cell("BulletFontSize"))
+                .and_then(|c| c.numeric())
+                .unwrap_or(-100.0);
+            let size = if pct < 0.0 {
+                pct.abs() / 100.0 * font_size
+            } else {
+                pct.max(0.02)
+            };
+            let pos_after = para_row
+                .and_then(|r| r.cell("TextPosAfterBullet"))
+                .and_then(|c| c.numeric())
+                .unwrap_or(0.0);
+            // The tab-stop grid lives on the document sheet.
+            let tab_stop = doc
+                .sheet
+                .cell("DefaultTabStop")
+                .and_then(|c| c.numeric())
+                .unwrap_or(0.5)
+                .max(0.01);
+            Some(BulletSpec {
+                glyph,
+                font,
+                size,
+                pos_after,
+                tab_stop,
+            })
+        });
+
+    // #229 TextBkgnd: 0 and 255 paint nothing; 1–24 select palette
+    // entries 0–23; larger values index the document palette through
+    // the +1 encoding; non-numeric values go through the shared color
+    // mapping (theme formulas fall to the cached V, the usual
+    // convention). TextBkgndTrans is transparency in percent — 50 %
+    // renders as 128/255 alpha (measured, #229).
+    let text_bkgnd = doc.resolve_cell(s, chain, "TextBkgnd").and_then(|c| {
+        let v = c.v.as_deref().unwrap_or("");
+        let color = match v.trim().parse::<f64>() {
+            Ok(n) => {
+                let n = n as i64;
+                if n <= 0 || n >= 255 {
+                    return None;
+                }
+                doc.color(n - 1).cloned().unwrap_or_else(|| palette(n - 1))
+            }
+            Err(_) => color_value(doc, v, c.f.as_deref()),
+        };
+        let trans = doc
+            .resolve_cell(s, chain, "TextBkgndTrans")
+            .and_then(|c| c.numeric())
+            .unwrap_or(0.0);
+        let alpha = ((100.0 - trans).clamp(0.0, 100.0) * 255.0 / 100.0).round() as i64;
+        if alpha <= 0 {
+            None
+        } else {
+            Some((color, alpha.min(255) as u8))
+        }
+    });
+
     TextBlock {
         pin: (tx, ty),
         size: (tw, th),
@@ -2151,6 +2303,11 @@ pub(crate) fn resolve_text_block(
         valign,
         cs_font,
         cs_size,
+        pos,
+        ind_first,
+        ind_left,
+        bullet,
+        text_bkgnd,
     }
 }
 
@@ -2173,11 +2330,13 @@ pub(crate) fn resolve_text_block(
 /// One wrapped line plus its paragraph's base direction (#257
 /// text-direction): alignment and emission order follow the base, so
 /// the wrap must carry it per line (a block can mix LTR and RTL
-/// paragraphs).
+/// paragraphs). `first_of_para` tags each paragraph's opening line —
+/// the #231 bullet and the IndFirst indent ride it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WrapLine {
     pub text: String,
     pub rtl: bool,
+    pub first_of_para: bool,
 }
 
 /// The Right-to-Left Text toggle's transform (#257 text-direction,
@@ -2273,6 +2432,15 @@ pub fn paragraph_base_rtl(para: &str) -> bool {
 /// complex-script cells (`cs_face`/`cs_size`, the Latin pair when
 /// absent), so the wrap decision and the raster agree by construction
 /// per paragraph, not just per block.
+///
+/// #231 paragraph indents: a paragraph's FIRST line wraps at
+/// `usable_w − first_off` (the after-bullet tab offset for bulleted
+/// paragraphs, `max(IndFirst, 0)` otherwise) and its wrapped lines at
+/// `usable_w − left_off` (IndLeft). #235 terminal-NBSP hang: a
+/// trailing no-break space never wraps its word — the overflow checks
+/// measure the line without the terminal NBSP's advance while the
+/// NBSP stays in the line's character-exact content.
+#[allow(clippy::too_many_arguments)] // the pair faces/sizes + the two indent offsets
 pub(crate) fn wrap_block_text(
     face: &crate::textmetrics::ResolvedFace,
     text: &str,
@@ -2281,6 +2449,8 @@ pub(crate) fn wrap_block_text(
     cs_face: &crate::textmetrics::ResolvedFace,
     cs_size: f64,
     cs_fallback: &crate::textmetrics::ResolvedFace,
+    first_off: f64,
+    left_off: f64,
 ) -> Vec<WrapLine> {
     let mut lines: Vec<WrapLine> = Vec::new();
     for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
@@ -2300,6 +2470,17 @@ pub(crate) fn wrap_block_text(
                 face.width_in(s, size)
             }
         };
+        // #235: the hang measure — a terminal no-break space's
+        // advance is excluded (it paints past the margin); anything
+        // else measures whole.
+        fn hang_trim(s: &str) -> &str {
+            s.strip_suffix('\u{a0}').unwrap_or(s)
+        }
+        // Per-line usable width: the first line takes first_off (the
+        // bullet tab offset / first-line indent), wrapped lines take
+        // left_off (the hanging indent) — #231.
+        let mut wrapped = false;
+        let line_usable = |wrapped: bool| usable_w - if wrapped { left_off } else { first_off };
         let mut cur = String::new();
         let mut started = false;
         for word in para.split(' ') {
@@ -2308,7 +2489,8 @@ pub(crate) fn wrap_block_text(
             } else {
                 word.to_string()
             };
-            if started && width_in(&candidate) > usable_w {
+            let usable = line_usable(wrapped);
+            if started && width_in(hang_trim(&candidate)) > usable {
                 if cur.is_empty() {
                     // The break lands on a pending separator space (an
                     // authored space run or a leading indent too wide
@@ -2318,14 +2500,17 @@ pub(crate) fn wrap_block_text(
                     lines.push(WrapLine {
                         text: " ".to_string(),
                         rtl,
+                        first_of_para: !wrapped,
                     });
                 } else {
                     lines.push(WrapLine {
                         text: std::mem::take(&mut cur),
                         rtl,
+                        first_of_para: !wrapped,
                     });
                 }
                 cur = word.to_string();
+                wrapped = true;
             } else {
                 cur = candidate;
             }
@@ -2333,14 +2518,15 @@ pub(crate) fn wrap_block_text(
             // A single word wider than the line: hard-split at the
             // longest character prefix that fits (always ≥1 char, so
             // the loop makes progress).
-            while width_in(&cur) > usable_w && cur.chars().count() > 1 {
+            let mut usable = line_usable(wrapped);
+            while width_in(hang_trim(&cur)) > usable && cur.chars().count() > 1 {
                 let mut split_at = cur
                     .char_indices()
                     .nth(1)
                     .map(|(i, _)| i)
                     .unwrap_or(cur.len());
                 for (i, _) in cur.char_indices().skip(1) {
-                    if width_in(&cur[..i]) <= usable_w {
+                    if width_in(hang_trim(&cur[..i])) <= usable {
                         split_at = i;
                     } else {
                         break;
@@ -2350,12 +2536,16 @@ pub(crate) fn wrap_block_text(
                 lines.push(WrapLine {
                     text: std::mem::replace(&mut cur, rest),
                     rtl,
+                    first_of_para: !wrapped,
                 });
+                wrapped = true;
+                usable = line_usable(wrapped);
             }
         }
         lines.push(WrapLine {
             text: cur,
             rtl,
+            first_of_para: !wrapped,
         });
     }
     lines
@@ -2387,12 +2577,16 @@ fn emit_text(
     // height (1.2003–1.2004 em at the canonical 120% spacing) — Visio
     // does NOT count the trailing break as a line, so dropping it
     // here keeps the block's line count and vertical centering where
-    // Visio puts them.
+    // Visio puts them. The trim set is explicit breaks/spaces/tab
+    // (#235): a trailing NO-BREAK SPACE is content — it composes and
+    // hangs past the margin in Visio, so the blanket `str::trim_end`
+    // (whose whitespace set includes U+00A0) must not eat it.
+    const TRAILING_TRIM: [char; 4] = ['\r', '\n', ' ', '\t'];
     let Some(text) = s
         .sheet
         .text
         .as_deref()
-        .map(str::trim_end)
+        .map(|t| t.trim_end_matches(TRAILING_TRIM))
         .filter(|t| !t.is_empty())
     else {
         return;
@@ -2404,9 +2598,17 @@ fn emit_text(
     let size = tb.font_size;
     let color = tb.color.clone();
     let style_bits = (tb.bold as u32) | ((tb.italic as u32) << 1);
+    // Character.Pos (#230): the measured reduced em + baseline shift
+    // for the block's family (None = unwitnessed family → nominal
+    // draw). The paint size shrinks; the LINE slots and the baseline
+    // ascent math stay nominal — Visio's TEXTHEIGHT retains the
+    // nominal size and the shift rides the nominal baseline.
+    let script = script_metrics(tb.font.as_deref(), tb.pos);
+    let reduce = script.map_or(1.0, |(r, _)| r);
+    let paint_size = size * reduce;
     let font_attrs = format!(
         r#"font-size="{s:.4}"{ff} fill="{c}"{b}{i}"#,
-        s = size,
+        s = paint_size,
         ff = font_family_attr(tb.font.as_deref()),
         // Document-supplied color text (e.g. a `#…` value) is attribute
         // content — escape it like every other attribute.
@@ -2448,6 +2650,75 @@ fn emit_text(
     // default and the probe never fires.
     let cs_fallback = crate::textmetrics::resolve(Some("Vazirmatn"), tb.bold, tb.italic);
     let cs_size = tb.cs_size.unwrap_or(size);
+    let cs_paint_size = cs_size * reduce;
+
+    // Line-band edges before the wrap — the #231 bullet layout needs
+    // them for its tab-stop arithmetic (the first line's text starts
+    // at the stop, so the wrap must reserve that offset).
+    let left_x = tx - tb.loc_pin.0 + ins_l;
+    let right_x = left_x + (tw - ins_l - ins_r);
+    // #231 bullet layout: the bullet's own advance, its line-start
+    // position, and the tab stop the after-bullet text snaps to. The
+    // bullet itself draws at bullet_x; the measured placement rule:
+    // TextPosAfterBullet when it lies past the bullet's start, else
+    // the hanging indent (IndLeft when IndFirst is negative) or the
+    // next DefaultTabStop multiple — whichever comes first, never
+    // before the bullet's end.
+    struct BulletLayout {
+        spec: crate::svg::BulletSpec,
+        x: f64,
+        text_x: f64,
+    }
+    let bullet_layout = tb.bullet.as_ref().map(|b| {
+        let bface = crate::textmetrics::resolve(
+            b.font.as_deref().or(tb.font.as_deref()),
+            tb.bold,
+            tb.italic,
+        );
+        let adv = match &b.glyph {
+            // The built-in round bullets draw as paths in a fixed em
+            // box (see `bullet_glyph_svg`); the advance is that box's
+            // width — a documented approximation, the corpus masters
+            // never pin these numerically.
+            BulletGlyph::Round(_) => 0.36 * b.size,
+            BulletGlyph::Str(glyph) => bface.width_in(glyph, b.size),
+        };
+        // Positive IndFirst indents the bullet; negative outdents it
+        // (the hanging-indent case) past the margin.
+        let x = left_x + tb.ind_first;
+        let bullet_end = x + adv;
+        // The measured placement rule (#231): TextPosAfterBullet —
+        // when it lies past the bullet's start — IS the stop outright
+        // (Visio does not take it as a minimum with the tab grid);
+        // otherwise the fallback candidates race: the hanging indent
+        // (IndLeft, when IndFirst is negative) and the next
+        // DefaultTabStop multiple, whichever comes first. A bullet
+        // reaching past the stop pushes the text to its end.
+        let stop = if b.pos_after > x {
+            b.pos_after
+        } else {
+            let mut s = f64::INFINITY;
+            if tb.ind_first < 0.0 {
+                s = s.min(tb.ind_left.max(x));
+            }
+            let tab = (bullet_end / b.tab_stop).ceil() * b.tab_stop;
+            s.min(tab)
+        };
+        let stop = stop.max(bullet_end);
+        BulletLayout {
+            spec: b.clone(),
+            x,
+            text_x: stop,
+        }
+    });
+    // Paragraph indents for the wrap: a bulleted paragraph's first
+    // line starts at the tab stop; otherwise at max(IndFirst, 0).
+    // Wrapped lines take IndLeft (#231). RTL paragraphs carry the same
+    // offsets (unwitnessed — #231's open questions).
+    let (first_off, left_off) = match &bullet_layout {
+        Some(bl) => ((bl.text_x - left_x).max(0.0), tb.ind_left),
+        None => (tb.ind_first.max(0.0), tb.ind_left),
+    };
     // Greeking (#124 item 2): a block whose on-screen em height falls
     // under TEXT_GREEK_PX renders as gray bars — per line, shaped only
     // at paragraph granularity (one width_in per paragraph, no greedy
@@ -2478,7 +2749,17 @@ fn emit_text(
         (Vec::new(), bars)
     } else {
         (
-            wrap_block_text(&face, text, size, usable_w, &cs_face, cs_size, &cs_fallback),
+            wrap_block_text(
+                &face,
+                text,
+                paint_size,
+                usable_w,
+                &cs_face,
+                cs_paint_size,
+                &cs_fallback,
+                first_off,
+                left_off,
+            ),
             Vec::new(),
         )
     };
@@ -2490,14 +2771,17 @@ fn emit_text(
     // Per-line slots (PR #269 review): an RTL line under a bigger
     // ComplexScriptSize needs a proportionally taller slot — the flat
     // n × line_h overlapped larger glyphs onto their neighbors, and
-    // TEXTHEIGHT (textfunc) measured the same too-small block.
+    // TEXTHEIGHT (textfunc) measured the same too-small block. Slots
+    // stay NOMINAL under Character.Pos (#230: TEXTHEIGHT retains the
+    // nominal size).
     let slots: Vec<f64> = if greeked {
         vec![line_h; n_lines as usize]
     } else {
         lines.iter().map(|l| line_slot_height(&tb, l.rtl)).collect()
     };
     let total_h: f64 = slots.iter().sum();
-    // The first line's ascent rides its own effective size.
+    // The first line's ascent rides its own effective size (nominal
+    // under Pos — the shift applies to the baseline, not the slot).
     let first_size = lines
         .first()
         .map_or(size, |l| if l.rtl { effective_cs_size(&tb) } else { size });
@@ -2507,7 +2791,7 @@ fn emit_text(
     // corner is (tx - lpx, ty - lpy) — masters can pin off-center, so no
     // centered-pin assumption. In the emitted y-negated frame the top edge
     // is -(ty - lpy + th).
-    let (lpx, lpy) = tb.loc_pin;
+    let lpy = tb.loc_pin.1;
     let top_edge = -(ty - lpy + th);
     let first_baseline = top_edge + text_first_baseline(&tb, total_h, first_size);
     let _ = (valign, ins_t, ins_b);
@@ -2517,8 +2801,6 @@ fn emit_text(
     // visual left edge moves with the line's base. The anchor stays
     // "start" (usvg lays glyphs from the visual left under its
     // hardcoded LTR base); the x is the line's computed visual left.
-    let left_x = tx - lpx + ins_l;
-    let right_x = left_x + (tw - ins_l - ins_r);
     let (anchor, x) = match halign {
         0 | 3 => ("start", left_x),
         2 => ("end", right_x),
@@ -2554,17 +2836,26 @@ fn emit_text(
             top += slot;
         }
     }
+    // #229 text-background extents: the union of the laid-out lines'
+    // [left, right] spans — the rect spans the widest laid-out line
+    // and the union of the line heights (margins position the text
+    // but add NO background padding). Accumulated during emission;
+    // the rect itself is written just before the <text> element
+    // (above shape geometry, below text).
+    let mut bkgnd_span: Option<(f64, f64)> = None;
     let mut any_rtl = false;
     for (line, slot) in lines.iter().zip(&slots) {
-        let (content, line_x, line_attrs) = if line.rtl {
+        let (content, line_x, line_attrs, pre, y) = if line.rtl {
             any_rtl = true;
             // The RTL line paints with the complex-script pair; its
             // visual LEFT edge per the start/end mapping, computed
             // from the line's own shaped width. The face/size ride
             // the tspan — a block may mix direction lines and the
-            // element-level attrs stay Latin.
+            // element-level attrs stay Latin. (Bullets and paragraph
+            // indents stay unwitnessed on RTL lines — #231 open
+            // questions — so RTL keeps the plain band placement.)
             let lw = cs_face
-                .width_in_runs(&cs_fallback, &line.text, cs_size);
+                .width_in_runs(&cs_fallback, &line.text, cs_paint_size);
             let content = format!("\u{2067}{}\u{2069}", line.text);
             let vx = match halign {
                 0 | 3 => right_x - lw, // start (reading order) = visual right edge
@@ -2586,25 +2877,105 @@ fn emit_text(
                 } else {
                     ""
                 },
-                if (cs_size - size).abs() > 1e-9 {
-                    format!(r#" font-size="{cs_size:.4}"{}"#, font_family_attr(cs_chain))
+                if (cs_paint_size - paint_size).abs() > 1e-9 {
+                    format!(
+                        r#" font-size="{cs_paint_size:.4}"{}"#,
+                        font_family_attr(cs_chain)
+                    )
                 } else {
                     font_family_attr(cs_chain)
                 }
             );
-            (content, vx, attrs)
+            let line_size = effective_cs_size(&tb);
+            let y = top + line_size * 0.8
+                - script.map_or(0.0, |(_, shift)| shift * line_size);
+            (content, vx, attrs, String::new(), y)
         } else {
-            (line.text.clone(), x, String::new())
+            // This line's baseline FIRST (the bullet glyph hangs off
+            // it): its slot top plus ITS OWN effective ascent
+            // (0.8 × effective size — the same factor
+            // `text_first_baseline` gives the first line).
+            // Character.Pos (#230) then shifts the baseline by the
+            // measured em offset (positive = raised) — independent of
+            // the reduced glyph em, so the shift base is the line's
+            // NOMINAL size.
+            let line_size = size;
+            let y = top + line_size * 0.8
+                - script.map_or(0.0, |(_, shift)| shift * line_size);
+            // LTR line placement: the default band anchor, with the
+            // #231 overrides — a bulleted paragraph's first line
+            // starts AT the computed tab stop (always a left anchor
+            // there: the stop is an absolute x), and wrapped lines
+            // start at the IndLeft band.
+            let line_w = face.width_in(&line.text, paint_size);
+            let bulleted = line.first_of_para && bullet_layout.is_some();
+            let (lx, line_left) = if bulleted {
+                let bl = bullet_layout.as_ref().unwrap();
+                // Centered/right-aligned first lines align
+                // bullet+gap+text as ONE unit: shift the whole
+                // [bullet .. text] run so the unit sits in the band
+                // (measured rule, #231).
+                let unit_w = (bl.text_x - bl.x) + line_w;
+                let unit_x = match halign {
+                    // Left/justify: the bullet sits where the indents
+                    // put it — no unit shift.
+                    0 | 3 => bl.x,
+                    2 => right_x - unit_w,
+                    _ => left_x + ((tw - ins_l - ins_r) - unit_w) / 2.0,
+                };
+                (unit_x + (bl.text_x - bl.x), unit_x)
+            } else if !line.first_of_para
+                && (bullet_layout.is_some() || tb.ind_left.abs() > 1e-12)
+            {
+                // A wrapped line of an indented paragraph: its band
+                // starts at IndLeft (bullet paragraphs wrap at the
+                // hanging indent too).
+                let lo = left_x + tb.ind_left;
+                match halign {
+                    0 | 3 => (lo, lo),
+                    2 => (right_x - face.width_in(&line.text, paint_size), right_x - line_w),
+                    _ => (lo + (tw - ins_l - ins_r - tb.ind_left) / 2.0, lo),
+                }
+            } else {
+                (x, x)
+            };
+            // The bullet glyph itself — path bullets for the built-in
+            // round set (viewer-proof, #231), a text glyph for custom
+            // strings. Only LTR first lines draw one (RTL bullets are
+            // an open #231 question); the bullet centers slightly
+            // above the baseline like a text glyph of its own size.
+            let pre = if bulleted {
+                let bl = bullet_layout.as_ref().unwrap();
+                let by = y - 0.28 * bl.spec.size;
+                match &bl.spec.glyph {
+                    BulletGlyph::Round(kind) => {
+                        bullet_glyph_svg(*kind, bl.x, by, bl.spec.size, &color)
+                    }
+                    BulletGlyph::Str(glyph) => format!(
+                        r#"<tspan x="{bx:.4}" y="{by:.4}" font-size="{fs:.4}"{ff}>{g}</tspan>"#,
+                        bx = bl.x,
+                        by = y,
+                        fs = bl.spec.size,
+                        ff = font_family_attr(bl.spec.font.as_deref()),
+                        g = escape_text(glyph),
+                    ),
+                }
+            } else {
+                String::new()
+            };
+            let span = (line_left, line_left + line_w);
+            bkgnd_span = Some(match bkgnd_span {
+                Some((a, b)) => (a.min(span.0), b.max(span.1)),
+                None => span,
+            });
+            let attrs = if bulleted {
+                r#" text-anchor="start""#.to_string()
+            } else {
+                String::new()
+            };
+            (line.text.clone(), lx, attrs, pre, y)
         };
-        // This line's baseline: its slot top plus ITS OWN effective
-        // ascent (0.8 × effective size — the same factor
-        // `text_first_baseline` gives the first line).
-        let line_size = if line.rtl {
-            effective_cs_size(&tb)
-        } else {
-            size
-        };
-        let y = top + line_size * 0.8;
+        let _ = write!(body, "{pre}");
         let _ = write!(
             body,
             r#"<tspan x="{line_x:.4}" y="{y:.4}"{}>{}</tspan>"#,
@@ -2662,8 +3033,29 @@ fn emit_text(
     } else {
         ""
     };
+    // #229 text background: ONE rectangle spanning the logical line
+    // extents (widest laid-out line × the union of line heights),
+    // margins position the text but add no padding. It uses the text
+    // transform (same group), paints above shape geometry and below
+    // text, and stays a rectangle in SVG. Greeking replaces the text
+    // with bars, so the background stays off there.
+    let bkgnd_rect = match (tb.text_bkgnd, bkgnd_span) {
+        (Some((fill, alpha)), Some((lo, hi))) if hi > lo => {
+            let (r, g, b) = hex_rgb(&fill);
+            format!(
+                r##"<rect x="{x:.4}" y="{y:.4}" width="{w:.4}" height="{h:.4}" fill="#{r:02x}{g:02x}{b:02x}" fill-opacity="{o:.3}" stroke="none"/>"##,
+                x = lo,
+                y = top_edge,
+                w = hi - lo,
+                h = total_h,
+                o = alpha as f64 / 255.0,
+            )
+        }
+        _ => String::new(),
+    };
     if flipped || net_txt_deg.abs() > 1e-6 {
         let _ = writeln!(out, r#"<g transform="{}">"#, escape_attr(&transform));
+        let _ = write!(out, "{bkgnd_rect}");
         let _ = writeln!(
             out,
             r#"<text{d} text-anchor="{a}" xml:space="preserve" {f}>{b}</text>"#,
@@ -2674,6 +3066,7 @@ fn emit_text(
         );
         let _ = writeln!(out, "</g>");
     } else {
+        let _ = write!(out, "{bkgnd_rect}");
         let _ = writeln!(
             out,
             r#"<text{d} text-anchor="{a}" xml:space="preserve" {f}>{b}</text>"#,
@@ -2682,6 +3075,77 @@ fn emit_text(
             f = font_attrs,
             b = body
         );
+    }
+}
+
+/// `#rrggbb` (or `#rgb`) → (r, g, b) bytes; black on anything else —
+/// the TextBkgnd path emits the fill as explicit channels plus a
+/// fill-opacity (#229), so it never leaks an unescaped attribute.
+fn hex_rgb(color: &str) -> (u8, u8, u8) {
+    let h = color.trim().trim_start_matches('#');
+    let v = |s: &str| u8::from_str_radix(s, 16).unwrap_or(0);
+    match h.len() {
+        6 => (
+            v(h.get(0..2).unwrap_or("00")),
+            v(h.get(2..4).unwrap_or("00")),
+            v(h.get(4..6).unwrap_or("00")),
+        ),
+        3 => {
+            let (r, g, b) = (
+                h.get(0..1).unwrap_or("0"),
+                h.get(1..2).unwrap_or("0"),
+                h.get(2..3).unwrap_or("0"),
+            );
+            let d = |s: &str| v(&format!("{s}{s}"));
+            (d(r), d(g), d(b))
+        }
+        _ => (0, 0, 0),
+    }
+}
+
+/// The built-in round bullet's drawn glyph as a PATH (#231): Word's
+/// round set (styles 1–7) draws as •, "o", ▪, ❑, ❖, ➢, ✓ — emitted
+/// as geometric paths in the TEXT fill color so no viewer font
+/// substitution can change their size or style (the custom-string
+/// bullets stay text). Each glyph is constructed in a 1-em local
+/// frame centered on (x, y) and scaled by `size`; our own cleanroom
+/// geometry, sized to read like Visio's marks.
+fn bullet_glyph_svg(kind: u8, x: f64, y: f64, size: f64, color: &str) -> String {
+    // The measured Visio marks, drawn from scratch (cleanroom: never
+    // a copy of the Wingdings/Symbol outlines):
+    let d = match kind {
+        // 1 • filled dot
+        1 => "M-0.14 0a0.14 0.14 0 1 0 0.28 0a0.14 0.14 0 1 0 -0.28 0Z",
+        // 2 "o" — a ring (Courier New's lowercase o reads as a ring)
+        2 => "M0 -0.15a0.15 0.15 0 1 0 0.001 0ZM0 -0.08a0.08 0.08 0 1 1 -0.001 0Z",
+        // 3 ▪ filled square
+        3 => "M-0.13 -0.13h0.26v0.26h-0.26Z",
+        // 4 ❑ box with an inner void (the shadow-box reading of
+        // Wingdings q)
+        4 => "M-0.15 -0.15h0.30v0.30h-0.30ZM-0.08 -0.08h0.16v0.16h-0.16Z",
+        // 5 ❖ four-diamond star
+        5 => "M0 -0.26l0.10 0.12l-0.10 0.12l-0.10 -0.12Z\
+              M0 0.02l0.10 0.12l-0.10 0.12l-0.10 -0.12Z\
+              M-0.19 -0.12l0.10 0.12l-0.10 0.12l-0.10 -0.12Z\
+              M0.19 -0.12l0.10 0.12l-0.10 0.12l-0.10 -0.12Z",
+        // 6 ➢ concave arrowhead pointing right
+        6 => "M-0.14 -0.15l0.29 0.15l-0.29 0.15l0.09 -0.15Z",
+        // 7 ✓ a stroked check
+        _ => "",
+    };
+    let scale = format!("translate({x:.4},{y:.4}) scale({s:.5})", s = size);
+    if kind == 7 {
+        format!(
+            r#"<path transform="{t}" d="M-0.15 0.01l0.11 -0.13l0.21 0.23" fill="none" stroke="{c}" stroke-width="0.09" stroke-linecap="round" stroke-linejoin="round"/>"#,
+            t = scale,
+            c = escape_attr(color),
+        )
+    } else {
+        format!(
+            r#"<path transform="{t}" d="{d}" fill="{c}" fill-rule="evenodd"/>"#,
+            t = scale,
+            c = escape_attr(color),
+        )
     }
 }
 
@@ -5069,6 +5533,110 @@ fn font_substitute(name: &str) -> Option<(&'static str, &'static str)> {
     })
 }
 
+/// The stock-font rule (GitHub #232, cleanroom-rebuilt from the
+/// observed Visio behavior documented on the issue — never Microsoft's
+/// 273-entry table): a font NOT in Visio's stock set draws in
+/// **Calibri** on a stock Windows + Office install, whatever the
+/// document's root style says — Visio's own SVG even names unknown
+/// families Calibri. So a document naming Helvetica, Roboto, or an
+/// invented family must lay out in our Calibri metric twin (Carlito),
+/// or its TEXTWIDTH-driven wrapping diverges from Visio's (Calibri is
+/// narrower than the look-alike faces a generic fallback picks).
+///
+/// The table is the well-known Windows/Office core set a stock Visio
+/// install offers; extend it only with evidence. Case-insensitive.
+fn is_stock_visio_font(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "arial"
+            | "arial black"
+            | "calibri"
+            | "cambria"
+            | "candara"
+            | "comic sans ms"
+            | "consolas"
+            | "constantia"
+            | "corbel"
+            | "courier new"
+            | "ebrima"
+            | "franklin gothic medium"
+            | "gabriola"
+            | "gadugi"
+            | "georgia"
+            | "impact"
+            | "lucida console"
+            | "lucida sans unicode"
+            | "malgun gothic"
+            | "microsoft himalaya"
+            | "microsoft jhenghei"
+            | "microsoft yahei"
+            | "mongolian baiti"
+            | "ms gothic"
+            | "ms mincho"
+            | "ms pgothic"
+            | "mv boli"
+            | "palatino linotype"
+            | "segoe script"
+            | "segoe serif"
+            | "segoe ui"
+            | "simsun"
+            | "sylfaen"
+            | "symbol"
+            | "tahoma"
+            | "times new roman"
+            | "trebuchet ms"
+            | "verdana"
+            | "webdings"
+            | "wingdings"
+            | "yu gothic"
+    )
+}
+
+/// The measurement/paint infrastructure faces (#232): families THIS
+/// app names itself (the vendored deterministic floor, the #257 RTL
+/// fallback) resolve as themselves — they never appear in Visio files,
+/// so exempting them has no parity cost, and the RTL fallback would
+/// regress to Carlito if the stock rule swallowed them.
+fn is_app_font(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "carlito" | "liberation sans" | "liberation serif" | "liberation mono" | "vazirmatn"
+    )
+}
+
+/// The measured Character.Pos metrics for a family (#230): the
+/// reduced glyph em and the baseline shift in NOMINAL em (positive =
+/// raised). Only Calibri and Arial were witnessed (a 36-case + 36-
+/// control measurement on the issue): Calibri 0.667 reduced with a
+/// 0.3-em superscript raise, Arial 1331/2048 ≈ 0.6499 with 0.477;
+/// the subscript drop is −0.14 for both. Our metric twins inherit the
+/// numbers (Carlito = Calibri, Liberation Sans = Arial); the #232
+/// stock rule already reads non-stock names as Calibri, so a Roboto
+/// label scripts with Calibri's numbers — exactly what Visio draws.
+/// Every other family returns `None`: the block keeps its nominal
+/// draw until that face is independently witnessed.
+pub(crate) fn script_metrics(font: Option<&str>, pos: i32) -> Option<(f64, f64)> {
+    if pos != 1 && pos != 2 {
+        return None;
+    }
+    let named = font.map(str::trim).filter(|f| !f.is_empty());
+    let key = match named {
+        None => "calibri".to_string(), // the default family IS Calibri
+        Some(n) if !is_stock_visio_font(n) && !is_app_font(n) => "calibri".to_string(),
+        Some(n) => n.to_ascii_lowercase(),
+    };
+    let (reduced, super_shift) = match key.as_str() {
+        "calibri" | "carlito" => (0.667, 0.3),
+        "arial" | "liberation sans" => (1331.0 / 2048.0, 0.477),
+        _ => return None,
+    };
+    let shift = match pos {
+        1 => super_shift,
+        _ => -0.14,
+    };
+    Some((reduced, shift))
+}
+
 /// Quote a font-family name for the CSS shorthand (single quotes when
 /// it contains anything but letters, digits and dashes). Inside the
 /// quotes, `'` and `\` are CSS-escaped so a document-supplied family
@@ -5093,11 +5661,26 @@ fn quote_family(name: &str) -> String {
 /// last) the renderer declares for a shape's resolved Character Font
 /// — the same walk [`crate::textmetrics`] measures with, so the wrap
 /// decision and the raster use one resolution (#21).
+///
+/// #232 stock-font rule: a family OUTSIDE Visio's stock set (and not
+/// one of our own infrastructure faces) resolves to the Calibri chain
+/// outright — named first, substituted last, like Visio's own SVG
+/// which renames unknown families Calibri. Wrap and raster follow one
+/// chain, so a Helvetica or Roboto label lays out exactly where Visio
+/// would draw it (Carlito = Calibri metrics) instead of drifting onto
+/// a wider look-alike.
 pub(crate) fn family_chain(font: Option<&str>) -> Vec<String> {
     let name = match font.map(str::trim) {
         Some(f) if !f.is_empty() => f,
         _ => "Calibri",
     };
+    if !is_stock_visio_font(name) && !is_app_font(name) {
+        return vec![
+            "Calibri".to_string(),
+            "Carlito".to_string(),
+            "sans-serif".to_string(),
+        ];
+    }
     let (substitute, class) = match font_substitute(name) {
         Some((s, c)) => (Some(s), c),
         None => (None, "sans-serif"),
@@ -7701,6 +8284,8 @@ mod tests {
                 &latin,
                 0.13889,
                 &fallback,
+                0.0,
+                0.0,
             );
             assert_eq!(lines.len(), 1);
             assert!(lines[0].rtl, "the base is rtl");
@@ -8428,5 +9013,369 @@ mod tests {
         );
         assert_eq!(nums[3], 0.0, "the quarter arc is not large");
         assert_eq!(nums[4], 1.0, "the sweep survives the split");
+    }
+
+    // ------------------------------------------------------------------
+    // Wave-4 text stack (GitHub #232 #230 #229 #231 #234 #235).
+
+    /// #232 stock-font rule: a family outside Visio's stock set
+    /// resolves the CALIBRI chain outright (named first, Carlito
+    /// substituted — Visio's own SVG renames unknown families
+    /// Calibri), while stock families keep their own chain and our
+    /// infrastructure faces stay themselves.
+    #[test]
+    fn non_stock_fonts_resolve_the_calibri_chain() {
+        for name in ["Roboto", "Helvetica", "Futura", "Fira Mono", "Certainly Not Installed"] {
+            let chain = family_chain(Some(name));
+            assert_eq!(
+                chain,
+                vec![
+                    "Calibri".to_string(),
+                    "Carlito".to_string(),
+                    "sans-serif".to_string()
+                ],
+                "{name} lays out in Calibri (#232): {chain:?}"
+            );
+        }
+        // Stock families keep their own chain (Arial still aliases to
+        // its metric twin).
+        assert_eq!(
+            family_chain(Some("Arial"))[..2],
+            ["Arial".to_string(), "Liberation Sans".to_string()]
+        );
+        assert_eq!(family_chain(Some("Calibri"))[0], "Calibri");
+        // The app infrastructure faces stay named (#232 exemption) —
+        // the RTL fallback must never regress to Calibri.
+        assert_eq!(family_chain(Some("Vazirmatn"))[0], "Vazirmatn");
+        assert_eq!(family_chain(Some("Liberation Serif"))[0], "Liberation Serif");
+        // No Font cell: Visio's default family is Calibri anyway.
+        assert_eq!(family_chain(None)[0], "Calibri");
+    }
+
+    /// #230: Character.Pos 1/2 draws at the measured reduced em and
+    /// shifts the baseline (Carlito inherits Calibri's 0.667 /
+    /// +0.3 / −0.14 numbers); an unwitnessed family keeps the
+    /// nominal draw. The LINE SLOTS stay nominal — TEXTHEIGHT
+    /// retains the nominal size.
+    #[test]
+    fn character_pos_scripts_the_block() {
+        let emit_pos = |pos: i32, font: Option<&str>| {
+            let doc = Document::default();
+            let mut s = Shape::default();
+            s.sheet.text = Some("H2O".into());
+            s.sheet.set_cell("Width", Cell::value("2.0"));
+            s.sheet.children.push(SheetChild::Section(Section {
+                name: "Character".into(),
+                rows: vec![Row {
+                    cells: font
+                        .map(|f| vec![("Pos".to_string(), Cell::value(pos.to_string())), ("Font".to_string(), Cell::value(f))])
+                        .unwrap_or_else(|| vec![("Pos".to_string(), Cell::value(pos.to_string()))]),
+                    ..Row::default()
+                }],
+                ..Section::default()
+            }));
+            let chain = [&s];
+            let mut out = String::new();
+            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            out
+        };
+        // Baseline: no Pos cell → nominal draw, no shift.
+        let plain = emit_pos(0, None);
+        assert!(plain.contains(r#"font-size="0.1389""#), "nominal size: {plain}");
+        // Superscript on the default (Calibri) family: 2/3 em draw,
+        // baseline raised 0.3 em from the nominal baseline.
+        let sup = emit_pos(1, None);
+        assert!(
+            sup.contains(r#"font-size="0.0926""#),
+            "superscript draws at 0.667 × 10 pt: {sup}"
+        );
+        let sup_y: f64 = sup
+            .split(r#" y=""#)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|v| v.parse().ok())
+            .expect("a y coordinate in the emitted text");
+        let plain_y: f64 = plain
+            .split(r#" y=""#)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|v| v.parse().ok())
+            .expect("a y coordinate in the emitted text");
+        assert!(
+            (plain_y - sup_y - 0.3 * 0.13888).abs() < 5e-4,
+            "superscript raises the baseline 0.3 em: {plain_y} vs {sup_y}"
+        );
+        // Subscript lowers by 0.14 em (both measured families).
+        let sub = emit_pos(2, None);
+        let sub_y: f64 = sub
+            .split(r#" y=""#)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|v| v.parse().ok())
+            .expect("a y coordinate");
+        assert!(
+            (sub_y - plain_y - 0.14 * 0.13888).abs() < 5e-4,
+            "subscript lowers the baseline 0.14 em: {sub_y} vs {plain_y}"
+        );
+        // Arial's witnessed numbers differ (1331/2048, 0.477 em
+        // raise) — Liberation Sans inherits them.
+        let sup_arial = emit_pos(1, Some("Arial"));
+        let arial_y: f64 = sup_arial
+            .split(r#" y=""#)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|v| v.parse().ok())
+            .expect("a y coordinate");
+        assert!(
+            (plain_y - arial_y - 0.477 * 0.13888).abs() < 5e-4,
+            "Arial superscripts raise 0.477 em: {arial_y} vs {plain_y}"
+        );
+        // An unwitnessed stock family keeps the nominal draw.
+        let times = emit_pos(1, Some("Times New Roman"));
+        assert!(
+            times.contains(r#"font-size="0.1389""#),
+            "Times New Roman has no witnessed Pos metrics: {times}"
+        );
+    }
+
+    /// #229: TextBkgnd paints ONE rectangle spanning the laid-out
+    /// lines — above geometry, below text — through the +1 palette
+    /// encoding (1–24 → palette 0–23), the 0/255 no-paint rule, the
+    /// percent transparency, and the corpus's theme-default formula
+    /// (falls to its cached V like every THEMEVAL we don't model).
+    #[test]
+    fn text_bkgnd_paints_the_laid_out_extent() {
+        let emit_bkgnd = |bkgnd: &str, trans: Option<&str>| {
+            let doc = Document::default();
+            let mut s = Shape::default();
+            s.sheet.text = Some("boxed".into());
+            s.sheet.set_cell("Width", Cell::value("2.0"));
+            s.sheet.set_cell("TextBkgnd", Cell::value(bkgnd));
+            if let Some(tr) = trans {
+                s.sheet.set_cell("TextBkgndTrans", Cell::value(tr));
+            }
+            let chain = [&s];
+            let mut out = String::new();
+            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            out
+        };
+        // 0 and 255 paint nothing.
+        assert!(!emit_bkgnd("0", None).contains("<rect"));
+        assert!(!emit_bkgnd("255", None).contains("<rect"));
+        // 1 → palette entry 0 (black); 5 → palette entry 4 (blue).
+        let black = emit_bkgnd("1", None);
+        assert!(
+            black.contains(r##"fill="#000000""##) && black.contains("<rect"),
+            "TextBkgnd 1 is palette entry 0: {black}"
+        );
+        assert!(
+            emit_bkgnd("5", None).contains(r##"fill="#0000ff""##),
+            "TextBkgnd 5 is palette entry 4"
+        );
+        // 50 % transparency renders as 128/255 ≈ 0.502 alpha.
+        let half = emit_bkgnd("1", Some("50"));
+        assert!(
+            half.contains(r#"fill-opacity="0.502""#),
+            "50 % trans → 128/255 alpha: {half}"
+        );
+        // The corpus's theme-default formula: THEMEGUARD(
+        // THEMEVAL("BackgroundColor")+1) with cached V=#ffffff — the
+        // un-modeled THEMEVAL falls to the cached V (white).
+        let doc = Document::default();
+        let mut s = Shape::default();
+        s.sheet.text = Some("boxed".into());
+        s.sheet.set_cell("Width", Cell::value("2.0"));
+        s.sheet.set_cell(
+            "TextBkgnd",
+            Cell {
+                v: Some("#ffffff".into()),
+                f: Some(r#"THEMEGUARD(THEMEVAL("BackgroundColor")+1)"#.into()),
+                ..Cell::default()
+            },
+        );
+        let chain = [&s];
+        let mut out = String::new();
+        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        assert!(
+            out.contains(r##"fill="#ffffff""##),
+            "the theme-default label paints its cached white: {out}"
+        );
+        // The rect sits BEFORE the <text> (below text, above the
+        // geometry emitted earlier).
+        let rect_at = out.find("<rect").expect("a rect");
+        let text_at = out.find("<text").expect("a text");
+        assert!(rect_at < text_at, "background below text: {out}");
+    }
+
+    /// #231: a bulleted paragraph's text starts at the computed tab
+    /// stop (bullet glyph as a path, then the text left-anchored at
+    /// the stop); TextPosAfterBullet only applies when it lies past
+    /// the bullet's start (the measured Visio-2021 rule), and a
+    /// custom bullet string draws as text.
+    #[test]
+    fn bullets_place_text_at_the_tab_stop() {
+        let emit_bullet = |bullet: &str, extra: &[(&str, &str)]| {
+            let doc = Document::default();
+            let mut s = Shape::default();
+            s.sheet.text = Some("bulleted".into());
+            s.sheet.set_cell("Width", Cell::value("4.0"));
+            s.sheet.children.push(SheetChild::Section(Section {
+                name: "Paragraph".into(),
+                rows: vec![Row {
+                    cells: {
+                        let mut cells = vec![
+                            ("Bullet".to_string(), Cell::value(bullet)),
+                            ("HorzAlign".to_string(), Cell::value("0")),
+                        ];
+                        for (n, v) in extra {
+                            cells.push((n.to_string(), Cell::value(*v)));
+                        }
+                        cells
+                    },
+                    ..Row::default()
+                }],
+                ..Section::default()
+            }));
+            let chain = [&s];
+            let mut out = String::new();
+            emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            out
+        };
+        // Built-in style 1 draws a PATH dot (never a text glyph).
+        let out = emit_bullet("1", &[]);
+        assert!(out.contains(r#"<path transform="#), "path bullet: {out}");
+        // The text starts AT the tab stop — left-anchored past the
+        // bullet (DefaultTabStop 0.5 default).
+        let tx: f64 = out
+            .split(r#"<tspan x=""#)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|v| v.parse().ok())
+            .expect("a tspan x");
+        assert!(
+            (tx - 0.5).abs() < 1e-3,
+            "after-bullet text sits on the 0.5 tab stop: {tx}"
+        );
+        // The measured rule: TextPosAfterBullet 0.1 with the bullet
+        // starting at 0 does NOT apply from the bullet's box — the
+        // next tab stop (0.5) wins; TextPosAfterBullet 0.6 (past the
+        // stop) wins outright.
+        let early: f64 = emit_bullet("1", &[("TextPosAfterBullet", "0.1")])
+            .split(r#"<tspan x=""#)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|v| v.parse().ok())
+            .expect("a tspan x");
+        assert!((early - 0.5).abs() < 1e-3, "0.1 < the stop → tab wins: {early}");
+        let late: f64 = emit_bullet("1", &[("TextPosAfterBullet", "0.6")])
+            .split(r#"<tspan x=""#)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|v| v.parse().ok())
+            .expect("a tspan x");
+        assert!((late - 0.6).abs() < 1e-3, "0.6 past the stop → wins: {late}");
+        // A custom bullet string stays TEXT in its own face.
+        let custom = emit_bullet("–", &[]);
+        assert!(
+            custom.contains(">&ndash;</tspan>") || custom.contains(">\u{2013}</tspan>"),
+            "custom bullets stay text: {custom}"
+        );
+        // Bullet 0: no bullet machinery at all.
+        assert!(!emit_bullet("0", &[]).contains("<path"));
+    }
+
+    /// #235 terminal-NBSP hang: a trailing no-break space never
+    /// wraps its word — the overflow check measures the line without
+    // the NBSP's advance, while the NBSP stays in the line content.
+    #[test]
+    fn terminal_nbsp_hangs_past_the_margin() {
+        let latin = crate::textmetrics::resolve(None, false, false);
+        let fallback = crate::textmetrics::resolve(Some("Vazirmatn"), false, false);
+        // Grow a word until word+NBSP just exceeds a 0.5 in line
+        // while the word alone still fits: the hang rule must keep
+        // that word whole (the NBSP paints past the margin), where
+        // the plain measurement would hard-split it.
+        let mut word = String::from("m");
+        while latin.width_in(&format!("{word}\u{a0}"), 0.13889) <= 0.5 {
+            word.push('n');
+        }
+        assert!(
+            latin.width_in(&word, 0.13889) <= 0.5,
+            "fixture: the word alone fits the margin"
+        );
+        let solo = wrap_block_text(
+            &latin,
+            &format!("{word}\u{a0}"),
+            0.13889,
+            0.5,
+            &latin,
+            0.13889,
+            &fallback,
+            0.0,
+            0.0,
+        );
+        assert_eq!(
+            solo.len(),
+            1,
+            "word+NBSP never hard-splits on the hanging advance: {:?}",
+            solo.iter().map(|l| &l.text).collect::<Vec<_>>()
+        );
+        assert_eq!(solo[0].text, format!("{word}\u{a0}"), "the NBSP stays content");
+        let lines = wrap_block_text(
+            &latin,
+            &format!("{word}\u{a0} next"),
+            0.13889,
+            0.5,
+            &latin,
+            0.13889,
+            &fallback,
+            0.0,
+            0.0,
+        );
+        assert_eq!(
+            lines[0].text,
+            format!("{word}\u{a0}"),
+            "the NBSP binds its word onto the first line (#235)"
+        );
+        // And a plain space there DOES wrap.
+        let lines_plain = wrap_block_text(
+            &latin,
+            &format!("{word} next"),
+            0.13889,
+            0.5,
+            &latin,
+            0.13889,
+            &fallback,
+            0.0,
+            0.0,
+        );
+        assert_eq!(
+            lines_plain[0].text, word,
+            "the control: a plain trailing space wraps"
+        );
+    }
+
+    /// #234: the composed width quantizes the size then rounds every
+    /// glyph advance onto the same grid — for a single glyph that is
+    /// exactly one grid-rounded product, and the terminal-run space
+    /// + slack make TEXTWIDTH strictly wider than the bare advance.
+    #[test]
+    fn composed_width_rounds_on_the_size_grid() {
+        let f = crate::textmetrics::resolve(None, false, false);
+        let size = 0.13889;
+        let q = crate::textmetrics::quantize18(size);
+        let adv_em = f.width_in("x", 1.0);
+        let expect = (q * adv_em * 262_144.0).round() / 262_144.0;
+        let got = f.composed_width_in("x", size);
+        assert!(
+            (got - expect).abs() < 1e-12,
+            "one glyph: {got} vs grid-rounded {expect}"
+        );
+        // The space advance itself lands on the grid.
+        let sp = f.space_advance_in(size);
+        assert!(
+            (sp * 262_144.0 - (sp * 262_144.0).round()).abs() < 1e-9,
+            "the terminal space is a grid step"
+        );
     }
 }

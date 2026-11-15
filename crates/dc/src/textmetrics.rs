@@ -53,6 +53,34 @@ use std::sync::OnceLock;
 /// corpus and never wrap-decisive at this precision).
 const UNCOVERED_EM: f64 = 0.55;
 
+/// One step of the 18-fractional-bit inch composition grid (#234):
+/// 1/2^18 in ≈ 0.0000038 in. Visio quantizes COMPOSED metrics — font
+/// sizes, then per-glyph advances — onto this grid before summing them
+/// (the measured 120 %-spacing height corrections at 6/8/10/12 pt are
+/// exactly the round-to-nearest residues of the quantized size). Only
+/// measurement quantizes; SVG painting keeps the raw size (#234).
+const GRID: f64 = 262_144.0; // 2^18
+
+/// Round `v` (inches) to the nearest 18-fractional-bit grid step —
+/// the quantization Visio applies to composed font sizes (#234).
+pub fn quantize18(v: f64) -> f64 {
+    (v * GRID).round() / GRID
+}
+
+/// Truncate `v` (inches) toward zero on the grid — the reduction
+/// Visio applies to a script run's drawn size before its glyph
+/// advances round on the grid (#230: "the reduced em is truncated on
+/// the 18-fractional-bit inch composition grid").
+pub fn trunc18(v: f64) -> f64 {
+    (v * GRID).trunc() / GRID
+}
+
+/// Round `v` (inches) onto the grid — the per-glyph advance rounding
+/// (#234 terminal-run advance, #230 script advances).
+fn round18(v: f64) -> f64 {
+    (v * GRID).round() / GRID
+}
+
 /// Every vendored face (GitHub #145): the Carlito set is style-complete
 /// (Regular/Bold/Italic/BoldItalic — italic used to measure as the
 /// upright face), and the Liberation metric faces (Sans/Serif/Mono × 4
@@ -356,6 +384,43 @@ impl ResolvedFace {
         self.shaped_width_em(text) * size_in
     }
 
+    /// Visio's COMPOSED width of `text` at `size_in` inches (#234):
+    /// the size quantized onto the 18-fractional-bit grid first, then
+    /// every shaped glyph advance rounded onto that same grid before
+    /// summing. This is the TEXTWIDTH building block — the caller adds
+    /// the terminal-run space and the 0.00005 allowance (#234's three
+    /// rules stay separable for tests). The plain `width_in` stays the
+    /// WRAP engine's measure: quantization deltas (≤ 1e-6 in) must not
+    /// flip a break the raster would not also flip.
+    pub fn composed_width_in(&self, text: &str, size_in: f64) -> f64 {
+        if text.is_empty() {
+            return 0.0;
+        }
+        let q = quantize18(size_in);
+        let fallback = |c: char| self.char_em(c);
+        let m = metrics();
+        let db_key = m as *const MetricsDb as usize;
+        let advances = m
+            .db
+            .with_face_data(self.id, |data, index| {
+                shaped_face(db_key, self.id, data, index)
+                    .and_then(|shaped| shape_glyph_advances_em(&shaped, text, &fallback))
+            })
+            .flatten()
+            .unwrap_or_else(|| text.chars().map(fallback).collect::<Vec<_>>());
+        advances
+            .into_iter()
+            .map(|em| round18(q * em))
+            .sum()
+    }
+
+    /// The grid-rounded advance of ONE space at `size_in` — the
+    /// terminal-run space of #234's composed width ("one terminal
+    /// space, from the final run, even if it paints no glyph").
+    pub fn space_advance_in(&self, size_in: f64) -> f64 {
+        round18(quantize18(size_in) * self.shaped_width_em(" "))
+    }
+
     /// Shaped width of `text` in em units, through a per-(database,
     /// face, text) cache — the wrap loop measures growing candidate
     /// strings repeatedly, and a shaped width is far too costly to
@@ -505,7 +570,11 @@ fn shaped_face(
 /// the rasterizer draws. Returns `None` when a run fails to shape —
 /// the caller falls back to the isolated-advance sum (the 0.15 API
 /// shapes in place and can fail; the old API could not).
-fn shape_width_em(face: &ShapedFace, text: &str, fallback: &dyn Fn(char) -> f64) -> Option<f64> {
+fn shape_glyph_advances_em(
+    face: &ShapedFace,
+    text: &str,
+    fallback: &dyn Fn(char) -> f64,
+) -> Option<Vec<f64>> {
     use harfrust::{shape, Buffer, Direction, ShapeOptions, ShaperFont};
     // Built per call, like usvg's own shaping path: harfrust's
     // interop slot caches the font's layout data behind the `Font`,
@@ -513,10 +582,10 @@ fn shape_width_em(face: &ShapedFace, text: &str, fallback: &dyn Fn(char) -> f64)
     let shaper = ShaperFont::new(&face.font);
     let bidi = unicode_bidi::BidiInfo::new(text, None);
     let Some(paragraph) = bidi.paragraphs.first() else {
-        return Some(0.0);
+        return Some(Vec::new());
     };
     let (levels, runs) = bidi.visual_runs(paragraph, paragraph.range.clone());
-    let mut total = 0.0;
+    let mut out = Vec::new();
     for run in runs.iter() {
         let sub = &text[run.clone()];
         if sub.is_empty() {
@@ -556,18 +625,17 @@ fn shape_width_em(face: &ShapedFace, text: &str, fallback: &dyn Fn(char) -> f64)
                     (next, start)
                 };
                 let hi = hi.min(sub.len());
-                total += sub
-                    .get(lo..hi)
-                    .unwrap_or("")
-                    .chars()
-                    .map(fallback)
-                    .sum::<f64>();
+                out.extend(sub.get(lo..hi).unwrap_or("").chars().map(fallback));
             } else {
-                total += positions[i].x_advance as f64 / face.upem;
+                out.push(positions[i].x_advance as f64 / face.upem);
             }
         }
     }
-    Some(total)
+    Some(out)
+}
+
+fn shape_width_em(face: &ShapedFace, text: &str, fallback: &dyn Fn(char) -> f64) -> Option<f64> {
+    shape_glyph_advances_em(face, text, fallback).map(|a| a.into_iter().sum())
 }
 
 /// The actual face a shape's text rasterizes in, as bytes — for
@@ -693,24 +761,53 @@ mod tests {
         assert!(f.width_in("按", 0.13889) > 0.0);
     }
 
-    /// Machine-independent by construction: the family is installed
-    /// nowhere, so resolution must land on the vendored faces whether
-    /// or not the host carries real Calibri/Arial (an installed family
-    /// legitimately wins the chain — that is the point of #21).
+    /// #232 stock-font rule: a family OUTSIDE Visio's stock set
+    /// resolves to the CALIBRI chain — byte-for-byte the same face a
+    /// document naming "Calibri" gets (the real installed Calibri
+    /// where the host carries one, the vendored Carlito metric twin
+    /// otherwise), never a wider look-alike. Machine-independent by
+    /// construction: the assertion is an identity between two chains,
+    /// not a pinned face id. On an embedded-only database (the
+    /// harness-pinned path) that face IS the vendored Carlito.
     #[test]
-    fn resolve_pins_uninstalled_families_to_carlito() {
-        let m = metrics();
+    fn resolve_pins_uninstalled_families_to_the_calibri_chain() {
         let f = resolve(Some("Certainly-Not-Installed-21"), false, false);
-        assert_eq!(f.id, m.carlito, "unresolved chains measure Carlito");
-        let g = resolve(Some("Certainly-Not-Installed-21"), true, false);
-        assert_eq!(g.id, m.carlito_bold, "bold resolves the bold face");
-        let i = resolve(Some("Certainly-Not-Installed-21"), false, true);
-        assert_eq!(i.id, m.carlito_italic, "italic resolves the italic face");
-        let bi = resolve(Some("Certainly-Not-Installed-21"), true, true);
+        let c = resolve(Some("Calibri"), false, false);
         assert_eq!(
-            bi.id, m.carlito_bold_italic,
-            "bold+italic resolves its corner"
+            f.id, c.id,
+            "an unknown family measures exactly what Calibri measures (#232)"
         );
+        assert_eq!(
+            resolve(Some("Certainly-Not-Installed-21"), true, false).id,
+            resolve(Some("Calibri"), true, false).id,
+            "bold corners follow the same chain"
+        );
+        assert_eq!(
+            resolve(Some("Certainly-Not-Installed-21"), false, true).id,
+            resolve(Some("Calibri"), false, true).id,
+            "italic corners follow the same chain"
+        );
+        assert_eq!(
+            resolve(Some("Certainly-Not-Installed-21"), true, true).id,
+            resolve(Some("Calibri"), true, true).id,
+            "bold+italic corners follow the same chain"
+        );
+    }
+
+    /// #232: OUR OWN infrastructure faces (the vendored floor, the
+    /// RTL fallback) resolve as themselves — the stock rule must not
+    /// swallow them or every RTL line would regress to Carlito.
+    #[test]
+    fn app_infrastructure_faces_resolve_as_themselves() {
+        // On the embedded-only database Vazirmatn is absent, so the
+        // resolution lands on the vendored Carlito chain end — the
+        // assertion is that the CHAIN keeps Vazirmatn first (visible
+        // on a system database where the face exists): the emitted
+        // family chain names it.
+        let chain = crate::svg::family_chain(Some("Vazirmatn"));
+        assert_eq!(chain[0], "Vazirmatn", "the app face stays named");
+        // Same for the vendored floor faces named directly.
+        assert_eq!(crate::svg::family_chain(Some("Carlito"))[0], "Carlito");
     }
 
     /// #146: measurement SHAPES the run the way the rasterizer draws
