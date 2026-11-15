@@ -2191,21 +2191,36 @@ pub(crate) fn resolve_text_block(
         .and_then(|c| c.numeric())
         .unwrap_or(0.0) as i32;
 
-    // Paragraph indents (#231) from the same first Paragraph row the
-    // HorzAlign above reads.
-    let ind_first = para_row
-        .and_then(|r| r.cell("IndFirst"))
+    // Paragraph indents (#231) resolved PER CELL through the
+    // instance → master inheritance (PR #284 review): an instance
+    // Paragraph row carrying only HorzAlign must not shadow the
+    // master's IndFirst/IndLeft/bullet cells, the way a whole-row
+    // pick would.
+    let para_cell = |name: &str| -> Option<Cell> {
+        let own = s
+            .sheet
+            .sections_named("Paragraph")
+            .iter()
+            .find_map(|sec| sec.rows.iter().find_map(|r| r.cell(name).cloned()));
+        own.or_else(|| {
+            doc.instance_source(s, chain)
+                .and_then(|src| {
+                    src.sheet.sections_named("Paragraph").iter().find_map(|sec| {
+                        sec.rows.iter().find_map(|r| r.cell(name).cloned())
+                    })
+                })
+        })
+    };
+    let ind_first = para_cell("IndFirst")
         .and_then(|c| c.numeric())
         .unwrap_or(0.0);
-    let ind_left = para_row
-        .and_then(|r| r.cell("IndLeft"))
+    let ind_left = para_cell("IndLeft")
         .and_then(|c| c.numeric())
         .unwrap_or(0.0);
 
     // #231 bullet machinery: a Bullet cell 1–7 (Word's round set) or a
     // non-numeric string (custom bullet) arms it; 0/empty stays off.
-    let bullet = para_row
-        .and_then(|r| r.cell("Bullet"))
+    let bullet = para_cell("Bullet")
         .and_then(|b| {
             let v = b.v.as_deref().unwrap_or("").trim().to_string();
             if v.is_empty() || v == "0" {
@@ -2218,15 +2233,13 @@ pub(crate) fn resolve_text_block(
             };
             // BulletFont: a family name, else inherit the paragraph
             // font (numeric legacy indexes and 0 both inherit).
-            let font = para_row
-                .and_then(|r| r.cell("BulletFont"))
+            let font = para_cell("BulletFont")
                 .and_then(|c| c.v.clone())
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty() && v.parse::<f64>().is_err());
             // BulletFontSize: negative = percent of the text size
             // (default −100 %), ≥ 0 = absolute inches.
-            let pct = para_row
-                .and_then(|r| r.cell("BulletFontSize"))
+            let pct = para_cell("BulletFontSize")
                 .and_then(|c| c.numeric())
                 .unwrap_or(-100.0);
             let size = if pct < 0.0 {
@@ -2234,8 +2247,7 @@ pub(crate) fn resolve_text_block(
             } else {
                 pct.max(0.02)
             };
-            let pos_after = para_row
-                .and_then(|r| r.cell("TextPosAfterBullet"))
+            let pos_after = para_cell("TextPosAfterBullet")
                 .and_then(|c| c.numeric())
                 .unwrap_or(0.0);
             // The tab-stop grid lives on the document sheet.
