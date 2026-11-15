@@ -2241,11 +2241,21 @@ pub(crate) fn resolve_text_block(
                 .and_then(|c| c.v.clone())
                 .map(|st| st.trim().to_string())
                 .filter(|st| !st.is_empty());
-            let glyph = match (custom, v.parse::<u8>()) {
+            // Numeric forms classify BEFORE the custom-string
+            // fallback (CodeRabbit local review): "256" overflows u8
+            // and "1.0"/"0.0" fail an integer parse — either way the
+            // old path painted the literal as a custom bullet.
+            // Integral 1–7 → the round set; any other numeric → no
+            // bullet; genuinely non-numeric text → a custom bullet.
+            let numeric = v
+                .parse::<f64>()
+                .ok()
+                .filter(|n| n.fract() == 0.0 && *n >= 0.0);
+            let glyph = match (custom, numeric.map(|n| n as u8)) {
                 (Some(st), _) => BulletGlyph::Str(st),
-                (None, Ok(n @ 1..=7)) => BulletGlyph::Round(n),
-                (None, Ok(_)) => return None, // out-of-range numeric: no bullet
-                (None, Err(_)) => BulletGlyph::Str(v),
+                (None, Some(n @ 1..=7)) => BulletGlyph::Round(n),
+                (None, Some(_)) => return None, // other numerics: no bullet
+                (None, None) => BulletGlyph::Str(v),
             };
             // BulletFont: a family name, else inherit the paragraph
             // font (numeric legacy indexes and 0 both inherit).
@@ -2636,8 +2646,15 @@ fn emit_text(
     // draw). The paint size shrinks; the LINE slots and the baseline
     // ascent math stay nominal — Visio's TEXTHEIGHT retains the
     // nominal size and the shift rides the nominal baseline.
-    let script = script_metrics(tb.font.as_deref(), tb.pos);
-    let reduce = script.map_or(1.0, |(r, _)| r);
+    // Character.Pos metrics come from the family that PAINTS each
+    // direction (CodeRabbit local review): LTR lines paint the Latin
+    // font, RTL lines the complex-script font (or the Latin chain
+    // when no CS font resolves) — an Arial block with a Times CS
+    // font must script with Times's numbers on RTL lines, and an
+    // unwitnessed CS family keeps the nominal draw there.
+    let script_latin = script_metrics(tb.font.as_deref(), tb.pos);
+    let script_l = script_latin;
+    let reduce = script_latin.map_or(1.0, |(r, _)| r);
     let paint_size = size * reduce;
     let font_attrs = format!(
         r#"font-size="{s:.4}"{ff} fill="{c}"{b}{i}"#,
@@ -2683,7 +2700,9 @@ fn emit_text(
     // default and the probe never fires.
     let cs_fallback = crate::textmetrics::resolve(Some("Vazirmatn"), tb.bold, tb.italic);
     let cs_size = tb.cs_size.unwrap_or(size);
-    let cs_paint_size = cs_size * reduce;
+    let script_cs = script_metrics(cs_chain, tb.pos);
+    let script_r = script_cs;
+    let cs_paint_size = cs_size * script_cs.map_or(1.0, |(r, _)| r);
 
     // Line-band edges before the wrap — the #231 bullet layout needs
     // them for its tab-stop arithmetic (the first line's text starts
@@ -2912,11 +2931,19 @@ fn emit_text(
             );
             let line_size = effective_cs_size(&tb);
             let y = top + line_size * 0.8
-                - script.map_or(0.0, |(_, shift)| shift * line_size);
+                - script_r.map_or(0.0, |(_, shift)| shift * line_size);
             // The RTL line's laid-out extent joins the #229 background
             // union too (PR review, wave 4) — an all-RTL block must
-            // still paint its text background.
-            let span = (vx, vx + lw);
+            // still paint its text background. The extent follows the
+            // line's EFFECTIVE anchor (CodeRabbit local review): a
+            // centered RTL line anchors middle at vx, so its extent
+            // runs half a line width to each side; start/end anchors
+            // place vx at an edge.
+            let span = match halign {
+                // Centered: vx is the line's middle.
+                1 => (vx - lw / 2.0, vx + lw / 2.0),
+                _ => (vx, vx + lw),
+            };
             bkgnd_span = Some(match bkgnd_span {
                 Some((a, b)) => (a.min(span.0), b.max(span.1)),
                 None => span,
@@ -2933,7 +2960,7 @@ fn emit_text(
             // NOMINAL size.
             let line_size = size;
             let y = top + line_size * 0.8
-                - script.map_or(0.0, |(_, shift)| shift * line_size);
+                - script_l.map_or(0.0, |(_, shift)| shift * line_size);
             // LTR line placement: every line lays out in an indented
             // band — a bulleted paragraph's first line carries
             // bullet+gap+text as ONE unit anchored at the tab stop

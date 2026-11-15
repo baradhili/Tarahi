@@ -137,7 +137,14 @@ impl SheetTextMeasure {
         let cs_face = crate::textmetrics::resolve(cs_chain, self.tb.bold, self.tb.italic);
         let cs_fallback =
             crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic);
-        let red = self.script_reduce();
+        // Per-direction script reductions (CodeRabbit local review):
+        // LTR paragraphs wrap at the Latin family's drawn size, RTL
+        // paragraphs at the complex-script family's — the same faces
+        // emit_text paints with.
+        let red_l = crate::svg::script_metrics(self.tb.font.as_deref(), self.tb.pos)
+            .map_or(1.0, |(r, _)| r);
+        let red_r = crate::svg::script_metrics(cs_chain, self.tb.pos)
+            .map_or(1.0, |(r, _)| r);
         let usable = (width - self.tb.insets.0 - self.tb.insets.1).max(0.02);
         // The first-line offset the RENDERER lays out (inches): the
         // bullet's tab stop for a bulleted block, max(IndFirst, 0)
@@ -151,10 +158,10 @@ impl SheetTextMeasure {
         crate::svg::wrap_block_text(
             &face,
             text,
-            self.tb.font_size * red,
+            self.tb.font_size * red_l,
             usable,
             &cs_face,
-            self.tb.cs_size.unwrap_or(self.tb.font_size) * red,
+            self.tb.cs_size.unwrap_or(self.tb.font_size) * red_r,
             &cs_fallback,
             first_off,
             self.tb.ind_left,
