@@ -200,23 +200,24 @@ pub struct ExtentInches {
     pub size: (f64, f64),
 }
 
-/// The extent for one page: the union of the paper and every DRAWING
-/// bound passed in (PR #284 review round 4 — bounds come from the
-/// DOCUMENT's shapes via the app's `shape_rect`, NOT from the landed
-/// layer quads: composite omits off-screen shapes and shapes without
-/// a ready texture, so a texture-based extent could shrink when the
-/// user pans away and clamp the scroll path back to an off-page
-/// shape). With no off-page content this is exactly the paper, so
-/// pre-#283 behavior is unchanged.
+/// The extent for one page: the union of the paper, the DOCUMENT's
+/// shape bounds (every top-level shape's base box — texture-state
+/// independent, so the range never shrinks: PR #284 review round 4)
+/// and the LANDED quads' drawn bboxes (rotation, group-child and ink
+/// overflow beyond the base box — Greptile round 4: a rotated shape's
+/// drawn corner can exceed its static box by more than the margin).
+/// With no off-page content this is exactly the paper, so pre-#283
+/// behavior is unchanged.
 pub fn content_extent(
     page: &PageGeom,
-    bounds: &[(f64, f64, f64, f64)],
+    doc_bounds: &[(f64, f64, f64, f64)],
+    drawn_bounds: &[(f64, f64, f64, f64)],
 ) -> ExtentInches {
     let mut min_x = 0.0f64;
     let mut min_y = 0.0f64;
     let mut max_x = page.w_in;
     let mut max_y = page.h_in;
-    for b in bounds {
+    for b in doc_bounds.iter().chain(drawn_bounds.iter()) {
         min_x = min_x.min(b.0);
         min_y = min_y.min(b.1);
         max_x = max_x.max(b.0 + b.2);
@@ -1039,7 +1040,12 @@ pub fn show(
     // The scrollable EXTENT (paper ∪ landed content, PR #284 review
     // round 2): off-page shapes must stay reachable, so the clamp and
     // the scrollbars cover the whole drawing, not just the paper.
-    let extent_in = content_extent(page, extent_bounds);
+    let drawn_bounds: Vec<(f64, f64, f64, f64)> = layers
+        .iter()
+        .chain(underlays.iter())
+        .map(|q| q.bbox)
+        .collect();
+    let extent_in = content_extent(page, extent_bounds, &drawn_bounds);
     let ppi = view.px_per_in();
     let extent_px = Vec2::new(
         extent_in.size.0 as f32 * ppi,

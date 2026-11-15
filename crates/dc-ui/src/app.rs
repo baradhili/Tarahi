@@ -12,6 +12,11 @@ use dc_core::commands::{
 };
 use dc_core::scope::{shape_chain, Scope};
 use dc_core::{Editor, Macro, SetCell, SetRowCell};
+
+/// The cached scroll-extent bounds entry (#284 review round 5): the
+/// (history_len, page_idx, shape_count) staleness key plus the cached
+/// page-DOWN bounds.
+pub type ExtentCacheEntry = (usize, usize, usize, Vec<(f64, f64, f64, f64)>);
 use egui::{Color32, Context, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 use vsdx::model::{Document, Shape};
 
@@ -245,6 +250,13 @@ pub struct App {
     /// Text waiting for the OS clipboard (#113, URS-1113): copied on
     /// the next frame's update (the copy path has no Context).
     os_clipboard_text: Option<String>,
+    /// #284 review round 5: the cached scroll-extent bounds and the
+    /// (history_len, page_idx, shape_count) key they were computed
+    /// for — per-frame `shape_rect` calls over all shapes cost an
+    /// O(N) page search per shape, so the bounds refresh only when
+    /// the document could have changed them (any apply/undo/redo
+    /// bumps history_len; a page switch or shape add moves the key).
+    extent_cache: Option<ExtentCacheEntry>,
     /// An in-flight OS clipboard image probe (#113): RGBA result.
     os_image_rx: Option<Receiver<Option<OsImage>>>,
     /// The Backgrounds dialog is open (#113, URS-1158).
@@ -727,6 +739,7 @@ impl App {
             mdi_decorated: false,
             mdi_drawing_tile: egui::Rect::NOTHING,
             os_clipboard_text: None,
+            extent_cache: None,
             os_image_rx: None,
             backgrounds_open: false,
             bg_underlays: Vec::new(),
@@ -10032,22 +10045,40 @@ impl App {
         // `self.shape_rect`), not the landed layer quads: composite
         // omits off-screen shapes and unready textures, so a
         // texture-based extent could shrink mid-pan and strand
-        // off-page work. Page-DOWN inches for the canvas.
+        // off-page work. Cached on (history_len, page_idx,
+        // shape_count) — Greptile round 5: per-frame calls cost an
+        // O(N) page search PER SHAPE, so the bounds refresh only when
+        // the document could have changed them.
+        let cache_key = (
+            self.ed().map(|e| e.history_len()).unwrap_or(0),
+            self.page_idx,
+            self.ed()
+                .and_then(|e| e.doc.pages.get(self.page_idx))
+                .map(|p| p.shapes.len())
+                .unwrap_or(0),
+        );
         let geom_pre = self.page_geom();
-        let extent_bounds: Vec<(f64, f64, f64, f64)> = self
-            .ed()
-            .and_then(|editor| {
-                let page = editor.doc.pages.get(self.page_idx)?;
-                let pid = page.id;
-                Some(
-                    page.shapes
-                        .iter()
-                        .filter_map(|sh| self.shape_rect(&editor.doc, pid, sh))
-                        .map(|(x, y, w, h)| (x, geom_pre.h_in - (y + h), w, h))
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .unwrap_or_default();
+        let extent_bounds = match &self.extent_cache {
+            Some((k0, k1, k2, bounds)) if (*k0, *k1, *k2) == cache_key => bounds.clone(),
+            _ => {
+                let bounds = self
+                    .ed()
+                    .and_then(|editor| {
+                        let page = editor.doc.pages.get(self.page_idx)?;
+                        let pid = page.id;
+                        Some(
+                            page.shapes
+                                .iter()
+                                .filter_map(|sh| self.shape_rect(&editor.doc, pid, sh))
+                                .map(|(x, y, w, h)| (x, geom_pre.h_in - (y + h), w, h))
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .unwrap_or_default();
+                self.extent_cache = Some((cache_key.0, cache_key.1, cache_key.2, bounds.clone()));
+                bounds
+            }
+        };
         let App {
             view, ed, page_idx, ..
         } = self;
@@ -14167,14 +14198,17 @@ impl App {
     fn jump_view_vertical(&mut self, top: bool) {
         let geom = self.page_geom();
         let (origin, content) = canvas::content_area(self.canvas_rect, self.view.show_rulers);
-        let (min, max) = canvas::pan_range_axis(
-            content.y,
-            geom.h_in as f32 * self.view.px_per_in(),
-            0.0, // the PAPER edges are the jump's semantic target; the
-                 // extent clamp (corner ≤ 0) never tightens this
-            self.view.zoom,
-        );
-        self.view.pan.y = origin.y + if top { max } else { min };
+        // The jump targets the PAPER edges literally (PR #284 review
+        // round 5): the extent range bounds are the manual-pan
+        // room (half-viewport around the fit center when pinned), and
+        // riding them hid half the page on fitted drawings. The
+        // per-frame extent clamp still validates the result.
+        let page_px = geom.h_in as f32 * self.view.px_per_in();
+        self.view.pan.y = if top {
+            origin.y
+        } else {
+            origin.y + content.y - page_px
+        };
         self.view.fit_mode = false;
     }
 

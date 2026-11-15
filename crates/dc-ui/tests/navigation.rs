@@ -230,10 +230,13 @@ fn ctrl_home_end_jump_the_page_edges() {
     h.run();
     let (_, _, py_home) = h.state().debug_view_for_test();
     assert!(py_home > py_end, "ctrl+home jumps toward the page top");
+    // The jumps target the PAPER edges exactly (PR #284 review round
+    // 5 — not the manual-pan range bounds, which would hide half the
+    // page on a fitted drawing), so repeats land identically.
     h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Home);
     h.run();
     let (_, _, py_home2) = h.state().debug_view_for_test();
-    assert_eq!(py_home, py_home2, "ctrl+home is pinned at the bound");
+    assert_eq!(py_home, py_home2, "ctrl+home repeats identically");
 }
 
 /// The Pan tool (Home ▸ Tools): a plain left drag pans, clicks and

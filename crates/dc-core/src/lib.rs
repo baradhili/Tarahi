@@ -224,6 +224,13 @@ impl History {
     pub fn can_redo(&self) -> bool {
         !self.redo_stack.is_empty()
     }
+    /// The monotone edit counter for the UI's cached derived state
+    /// (PR #284 review round 4): every apply/undo/redo pops or pushes
+    /// exactly one command, so this changes exactly when the document
+    /// could have changed shape positions.
+    pub fn history_len(&self) -> usize {
+        self.undo_stack.len() + self.redo_stack.len()
+    }
     /// Labels of applied commands, oldest first.
     pub fn undo_labels(&self) -> Vec<String> {
         self.undo_stack.iter().map(|c| c.label()).collect()
@@ -282,6 +289,12 @@ impl Editor {
 
     pub fn redo(&mut self) -> Result<Option<(String, TouchList)>> {
         self.history.redo(&mut self.doc)
+    }
+
+    /// The monotone edit counter for the UI's cached derived state
+    /// (PR #284 review round 4) — delegates to the history.
+    pub fn history_len(&self) -> usize {
+        self.history.history_len()
     }
 
     /// Save the document to `path` (lossless write path). The write is
