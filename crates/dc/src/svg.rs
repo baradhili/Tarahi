@@ -2197,18 +2197,25 @@ pub(crate) fn resolve_text_block(
     // master's IndFirst/IndLeft/bullet cells, the way a whole-row
     // pick would.
     let para_cell = |name: &str| -> Option<Cell> {
+        // The FIRST row of the FIRST Paragraph section per side (PR
+        // #284 review, round 2): later sections/rows belong to OTHER
+        // paragraphs (the <pp> markers) — scanning them would blend
+        // paragraph 2's bullet into paragraph 0's settings. Per-cell
+        // instance -> master inheritance is preserved.
         let own = s
             .sheet
             .sections_named("Paragraph")
-            .iter()
-            .find_map(|sec| sec.rows.iter().find_map(|r| r.cell(name).cloned()));
+            .first()
+            .and_then(|sec| sec.rows.first())
+            .and_then(|r| r.cell(name).cloned());
         own.or_else(|| {
-            doc.instance_source(s, chain)
-                .and_then(|src| {
-                    src.sheet.sections_named("Paragraph").iter().find_map(|sec| {
-                        sec.rows.iter().find_map(|r| r.cell(name).cloned())
-                    })
-                })
+            doc.instance_source(s, chain).and_then(|src| {
+                src.sheet
+                    .sections_named("Paragraph")
+                    .first()
+                    .and_then(|sec| sec.rows.first())
+                    .and_then(|r| r.cell(name).cloned())
+            })
         })
     };
     let ind_first = para_cell("IndFirst")
