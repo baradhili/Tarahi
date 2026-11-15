@@ -2723,7 +2723,13 @@ fn emit_text(
     // offsets (unwitnessed — #231's open questions).
     let (first_off, left_off) = match &bullet_layout {
         Some(bl) => ((bl.text_x - left_x).max(0.0), tb.ind_left),
-        None => (tb.ind_first.max(0.0), tb.ind_left),
+        // The unbulleted first line reserves the COMBINED indent
+        // (IndLeft base + IndFirst adjustment — PR #284 review round
+        // 4): the paint band and the TEXTHEIGHT measure already use
+        // `unbulleted_first_offset_in`; wrapping at less would let
+        // text run past the right margin and split measured line
+        // counts from laid-out ones.
+        None => (unbulleted_first_offset_in(&tb), tb.ind_left),
     };
     // Greeking (#124 item 2): a block whose on-screen em height falls
     // under TEXT_GREEK_PX renders as gray bars — per line, shaped only
