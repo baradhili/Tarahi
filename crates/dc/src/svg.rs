@@ -2251,6 +2251,11 @@ pub(crate) fn resolve_text_block(
                 .unwrap_or(-100.0);
             let size = if pct < 0.0 {
                 pct.abs() / 100.0 * font_size
+            } else if pct == 0.0 {
+                // 0 = the size of the first character after the bullet
+                // ([MS-VSDX] BulletFontSize — PR #284 review round 3):
+                // the paragraph's own size, not a 0.02 in sliver.
+                font_size
             } else {
                 pct.max(0.02)
             };
