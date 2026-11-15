@@ -223,25 +223,78 @@ fn ctrl_home_end_jump_the_page_edges() {
     assert_eq!(py_home, py_home2, "ctrl+home is pinned at the bound");
 }
 
-/// The Pan tool (Home ▸ Tools): a plain left drag pans, clicks change
-/// no selection, and Esc returns to the pointer.
+/// The Pan tool (Home ▸ Tools): a plain left drag pans, clicks and
+/// double-clicks on a SHAPE change nothing (PR #284 review — the
+/// regression needs a shape on the page to guard), and Esc restores
+/// the pointer tool's selection behavior.
 #[test]
 fn pan_tool_drags_the_view_and_clicks_select_nothing() {
     let mut h = harness_with_blank();
     h.run();
     h.run();
-    zoom_into_page(&mut h);
+    // A shape on the page: click the first Quick Shapes master tile,
+    // then the canvas center places it (the stencil paradigm).
+    let cell = h.state().debug_master_cells()[0].1.center();
+    h.hover_at(cell);
+    h.event(egui::Event::PointerButton {
+        pos: cell,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.event(egui::Event::PointerButton {
+        pos: cell,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
     let canvas = h.state().debug_canvas_rect();
-    let (_, _, py0) = h.state().debug_view_for_test();
+    let center = canvas.center();
+    h.hover_at(center);
+    h.event(egui::Event::PointerButton {
+        pos: center,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.event(egui::Event::PointerButton {
+        pos: center,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    let (_, shape) = h.state().debug_sel().expect("the placed shape is selected");
+    // Deselect with the pointer tool first: Pan's inert clicks are
+    // then provable against an EMPTY selection.
+    let empty = canvas.left_top() + egui::vec2(30.0, 30.0);
+    h.hover_at(empty);
+    h.event(egui::Event::PointerButton {
+        pos: empty,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.event(egui::Event::PointerButton {
+        pos: empty,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    assert_eq!(h.state().debug_sel(), None, "deselected before the tool");
 
-    // The ribbon button's ACCESSIBLE label is its compact-tier alt
-    // text ("Pan") — exact match, so the planned Task panes stub
-    // (whose label contains "Pan & Zoom") can't shadow it.
+    // Arm the Pan tool: the button's ACCESSIBLE label is its
+    // compact-tier alt text ("Pan") — exact match, so the planned
+    // Task panes stub (whose label contains "Pan & Zoom") can't
+    // shadow it.
     h.get_by_label("Pan").click();
     h.run();
 
     // A left drag over the canvas pans (the tool's gesture).
-    let start = canvas.center() - egui::vec2(60.0, 60.0);
+    let (_, _, py0) = h.state().debug_view_for_test();
+    let start = center - egui::vec2(60.0, -60.0);
     h.hover_at(start);
     h.event(egui::Event::PointerButton {
         pos: start,
@@ -266,10 +319,52 @@ fn pan_tool_drags_the_view_and_clicks_select_nothing() {
         "the Pan tool's left drag pans down the page: {py0} → {py1}"
     );
 
-    // Esc returns to the pointer (the tool shortcut contract).
+    // A click ON the shape with the Pan tool selects NOTHING (the
+    // pointer tool would select it) — the click gate's regression.
+    let sr = h.state().debug_shape_screen_rect(shape).expect("the shape");
+    let sc = sr.center();
+    h.hover_at(sc);
+    h.event(egui::Event::PointerButton {
+        pos: sc,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.event(egui::Event::PointerButton {
+        pos: sc,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    assert_eq!(
+        h.state().debug_sel(),
+        None,
+        "Pan clicks are inert on shapes"
+    );
+
+    // Esc returns to the pointer tool — which then SELECTS on click
+    // (the tool contract, asserted behaviorally per the PR review).
     h.key_press(egui::Key::Escape);
     h.run();
-    // With the pointer tool back, the same drag gestures would be a
-    // marquee; a full behavioral check of selection lives in the
-    // interactions suite — here the drag is over empty page anyway.
+    h.hover_at(sc);
+    h.event(egui::Event::PointerButton {
+        pos: sc,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.event(egui::Event::PointerButton {
+        pos: sc,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    let sel = h.state().debug_sel();
+    assert_eq!(
+        sel.map(|(_, id)| id),
+        Some(shape),
+        "Esc restores the pointer tool's selection behavior"
+    );
 }
