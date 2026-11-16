@@ -817,7 +817,13 @@ fn node_ink_box(
                 .then(&Affine::scale(fsx, fsy))
                 .then(&Affine::rotate_deg(net_deg))
                 .then(&Affine::translate(-tx, ty));
-            let a_text = text_tf.then(&a);
+            // `then` applies its argument FIRST (self · next, the SVG
+            // transform-list reading) — so the text rotation runs on
+            // the shape-LOCAL corner and `a` carries the result to
+            // the page. The round-8 form composed them backwards and
+            // rotated page coordinates around a shape-local pivot,
+            // landing the hull far from the shape (Greptile round 9).
+            let a_text = a.then(&text_tf);
             box_union(
                 x0 - bullet_escape,
                 y0,
@@ -8303,8 +8309,8 @@ mod tests {
         let e = -(tb.insets.0 + tb.ind_first) + bullet_advance_in(&tb, b);
         // Extended frame corners, shape-local y-down: [−e, 2] × [−1, 0]
         // (frame x0 = 0, th = 1). Net rotation −90° about the TxtPin
-        // (1, −0.5): (dx, dy) → (dy, −dx). Shape-local → page:
-        // (3 + x, 6 + y).
+        // (1, −0.5): (dx, dy) → (dy, −dx). Shape-local → page: the
+        // pin line (local y = 0) maps to page y 6.5, x = 3 + local.
         let pivot = (1.0, -0.5);
         let corners = [
             (-e, -1.0),
@@ -8312,28 +8318,54 @@ mod tests {
             (2.0, 0.0),
             (-e, 0.0),
         ];
+        let mut pts = Vec::new();
         for (cx, cy) in corners {
             let (dx, dy) = (cx - pivot.0, cy - pivot.1);
             let (rx, ry) = (pivot.0 + dy, pivot.1 - dx);
-            let (px, py) = (3.0 + rx, 6.0 + ry);
-            assert!(
-                px >= bx - 1e-9
-                    && px <= bx + bw + 1e-9
-                    && py >= by - 1e-9
-                    && py <= by + bh + 1e-9,
-                "the bounds must contain the rotated corner ({px}, {py}) \
-                 of the extended frame [e={e:.4}, bounds {bx:.3},{by:.3} \
-                 {bw:.3}×{bh:.3}]"
-            );
+            pts.push((3.0 + rx, 6.5 + ry));
         }
-        // …and the fixture BITES: the far corner sits past where the
-        // old PIN-centered square (half-side (2+e)/2) could reach.
-        let far = 6.0 + pivot.1 - (-e - pivot.0);
-        let old_reach = 5.5 + (2.0 + e) / 2.0;
+        // The bounds must equal the EXACT hull of the rotated corners
+        // union the shape box (page [3,5]×[5.5,6.5]) plus PAD —
+        // containment alone let the round-8 ORDER bug pass (the
+        // backwards composition built a giant hull around a
+        // shape-local pivot that contained everything; Greptile
+        // round 9).
+        let hull_x = (
+            pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min).min(3.0),
+            pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max).max(5.0),
+        );
+        let hull_y = (
+            pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min).min(5.5),
+            pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max).max(6.5),
+        );
+        assert!(
+            (bx - (hull_x.0 - PAD)).abs() < 1e-9
+                && ((bx + bw) - (hull_x.1 + PAD)).abs() < 1e-9
+                && (by - (hull_y.0 - PAD)).abs() < 1e-9
+                && ((by + bh) - (hull_y.1 + PAD)).abs() < 1e-9,
+            "the bounds are the exact rotated hull + PAD: got \
+             [{bx:.4},{by:.4} {bw:.4}×{bh:.4}], want [{:.4},{:.4} \
+             {:.4}×{:.4}] (e={e:.4})",
+            hull_x.0 - PAD,
+            hull_y.0 - PAD,
+            hull_x.1 - hull_x.0 + 2.0 * PAD,
+            hull_y.1 - hull_y.0 + 2.0 * PAD
+        );
+        // …and the fixture BITES on both prior forms: the far corner
+        // sits past the old PIN-centered square's reach (the old
+        // square centered on the TxtPin's page point (4, 6.0))…
+        let far = pts[0].1;
+        let old_reach = 6.0 + (2.0 + e) / 2.0;
         assert!(
             far > old_reach,
             "fixture: the far corner {far:.3} escapes the old square's \
              reach {old_reach:.3}"
+        );
+        // …and a wrong-order hull would tower over the tight one.
+        assert!(
+            bh < 6.0,
+            "fixture: the tight hull is a few inches, not a giant \
+             wrong-order hull (h={bh:.3})"
         );
     }
 
