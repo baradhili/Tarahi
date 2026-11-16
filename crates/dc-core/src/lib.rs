@@ -284,6 +284,7 @@ impl Editor {
         self.history.redo(&mut self.doc)
     }
 
+
     /// Save the document to `path` (lossless write path). The write is
     /// crash-safe: craft-atomic stages the package in the destination
     /// directory, fsyncs it, and renames it over the target, so a

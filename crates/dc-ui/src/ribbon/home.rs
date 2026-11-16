@@ -225,6 +225,14 @@ fn tools_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<super:
                  geometry — the stroke becomes an editable shape (Esc finishes)",
                 ),
         ]),
+        // #283: Visio's pan affordance as a discoverable tool — the
+        // two-button-mouse/trackpad case the shell never covered.
+        stack(vec![
+            RibbonButton::new(Icon::Hand, "", Action::PanTool)
+                .alt(s.msg_pan())
+                .selected(ctx.tool == Tool::Pan)
+                .tip(s.msg_pan_tip()),
+        ]),
         // Visio's shape-drawing tools, compact icon tier (planned).
         grid(vec![
             vec![

@@ -119,6 +119,19 @@ Packaging metadata lives in the `dc-ui` manifest (`[package.metadata.deb]`,
 `[package.metadata.generate-rpm]`), `packaging/installer.nsi` for the NSIS installer, and
 `packaging/` for the desktop entry, icons, and macOS Info.plist.
 
+**Linux compatibility floor (by design, #281):** the whole Linux job builds
+inside an `ubuntu:22.04` container, so the Linux artifacts run on **glibc 2.35
+or newer — Ubuntu 22.04+, Debian 12+, Fedora 36+** (the oldest still-supported
+Ubuntu LTS). The AppImage is therefore intentionally *not* "self-contained" in
+the C-library sense every glibc-based AppImage shares: glibc itself comes from
+the host (bundling it is the known-broken path for AppImages); the dlopen'd
+X11/Wayland/dbus client libraries ARE bundled. The release enforces the floor
+at build time (`GLIBC_FLOOR=2.35` symbol check) and will fail loudly if the
+base ever drifts. Raise the floor (or lower it via an older-baseline linker)
+only with an explicit compat decision. The AppImage also embeds
+AppImageUpdate metadata and ships a `.zsync` sidecar (#281), so
+`AppImageUpdate` can delta-update it against the latest stable release.
+
 ## Commit conventions
 
 Conventional Commits, enforced by [cargo-commitlint] through the tracked

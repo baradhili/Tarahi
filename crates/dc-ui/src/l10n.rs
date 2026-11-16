@@ -3817,6 +3817,27 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "pan",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "pan-off",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "pan-tip",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "paragraph",
         attribute: None,
         vars: &[],
@@ -6261,10 +6282,11 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
 ];
 #[allow(dead_code)]
-static ALL_LANGS: [L10n; 3] = [
+static ALL_LANGS: [L10n; 4] = [
     // languages as an array
     L10n::De,
     L10n::En,
+    L10n::Es,
     L10n::Fa,
 ];
 
@@ -6273,6 +6295,7 @@ static ALL_LANGS: [L10n; 3] = [
 pub enum L10n {
     De,
     En,
+    Es,
     Fa,
 }
 
@@ -6289,6 +6312,7 @@ impl FromStr for L10n {
         match s {
             "de" => Ok(Self::De),
             "en" => Ok(Self::En),
+            "es" => Ok(Self::Es),
             "fa" => Ok(Self::Fa),
             _ => Err(format!("Unknown language: {}", s)),
         }
@@ -6301,6 +6325,7 @@ impl Deref for L10n {
         match self {
             Self::De => "de",
             Self::En => "en",
+            Self::Es => "es",
             Self::Fa => "fa",
         }
     }
@@ -6332,15 +6357,17 @@ impl L10n {
         match self {
             Self::De => "Deutsch",
             Self::En => "English",
+            Self::Es => "Español",
             Self::Fa => "فارسی",
         }
     }
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..44846,
-            Self::En => 44846..88347,
-            Self::Fa => 88347..145395,
+            Self::De => 0..44998,
+            Self::En => 44998..88635,
+            Self::Es => 88635..136686,
+            Self::Fa => 136686..193977,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -8536,6 +8563,16 @@ impl L10nLanguage {
         _args.set("n", n.into());
         _args.set("to", to.into());
         self.0.msg("painter-cells-sticky", Some(_args)).unwrap()
+    }
+    /// $what - argument
+    pub fn msg_pan(&self) -> String {
+        self.0.msg("pan", None).unwrap()
+    }
+    pub fn msg_pan_off(&self) -> String {
+        self.0.msg("pan-off", None).unwrap()
+    }
+    pub fn msg_pan_tip(&self) -> String {
+        self.0.msg("pan-tip", None).unwrap()
     }
     pub fn msg_paragraph(&self) -> String {
         self.0.msg("paragraph", None).unwrap()

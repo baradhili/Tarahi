@@ -12,6 +12,7 @@ use dc_core::commands::{
 };
 use dc_core::scope::{shape_chain, Scope};
 use dc_core::{Editor, Macro, SetCell, SetRowCell};
+
 use egui::{Color32, Context, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 use vsdx::model::{Document, Shape};
 
@@ -171,6 +172,8 @@ pub struct App {
     info_render_fail_for_test: bool,
     /// Live drag ghosts drawn on the last frame (#96, test hook).
     last_drag_ghosts: usize,
+    /// #283 review: the live drag's primary ghost quad on screen.
+    last_drag_ghost_rect: Option<egui::Rect>,
     mouse_page: Option<(f64, f64)>,
     status: String,
     /// #192 spec: the open ShapeSheet windows, one PER SHAPE (each
@@ -556,6 +559,9 @@ pub enum Tool {
     /// #132 (URS-1225): the Freeform tool — a sampled pen stroke
     /// becomes a new shape's editable Geometry rows.
     Freeform,
+    /// #283: the Pan tool — a plain drag moves the view (Visio's
+    /// hand); nothing arms, Esc returns to the pointer.
+    Pan,
 }
 
 struct DragState {
@@ -691,6 +697,7 @@ impl App {
             layers: crate::layers::ShapeLayers::default(),
             info_render_fail_for_test: false,
             last_drag_ghosts: 0,
+            last_drag_ghost_rect: None,
             mouse_page: None,
             status: String::new(),
             shapesheets: Vec::new(),
@@ -3033,7 +3040,7 @@ impl App {
                 if !consumed {
                     if matches!(
                         self.tool,
-                        Tool::Connector | Tool::Lasso | Tool::ConnectionPoint | Tool::Freeform
+                        Tool::Connector | Tool::Lasso | Tool::ConnectionPoint | Tool::Freeform | Tool::Pan
                     ) {
                         self.tool = Tool::Pointer;
                     }
@@ -3044,6 +3051,15 @@ impl App {
                         self.status = crate::i18n::strs().msg_format_painter_cancelled();
                     }
                 }
+            }
+            // #283 keyboard view navigation (Visio's Ctrl+Home/End →
+            // the page's top / bottom edge). Deliberately tier-2 small:
+            // PageUp/PageDown stay page switches, untouched.
+            if ctrl && !kb_owned && i.key_pressed(egui::Key::Home) {
+                self.jump_view_vertical(true);
+            }
+            if ctrl && !kb_owned && i.key_pressed(egui::Key::End) {
+                self.jump_view_vertical(false);
             }
             // Ctrl+A selects the page (#110, URS-1160).
             if ctrl && i.key_pressed(egui::Key::A) && !kb_owned {
@@ -8213,6 +8229,17 @@ impl App {
                         crate::i18n::strs().msg_freeform_drag_on_the_page_to_dra();
                 }
             }
+            Action::PanTool => {
+                // #283: toggle like the other tools; a plain drag pans,
+                // presses arm nothing, clicks change nothing.
+                if self.tool == Tool::Pan {
+                    self.tool = Tool::Pointer;
+                    self.status = crate::i18n::strs().msg_pan_off();
+                } else {
+                    self.tool = Tool::Pan;
+                    self.status = crate::i18n::strs().msg_pan_tip();
+                }
+            }
             Action::LassoTool => {
                 // Toggle like Visio's Select ▸ Lasso Select menu item;
                 // the Pointer Tool (or Esc) is Select Area.
@@ -8287,7 +8314,12 @@ impl App {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| crate::i18n::strs().msg_drawing_n(1));
-        let title = format!("{name} - Tarahi{}", if self.dirty { " *" } else { "" });
+        // The OS title bar is a NATIVE surface (#280): the WM's font
+        // has no glyphs for Fluent's bidi-isolation marks and paints
+        // them as tofu — strip them at the boundary
+        // (`i18n::to_native_surface`).
+        let dirty_mark = if self.dirty { " *" } else { "" };
+        let title = crate::i18n::to_native_surface(&format!("{name} - Tarahi{dirty_mark}"));
         if self.window_title != title {
             self.window_title = title.clone();
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
@@ -10066,6 +10098,7 @@ impl App {
             self.tool == Tool::Connector,
             self.tool == Tool::Lasso,
             self.tool == Tool::Freeform,
+            self.tool == Tool::Pan,
             armed,
             sel_line_curved,
             &conn_fx,
@@ -10080,6 +10113,9 @@ impl App {
         );
         self.mouse_page = mouse;
         self.canvas_rect = out.canvas_rect;
+        // #283 review: the live drag ghost's exact screen rect (the
+        // canvas's own quad_to_screen mapping), for the #96 contract.
+        self.last_drag_ghost_rect = out.drag_ghost_rects.first().copied();
         self.conn_fx_last = conn_fx_seen.into_inner();
         if self.text_edit.is_some() {
             // Click anywhere on the canvas = click outside the text:
@@ -10096,19 +10132,28 @@ impl App {
             if let Some(dir) = out.autoclick {
                 self.autoconnect(dir);
             }
-            if let Some(pos) = out.dbl_click_page_pos {
-                // The second click of the pair completes a double-click
-                // instead of a plain click: the first click already ran its
-                // select (and possible drag-start) semantics on its frame.
-                self.on_canvas_dbl_click(pos);
-            } else if out.autoclick.is_none() {
-                if let Some(pos) = out.click_page_pos {
-                    self.on_canvas_click(pos, out.shift_click, out.ctrl_click);
+            // #283: the Pan tool's clicks are inert — no selection, no
+            // double-click text edit, no move-drag arming (right-click
+            // keeps its context menu, like Visio's pan mode).
+            let pan_clicks = self.tool != Tool::Pan;
+            if pan_clicks {
+                if let Some(pos) = out.dbl_click_page_pos {
+                    // The second click of the pair completes a double-click
+                    // instead of a plain click: the first click already ran its
+                    // select (and possible drag-start) semantics on its frame.
+                    self.on_canvas_dbl_click(pos);
+                } else if out.autoclick.is_none() {
+                    if let Some(pos) = out.click_page_pos {
+                        self.on_canvas_click(pos, out.shift_click, out.ctrl_click);
+                    }
+                }
+                if let Some(pos) = out.press_page_pos {
+                    self.on_canvas_press(pos);
                 }
             }
-            if let Some(pos) = out.press_page_pos {
-                self.on_canvas_press(pos);
-            }
+            // Marquee/lasso/freeform/connector drops need no gating:
+            // the Pan tool's press-arming gate in the canvas means
+            // those gestures never report under it.
             if let Some((x0, y0, x1, y1)) = out.marquee_done {
                 self.apply_marquee(x0, y0, x1, y1);
             }
@@ -14092,6 +14137,28 @@ impl App {
     }
 
     /// #237: the view's (zoom, pan) for zoom-behavior assertions.
+    /// #283: jump the view's vertical pan to the page's top (true) or
+    /// bottom edge — Ctrl+Home/End. The horizontal pan is untouched
+    /// (Visio's jump is vertical); the per-frame extent clamp in the
+    /// canvas bounds it, and this pre-computes the same range so the
+    /// jump lands exactly on the paper edge.
+    fn jump_view_vertical(&mut self, top: bool) {
+        let geom = self.page_geom();
+        let (origin, content) = canvas::content_area(self.canvas_rect, self.view.show_rulers);
+        // The jump targets the PAPER edges literally (PR #284 review
+        // round 5): the extent range bounds are the manual-pan
+        // room (half-viewport around the fit center when pinned), and
+        // riding them hid half the page on fitted drawings. The
+        // per-frame extent clamp still validates the result.
+        let page_px = geom.h_in as f32 * self.view.px_per_in();
+        self.view.pan.y = if top {
+            origin.y
+        } else {
+            origin.y + content.y - page_px
+        };
+        self.view.fit_mode = false;
+    }
+
     pub fn debug_view_for_test(&self) -> (f32, f32, f32) {
         (self.view.zoom, self.view.pan.x, self.view.pan.y)
     }
@@ -14283,6 +14350,14 @@ impl App {
 
     pub fn debug_drag_ghosts_for_test(&self) -> usize {
         self.last_drag_ghosts
+    }
+
+    /// kittest (#283 review): the live drag's PRIMARY ghost quad on
+    /// screen — the #96 contract is "the shape lands where the ghost
+    /// showed", so drag tests assert against this rect (snap included)
+    /// instead of a raw pixel delta.
+    pub fn debug_drag_ghost_rect_for_test(&self) -> Option<egui::Rect> {
+        self.last_drag_ghost_rect
     }
 
     /// kittest: how many shape layers have landed (#93) — the post cap

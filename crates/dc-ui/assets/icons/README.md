@@ -43,6 +43,7 @@ File names map 1:1 to the `Icon` enum asset stems in
 | onlinepic | web |
 | orientation | swap-horizontal-bold |
 | pointer | cursor-default-outline |
+| hand | hand-back-right-outline |
 | textbox | text-box-outline |
 | newpage | file-document-plus-outline |
 | theme | palette |

@@ -602,6 +602,10 @@ page-width = Seitenbreite
 paint-formatting-onto-shape-to = Formatierung auf Form { $to } übertragen
 painter-cells = { $n } Formatierungszellen an Form { $to } kopiert
 painter-cells-sticky = { $n } Formatierungszellen an Form { $to } kopiert (weitere Formen anklicken, Esc beendet)
+pan = Verschieben
+pan-off = Verschiebetool aus
+pan-tip = Verschiebetool — die Seite ziehen, um die Ansicht zu bewegen (Esc kehrt zum Zeiger zurück)
+
 paragraph = Absatz
 paste = Einfügen
 pick-an-output-file-first = Zuerst eine Ausgabedatei wählen
