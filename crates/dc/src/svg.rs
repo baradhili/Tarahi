@@ -785,7 +785,23 @@ fn node_ink_box(
             );
         } else {
             let (x0, y0) = (tx - tlx, -(ty - tly + th));
-            box_union(x0, y0, x0 + tw, y0 + th, &a, &mut u);
+            // #231 outdented bullets hang LEFT of the text frame: a
+            // negative IndFirst draws the glyph at the text area's
+            // left + IndFirst, which can precede the frame (and the
+            // shape box) — the frame-only union lets that ink escape
+            // the ink box, so the layer viewBox clips it and the
+            // #236 cull skips the child (local CodeRabbit round 3).
+            // Extend the LEFT edge only, by the bullet's escape plus
+            // its glyph advance; the frame's right edge stays put.
+            let mut bx0 = x0;
+            let tb = resolve_text_block(doc, s, chain, width, height);
+            if let Some(b) = tb.bullet.as_ref() {
+                let escape = tb.insets.0 + tb.ind_first;
+                if escape < 0.0 {
+                    bx0 += escape - bullet_advance_in(&tb, b);
+                }
+            }
+            box_union(bx0, y0, x0 + tw, y0 + th, &a, &mut u);
         }
     }
     (u.acc.unwrap_or((0.0, 0.0, 0.0, 0.0)), a)
@@ -2201,22 +2217,52 @@ pub(crate) fn resolve_text_block(
         // #284 review, round 2): later sections/rows belong to OTHER
         // paragraphs (the <pp> markers) — scanning them would blend
         // paragraph 2's bullet into paragraph 0's settings. Per-cell
-        // instance -> master inheritance is preserved.
-        let own = s
-            .sheet
-            .sections_named("Paragraph")
-            .first()
-            .and_then(|sec| sec.rows.first())
-            .and_then(|r| r.cell(name).cloned());
-        own.or_else(|| {
-            doc.instance_source(s, chain).and_then(|src| {
-                src.sheet
-                    .sections_named("Paragraph")
-                    .first()
-                    .and_then(|sec| sec.rows.first())
-                    .and_then(|r| r.cell(name).cloned())
-            })
-        })
+        // instance -> master inheritance is preserved, then the
+        // TEXT-STYLE stylesheet cascade follows — the same walk
+        // `char_cell` gives Character cells (local CodeRabbit round
+        // 3: a text style's IndLeft/Bullet must reach paragraphs the
+        // same way its Font/Size reach characters).
+        let first_cell = |sheet: &Sheet| {
+            sheet
+                .sections_named("Paragraph")
+                .first()
+                .and_then(|sec| sec.rows.first())
+                .and_then(|r| r.cell(name).cloned())
+        };
+        if let Some(c) = first_cell(&s.sheet) {
+            return Some(c);
+        }
+        let source = doc.instance_source(s, chain);
+        if let Some(src) = source {
+            if let Some(c) = first_cell(&src.sheet) {
+                return Some(c);
+            }
+        }
+        let style_id = s
+            .text_style
+            .or_else(|| source.and_then(|src| src.text_style))?;
+        let mut cur = doc.stylesheet(style_id)?;
+        for _ in 0..8 {
+            if let Some(c) = first_cell(&cur.sheet) {
+                return Some(c);
+            }
+            let next_id = cur
+                .attrs
+                .iter()
+                .find(|(k, _)| k == "TextStyle")
+                .and_then(|(_, v)| v.parse::<i64>().ok())
+                .or_else(|| {
+                    cur.sheet
+                        .cell("TextStyle")
+                        .and_then(|c| c.numeric())
+                        .map(|v| v as i64)
+                })?;
+            if next_id == cur.id {
+                return None;
+            }
+            cur = doc.stylesheet(next_id)?;
+        }
+        None
     };
     let ind_first = para_cell("IndFirst")
         .and_then(|c| c.numeric())
@@ -3228,10 +3274,11 @@ pub(crate) fn unbulleted_first_offset_in(tb: &TextBlock) -> f64 {
 /// multiple, whichever comes first; a bullet reaching past the stop
 /// pushes the text to its end. Returns the stop as a TEXT-AREA
 /// offset in INCHES, `None` for a non-bulleted block.
-pub(crate) fn bullet_stop_offset_in(tb: &TextBlock) -> Option<f64> {
-    let b = tb.bullet.as_ref()?;
-    let bullet_off = tb.ind_first;
-    let adv = match &b.glyph {
+/// The bullet glyph's advance in inches — shared by the tab-stop
+/// rule and the ink bounds (an outdented bullet hangs LEFT of the
+/// text frame by its origin; the advance bounds the glyph itself).
+pub(crate) fn bullet_advance_in(tb: &TextBlock, b: &BulletSpec) -> f64 {
+    match &b.glyph {
         // The built-in round bullets draw as paths in a fixed em box
         // (see `bullet_glyph_svg`); the advance is that box's width —
         // a documented approximation.
@@ -3244,7 +3291,13 @@ pub(crate) fn bullet_stop_offset_in(tb: &TextBlock) -> Option<f64> {
             );
             bface.width_in(glyph, b.size)
         }
-    };
+    }
+}
+
+pub(crate) fn bullet_stop_offset_in(tb: &TextBlock) -> Option<f64> {
+    let b = tb.bullet.as_ref()?;
+    let bullet_off = tb.ind_first;
+    let adv = bullet_advance_in(tb, b);
     let bullet_end_off = bullet_off + adv;
     let stop = if b.pos_after > bullet_off {
         b.pos_after
@@ -8121,6 +8174,131 @@ mod tests {
         let left = x + PAD;
         assert!((left - 2.5).abs() < 1e-9, "left={left}");
         assert!(h > 1.0, "h={h}");
+    }
+
+    #[test]
+    fn ink_bounds_cover_outdented_bullets() {
+        // A bulleted block with IndFirst = −1 hangs its glyph a full
+        // inch left of the text area — outside the 2-wide shape's box
+        // AND its text frame (local x0 = 0 here). The ink box must
+        // reach the glyph: the layer viewBox and the #236 cull are
+        // built from these bounds, and a frame-only bound would clip
+        // the bullet and skip the shape on a cull that covers only
+        // the overhang (local CodeRabbit round 3).
+        let mut s = shape_at(1, (4.0, 5.0), 2.0, 1.0, 0.0);
+        s.sheet.text = Some("bullet".into());
+        s.sheet.children.push(SheetChild::Section(Section {
+            name: "Paragraph".into(),
+            rows: vec![Row {
+                cells: vec![
+                    ("Bullet".to_string(), Cell::value("1")),
+                    ("IndFirst".to_string(), Cell::value("-1")),
+                ],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        let (doc, page) = page_fixture(vec![s.clone()]);
+        let (x, _y, _w, _h) = shape_ink_bounds(&doc, &page, 1).unwrap();
+        // The shape box spans page x∈[3,5] (frame x0 = 0 local); the
+        // bullet reaches local ins_l − 1 − its advance. Assert the
+        // bound's left edge tracks that escape exactly (PAD included).
+        let chain = [&s];
+        let tb = resolve_text_block(&doc, &s, &chain, 2.0, 1.0);
+        let b = tb.bullet.as_ref().expect("the block is bulleted");
+        let want_left =
+            3.0 + (tb.insets.0 + tb.ind_first) - bullet_advance_in(&tb, b) - PAD;
+        assert!(
+            (x - want_left).abs() < 1e-9,
+            "left edge covers the outdented bullet: {x} vs {want_left}"
+        );
+        // The cull regression: a rect covering ONLY the bullet
+        // overhang intersects the ink bounds (the shape must not be
+        // skipped when just its bullet is damaged) — vertically
+        // inside the box, horizontally past the shape box's left.
+        let overhang = (want_left, _y + _h / 2.0 - 0.05, 0.2, 0.1);
+        assert!(
+            boxes_intersect((x, _y, _w, _h), overhang),
+            "a bullet-only rect still intersects the ink bounds"
+        );
+    }
+
+    /// Local CodeRabbit round 3: paragraph cells inherit through the
+    /// TEXT-STYLE stylesheet cascade like character cells do
+    /// (`char_cell`'s walk) — a styled shape with no local or master
+    /// Paragraph row still picks up the style's IndLeft/Bullet, a
+    /// local cell still wins, and a local row carrying only another
+    /// cell does not shadow the style (per-cell inheritance).
+    #[test]
+    fn paragraph_cells_inherit_the_text_style_cascade() {
+        let mut style = Sheet::default();
+        style.children.push(SheetChild::Section(Section {
+            name: "Paragraph".into(),
+            rows: vec![Row {
+                cells: vec![
+                    ("IndLeft".to_string(), Cell::value("0.25")),
+                    ("Bullet".to_string(), Cell::value("2")),
+                ],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        let mut doc = Document::default();
+        doc.stylesheets.push(vsdx::model::StyleSheet {
+            id: 7,
+            name_u: None,
+            attrs: Vec::new(),
+            sheet: style,
+        });
+        let base = || {
+            let mut s = Shape::default();
+            s.sheet.set_cell("Width", Cell::value("2.0"));
+            s.sheet.text = Some("styled".into());
+            s.text_style = Some(7);
+            s
+        };
+        // Bare styled shape: the style's Paragraph row speaks.
+        let s = base();
+        let tb = resolve_text_block(&doc, &s, &[&s], 2.0, 1.0);
+        assert!(
+            (tb.ind_left - 0.25).abs() < 1e-12,
+            "IndLeft arrives from the text style: {}",
+            tb.ind_left
+        );
+        assert!(tb.bullet.is_some(), "the style's Bullet arms the block");
+        // A local cell WINS over the style.
+        let mut local = base();
+        local.sheet.children.push(SheetChild::Section(Section {
+            name: "Paragraph".into(),
+            rows: vec![Row {
+                cells: vec![("IndLeft".to_string(), Cell::value("0.5"))],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        let tb = resolve_text_block(&doc, &local, &[&local], 2.0, 1.0);
+        assert!(
+            (tb.ind_left - 0.5).abs() < 1e-12,
+            "the local IndLeft wins: {}",
+            tb.ind_left
+        );
+        // A local row carrying ONLY HorzAlign leaves the style's
+        // IndLeft standing (per-cell inheritance, PR #284 round 2).
+        let mut shadow = base();
+        shadow.sheet.children.push(SheetChild::Section(Section {
+            name: "Paragraph".into(),
+            rows: vec![Row {
+                cells: vec![("HorzAlign".to_string(), Cell::value("0"))],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        let tb = resolve_text_block(&doc, &shadow, &[&shadow], 2.0, 1.0);
+        assert!(
+            (tb.ind_left - 0.25).abs() < 1e-12,
+            "a HorzAlign-only local row never shadows the style: {}",
+            tb.ind_left
+        );
     }
 
     #[test]

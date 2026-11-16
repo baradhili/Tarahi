@@ -396,7 +396,17 @@ impl ResolvedFace {
         if text.is_empty() {
             return 0.0;
         }
-        let q = quantize18(size_in);
+        self.composed_run_in(text, quantize18(size_in))
+    }
+
+    /// The #234 composed advance sum for one run at the (already
+    /// quantized) `q`: every shaped glyph advance rounded onto the
+    /// 18-fractional-bit grid before summing — [`Self::composed_width_in`]'s
+    /// core, split out for the runs variant below.
+    fn composed_run_in(&self, text: &str, q: f64) -> f64 {
+        if text.is_empty() {
+            return 0.0;
+        }
         let fallback = |c: char| self.char_em(c);
         let m = metrics();
         let db_key = m as *const MetricsDb as usize;
@@ -412,6 +422,51 @@ impl ResolvedFace {
             .into_iter()
             .map(|em| round18(q * em))
             .sum()
+    }
+
+    /// The composed-width twin of [`Self::width_in_runs`] (local
+    /// CodeRabbit round 3): #234's per-glyph grid rounding, with each
+    /// run measured on the face that covers it — the renderer's
+    /// fallback runs. A paragraph the primary face cannot cover must
+    /// not compose its width from missing-glyph estimates the paint
+    /// never draws. Single-coverage text (or a fallback that covers
+    /// nothing, as in the unregistered test world) is byte-identical
+    /// to [`Self::composed_width_in`]: every run lands on `self`.
+    pub fn composed_width_in_runs(
+        &self,
+        other: &ResolvedFace,
+        text: &str,
+        size_in: f64,
+    ) -> f64 {
+        if text.is_empty() {
+            return 0.0;
+        }
+        let q = quantize18(size_in);
+        split_runs(text, |c| self.covers(c), |c| other.covers(c))
+            .into_iter()
+            .map(|(uses_other, run)| {
+                if uses_other {
+                    other.composed_run_in(&run, q)
+                } else {
+                    self.composed_run_in(&run, q)
+                }
+            })
+            .sum()
+    }
+
+    /// The face covering `text`'s FINAL run — where the terminal-run
+    /// space of a composed width comes from (the runs variant of
+    /// taking the measuring face's space advance).
+    pub fn final_run_face<'a>(&'a self, other: &'a ResolvedFace, text: &str) -> &'a ResolvedFace {
+        split_runs(text, |c| self.covers(c), |c| other.covers(c))
+            .last()
+            .map_or(self, |(uses_other, _)| {
+                if *uses_other {
+                    other
+                } else {
+                    self
+                }
+            })
     }
 
     /// The grid-rounded advance of ONE space at `size_in` — the
@@ -725,6 +780,65 @@ mod tests {
 
 
     use super::*;
+
+    /// Local CodeRabbit round 3: the composed width run-splits like
+    /// the renderer's `width_in_runs` — each run composes on the face
+    /// that covers it, the terminal space comes from the final run's
+    /// face. Carlito lacks U+0476 (Ѷ) while Liberation Sans carries
+    /// it at a real advance, a hermetic coverage split between two
+    /// vendored faces (the soft hyphen also splits them but its
+    /// notdef-estimated advance collides on the grid).
+    #[test]
+    fn composed_width_in_runs_splits_coverage() {
+        let carlito = resolve(Some("Carlito"), false, false);
+        let libsans = resolve(Some("Liberation Sans"), false, false);
+        assert!(
+            !carlito.covers('\u{476}') && libsans.covers('\u{476}'),
+            "fixture: Ѷ splits the two vendored faces"
+        );
+        let text = "a\u{476}b";
+        let size = 12.0 / 72.0;
+        // Each run composes on its covering face at the same grid.
+        let want = carlito.composed_width_in("a", size)
+            + libsans.composed_width_in("\u{476}", size)
+            + carlito.composed_width_in("b", size);
+        let got = carlito.composed_width_in_runs(&libsans, text, size);
+        assert!(
+            (got - want).abs() < 1e-12,
+            "the runs compose per covering face: {got} vs {want}"
+        );
+        // …and that differs from single-face composition, which
+        // estimates Ѷ through Carlito's missing-glyph chain instead
+        // of Liberation Sans's real advance.
+        let whole = carlito.composed_width_in(text, size);
+        assert_ne!(
+            got, whole,
+            "the split run composes on the covering face: {got} vs {whole}"
+        );
+        // A fallback that covers nothing degenerates to the plain
+        // composed width (the unregistered test world — every run
+        // stays on the primary face).
+        let none = resolve(Some("NoSuchFamily At All"), false, false);
+        assert_eq!(
+            carlito.composed_width_in_runs(&none, text, size),
+            whole,
+            "an uncovered fallback keeps plain composition"
+        );
+    }
+
+    /// The final run's face — the terminal-run space's owner.
+    #[test]
+    fn final_run_face_picks_the_covering_face() {
+        let carlito = resolve(Some("Carlito"), false, false);
+        let libsans = resolve(Some("Liberation Sans"), false, false);
+        // Trailing covered run → the fallback owns the line's end.
+        let ptr = carlito.final_run_face(&libsans, "a\u{476}");
+        assert!(std::ptr::eq(ptr, &libsans), "the final run's face wins");
+        // Trailing primary run → the primary face.
+        let ptr = carlito.final_run_face(&libsans, "\u{476}b");
+        assert!(std::ptr::eq(ptr, &carlito), "a primary-run ending stays");
+    }
+
 
     /// Measurement uses the embedded Carlito everywhere (hermetic on
     /// any machine); these tests only assert relationships that hold

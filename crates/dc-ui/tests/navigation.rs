@@ -377,3 +377,109 @@ fn pan_tool_drags_the_view_and_clicks_select_nothing() {
         "Esc restores the pointer tool's selection behavior"
     );
 }
+
+/// Local CodeRabbit round 3: a scrollbar press must not arm canvas
+/// gestures underneath — egui's `contains_pointer` ignores occlusion
+/// (the canvas and the later-allocated bar responses all contain the
+/// press), so a thumb drag over a shape would also arm that shape's
+/// move-drag and drag it with the view.
+#[test]
+fn scrollbar_drag_over_a_shape_moves_only_the_view() {
+    let mut h = harness_with_blank();
+    h.run();
+    h.run();
+    // Place a master rectangle, then zoom until the page overflows.
+    // The zoom anchors on the SELECTION (the placed shape), so the
+    // shape holds its screen position while it grows; horizontal
+    // wheel scrolls then carry it under the right-edge v-band.
+    let from = h.state().debug_master_cells()[0].1.center();
+    h.hover_at(from);
+    h.event(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.event(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    let canvas = h.state().debug_canvas_rect();
+    let c = canvas.center();
+    let target = egui::pos2(c.x + canvas.width() * 0.2, c.y);
+    h.hover_at(target);
+    h.event(egui::Event::PointerButton {
+        pos: target,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.event(egui::Event::PointerButton {
+        pos: target,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    let shape = h
+        .state()
+        .debug_sel()
+        .expect("placement selects the shape")
+        .1;
+    zoom_into_page(&mut h);
+    let canvas = h.state().debug_canvas_rect();
+    let c = canvas.center();
+    for _ in 0..10 {
+        let sr = h
+            .state()
+            .debug_shape_screen_rect(shape)
+            .expect("the shape renders");
+        if sr.center().x > canvas.right() - 60.0 {
+            break;
+        }
+        wheel_at(&mut h, c, 10.0, 0.0, false);
+    }
+    let sr = h.state().debug_shape_screen_rect(shape).unwrap();
+    let band_x = canvas.right() - 6.0;
+    assert!(
+        sr.contains(egui::pos2(band_x, sr.center().y))
+            && sr.center().y > canvas.top() + 20.0
+            && sr.center().y < canvas.bottom() - 40.0,
+        "fixture: the shape covers the v-band at x={band_x}: {sr:?} canvas {canvas:?}"
+    );
+    let pinx = h.state().debug_cell_for_test(shape, "PinX");
+    let (_, _, py0) = h.state().debug_view_for_test();
+    // Press the v-band over the shape, drag down, release — a thumb
+    // drag on the scrollbar.
+    let press_y = sr.center().y;
+    h.hover_at(egui::pos2(band_x, press_y));
+    h.event(egui::Event::PointerButton {
+        pos: egui::pos2(band_x, press_y),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    for k in 1..=3 {
+        h.hover_at(egui::pos2(band_x, press_y + 50.0 * k as f32));
+        h.run();
+    }
+    h.event(egui::Event::PointerButton {
+        pos: egui::pos2(band_x, press_y + 150.0),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    // The view panned (the bar owned the gesture)…
+    let (_, _, py1) = h.state().debug_view_for_test();
+    assert!(py1 < py0, "the thumb drag panned the view: {py0} → {py1}");
+    // …and the shape UNDER the band stayed put in the document.
+    assert_eq!(
+        h.state().debug_cell_for_test(shape, "PinX"),
+        pinx,
+        "the shape under the scrollbar did not move"
+    );
+}

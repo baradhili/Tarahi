@@ -976,9 +976,19 @@ pub fn show(
     let mem_autoc = egui::Id::unique("dc-autoclick");
     let primary_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
     let primary_released = ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
+    // The scrollbar bands own their presses (#283, local CodeRabbit
+    // round 3): egui's `contains_pointer` ignores occlusion — the
+    // canvas AND the later-allocated bar responses all contain a band
+    // press — so without this guard a thumb drag over a shape also
+    // arms that shape's move-drag and drags it with the view.
+    let scrollbar_press = ui.input(|i| i.pointer.press_origin()).is_some_and(|p| {
+        let (hband, vband) = scrollbar_rects(canvas_r);
+        hband.contains(p) || vband.contains(p)
+    });
 
     if primary_pressed
         && resp.contains_pointer()
+        && !scrollbar_press
         && !interaction_lock
         // The Pan tool (#283) owns the gesture: a press never arms a
         // marquee, a move-drag, a connector, a guide or an arrow

@@ -202,21 +202,32 @@ impl TextMeasure for SheetTextMeasure {
         // Each paragraph measures on the face and size it PAINTS
         // with (Greptile PR #284 round 6): LTR on the Latin family,
         // RTL on the complex-script chain — the same per-direction
-        // pair `lines_at` wraps with below.
+        // pair `lines_at` wraps with below. An RTL paragraph also
+        // RUN-SPLITS like the paint (local CodeRabbit round 3): the
+        // renderer measures and rasterizes runs the CS chain can't
+        // cover through the per-cluster fallback (the vendored
+        // Vazirmatn), so TEXTWIDTH composes the same runs and takes
+        // its terminal-run space from the final run's face instead of
+        // missing-glyph estimates.
         let text = text.trim_end_matches(TRAILING_TRIM);
         if text.is_empty() {
             return Some(0.0);
         }
         let (face, cs_face, size_l, size_r) = self.paint_metrics();
+        let cs_fallback =
+            crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic);
         let mut best = 0.0;
         for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
-            let (f, size) = if crate::svg::paragraph_base_rtl(para) {
-                (&cs_face, size_r)
+            let w = if crate::svg::paragraph_base_rtl(para) {
+                let q = crate::textmetrics::quantize18(size_r);
+                cs_face.composed_width_in_runs(&cs_fallback, para, size_r)
+                    + cs_face
+                        .final_run_face(&cs_fallback, para)
+                        .space_advance_in(q)
             } else {
-                (&face, size_l)
+                let q = crate::textmetrics::quantize18(size_l);
+                face.composed_width_in(para, size_l) + face.space_advance_in(q)
             };
-            let q = crate::textmetrics::quantize18(size);
-            let w = f.composed_width_in(para, q) + f.space_advance_in(q);
             if w > best {
                 best = w;
             }
