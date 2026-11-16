@@ -176,124 +176,6 @@ pub const RULER: f32 = 22.0;
 /// wheel anchors and hit tests all see the same area the bars leave.
 pub const SCROLLBAR: f32 = 14.0;
 const THUMB_MIN: f32 = 24.0;
-/// Scroll margin (#283): page-relative space (inches) the view may
-/// scroll past each paper edge — Visio's scrollbars always leave a
-/// strip of workspace visible around the page.
-const SCROLL_MARGIN_IN: f32 = 0.5;
-
-/// The scrollable pan range for one axis, in page-relative screen px
-/// (#283): `pan` is the screen offset of the page's top-left corner,
-/// so the axis range is `[view − page − margin, margin]` — the
-/// visible window may show at most `margin` beyond each paper edge.
-/// When the whole extent already fits (min > max) the range PINS: the
-/// page centers, clamping is a no-op there, and the thumb draws
-/// full-length (a fit view).
-/// The scrollable extent in page-DOWN inches (PR #284 local review,
-/// round 2): the union of the paper and every landed layer's bbox —
-/// shapes dragged beyond the paper live outside it, and the scroll
-/// range must reach them (Visio's drawing area grows with content).
-/// `corner` is the extent's top-left in page coordinates (≤ 0 in
-/// each component); `size` covers from that corner.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ExtentInches {
-    pub corner: (f64, f64),
-    pub size: (f64, f64),
-}
-
-/// The extent for one page: the union of the paper, the DOCUMENT's
-/// shape bounds (every top-level shape's base box — texture-state
-/// independent, so the range never shrinks: PR #284 review round 4)
-/// and the LANDED quads' drawn bboxes (rotation, group-child and ink
-/// overflow beyond the base box — Greptile round 4: a rotated shape's
-/// drawn corner can exceed its static box by more than the margin).
-/// With no off-page content this is exactly the paper, so pre-#283
-/// behavior is unchanged.
-pub fn content_extent(
-    page: &PageGeom,
-    doc_bounds: &[(f64, f64, f64, f64)],
-    drawn_bounds: &[(f64, f64, f64, f64)],
-) -> ExtentInches {
-    let mut min_x = 0.0f64;
-    let mut min_y = 0.0f64;
-    let mut max_x = page.w_in;
-    let mut max_y = page.h_in;
-    for b in doc_bounds.iter().chain(drawn_bounds.iter()) {
-        min_x = min_x.min(b.0);
-        min_y = min_y.min(b.1);
-        max_x = max_x.max(b.0 + b.2);
-        max_y = max_y.max(b.1 + b.3);
-    }
-    ExtentInches {
-        corner: (min_x, min_y),
-        size: (max_x - min_x, max_y - min_y),
-    }
-}
-
-/// The effective scroll margin for one axis (#283): page-relative
-/// inches scaled by zoom, but never more than half the visible axis
-/// (PR #284 review: at zoom 8 the raw 0.5 in is 384 px — on a small
-/// axis max pan would push the page's edge fully off-view, and — the
-/// round-2 follow-up — thumb_geom must size the thumb with the SAME
-/// capped margin or the thumb misstates the visible fraction).
-fn scroll_margin(view_px: f32, zoom: f32) -> f32 {
-    (SCROLL_MARGIN_IN * 96.0 * zoom).min(view_px * 0.5)
-}
-
-pub fn pan_range_axis(view_px: f32, extent_px: f32, corner_px: f32, zoom: f32) -> (f32, f32) {
-    let m = scroll_margin(view_px, zoom);
-    // `corner_px` is the extent corner's offset from the PAGE corner
-    // (≤ 0): the pan limits are the window sliding over
-    // [corner .. corner + extent] plus the margin band.
-    let (min, max) = (view_px - corner_px - extent_px - m, -corner_px + m);
-    if min <= max {
-        (min, max)
-    } else {
-        // PINNED (the whole extent fits the view): a fully unbounded
-        // pan can park the page off-screen (Greptile, PR #284 round
-        // 4), but the old re-center also fought in-flight gestures.
-        // The bound is a half-viewport around the centered fit
-        // position — generous panning room, and the page stays at
-        // least partly visible at every endpoint.
-        let c = (view_px - corner_px - extent_px) / 2.0;
-        (c - view_px / 2.0, c + view_px / 2.0)
-    }
-}
-
-/// Clamp a pan onto the scrollable extent (both axes; `origin` is the
-/// content area's top-left — pan is in absolute screen px). One
-/// authoritative clamp point per frame covers every pan write: wheel
-/// scroll, thumb drags, middle/command/tool drags, zoom writes and
-/// views restored from the per-document persistence (#192 4b).
-pub fn clamp_pan(
-    pan: Vec2,
-    origin: Pos2,
-    view_px: Vec2,
-    extent_px: Vec2,
-    corner_px: Vec2,
-    zoom: f32,
-) -> Vec2 {
-    let (min_x, max_x) = pan_range_axis(view_px.x, extent_px.x, corner_px.x, zoom);
-    let (min_y, max_y) = pan_range_axis(view_px.y, extent_px.y, corner_px.y, zoom);
-    // A PINNED axis (the whole extent fits the view) imposes nothing:
-    // the extent ⊇ page is fully visible at any pan, so clamping to
-    // the re-centered pin would only fight in-flight gestures — the
-    // extent grows as a drag crosses the paper edge, and re-centering
-    // then shifted the view under the pointer (PR #284 review round
-    // 2 follow-up). Off-screen throws remain impossible: they need
-    // extent > view, which is exactly the clamped case.
-    let clamp_axis = |v: f32, min: f32, max: f32| {
-        if max > min {
-            v.clamp(min, max)
-        } else {
-            v
-        }
-    };
-    Vec2::new(
-        origin.x + clamp_axis(pan.x - origin.x, min_x, max_x),
-        origin.y + clamp_axis(pan.y - origin.y, min_y, max_y),
-    )
-}
-
 /// One scrollbar thumb's geometry inside its track (track-local px).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThumbGeom {
@@ -310,33 +192,19 @@ pub struct ThumbGeom {
 pub fn thumb_geom(
     track_len: f32,
     view_px: f32,
-    extent_px: f32,
-    corner_px: f32,
-    zoom: f32,
-    pan_axis: f32,
+    page_px: f32,
+    pan_rel: f32,
 ) -> ThumbGeom {
-    // The thumb fraction is the viewport's share of the FULL
-    // scrollable span (travel + viewport, PR #284 review round 4):
-    // sizing from the bare extent left a full-length thumb on axes
-    // that still had a margin-sized travel range, so drags jumped.
-    let (min, max) = pan_range_axis(view_px, extent_px, corner_px, zoom);
-    let frac = if max > min {
-        (view_px / ((max - min) + view_px)).clamp(0.0, 1.0)
-    } else {
-        1.0
-    };
+    // Standard scrollbar sizing, WITHOUT any pan limit (#286): the
+    // thumb length is the viewport's share of the page+view span, and
+    // its position tracks the page's offset. Pans past the paper pin
+    // the thumb at a track edge (the pan itself stays unrestricted —
+    // that is the point of #286).
+    let total = (page_px + view_px).max(1.0);
+    let frac = (view_px / total).clamp(0.0, 1.0);
     let len = (track_len * frac).clamp(THUMB_MIN.min(track_len), track_len);
     let span = (track_len - len).max(0.0);
-    // Standard scrollbar direction (PR #284 review): pan = MAX means
-    // the page's top/left corner sits at the margin band — the view
-    // is at the document's START, so the thumb belongs at the track's
-    // start; pan = MIN (the page's far corner visible) puts it at the
-    // end.
-    let t = if max > min {
-        ((max - pan_axis) / (max - min)).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
+    let t = ((view_px - pan_rel) / total).clamp(0.0, 1.0);
     ThumbGeom {
         pos: t * span,
         len,
@@ -344,22 +212,24 @@ pub fn thumb_geom(
 }
 
 /// The pan a thumb position (track-local px) maps back to, one axis —
-/// the inverse of [`thumb_geom`] (a round trip is exact).
+/// the inverse of [`thumb_geom`] (#284 round 4). Unbounded: the pan
+/// tracks the thumb across the full track without any extent clamp
+/// (#286 — pan limits removed).
 pub fn pan_from_thumb(
     thumb_pos: f32,
     track_len: f32,
     view_px: f32,
-    extent_px: f32,
-    corner_px: f32,
-    zoom: f32,
+    page_px: f32,
 ) -> f32 {
-    let (min, max) = pan_range_axis(view_px, extent_px, corner_px, zoom);
-    if max <= min {
-        return min;
-    }
-    let g = thumb_geom(track_len, view_px, extent_px, corner_px, zoom, max);
-    let span = (track_len - g.len).max(1.0);
-    max - (thumb_pos / span).clamp(0.0, 1.0) * (max - min)
+    let total = (page_px + view_px).max(1.0);
+    let frac = (view_px / total).clamp(0.0, 1.0);
+    let len = (track_len * frac).clamp(THUMB_MIN.min(track_len), track_len);
+    let span = (track_len - len).max(1.0);
+    let t = (thumb_pos / span).clamp(0.0, 1.0);
+    // The inverse of the direction above: thumb at the track's start
+    // → pan_rel at its maximum (view − page); at the end → the
+    // minimum. Pan absolute = pan_rel + content_origin (call site).
+    view_px - t * total
 }
 
 /// The canvas's scrollbar bands (#283): (horizontal, vertical). The
@@ -876,7 +746,6 @@ pub fn show(
     // #284 review round 4: every drawing shape's bbox (page-DOWN
     // inches) — the scroll extent's source of truth, independent of
     // texture readiness.
-    extent_bounds: &[(f64, f64, f64, f64)],
     sel_rect: Option<Rect>,   // primary selection (page-inches, y-down)
     extra_sel_rects: &[Rect], // other multi-selection members
     member_hl: &[Rect],       // #156: selected container's members (page-inches, y-down)
@@ -1040,31 +909,7 @@ pub fn show(
     // The scrollable EXTENT (paper ∪ landed content, PR #284 review
     // round 2): off-page shapes must stay reachable, so the clamp and
     // the scrollbars cover the whole drawing, not just the paper.
-    let drawn_bounds: Vec<(f64, f64, f64, f64)> = layers
-        .iter()
-        .chain(underlays.iter())
-        .map(|q| q.bbox)
-        .collect();
-    let extent_in = content_extent(page, extent_bounds, &drawn_bounds);
-    let ppi = view.px_per_in();
-    let extent_px = Vec2::new(
-        extent_in.size.0 as f32 * ppi,
-        extent_in.size.1 as f32 * ppi,
-    );
-    let corner_px = Vec2::new(
-        extent_in.corner.0 as f32 * ppi,
-        extent_in.corner.1 as f32 * ppi,
-    );
-    view.pan = clamp_pan(
-        view.pan,
-        content_origin,
-        content,
-        extent_px,
-        corner_px,
-        view.zoom,
-    );
-
-    // ---- gesture arming, on the PRESS frame (see module note) ----
+// ---- gesture arming, on the PRESS frame (see module note) ----
     // Handles in screen coords; a press inside HANDLE_GRAB of one wins
     // over everything (resize takes precedence over move, #59).
     let handles_screen: Vec<(HandleId, Pos2)> = handles
@@ -2192,22 +2037,15 @@ pub fn show(
     // Drawn last (topmost), allocated after the canvas so their rects
     // own the clicks and drags that land in the bands. Thumb drags
     // and track page-jumps write `pan` like any other gesture.
-    draw_scrollbars(
-        ui, canvas_r, view, content_origin, content, &extent_px, &corner_px, &t,
+    // Panning itself is UNRESTRICTED (#286 — the #283 extent clamp
+    // was removed: it fought gestures and made off-paper content
+    // unreachable; a bounded-pan design remains open on #286).
+    let page_px = Vec2::new(
+        page.w_in as f32 * view.px_per_in(),
+        page.h_in as f32 * view.px_per_in(),
     );
+    draw_scrollbars(ui, canvas_r, view, content_origin, &page_px, &t);
 
-    // The clamp for the scrollbar writes above (their widget order is
-    // inherently post-paint): the STORED view stays inside the extent
-    // — the page can never be thrown off-screen (the report's second
-    // defect) and a restored pan is sane.
-    view.pan = clamp_pan(
-        view.pan,
-        content_origin,
-        content,
-        extent_px,
-        corner_px,
-        view.zoom,
-    );
     out
 }
 
@@ -2217,15 +2055,12 @@ pub fn show(
 /// sit right in both shell themes; a fitted view draws full-length
 /// thumbs (nothing to scroll, layout stays stable across the
 /// fit→manual transition).
-#[allow(clippy::too_many_arguments)] // the rects, state, extents and tokens
 fn draw_scrollbars(
     ui: &mut Ui,
     canvas_r: Rect,
     view: &mut View,
     content_origin: Pos2,
-    content: Vec2,
-    extent_px: &Vec2,
-    corner_px: &Vec2,
+    page_px: &Vec2,
     t: &ShellTokens,
 ) {
     let (hbar_r, vbar_r) = scrollbar_rects(canvas_r);
@@ -2254,17 +2089,13 @@ fn draw_scrollbars(
         Pos2::new(hbar_r.left() + 2.0, hbar_r.top() + 2.0),
         Pos2::new(hbar_r.right() - 2.0, hbar_r.bottom() - 2.0),
     );
-    // The response comes FIRST — the thumb's fill reads its hover and
-    // drag state, so the interaction must be claimed before painting.
     let hr = ui.allocate_rect(hbar_r, Sense::click_and_drag());
     p.rect_filled(hbar_r, 2.0, track_fill);
     let hg = thumb_geom(
         track.width(),
-        content.x,
-        extent_px.x,
-        corner_px.x,
-        view.zoom,
-        view.pan.x - content_origin.x,
+        content_origin.x,
+        page_px.x,
+        view.pan.x,
     );
     let hthumb = Rect::from_min_size(
         Pos2::new(track.left() + hg.pos, track.top()),
@@ -2279,23 +2110,19 @@ fn draw_scrollbars(
             // 6 px threshold, so measuring from the current frame would
             // swallow the movement before it. The release frame applies
             // its final position with the stored offset before cleanup,
-            // so movement+release in one frame still lands (local
-            // review finding 2).
+            // so movement+release in one frame still lands.
             let off = grab_offset(
                 ui,
                 &hr,
                 ui.input(|i| i.pointer.press_origin()).unwrap_or(pos).x - track.left(),
                 hg.pos,
             );
-            view.pan.x = content_origin.x
-                + pan_from_thumb(
-                    pos.x - track.left() - off,
-                    track.width(),
-                    content.x,
-                    extent_px.x,
-                    corner_px.x,
-                    view.zoom,
-                );
+            view.pan.x = pan_from_thumb(
+                pos.x - track.left() - off,
+                track.width(),
+                content_origin.x,
+                page_px.x,
+            );
             view.fit_mode = false;
         }
     } else {
@@ -2307,30 +2134,25 @@ fn draw_scrollbars(
                 if !hthumb.contains(pos) {
                     let g = thumb_geom(
                         track.width(),
-                        content.x,
-                        extent_px.x,
-                        corner_px.x,
-                        view.zoom,
-                        view.pan.x - content_origin.x,
+                        content_origin.x,
+                        page_px.x,
+                        view.pan.x,
                     );
                     let span = (track.width() - g.len).max(1.0);
                     let target = (pos.x - track.left() - g.len / 2.0).clamp(0.0, span);
-                    view.pan.x = content_origin.x
-                        + pan_from_thumb(
-                            target,
-                            track.width(),
-                            content.x,
-                            extent_px.x,
-                            corner_px.x,
-                            view.zoom,
-                        );
+                    view.pan.x = pan_from_thumb(
+                        target,
+                        track.width(),
+                        content_origin.x,
+                        page_px.x,
+                    );
                     view.fit_mode = false;
                 }
             }
         }
     }
 
-    // Vertical.
+    // Vertical — the mirror of the horizontal bar.
     let track = Rect::from_min_max(
         Pos2::new(vbar_r.left() + 2.0, vbar_r.top() + 2.0),
         Pos2::new(vbar_r.right() - 2.0, vbar_r.bottom() - 2.0),
@@ -2339,11 +2161,9 @@ fn draw_scrollbars(
     p.rect_filled(vbar_r, 2.0, track_fill);
     let vg = thumb_geom(
         track.height(),
-        content.y,
-        extent_px.y,
-        corner_px.y,
-        view.zoom,
-        view.pan.y - content_origin.y,
+        content_origin.y,
+        page_px.y,
+        view.pan.y,
     );
     let vthumb = Rect::from_min_size(
         Pos2::new(track.left(), track.top() + vg.pos),
@@ -2352,51 +2172,39 @@ fn draw_scrollbars(
     p.rect_filled(vthumb, 3.0, thumb_of(&vr));
     if vr.dragged() || vr.drag_stopped() {
         if let Some(pos) = vr.interact_pointer_pos() {
-            // The latched grab offset, as on the horizontal bar (from
-            // the press position; the release frame applies its final
-            // position before the cleanup below).
             let off = grab_offset(
                 ui,
                 &vr,
                 ui.input(|i| i.pointer.press_origin()).unwrap_or(pos).y - track.top(),
                 vg.pos,
             );
-            view.pan.y = content_origin.y
-                + pan_from_thumb(
-                    pos.y - track.top() - off,
-                    track.height(),
-                    content.y,
-                    extent_px.y,
-                    corner_px.y,
-                    view.zoom,
-                );
+            view.pan.y = pan_from_thumb(
+                pos.y - track.top() - off,
+                track.height(),
+                content_origin.y,
+                page_px.y,
+            );
             view.fit_mode = false;
         }
     } else {
         grab_offset_clear(ui, &vr);
         if vr.clicked() {
             if let Some(pos) = vr.interact_pointer_pos() {
-                // Track clicks only — thumb presses are drag starts.
                 if !vthumb.contains(pos) {
                     let g = thumb_geom(
                         track.height(),
-                        content.y,
-                        extent_px.y,
-                        corner_px.y,
-                        view.zoom,
-                        view.pan.y - content_origin.y,
+                        content_origin.y,
+                        page_px.y,
+                        view.pan.y,
                     );
                     let span = (track.height() - g.len).max(1.0);
                     let target = (pos.y - track.top() - g.len / 2.0).clamp(0.0, span);
-                    view.pan.y = content_origin.y
-                        + pan_from_thumb(
-                            target,
-                            track.height(),
-                            content.y,
-                            extent_px.y,
-                            corner_px.y,
-                            view.zoom,
-                        );
+                    view.pan.y = pan_from_thumb(
+                        target,
+                        track.height(),
+                        content_origin.y,
+                        page_px.y,
+                    );
                     view.fit_mode = false;
                 }
             }
@@ -2405,18 +2213,15 @@ fn draw_scrollbars(
 }
 
 /// The latched thumb grab offset for one bar (pointer position minus
-/// the thumb's leading edge, track-local px). Latched at the drag's
-/// first frame; egui reports `drag_started` on the same frame it
-/// reports `dragged`, so the first call below always latches.
+/// the thumb's leading edge, track-local px). Latched from the PRESS
+/// position (CodeRabbit local review): egui reports drag_started only
+/// after the 6 px threshold, so the first frame would otherwise
+/// swallow the movement before it.
 fn grab_offset(ui: &Ui, r: &egui::Response, press_track_pos: f32, thumb_pos: f32) -> f32 {
     let id = egui::Id::unique(("dc-scroll-grab", r.id));
     if r.drag_started() || ui.ctx().memory(|m| m.data.get_temp::<f32>(id).is_none()) {
-        // Latched from the PRESS position, not the current drag frame
-        // (CodeRabbit local review): egui only reports drag_started
-        // once the pointer passes the drag threshold (>6 px), so
-        // movement before that frame is real dragging — measuring the
-        // offset from the current position would silently swallow it.
-        ui.ctx().memory_mut(|m| m.data.insert_temp(id, press_track_pos - thumb_pos));
+        ui.ctx()
+            .memory_mut(|m| m.data.insert_temp(id, press_track_pos - thumb_pos));
     }
     ui.ctx().memory(|m| m.data.get_temp::<f32>(id).unwrap_or(0.0))
 }
@@ -2900,94 +2705,98 @@ mod tests {
     /// The scrollable range: the view may show at most one margin
     /// band past each paper edge, and an extent that fits pins to the
     /// centered form (min == max).
+        /// #286: the thumb sizes from the viewport's share of the PAGE
+    /// span (no pan limit — panning is unrestricted, so the thumb
+    /// simply pins at a track edge when the pan goes past the paper).
     #[test]
-    fn pan_range_bounds_the_view_to_page_plus_margin() {
-        let zoom = 1.0;
-        let m = SCROLL_MARGIN_IN * 96.0;
-        // A page smaller than the view: the range is PINNED to a
-        // half-viewport around the centered fit position (Greptile
-        // round 4: fully unbounded pan could park the page
-        // off-screen).
-        let (min, max) = pan_range_axis(800.0, 400.0, 0.0, zoom);
-        assert_eq!(
-            (min, max),
-            ((800.0 - 400.0) / 2.0 - 400.0, (800.0 - 400.0) / 2.0 + 400.0)
+    fn thumb_sizes_from_the_page_span() {
+        let track = 600.0;
+        let g = thumb_geom(track, 500.0, 1200.0, 300.0);
+        assert!(g.len < track, "a page wider than the view: {g:?}");
+        assert!(g.pos <= track - g.len + 0.01, "the thumb stays on the track");
+        // A page smaller than the view: the thumb is partial too (the
+        // view share of the page) — panning is unbounded, so it never
+        // claims a scroll range that does not exist.
+        let small = thumb_geom(track, 400.0, 300.0, 0.0);
+        let expected = (track * 400.0 / (300.0 + 400.0)).clamp(24.0, track);
+        assert!(
+            (small.len - expected).abs() < 0.01,
+            "the thumb share follows view/(page+view): {small:?} vs {expected}"
         );
-        // A page larger than the view: margin bands on both ends.
-        let (min, max) = pan_range_axis(500.0, 1200.0, 0.0, zoom);
-        assert_eq!(min, 500.0 - 1200.0 - m);
-        assert_eq!(max, m);
-        // The margin scales with zoom (it is page-relative space).
-        let (min2, max2) = pan_range_axis(500.0, 1200.0, 0.0, 2.0);
-        assert!((max2 - 2.0 * m).abs() < 1e-4);
-        assert!(min2 < min);
     }
 
-    /// Clamping writes through: an unbounded drag cannot throw the
-    /// page off-screen (the report's second defect), and the pinned
-    /// form centers.
+    /// #286: the thumb↔pan mapping is the inverse — for thumb
+    /// positions within the travel span, pan_from_thumb undoes
+    /// thumb_geom's position mapping.
     #[test]
-    fn clamp_pan_bounds_every_axis_and_pins_small_pages() {
-        let origin = Pos2::new(30.0, 22.0);
-        let view = Vec2::new(800.0, 600.0);
-        let page = Vec2::new(1200.0, 900.0);
-        let clamped = clamp_pan(Vec2::new(999.0, -9999.0), origin, view, page, Vec2::ZERO, 1.0);
-        let m = SCROLL_MARGIN_IN * 96.0;
-        assert_eq!(clamped.x, origin.x + m, "max pan = the margin band");
-        assert_eq!(clamped.y, origin.y + (view.y - page.y - m), "min pan");
-        // A page that fits: the axis is PINNED to a half-viewport
-        // around the centered fit position (Greptile round 4 — fully
-        // unbounded pan parked the page off-screen; the old re-center
-        // fought in-flight gestures).
-        let small = Vec2::new(400.0, 300.0);
-        let clamped = clamp_pan(Vec2::new(-1234.0, 4321.0), origin, view, small, Vec2::ZERO, 1.0);
-        let c0x = (view.x - small.x) / 2.0;
-        let c0y = (view.y - small.y) / 2.0;
-        assert_eq!(
-            clamped.x,
-            origin.x + c0x - view.x / 2.0,
-            "x pinned at the bound"
+    fn pan_from_thumb_inverts_the_thumb_position() {
+        let track = 600.0;
+        let view = 500.0;
+        let page = 1200.0;
+        let g = thumb_geom(track, view, page, 0.0);
+        let mid_thumb = g.pos + (track - g.len) / 2.0;
+        // pan_from_thumb maps the thumb's LEADING edge; the mid-thumb
+        // check uses the same relation the drag applies (pos − off).
+        let leading = g.pos;
+        let pan_at_leading = pan_from_thumb(leading, track, view, page);
+        let _ = mid_thumb;
+        assert!(
+            pan_at_leading.is_finite(),
+            "the inverse is finite: {pan_at_leading}"
         );
+        // Ends (inverted direction): leading edge 0 → the page's TOP
+        // at the window top (pan_rel = view); leading edge at the span
+        // end → the page's BOTTOM at the window bottom (pan_rel =
+        // −page).
         assert_eq!(
-            clamped.y,
-            origin.y + c0y + view.y / 2.0,
-            "y pinned at the bound"
+            pan_from_thumb(0.0, track, view, page),
+            view,
+            "thumb at track start → the page top at the window top"
+        );
+        let end_pan = pan_from_thumb(track - g.len, track, view, page);
+        assert!(
+            (end_pan + page).abs() < 1e-4,
+            "thumb at the far end → the page bottom at the window bottom"
         );
     }
 
     /// The thumb round-trips: pan → geometry → pan is exact, the
     /// thumb fills the track on a fitted view, and drag extents stay
     /// inside the track.
+    /// #286: the thumb↔pan mapping round-trips — pan_from_thumb
+    /// undoes the thumb_geom position for any pan within the visible
+    /// band, and the thumb stays proportional to the page span.
     #[test]
-    fn thumb_geom_round_trips_and_fills_when_fitted() {
+    fn thumb_geom_round_trips() {
         let track = 600.0;
-        let view_px = 500.0;
-        let page_px = 1200.0;
-        let zoom = 1.0;
-        // A fitted view (extent fits): the thumb is the viewport's
-        // share of the bounded span (span = 2×view → half-length),
-        // riding at the track's start while pan sits at the fit
-        // position's upper bound.
-        // At the pinned center (c0 = 50): the thumb rides mid-track.
-        let fit = thumb_geom(track, 400.0, 300.0, 0.0, zoom, 50.0);
-        assert_eq!(fit.len, track / 2.0, "fit view → half track (bounded pan)");
-        assert_eq!(fit.pos, track / 4.0, "the fit-centered pan rides mid-track");
-        // A scrolled view: the thumb sits mid-track and round-trips.
-        let (min, max) = pan_range_axis(view_px, page_px, 0.0, zoom);
-        let mid = (min + max) / 2.0;
-        let g = thumb_geom(track, view_px, page_px, 0.0, zoom, mid);
-        assert!(g.len < track);
+        let view = 500.0;
+        let page = 1200.0;
+        // pan 0 (page left at the content origin) → the thumb sits at
+        // its share of the travel: t = view/(page+view).
+        // pan 0 (page top at the content origin) → the thumb rides at
+        // its share of the travel: t = view/total.
+        let g = thumb_geom(track, view, page, 0.0);
+        let t0 = view / (page + view);
+        let expected_pos = t0 * (track - g.len);
         assert!(
-            (g.pos - (track - g.len) / 2.0).abs() < 1e-4,
-            "mid-range pan → mid-track thumb: {g:?}"
+            (g.pos - expected_pos).abs() < 1e-4,
+            "pan 0 → thumb at its travel share: {g:?} vs {expected_pos}"
         );
-        let back = pan_from_thumb(g.pos, track, view_px, page_px, 0.0, zoom);
-        assert!((back - mid).abs() < 1e-3, "round trip: {back} vs {mid}");
-        // Ends (standard direction, PR #284 review): thumb at the
-        // track's start → MAX pan (the page's start corner at the
-        // margin band), thumb at the far end → MIN pan.
-        assert_eq!(pan_from_thumb(0.0, track, view_px, page_px, 0.0, zoom), max);
-        let end = pan_from_thumb(track, track, view_px, page_px, 0.0, zoom);
-        assert!((end - min).abs() < 1e-3, "thumb dragged to the end: {end}");
+        let back = pan_from_thumb(g.pos, track, view, page);
+        assert!((back - 0.0).abs() < 1e-4, "round trip at pan 0: {back}");
+        // The pan that centers the thumb mid-track: t = 0.5 ⇒ pan_rel
+        // = view − total/2 = (view − page)/2 (the page's center sits
+        // at the content origin's center). Round-trips exactly.
+        let mid_pan = (view - page) / 2.0;
+        let g2 = thumb_geom(track, view, page, mid_pan);
+        assert!(
+            (g2.pos - (track - g2.len) / 2.0).abs() < 1e-4,
+            "the mid-pan thumb rides mid-track: {g2:?}"
+        );
+        let back2 = pan_from_thumb(g2.pos, track, view, page);
+        assert!(
+            (back2 - mid_pan).abs() < 1e-4,
+            "the thumb position round-trips: {back2} vs {mid_pan}"
+        );
     }
 }

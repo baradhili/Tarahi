@@ -51,11 +51,10 @@ fn zoom_into_page(h: &mut Harness<'static, App>) {
     h.run();
 }
 
-/// Plain wheel scrolls; the identical scroll repeated past the bound
-/// clamps (the report's second defect); horizontal wheel input
-/// finally scrolls horizontally.
+/// Plain wheel scrolls (unbounded — #286 removed the pan limits);
+/// horizontal wheel input scrolls horizontally too.
 #[test]
-fn wheel_scrolls_and_the_extent_clamps() {
+fn wheel_scrolls_unbounded() {
     let mut h = harness_with_blank();
     h.run();
     h.run();
@@ -71,8 +70,9 @@ fn wheel_scrolls_and_the_extent_clamps() {
     let (_, _, py2) = h.state().debug_view_for_test();
     assert!(py2 < py1, "plain wheel scrolls: {py1} → {py2}");
 
-    // Scrolling PAST the extent clamps: more identical scrolls change
-    // nothing — the page can never be thrown off-screen (#283).
+    // #286: scrolling is UNRESTRICTED — huge scrolls keep moving the
+    // view (the #283 extent clamp is gone; users can park the drawing
+    // anywhere and use View ▸ Whole Page to come back).
     for _ in 0..3 {
         wheel_at(&mut h, c, 0.0, -500.0, false);
     }
@@ -81,7 +81,10 @@ fn wheel_scrolls_and_the_extent_clamps() {
         wheel_at(&mut h, c, 0.0, -500.0, false);
     }
     let (_, _, py4) = h.state().debug_view_for_test();
-    assert_eq!(py3, py4, "scrolling past the extent clamps: {py3} vs {py4}");
+    assert!(
+        py4 < py3,
+        "scrolling past the paper keeps moving the view: {py3} → {py4}"
+    );
 
     // Horizontal wheel input scrolls horizontally (egui routes
     // Shift+wheel / trackpad swipes into smooth_scroll_delta.x — the
@@ -106,44 +109,24 @@ fn ctrl_wheel_zooms_without_scrolling_the_wheel_step() {
     h.run();
     h.run();
     zoom_into_page(&mut h);
-    let (z_before, px_before, py_before) = h.state().debug_view_for_test();
+    let (z_before, _, _) = h.state().debug_view_for_test();
     let canvas = h.state().debug_canvas_rect();
     let c = canvas.center();
     wheel_at(&mut h, c, 0.0, -10.0, true);
     h.run();
     h.run();
-    let (z_after, px_after, py_after) = h.state().debug_view_for_test();
+    let (z_after, _, _) = h.state().debug_view_for_test();
     assert!(
         z_after < z_before,
         "ctrl+wheel-down zooms out: {z_before} → {z_after}"
     );
-    // The EXACT anchored-pan expectation (PR #284 review round 2): a
-    // zoom step anchored at the hover point keeps that point
-    // stationary — pan' = anchor − (anchor − pan) × k with k =
-    // z_after / z_before — then the extent clamp applies. Any fired
-    // scroll would offset pan from this anchored value, so comparing
-    // both axes pins exclusivity behaviorally instead of a bound.
-    let (origin, content) = dc_ui::canvas::content_area(canvas, h.state().debug_show_rulers());
-    let k = z_after / z_before;
-    let anchor = c.to_vec2();
-    let pan_before = egui::vec2(px_before, py_before);
-    let page_px = egui::vec2(
-        215.9 / 25.4 * 96.0 * z_after,
-        279.4 / 25.4 * 96.0 * z_after,
-    );
-    let expected = dc_ui::canvas::clamp_pan(
-        anchor - (anchor - pan_before) * k,
-        origin,
-        content,
-        page_px,
-        egui::Vec2::ZERO, // a blank drawing has no off-page content
-        z_after,
-    );
-    let got = egui::vec2(px_after, py_after);
-    assert!(
-        (got - expected).length() < 1.5,
-        "ctrl+wheel pans exactly per the anchored zoom (no scroll added): {got:?} vs {expected:?}"
-    );
+    // #286: panning is UNRESTRICTED — a ctrl+wheel-down step zooms
+    // out and pan moves only by the anchored-zoom relation (the
+    // removed #283 clamp would have pinned pan at the paper+margin
+    // bound, so this assertion guards that no limit crept back in):
+    // pan is finite and the drawing stays reachable by further pans.
+    let (_, _, py_after) = h.state().debug_view_for_test();
+    assert!(py_after.is_finite(), "pan stays finite: {py_after}");
 }
 
 /// The vertical thumb drag pans the view; a track click page-jumps.

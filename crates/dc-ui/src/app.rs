@@ -13,10 +13,6 @@ use dc_core::commands::{
 use dc_core::scope::{shape_chain, Scope};
 use dc_core::{Editor, Macro, SetCell, SetRowCell};
 
-/// The cached scroll-extent bounds entry (#284 review round 5): the
-/// (history_len, page_idx, shape_count) staleness key plus the cached
-/// page-DOWN bounds.
-pub type ExtentCacheEntry = (usize, usize, usize, Vec<(f64, f64, f64, f64)>);
 use egui::{Color32, Context, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 use vsdx::model::{Document, Shape};
 
@@ -250,13 +246,6 @@ pub struct App {
     /// Text waiting for the OS clipboard (#113, URS-1113): copied on
     /// the next frame's update (the copy path has no Context).
     os_clipboard_text: Option<String>,
-    /// #284 review round 5: the cached scroll-extent bounds and the
-    /// (history_len, page_idx, shape_count) key they were computed
-    /// for — per-frame `shape_rect` calls over all shapes cost an
-    /// O(N) page search per shape, so the bounds refresh only when
-    /// the document could have changed them (any apply/undo/redo
-    /// bumps history_len; a page switch or shape add moves the key).
-    extent_cache: Option<ExtentCacheEntry>,
     /// An in-flight OS clipboard image probe (#113): RGBA result.
     os_image_rx: Option<Receiver<Option<OsImage>>>,
     /// The Backgrounds dialog is open (#113, URS-1158).
@@ -739,7 +728,6 @@ impl App {
             mdi_decorated: false,
             mdi_drawing_tile: egui::Rect::NOTHING,
             os_clipboard_text: None,
-            extent_cache: None,
             os_image_rx: None,
             backgrounds_open: false,
             bg_underlays: Vec::new(),
@@ -10039,46 +10027,6 @@ impl App {
                     .zoom_to_selection(rect, content, origin.to_vec2(), &geom);
             }
         }
-        // #284 review round 4: the scroll extent covers every
-        // top-level drawing shape — including off-page and
-        // never-rastered ones — computed from the DOCUMENT (per
-        // `self.shape_rect`), not the landed layer quads: composite
-        // omits off-screen shapes and unready textures, so a
-        // texture-based extent could shrink mid-pan and strand
-        // off-page work. Cached on (history_len, page_idx,
-        // shape_count) — Greptile round 5: per-frame calls cost an
-        // O(N) page search PER SHAPE, so the bounds refresh only when
-        // the document could have changed them.
-        let cache_key = (
-            self.ed().map(|e| e.history_len()).unwrap_or(0),
-            self.page_idx,
-            self.ed()
-                .and_then(|e| e.doc.pages.get(self.page_idx))
-                .map(|p| p.shapes.len())
-                .unwrap_or(0),
-        );
-        let geom_pre = self.page_geom();
-        let extent_bounds = match &self.extent_cache {
-            Some((k0, k1, k2, bounds)) if (*k0, *k1, *k2) == cache_key => bounds.clone(),
-            _ => {
-                let bounds = self
-                    .ed()
-                    .and_then(|editor| {
-                        let page = editor.doc.pages.get(self.page_idx)?;
-                        let pid = page.id;
-                        Some(
-                            page.shapes
-                                .iter()
-                                .filter_map(|sh| self.shape_rect(&editor.doc, pid, sh))
-                                .map(|(x, y, w, h)| (x, geom_pre.h_in - (y + h), w, h))
-                                .collect::<Vec<_>>(),
-                        )
-                    })
-                    .unwrap_or_default();
-                self.extent_cache = Some((cache_key.0, cache_key.1, cache_key.2, bounds.clone()));
-                bounds
-            }
-        };
         let App {
             view, ed, page_idx, ..
         } = self;
@@ -10139,7 +10087,6 @@ impl App {
             view,
             &geom,
             &quads,
-            &extent_bounds,
             sel_rect,
             &extra_rects,
             &member_hl,
