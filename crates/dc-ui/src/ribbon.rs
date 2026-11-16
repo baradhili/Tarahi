@@ -192,6 +192,9 @@ pub enum Action {
     /// #267 Insert ▸ Field: the Insert Field dialog on the primary
     /// selection (the marker appends to the shape's text).
     InsertField,
+    /// #121 Review ▸ Spelling (F7): the dialog-driven Check Spelling
+    /// pass over the page's shape text.
+    Spelling,
     /// #252 Container Tools ▸ Membership: release the container's
     /// members and delete it (one undo step).
     ContainerDisband,

@@ -821,7 +821,19 @@ snap-to = جذب به:
 snapglue-note = تنظیمات در خود نقش ذخیره می‌شوند. راهنماها به‌عنوان هدف با #113 می‌آیند؛ چسبندگی کانکتور با #108.
 solid = ممتد
 spacing = فاصله‌گذاری
-spell-check-planned = بررسی املا — برنامه‌ریزی شده
+spell-add = افزودن
+spell-change = تغییر
+spell-change-all = تغییر همه
+spell-check-complete = بررسی املا کامل شد.
+# $k - موقعیت شکل جاری (از ۱)
+# $n - تعداد شکل‌های دارای متن
+spell-shape-progress = شکل { $k } از { $n }
+spell-dialog-title = بررسی املا
+spell-ignore = چشم‌پوشی
+spell-ignore-all = چشم‌پوشی از همه
+spell-not-in-dictionary = در واژه‌نامه نیست:
+spell-suggestions = پیشنهادها:
+spell-tip = املا (F7)
 spelling = املا
 splash-wordmark = طارحی
 split = تقسیم

@@ -8,6 +8,7 @@ pub mod export;
 pub mod geom;
 pub mod pdf;
 pub mod raster;
+pub mod spell;
 pub mod svg;
 pub mod textfunc;
 pub mod textmetrics;

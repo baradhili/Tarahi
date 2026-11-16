@@ -881,7 +881,19 @@ snap-to = 对齐到：
 snapglue-note = 设置存储在绘图中。作为目标的参考线将随 #113 提供；连接线粘附随 #108 提供。
 solid = 实线
 spacing = 间距
-spell-check-planned = 拼写检查 — 计划中
+spell-add = 添加
+spell-change = 更改
+spell-change-all = 全部更改
+spell-check-complete = 拼写检查已完成。
+# $k - 当前形状的位置（从 1 起）
+# $n - 含文本的形状数
+spell-shape-progress = 第 { $k } 个形状，共 { $n } 个
+spell-dialog-title = 拼写检查
+spell-ignore = 忽略
+spell-ignore-all = 全部忽略
+spell-not-in-dictionary = 不在词典中：
+spell-suggestions = 建议：
+spell-tip = 拼写检查 (F7)
 spelling = 拼写
 splash-wordmark = tarahi
 split = 拆分

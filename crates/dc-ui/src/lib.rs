@@ -28,6 +28,7 @@ pub mod os_theme;
 pub mod perf;
 pub mod props;
 pub mod quickshapes;
+pub mod spellcheck;
 mod rasterpool;
 pub mod recent;
 pub mod ribbon;

@@ -889,7 +889,19 @@ snap-to = Snap to:
 snapglue-note = Settings are stored in the drawing. Guides as targets arrive with #113; connector glue with #108.
 solid = Solid
 spacing = Spacing
-spell-check-planned = Spell check — planned
+spell-add = Add
+spell-change = Change
+spell-change-all = Change All
+spell-check-complete = Spelling check complete.
+# $k (Number) - the current shape's 1-based position
+# $n (Number) - the text-bearing shape count
+spell-shape-progress = shape { $k } of { $n }
+spell-dialog-title = Check Spelling
+spell-ignore = Ignore
+spell-ignore-all = Ignore All
+spell-not-in-dictionary = Not in dictionary:
+spell-suggestions = Suggestions:
+spell-tip = Spelling (F7)
 spelling = Spelling
 splash-wordmark = tarahi
 split = Split

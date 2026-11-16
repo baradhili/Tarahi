@@ -821,7 +821,19 @@ snap-to = Einrasten an:
 snapglue-note = Einstellungen liegen in der Zeichnung. Führungslinien als Ziele kommen mit #113; Konnektor-Klebung mit #108.
 solid = Einfarbig
 spacing = Abstand
-spell-check-planned = Rechtschreibprüfung — geplant
+spell-add = Hinzufügen
+spell-change = Ändern
+spell-change-all = Alle ändern
+spell-check-complete = Rechtschreibprüfung abgeschlossen.
+# $k - Position der aktuellen Form (1-basiert)
+# $n - Anzahl der Formen mit Text
+spell-shape-progress = Form { $k } von { $n }
+spell-dialog-title = Rechtschreibprüfung
+spell-ignore = Ignorieren
+spell-ignore-all = Alle ignorieren
+spell-not-in-dictionary = Nicht im Wörterbuch:
+spell-suggestions = Vorschläge:
+spell-tip = Rechtschreibung (F7)
 spelling = Rechtschreibung
 splash-wordmark = tarahi
 split = Teilen

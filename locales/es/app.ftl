@@ -886,7 +886,19 @@ snap-to = Ajustar a:
 snapglue-note = La configuración se guarda en el dibujo. Las guías como destino llegan con #113; la conexión de conectores, con #108.
 solid = Sólido
 spacing = Espaciado
-spell-check-planned = Revisión ortográfica — planeado
+spell-add = Agregar
+spell-change = Cambiar
+spell-change-all = Cambiar todo
+spell-check-complete = Revisión ortográfica completada.
+# $k - posición de la forma actual (1-basado)
+# $n - número de formas con texto
+spell-shape-progress = forma { $k } de { $n }
+spell-dialog-title = Revisión ortográfica
+spell-ignore = Omitir
+spell-ignore-all = Omitir todas
+spell-not-in-dictionary = No está en el diccionario:
+spell-suggestions = Sugerencias:
+spell-tip = Ortografía (F7)
 spelling = Ortografía
 splash-wordmark = tarahi
 split = Dividir

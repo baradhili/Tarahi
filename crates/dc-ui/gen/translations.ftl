@@ -824,7 +824,19 @@ snap-to = Einrasten an:
 snapglue-note = Einstellungen liegen in der Zeichnung. Führungslinien als Ziele kommen mit #113; Konnektor-Klebung mit #108.
 solid = Einfarbig
 spacing = Abstand
-spell-check-planned = Rechtschreibprüfung — geplant
+spell-add = Hinzufügen
+spell-change = Ändern
+spell-change-all = Alle ändern
+spell-check-complete = Rechtschreibprüfung abgeschlossen.
+# $k - Position der aktuellen Form (1-basiert)
+# $n - Anzahl der Formen mit Text
+spell-shape-progress = Form { $k } von { $n }
+spell-dialog-title = Rechtschreibprüfung
+spell-ignore = Ignorieren
+spell-ignore-all = Alle ignorieren
+spell-not-in-dictionary = Nicht im Wörterbuch:
+spell-suggestions = Vorschläge:
+spell-tip = Rechtschreibung (F7)
 spelling = Rechtschreibung
 splash-wordmark = tarahi
 split = Teilen
@@ -1941,7 +1953,19 @@ snap-to = Snap to:
 snapglue-note = Settings are stored in the drawing. Guides as targets arrive with #113; connector glue with #108.
 solid = Solid
 spacing = Spacing
-spell-check-planned = Spell check — planned
+spell-add = Add
+spell-change = Change
+spell-change-all = Change All
+spell-check-complete = Spelling check complete.
+# $k (Number) - the current shape's 1-based position
+# $n (Number) - the text-bearing shape count
+spell-shape-progress = shape { $k } of { $n }
+spell-dialog-title = Check Spelling
+spell-ignore = Ignore
+spell-ignore-all = Ignore All
+spell-not-in-dictionary = Not in dictionary:
+spell-suggestions = Suggestions:
+spell-tip = Spelling (F7)
 spelling = Spelling
 splash-wordmark = tarahi
 split = Split
@@ -3060,7 +3084,19 @@ snap-to = Ajustar a:
 snapglue-note = La configuración se guarda en el dibujo. Las guías como destino llegan con #113; la conexión de conectores, con #108.
 solid = Sólido
 spacing = Espaciado
-spell-check-planned = Revisión ortográfica — planeado
+spell-add = Agregar
+spell-change = Cambiar
+spell-change-all = Cambiar todo
+spell-check-complete = Revisión ortográfica completada.
+# $k - posición de la forma actual (1-basado)
+# $n - número de formas con texto
+spell-shape-progress = forma { $k } de { $n }
+spell-dialog-title = Revisión ortográfica
+spell-ignore = Omitir
+spell-ignore-all = Omitir todas
+spell-not-in-dictionary = No está en el diccionario:
+spell-suggestions = Sugerencias:
+spell-tip = Ortografía (F7)
 spelling = Ortografía
 splash-wordmark = tarahi
 split = Dividir
@@ -4114,7 +4150,19 @@ snap-to = جذب به:
 snapglue-note = تنظیمات در خود نقش ذخیره می‌شوند. راهنماها به‌عنوان هدف با #113 می‌آیند؛ چسبندگی کانکتور با #108.
 solid = ممتد
 spacing = فاصله‌گذاری
-spell-check-planned = بررسی املا — برنامه‌ریزی شده
+spell-add = افزودن
+spell-change = تغییر
+spell-change-all = تغییر همه
+spell-check-complete = بررسی املا کامل شد.
+# $k - موقعیت شکل جاری (از ۱)
+# $n - تعداد شکل‌های دارای متن
+spell-shape-progress = شکل { $k } از { $n }
+spell-dialog-title = بررسی املا
+spell-ignore = چشم‌پوشی
+spell-ignore-all = چشم‌پوشی از همه
+spell-not-in-dictionary = در واژه‌نامه نیست:
+spell-suggestions = پیشنهادها:
+spell-tip = املا (F7)
 spelling = املا
 splash-wordmark = طارحی
 split = تقسیم
@@ -5223,7 +5271,19 @@ snap-to = 对齐到：
 snapglue-note = 设置存储在绘图中。作为目标的参考线将随 #113 提供；连接线粘附随 #108 提供。
 solid = 实线
 spacing = 间距
-spell-check-planned = 拼写检查 — 计划中
+spell-add = 添加
+spell-change = 更改
+spell-change-all = 全部更改
+spell-check-complete = 拼写检查已完成。
+# $k - 当前形状的位置（从 1 起）
+# $n - 含文本的形状数
+spell-shape-progress = 第 { $k } 个形状，共 { $n } 个
+spell-dialog-title = 拼写检查
+spell-ignore = 忽略
+spell-ignore-all = 全部忽略
+spell-not-in-dictionary = 不在词典中：
+spell-suggestions = 建议：
+spell-tip = 拼写检查 (F7)
 spelling = 拼写
 splash-wordmark = tarahi
 split = 拆分

@@ -5203,7 +5203,77 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "spell-check-planned",
+        message: "spell-add",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-change",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-change-all",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-check-complete",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-shape-progress",
+        attribute: None,
+        vars: &["k", "n"],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-dialog-title",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-ignore",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-ignore-all",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-not-in-dictionary",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-suggestions",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-tip",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -6481,11 +6551,11 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..45755,
-            Self::En => 45755..90100,
-            Self::Es => 90100..138973,
-            Self::Fa => 138973..197075,
-            Self::ZhHans => 197075..239350,
+            Self::De => 0..46182,
+            Self::En => 46182..90933,
+            Self::Es => 90933..140223,
+            Self::Fa => 140223..198791,
+            Self::ZhHans => 198791..241465,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -9432,8 +9502,47 @@ impl L10nLanguage {
     pub fn msg_spacing(&self) -> String {
         self.0.msg("spacing", None).unwrap()
     }
-    pub fn msg_spell_check_planned(&self) -> String {
-        self.0.msg("spell-check-planned", None).unwrap()
+    pub fn msg_spell_add(&self) -> String {
+        self.0.msg("spell-add", None).unwrap()
+    }
+    pub fn msg_spell_change(&self) -> String {
+        self.0.msg("spell-change", None).unwrap()
+    }
+    pub fn msg_spell_change_all(&self) -> String {
+        self.0.msg("spell-change-all", None).unwrap()
+    }
+    pub fn msg_spell_check_complete(&self) -> String {
+        self.0.msg("spell-check-complete", None).unwrap()
+    }
+    /// $k (Number) - the current shape's 1-based position
+    /// $n (Number) - the text-bearing shape count
+    pub fn msg_spell_shape_progress<F0: Into<FluentNumber>, F1: Into<FluentNumber>>(
+        &self,
+        k: F0,
+        n: F1,
+    ) -> String {
+        let mut _args = FluentArgs::new();
+        _args.set("k", k.into());
+        _args.set("n", n.into());
+        self.0.msg("spell-shape-progress", Some(_args)).unwrap()
+    }
+    pub fn msg_spell_dialog_title(&self) -> String {
+        self.0.msg("spell-dialog-title", None).unwrap()
+    }
+    pub fn msg_spell_ignore(&self) -> String {
+        self.0.msg("spell-ignore", None).unwrap()
+    }
+    pub fn msg_spell_ignore_all(&self) -> String {
+        self.0.msg("spell-ignore-all", None).unwrap()
+    }
+    pub fn msg_spell_not_in_dictionary(&self) -> String {
+        self.0.msg("spell-not-in-dictionary", None).unwrap()
+    }
+    pub fn msg_spell_suggestions(&self) -> String {
+        self.0.msg("spell-suggestions", None).unwrap()
+    }
+    pub fn msg_spell_tip(&self) -> String {
+        self.0.msg("spell-tip", None).unwrap()
     }
     pub fn msg_spelling(&self) -> String {
         self.0.msg("spelling", None).unwrap()

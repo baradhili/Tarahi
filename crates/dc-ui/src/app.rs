@@ -85,6 +85,15 @@ enum FormatSection {
     Text,
 }
 
+/// One Check Spelling dialog action (#121).
+enum SpellAction {
+    Ignore,
+    IgnoreAll,
+    Change(String),
+    ChangeAll(String),
+    Add(String),
+}
+
 /// The Insert Field dialog's draft (#267): which category, which of
 /// its fields, which format picture, and the custom-formula entry.
 #[derive(Clone, Default)]
@@ -169,6 +178,16 @@ pub struct App {
     field_open: Option<i64>,
     /// The Insert Field dialog's draft (#267).
     field_draft: FieldDraft,
+    /// The Check Spelling pass (#121): `Some` while the dialog walks
+    /// the page's shapes.
+    spell: Option<crate::spellcheck::SpellSession>,
+    /// The app-level custom dictionary (#121) — the config-dir store.
+    spell_custom: crate::spellcheck::CustomWords,
+    /// The suggestion list for the misspelling under review, cached
+    /// by (shape index, offset, word) so the ranking runs once per
+    /// misspelling, not per frame.
+    spell_sugg_key: (usize, usize, String),
+    spell_suggestions: Vec<String>,
     /// Draft row being added/edited in the Hyperlinks dialog (#28).
     hyperlink_draft: Option<HyperlinkDraft>,
     /// The Comments popup is open for this shape (#29 rework: the
@@ -736,6 +755,10 @@ impl App {
             hyperlink_open: None,
             field_open: None,
             field_draft: FieldDraft::default(),
+            spell: None,
+            spell_custom: crate::spellcheck::CustomWords::ephemeral(),
+            spell_sugg_key: (0, 0, String::new()),
+            spell_suggestions: Vec::new(),
             hyperlink_draft: None,
             comment_target: None,
             comment_body: String::new(),
@@ -1276,7 +1299,7 @@ impl App {
             .map(|ed| ed.doc.pages[self.page_idx.min(ed.doc.pages.len().saturating_sub(1))].id)
     }
 
-    fn apply<C: dc_core::Command + 'static>(&mut self, cmd: C) {
+    pub fn apply<C: dc_core::Command + 'static>(&mut self, cmd: C) {
         // Field-disjoint borrows (ed/layers vs status): the #219
         // damage routing needs the editor document alongside the
         // layer store, so this site inlines page_id().
@@ -1389,7 +1412,7 @@ impl App {
         self.sel_set = picked;
     }
 
-    fn do_undo(&mut self) {
+    pub fn do_undo(&mut self) {
         if let Some(ed) = self.ed.as_mut() {
             match ed.undo() {
                 Ok(Some((l, touched))) => {
@@ -3065,6 +3088,11 @@ impl App {
             if ctrl && i.key_pressed(egui::Key::O) {
                 open = true;
             }
+            // #121: Check Spelling (F7) — Visio's spelling is a
+            // command, not live squigglies.
+            if !kb_owned && i.key_pressed(egui::Key::F7) {
+                self.start_spell_pass();
+            }
             if ctrl && i.key_pressed(egui::Key::S) {
                 if i.modifiers.shift {
                     save_as = true;
@@ -3606,6 +3634,10 @@ impl App {
     /// confirm-close/new modals handle theirs. Returns true when one
     /// closed.
     fn close_front_dialog(&mut self) -> bool {
+        if self.spell.is_some() {
+            self.spell = None;
+            return true;
+        }
         if self.selby_open {
             self.selby_open = false;
             return true;
@@ -8351,6 +8383,11 @@ impl App {
             Action::Group => self.group_selection(),
             Action::ContainerDisband => self.disband_container(),
             Action::Ungroup => self.ungroup_selection(),
+            Action::Spelling => {
+                // #121 Check Spelling (F7): the dialog-driven pass
+                // over this page's shape text.
+                self.start_spell_pass();
+            }
             Action::InsertField => {
                 // #267 Insert ▸ Field: the dialog on the primary
                 // selection; no selection notes it.
@@ -11840,6 +11877,294 @@ impl App {
         }
     }
 
+    /// The merged dictionary: the embedded wordlist plus the app-
+    /// level custom words (#121).
+    fn spell_dictionary(&self) -> dc::spell::Spell {
+        dc::spell::Spell::new(
+            dc::spell::embedded_words()
+                .chain(self.spell_custom.words().iter().cloned()),
+        )
+    }
+
+    /// Start the Check Spelling pass (F7 / Review ▸ Spelling, #121):
+    /// walks THIS page's shapes; the first misspelling opens the
+    /// dialog, a clean page notes completion.
+    fn start_spell_pass(&mut self) {
+        let Some(ed) = self.ed() else {
+            return;
+        };
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
+        self.spell = Some(crate::spellcheck::SpellSession::start(&ed.doc, page_id));
+        self.spell_suggestions.clear();
+        self.spell_sugg_key = (0, 0, String::new());
+    }
+
+    /// The Check Spelling dialog (#121): word-in-context, ranked
+    /// suggestions, Ignore / Ignore All / Change / Change All / Add,
+    /// the shape counter, and the wave's keyboard rules (Esc dismisses
+    /// via `close_front_dialog`; Enter = Change, pinned from the MS
+    /// docs until a bottle returns).
+    fn spell_window(&mut self, ctx: &egui::Context) {
+        use crate::i18n::strs;
+        if self.spell.is_none() {
+            return;
+        }
+        // Disjoint field borrows: `ed` reads the document while the
+        // session mutates — `self.ed()` would borrow all of self.
+        let Some(ed) = self.ed.as_ref() else {
+            self.spell = None;
+            return;
+        };
+        let Some(page_id) = self.page_id() else {
+            self.spell = None;
+            return;
+        };
+        let spell = self.spell_dictionary();
+
+        // The walk: advance past clean shapes until a misspelling
+        // surfaces or the page completes.
+        let miss = {
+            let session = self.spell.as_mut().expect("checked above");
+            loop {
+                match session.current_miss(&spell, &ed.doc, page_id) {
+                    Some(m) => break Some(m),
+                    None => {
+                        if session.shape_ix + 1 < session.shape_ids.len() {
+                            session.advance();
+                        } else {
+                            break None;
+                        }
+                    }
+                }
+            }
+        };
+        let Some(miss) = miss else {
+            self.spell = None;
+            self.status = strs().msg_spell_check_complete();
+            return;
+        };
+        let session = self.spell.as_mut().expect("checked above");
+        let shape_ix = session.shape_ix;
+        let count = session.page_shape_count;
+        let sid = session.current_shape().expect("a live miss implies a shape");
+        // The misspelled shape is the selected one while the dialog
+        // is up (the plan's walk behavior).
+        if self.sel != Some((page_id, sid)) {
+            self.sel = Some((page_id, sid));
+        }
+        // The context line: the word with a few characters either side.
+        let shape_text = ed
+            .doc
+            .pages
+            .iter()
+            .find(|p| p.id == page_id)
+            .and_then(|p| vsdx::model::find_shape_by_id(&p.shapes, sid))
+            .and_then(|s| s.sheet.text.clone())
+            .unwrap_or_default();
+        let ctx_a = miss.start.saturating_sub(24);
+        let ctx_b = (miss.start + miss.text.len() + 24).min(shape_text.len());
+        let context = format!(
+            "{}\u{2026}{}\u{2026}",
+            &shape_text[ctx_a..miss.start],
+            &shape_text[miss.start + miss.text.len()..ctx_b]
+        );
+        // Suggestions once per misspelling.
+        let key = (shape_ix, miss.start, miss.text.clone());
+        if self.spell_sugg_key != key {
+            self.spell_suggestions = spell.suggestions(&miss.text, 5);
+            self.spell_sugg_key = key;
+        }
+        let drop = self.spell.take().expect("checked above");
+        self.spell = Some(drop);
+
+        let mut action: Option<SpellAction> = None;
+        let mut close = false;
+        let mut selection = self.spell_suggestions.first().cloned().unwrap_or_default();
+        let mut open = true;
+        egui::Window::new(strs().msg_spell_dialog_title())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                let dir = if crate::i18n::rtl() {
+                    egui::Layout::top_down(egui::Align::RIGHT)
+                } else {
+                    egui::Layout::top_down(egui::Align::LEFT)
+                };
+                ui.with_layout(dir, |ui| {
+                    ui.label(strs().msg_spell_not_in_dictionary());
+                    ui.add_space(2.0);
+                    ui.strong(&miss.text);
+                    ui.add_space(2.0);
+                    ui.weak(&context);
+                    ui.add_space(2.0);
+                    ui.weak(strs().msg_spell_shape_progress(
+                        (shape_ix + 1) as i64,
+                        count as i64,
+                    ));
+                    ui.add_space(6.0);
+                    ui.label(strs().msg_spell_suggestions());
+                    ui.add_space(2.0);
+                    for s in self.spell_suggestions.iter() {
+                        if ui
+                            .radio(selection == *s, s)
+                            .clicked()
+                        {
+                            selection = s.clone();
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(strs().msg_spell_ignore()).clicked() {
+                            action = Some(SpellAction::Ignore);
+                        }
+                        if ui.button(strs().msg_spell_ignore_all()).clicked() {
+                            action = Some(SpellAction::IgnoreAll);
+                        }
+                        if ui.button(strs().msg_spell_change()).clicked() {
+                            action = Some(SpellAction::Change(selection.clone()));
+                        }
+                        if ui.button(strs().msg_spell_change_all()).clicked() {
+                            action = Some(SpellAction::ChangeAll(selection.clone()));
+                        }
+                        if ui.button(strs().msg_spell_add()).clicked() {
+                            action = Some(SpellAction::Add(miss.text.clone()));
+                        }
+                    });
+                    ui.add_space(4.0);
+                    if ui.button(strs().msg_cancel()).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            action = Some(SpellAction::Change(
+                self.spell_suggestions.first().cloned().unwrap_or_default(),
+            ));
+        }
+        match action {
+            Some(SpellAction::Ignore) => {
+                self.spell.as_mut().unwrap().ignore(&miss);
+            }
+            Some(SpellAction::IgnoreAll) => {
+                self.spell.as_mut().unwrap().ignore_all(&miss);
+            }
+            Some(SpellAction::Change(replacement)) => {
+                self.spell_change(sid, miss.start, miss.text.len(), &replacement);
+            }
+            Some(SpellAction::ChangeAll(replacement)) => {
+                self.spell_change_all(page_id, &miss.text, &replacement);
+                if let Some(session) = self.spell.as_mut() {
+                    session.changed();
+                    session.advance();
+                }
+            }
+            Some(SpellAction::Add(word)) => {
+                self.spell_custom.add(&word);
+                if let Some(session) = self.spell.as_mut() {
+                    session.ignore_all(&miss);
+                }
+            }
+            None => {}
+        }
+        if close || !open {
+            self.spell = None;
+        }
+    }
+
+    /// One accepted Change: the replaced text rides the
+    /// `text_edit_macro` precedent (SetText + cache refresh, ONE undo
+    /// step).
+    fn spell_change(&mut self, sid: i64, start: usize, len: usize, replacement: &str) {
+        let Some(page_id) = self.page_id() else { return };
+        let scope = Scope::Shape {
+            page: page_id,
+            shape: sid,
+        };
+        let text = {
+            let ed = self.ed.as_ref().expect("a live pass implies a doc");
+            let page = ed.doc.pages.iter().find(|p| p.id == page_id);
+            let Some(s) = page.and_then(|p| vsdx::model::find_shape_by_id(&p.shapes, sid)) else {
+                return;
+            };
+            let mut t = s.sheet.text.clone().unwrap_or_default();
+            if start + len <= t.len() {
+                t.replace_range(start..start + len, replacement);
+            }
+            t
+        };
+        self.apply(dc::textfunc::text_edit_macro(
+            &self.ed.as_ref().expect("doc").doc,
+            &scope,
+            &text,
+        ));
+        if let Some(session) = self.spell.as_mut() {
+            session.changed();
+        }
+    }
+
+    /// Change All: every whole-token occurrence of the word across the
+    /// page's shapes, one Macro (one undo reverts the whole pass).
+    fn spell_change_all(&mut self, page_id: i64, word: &str, replacement: &str) {
+        let cmds: Vec<Box<dyn dc_core::Command>> = {
+            let ed = self.ed.as_ref().expect("a live pass implies a doc");
+            let Some(page) = ed.doc.pages.iter().find(|p| p.id == page_id) else {
+                return;
+            };
+            let mut cmds: Vec<Box<dyn dc_core::Command>> = Vec::new();
+            for s in &page.shapes {
+                let Some(text) = s.sheet.text.as_deref() else {
+                    continue;
+                };
+                let mut changed = false;
+                let mut out = String::new();
+                for token in dc::spell::tokens(text) {
+                    if token.text == word {
+                        out.push_str(replacement);
+                        changed = true;
+                    } else {
+                        out.push_str(&text[token.start..token.start + token.text.len()]);
+                    }
+                }
+                if changed {
+                    let gap = text.len() - out.len();
+                    let mut fixed = String::with_capacity(text.len() - gap);
+                    // Rebuild in ORIGINAL order: splice replacement into
+                    // the original by walking the tokens again.
+                    fixed.clear();
+                    let mut pos = 0usize;
+                    for token in dc::spell::tokens(text) {
+                        let end = token.start + token.text.len();
+                        fixed.push_str(&text[pos..token.start]);
+                        if token.text == word {
+                            fixed.push_str(replacement);
+                        } else {
+                            fixed.push_str(&text[token.start..end]);
+                        }
+                        pos = end;
+                    }
+                    fixed.push_str(&text[pos..]);
+                    let _ = changed;
+                    cmds.push(Box::new(dc::textfunc::text_edit_macro(
+                        &ed.doc,
+                        &Scope::Shape {
+                            page: page_id,
+                            shape: s.id,
+                        },
+                        &fixed,
+                    )));
+                }
+            }
+            cmds
+        };
+        if !cmds.is_empty() {
+            self.apply(dc_core::Macro::new("change spelling", cmds));
+        }
+    }
+
     /// The Insert Field dialog (#267): Category / Field / Format in
     /// the 2016 layout. OK writes the Field row AND appends the
     /// `<fld IX>` marker to the shape's text in ONE undo step (the
@@ -15297,6 +15622,7 @@ impl App {
         self.language_window(&ctx);
         self.hyperlink_window(&ctx);
         self.field_window(&ctx);
+        self.spell_window(&ctx);
         self.comment_window(&ctx);
         self.shape_data_window(&ctx);
         self.color_palette_window(&ctx);

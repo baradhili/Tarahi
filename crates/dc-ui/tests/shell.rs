@@ -703,3 +703,74 @@ fn insert_field_dialog_flow() {
         "status names the field insert: {status}"
     );
 }
+
+/// #121 Check Spelling dialog flow: a shape with typos → Review ▸
+/// Spelling → the dialog offers ranked suggestions → Change applies
+/// through one undoable SetText (the status names it) → Ignore All
+/// lifts the next typo → the clean page completes. Undo restores the
+/// changed text.
+#[test]
+fn spelling_dialog_flow() {
+    use egui_kittest::kittest::Queryable;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let doc = fixture_pages(tmp.path(), &["Page-1"]);
+    // Give the fixture's first shape a typo-laden text.
+    let mut app = App::with_doc(&doc);
+    app.select_shape_for_test(0, 1);
+    app.apply(dc_core::SetText::new(
+        dc_core::Scope::Shape { page: 0, shape: 1 },
+        "teh managr diagram",
+    ));
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(
+            |ui, app: &mut App| {
+                dc_ui::theme::install(ui.ctx());
+                app.draw(ui);
+            },
+            app,
+        );
+    h.run();
+    h.run();
+    // Review ▸ Spelling (F7's ribbon twin).
+    h.get_all_by_label_contains("Review").next().expect("Review tab").click();
+    h.run();
+    h.get_all_by_label_contains("Spelling").next().expect("Spelling button").click();
+    h.run();
+    h.run();
+    // The dialog is up over the first misspelling ("teh").
+    h.get_by_label_contains("Not in dictionary:");
+    // Pick the ranked suggestion "the" and Change (Enter's twin).
+    h.get_all_by_label_contains("the").next().expect("the suggestion").click();
+    h.get_by_label("Change").click();
+    h.run();
+    h.run();
+    // The SetText macro's label is the status; the pass moves on to
+    // "managr".
+    let status = h.state().debug_status().to_string();
+    assert!(status.contains("set text"), "the change applied: {status}");
+    h.get_by_label_contains("Not in dictionary:");
+    // Ignore All lifts "managr" for the rest of the pass.
+    h.get_by_label("Ignore All").click();
+    h.run();
+    h.run();
+    // The page is clean: the completion note replaced the dialog.
+    let status = h.state().debug_status().to_string();
+    assert!(
+        status.contains("Spelling check complete"),
+        "the pass completes: {status}"
+    );
+    // One undo restores the CHANGED text (the macro step) — routed
+    // through the app's own undo path.
+    h.state_mut().do_undo();
+    h.run();
+    h.run();
+    let status = h.state().debug_status().to_string();
+    assert!(
+        !status.contains("Spelling check complete"),
+        "undo leaves the completion note behind: {status}"
+    );
+}
