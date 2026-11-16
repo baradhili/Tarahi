@@ -776,10 +776,12 @@ fn node_ink_box(
         // IndFirst, which can precede the frame (and the shape box) —
         // the frame-only bounds let that ink escape the ink box, so
         // the layer viewBox clips it and the #236 cull skips the
-        // child (local CodeRabbit round 3 + final pass). Computed
-        // once for BOTH branches: the unrotated branch extends the
-        // left edge exactly; the rotated branch widens its
-        // circumscribed square — the escape rotates with the block.
+        // child (local CodeRabbit round 3 + final pass). Both branches
+        // bound the EXTENDED frame (left edge out by the escape): the
+        // unrotated branch through the shape transform directly; the
+        // rotated branch through emit_text's own wrapper first — the
+        // escape rotates with the block.
+        let (x0, y0) = (tx - tlx, -(ty - tly + th));
         let tb = resolve_text_block(doc, s, chain, width, height);
         let bullet_escape = tb.bullet.as_ref().map_or(0.0, |b| {
             let escape = tb.insets.0 + tb.ind_first;
@@ -790,19 +792,41 @@ fn node_ink_box(
             }
         });
         if get("TxtAngle", &text_env).unwrap_or(0.0) != 0.0 {
-            // Rotated text: bound by the circumscribed square.
-            let side = tw.max(th) + bullet_escape;
-            let (cx, cy) = (tx - tlx + tw / 2.0, -(ty - tly + th / 2.0));
+            // Rotated text: push the extended frame's corners through
+            // emit_text's own wrapper — the pin rotation (flips
+            // composed, net = −sx·sy·TxtAngle) in the shape-local
+            // y-down frame — then the shape transform. The old
+            // centered circumscribed square under-covered BOTH the
+            // one-sided bullet escape (half of it — Greptile round 8)
+            // and oblique rotations of the frame itself.
+            let angle = get("TxtAngle", &text_env).unwrap_or(0.0);
+            let (fsx, fsy) = (
+                if get("FlipX", &text_env).unwrap_or(0.0) != 0.0 {
+                    -1.0
+                } else {
+                    1.0
+                },
+                if get("FlipY", &text_env).unwrap_or(0.0) != 0.0 {
+                    -1.0
+                } else {
+                    1.0
+                },
+            );
+            let net_deg = -(fsx * fsy) * angle.to_degrees();
+            let text_tf = Affine::translate(tx, -ty)
+                .then(&Affine::scale(fsx, fsy))
+                .then(&Affine::rotate_deg(net_deg))
+                .then(&Affine::translate(-tx, ty));
+            let a_text = text_tf.then(&a);
             box_union(
-                cx - side / 2.0,
-                cy - side / 2.0,
-                cx + side / 2.0,
-                cy + side / 2.0,
-                &a,
+                x0 - bullet_escape,
+                y0,
+                x0 + tw,
+                y0 + th,
+                &a_text,
                 &mut u,
             );
         } else {
-            let (x0, y0) = (tx - tlx, -(ty - tly + th));
             box_union(
                 x0 - bullet_escape,
                 y0,
@@ -8243,48 +8267,73 @@ mod tests {
         );
     }
 
-    /// The rotated twin (final local CodeRabbit pass): under
-    /// TxtAngle ≠ 0 the circumscribed-square bound widens by the
-    /// bullet escape — the glyph rotates with the block, and a
-    /// square sized to the frame alone would clip/cull it.
+    /// The rotated twin (final local CodeRabbit pass + Greptile round
+    /// 8): under TxtAngle ≠ 0 the bounds must CONTAIN the rotated
+    /// EXTENDED frame — the old centered circumscribed square covered
+    /// only half of the one-sided bullet escape (and under-covered
+    /// oblique rotations of the frame itself). The corners are
+    /// rotated here independently of the production code (SVG rotate
+    /// about the TxtPin, net = −TxtAngle at no flip).
     #[test]
     fn ink_bounds_cover_outdented_bullets_rotated() {
-        let mk = |bullet: bool| {
-            let mut s = shape_at(1, (4.0, 5.0), 2.0, 1.0, 0.0);
-            s.sheet.text = Some("bullet".into());
-            s.sheet.set_cell(
-                "TxtAngle",
-                Cell::value(std::f64::consts::FRAC_PI_2.to_string()),
-            );
-            if bullet {
-                s.sheet.children.push(SheetChild::Section(Section {
-                    name: "Paragraph".into(),
-                    rows: vec![Row {
-                        cells: vec![
-                            ("Bullet".to_string(), Cell::value("1")),
-                            ("IndFirst".to_string(), Cell::value("-1")),
-                        ],
-                        ..Row::default()
-                    }],
-                    ..Section::default()
-                }));
-            }
-            s
-        };
-        let plain = mk(false);
-        let (doc, page) = page_fixture(vec![plain.clone()]);
-        let (_, _, w0, h0) = shape_ink_bounds(&doc, &page, 1).unwrap();
-        let bulleted = mk(true);
-        let (doc, page) = page_fixture(vec![bulleted.clone()]);
-        let (_, _, w1, h1) = shape_ink_bounds(&doc, &page, 1).unwrap();
-        // The square grows by the escape in BOTH page dimensions.
-        let chain = [&bulleted];
-        let tb = resolve_text_block(&doc, &bulleted, &chain, 2.0, 1.0);
+        let mut s = shape_at(1, (4.0, 5.0), 2.0, 1.0, 0.0);
+        s.sheet.text = Some("bullet".into());
+        s.sheet.set_cell(
+            "TxtAngle",
+            Cell::value(std::f64::consts::FRAC_PI_2.to_string()),
+        );
+        s.sheet.children.push(SheetChild::Section(Section {
+            name: "Paragraph".into(),
+            rows: vec![Row {
+                cells: vec![
+                    ("Bullet".to_string(), Cell::value("1")),
+                    ("IndFirst".to_string(), Cell::value("-1")),
+                ],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        let (doc, page) = page_fixture(vec![s.clone()]);
+        let (bx, by, bw, bh) = shape_ink_bounds(&doc, &page, 1).unwrap();
+        // The escape: bullet origin 1 in left of the text area's left
+        // inset, plus the glyph's own advance.
+        let chain = [&s];
+        let tb = resolve_text_block(&doc, &s, &chain, 2.0, 1.0);
         let b = tb.bullet.as_ref().expect("the block is bulleted");
-        let ext = -(tb.insets.0 + tb.ind_first) + bullet_advance_in(&tb, b);
+        let e = -(tb.insets.0 + tb.ind_first) + bullet_advance_in(&tb, b);
+        // Extended frame corners, shape-local y-down: [−e, 2] × [−1, 0]
+        // (frame x0 = 0, th = 1). Net rotation −90° about the TxtPin
+        // (1, −0.5): (dx, dy) → (dy, −dx). Shape-local → page:
+        // (3 + x, 6 + y).
+        let pivot = (1.0, -0.5);
+        let corners = [
+            (-e, -1.0),
+            (2.0, -1.0),
+            (2.0, 0.0),
+            (-e, 0.0),
+        ];
+        for (cx, cy) in corners {
+            let (dx, dy) = (cx - pivot.0, cy - pivot.1);
+            let (rx, ry) = (pivot.0 + dy, pivot.1 - dx);
+            let (px, py) = (3.0 + rx, 6.0 + ry);
+            assert!(
+                px >= bx - 1e-9
+                    && px <= bx + bw + 1e-9
+                    && py >= by - 1e-9
+                    && py <= by + bh + 1e-9,
+                "the bounds must contain the rotated corner ({px}, {py}) \
+                 of the extended frame [e={e:.4}, bounds {bx:.3},{by:.3} \
+                 {bw:.3}×{bh:.3}]"
+            );
+        }
+        // …and the fixture BITES: the far corner sits past where the
+        // old PIN-centered square (half-side (2+e)/2) could reach.
+        let far = 6.0 + pivot.1 - (-e - pivot.0);
+        let old_reach = 5.5 + (2.0 + e) / 2.0;
         assert!(
-            (w1 - w0 - ext).abs() < 1e-9 && (h1 - h0 - ext).abs() < 1e-9,
-            "the rotated square widens by the escape {ext}: {w0}→{w1}, {h0}→{h1}"
+            far > old_reach,
+            "fixture: the far corner {far:.3} escapes the old square's \
+             reach {old_reach:.3}"
         );
     }
 
