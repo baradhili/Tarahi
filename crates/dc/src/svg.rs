@@ -2221,13 +2221,19 @@ pub(crate) fn resolve_text_block(
         // TEXT-STYLE stylesheet cascade follows — the same walk
         // `char_cell` gives Character cells (local CodeRabbit round
         // 3: a text style's IndLeft/Bullet must reach paragraphs the
-        // same way its Font/Size reach characters).
+        // same way its Font/Size reach characters). INHERITED cells
+        // (F="Inh") never satisfy a level — their cached V is a
+        // snapshot that can be stale against the parent, so the walk
+        // skips them exactly like `resolve_cell` does (Greptile PR
+        // #284 round 7) and the live parent value wins.
         let first_cell = |sheet: &Sheet| {
             sheet
                 .sections_named("Paragraph")
                 .first()
                 .and_then(|sec| sec.rows.first())
-                .and_then(|r| r.cell(name).cloned())
+                .and_then(|r| r.cell(name))
+                .filter(|c| !c.is_inherited())
+                .cloned()
         };
         if let Some(c) = first_cell(&s.sheet) {
             return Some(c);
@@ -8223,33 +8229,66 @@ mod tests {
         );
     }
 
-    /// Local CodeRabbit round 3: paragraph cells inherit through the
-    /// TEXT-STYLE stylesheet cascade like character cells do
-    /// (`char_cell`'s walk) — a styled shape with no local or master
-    /// Paragraph row still picks up the style's IndLeft/Bullet, a
-    /// local cell still wins, and a local row carrying only another
-    /// cell does not shadow the style (per-cell inheritance).
+    /// Local CodeRabbit round 3 + Greptile round 7: paragraph cells
+    /// inherit through the TEXT-STYLE stylesheet cascade like
+    /// character cells do (`char_cell`'s walk) — a styled shape with
+    /// no local or master Paragraph row still picks up the style's
+    /// IndLeft/Bullet, a local cell still wins, a local row carrying
+    /// only another cell does not shadow the style (per-cell
+    /// inheritance), and INHERITED cells (F="Inh") never satisfy a
+    /// level: their cached V is stale against the live parent, so the
+    /// parent's current value wins (resolve_cell's rule).
     #[test]
     fn paragraph_cells_inherit_the_text_style_cascade() {
-        let mut style = Sheet::default();
-        style.children.push(SheetChild::Section(Section {
-            name: "Paragraph".into(),
-            rows: vec![Row {
-                cells: vec![
-                    ("IndLeft".to_string(), Cell::value("0.25")),
-                    ("Bullet".to_string(), Cell::value("2")),
-                ],
-                ..Row::default()
-            }],
-            ..Section::default()
-        }));
+        // Parent style 8 carries the live values; child style 7
+        // caches a STALE IndLeft under F="Inh" and links to 8.
+        let parent = {
+            let mut sh = Sheet::default();
+            sh.children.push(SheetChild::Section(Section {
+                name: "Paragraph".into(),
+                rows: vec![Row {
+                    cells: vec![
+                        ("IndLeft".to_string(), Cell::value("0.25")),
+                        ("Bullet".to_string(), Cell::value("2")),
+                    ],
+                    ..Row::default()
+                }],
+                ..Section::default()
+            }));
+            vsdx::model::StyleSheet {
+                id: 8,
+                name_u: None,
+                attrs: Vec::new(),
+                sheet: sh,
+            }
+        };
+        let child = {
+            let mut sh = Sheet::default();
+            sh.children.push(SheetChild::Section(Section {
+                name: "Paragraph".into(),
+                rows: vec![Row {
+                    cells: vec![(
+                        "IndLeft".to_string(),
+                        Cell {
+                            v: Some("0.5".into()),
+                            f: Some("Inh".into()),
+                            ..Cell::default()
+                        },
+                    )],
+                    ..Row::default()
+                }],
+                ..Section::default()
+            }));
+            vsdx::model::StyleSheet {
+                id: 7,
+                name_u: None,
+                attrs: vec![("TextStyle".to_string(), "8".to_string())],
+                sheet: sh,
+            }
+        };
         let mut doc = Document::default();
-        doc.stylesheets.push(vsdx::model::StyleSheet {
-            id: 7,
-            name_u: None,
-            attrs: Vec::new(),
-            sheet: style,
-        });
+        doc.stylesheets.push(parent);
+        doc.stylesheets.push(child);
         let base = || {
             let mut s = Shape::default();
             s.sheet.set_cell("Width", Cell::value("2.0"));
@@ -8257,15 +8296,39 @@ mod tests {
             s.text_style = Some(7);
             s
         };
-        // Bare styled shape: the style's Paragraph row speaks.
+        // Bare styled shape: the PARENT's live value wins through the
+        // child's stale Inh cache.
         let s = base();
         let tb = resolve_text_block(&doc, &s, &[&s], 2.0, 1.0);
         assert!(
             (tb.ind_left - 0.25).abs() < 1e-12,
-            "IndLeft arrives from the text style: {}",
+            "the parent's live IndLeft wins over the child's Inh cache: {}",
             tb.ind_left
         );
         assert!(tb.bullet.is_some(), "the style's Bullet arms the block");
+        // A stale Inh cache on the SHAPE itself never wins either.
+        let mut stale = base();
+        stale.sheet.children.push(SheetChild::Section(Section {
+            name: "Paragraph".into(),
+            rows: vec![Row {
+                cells: vec![(
+                    "IndLeft".to_string(),
+                    Cell {
+                        v: Some("9".into()),
+                        f: Some("Inh".into()),
+                        ..Cell::default()
+                    },
+                )],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        let tb = resolve_text_block(&doc, &stale, &[&stale], 2.0, 1.0);
+        assert!(
+            (tb.ind_left - 0.25).abs() < 1e-12,
+            "a shape-level Inh cache falls through to the style: {}",
+            tb.ind_left
+        );
         // A local cell WINS over the style.
         let mut local = base();
         local.sheet.children.push(SheetChild::Section(Section {

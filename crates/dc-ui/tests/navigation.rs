@@ -451,6 +451,7 @@ fn scrollbar_drag_over_a_shape_moves_only_the_view() {
         "fixture: the shape covers the v-band at x={band_x}: {sr:?} canvas {canvas:?}"
     );
     let pinx = h.state().debug_cell_for_test(shape, "PinX");
+    let piny = h.state().debug_cell_for_test(shape, "PinY");
     let (_, _, py0) = h.state().debug_view_for_test();
     // Press the v-band over the shape, drag down, release — a thumb
     // drag on the scrollbar.
@@ -476,10 +477,17 @@ fn scrollbar_drag_over_a_shape_moves_only_the_view() {
     // The view panned (the bar owned the gesture)…
     let (_, _, py1) = h.state().debug_view_for_test();
     assert!(py1 < py0, "the thumb drag panned the view: {py0} → {py1}");
-    // …and the shape UNDER the band stayed put in the document.
+    // …and the shape UNDER the band stayed put in the document —
+    // BOTH axes (the drag is vertical, so PinY is the axis a
+    // regressed move-drag would actually touch; Greptile round 7).
     assert_eq!(
         h.state().debug_cell_for_test(shape, "PinX"),
         pinx,
-        "the shape under the scrollbar did not move"
+        "the shape under the scrollbar did not move (x)"
+    );
+    assert_eq!(
+        h.state().debug_cell_for_test(shape, "PinY"),
+        piny,
+        "the shape under the scrollbar did not move (y)"
     );
 }
