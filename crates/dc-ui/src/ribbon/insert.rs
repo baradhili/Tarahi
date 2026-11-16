@@ -122,10 +122,9 @@ fn text_cols(s: &'static crate::l10n::L10nLanguage) -> Vec<super::Col> {
         ),
         grid(vec![
             vec![
-                RibbonButton::new(Icon::Field, "", Action::Macros)
+                RibbonButton::new(Icon::Field, "", Action::InsertField)
                     .alt(s.msg_text_field())
-                    .enabled(false)
-                    .tip(s.msg_fields_planned()),
+                    .tip(s.msg_insert_field_tip()),
                 RibbonButton::new(Icon::DateTime, "", Action::Macros)
                     .alt(s.msg_date_time())
                     .enabled(false)

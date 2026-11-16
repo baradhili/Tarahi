@@ -189,6 +189,9 @@ pub enum Action {
     /// #252 Insert ▸ Links: open the Hyperlinks dialog (#28/#71) on
     /// the primary selection.
     Hyperlink,
+    /// #267 Insert ▸ Field: the Insert Field dialog on the primary
+    /// selection (the marker appends to the shape's text).
+    InsertField,
     /// #252 Container Tools ▸ Membership: release the container's
     /// members and delete it (one undo step).
     ContainerDisband,

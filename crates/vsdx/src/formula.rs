@@ -17,6 +17,58 @@ use std::collections::HashMap;
 
 pub type Env = HashMap<String, f64>;
 
+/// STRING-valued cell layer for field evaluation (#267): a Field
+/// row's `Value` formula references string cells the numeric [`Env`]
+/// cannot carry (`User.Label`, `Prop.Text`, cross-sheet
+/// `Sheet.5!User.ValueText`). Resolution tries the numeric env first
+/// and this map second, so a name that resolves as either wins in
+/// the caller's preference order. Only [`eval_field`] consults it —
+/// the geometry/size entries keep the pure numeric env.
+pub type StrEnv = HashMap<String, String>;
+
+/// The render context a field's functions resolve against
+/// (#267): everything `MASTERNAME()`/`PAGENUMBER()`/`DOCLASTSAVE()`
+/// and friends need that is not a cell. `dc` builds it once per
+/// rendered page; the wall clock is deliberately absent — `NOW()`
+/// stays unresolved (error → cached-V fallback) so renders stay
+/// deterministic and testable.
+#[derive(Debug, Clone, Default)]
+pub struct FieldCtx {
+    pub page_name: Option<String>,
+    pub page_number: Option<f64>,
+    pub master_name: Option<String>,
+    /// Document properties (ISO date/time strings).
+    pub doc_last_save: Option<String>,
+    pub doc_last_edit: Option<String>,
+}
+
+/// [`eval_measured`] with the string layer and field context:
+/// string cell references resolve through `strs`, and the
+/// context functions (`MASTERNAME`, `PAGENUMBER`, `DOCLASTSAVE`,
+/// `DOCLASTEDIT`, `NOW`) read `ctx`.
+pub fn eval_field(
+    expr: &str,
+    env: &Env,
+    strs: &StrEnv,
+    ctx: &FieldCtx,
+    m: &dyn TextMeasure,
+) -> Result<Value, String> {
+    let toks = tokenize(expr)?;
+    let mut p = Parser {
+        toks: &toks,
+        pos: 0,
+        env,
+        strs,
+        ctx,
+        measure: m,
+    };
+    let v = p.expr()?;
+    if p.pos != toks.len() {
+        return Err(format!("trailing tokens at {}", p.pos));
+    }
+    Ok(v)
+}
+
 /// Text measurement bridge for `TEXTWIDTH`/`TEXTHEIGHT` (GitHub #147).
 /// The evaluator lives in this bottom crate while the metrics engine
 /// (`dc::textmetrics`) lives further up; callers that CAN measure
@@ -123,6 +175,8 @@ pub fn eval_measured(expr: &str, env: &Env, m: &dyn TextMeasure) -> Result<Value
         toks: &toks,
         pos: 0,
         env,
+        strs: &StrEnv::new(),
+        ctx: &FieldCtx::default(),
         measure: m,
     };
     let v = p.expr()?;
@@ -320,6 +374,10 @@ struct Parser<'a> {
     toks: &'a [Tok],
     pos: usize,
     env: &'a Env,
+    /// String-valued cells (field evaluation only; empty otherwise).
+    strs: &'a StrEnv,
+    /// The field context (page/master/document facts).
+    ctx: &'a FieldCtx,
     measure: &'a dyn TextMeasure,
 }
 
@@ -474,11 +532,16 @@ impl<'a> Parser<'a> {
                         .ok_or_else(|| "TheText: no text metrics bridge".to_string());
                 }
                 // Unit-suffixed idents like `0.5DL` arrive as Num + Ident;
-                // bare idents resolve from the environment.
-                self.env
-                    .get(&name)
-                    .map(|v| Value::Num(*v))
-                    .ok_or_else(|| format!("unknown cell '{name}'"))
+                // bare idents resolve from the environment, then from
+                // the string layer (field evaluation's User/Prop text
+                // cells — #267).
+                if let Some(v) = self.env.get(&name) {
+                    return Ok(Value::Num(*v));
+                }
+                if let Some(s) = self.strs.get(&name) {
+                    return Ok(Value::Str(s.clone()));
+                }
+                Err(format!("unknown cell '{name}'"))
             }
             Some(Tok::LParen) => {
                 let v = self.expr()?;
@@ -638,6 +701,132 @@ impl<'a> Parser<'a> {
                     .text_height(&text, width)
                     .map(Value::Num)
                     .ok_or_else(|| "TEXTHEIGHT: no text metrics bridge".to_string())
+            }
+            // ---- #267 field-evaluation slice ----
+            // All corpus-attested (2026-11-16 Value.F census): the
+            // string pair, the context set, and the date/format set.
+            // Anything unresolvable errors so callers fall back to
+            // the cached `V`.
+            "INDEX" => {
+                // INDEX(element, list, [separator]): 0-BASED element
+                // (the corpus classic INDEX(0, INDEX(0, MASTERNAME(),
+                // ":"), ".") takes the first segment); "," splits by
+                // default. Out-of-range or non-list values error.
+                if args.is_empty() || args.len() > 3 {
+                    return Err(format!("{name} takes 1 to 3 arguments"));
+                }
+                let element = arg(&args, 0)? as usize;
+                let list = args[1].clone().coerce_str();
+                let sep = if args.len() == 3 {
+                    args[2].clone().coerce_str()
+                } else {
+                    ",".to_string()
+                };
+                if sep.is_empty() {
+                    return Err("INDEX: empty separator".into());
+                }
+                list.split(&sep)
+                    .nth(element)
+                    .map(|s| Value::Str(s.to_string()))
+                    .ok_or_else(|| "INDEX: element out of range".to_string())
+            }
+            "STRSAME" => {
+                if args.len() != 2 {
+                    return Err(format!("{name} takes two arguments"));
+                }
+                // Case-INsensitive equality (Visio's default; the
+                // case-sensitive form is STRSAMEEX, unattested).
+                let a = args[0].clone().coerce_str();
+                let b = args[1].clone().coerce_str();
+                Ok(Value::Num(f64::from(a.eq_ignore_ascii_case(&b))))
+            }
+            "MASTERNAME" => {
+                if !args.is_empty() {
+                    return Err(format!("{name} takes no arguments"));
+                }
+                self.ctx
+                    .master_name
+                    .clone()
+                    .map(Value::Str)
+                    .ok_or_else(|| "MASTERNAME: no field context".to_string())
+            }
+            "PAGENUMBER" => {
+                if !args.is_empty() {
+                    return Err(format!("{name} takes no arguments"));
+                }
+                self.ctx
+                    .page_number
+                    .map(Value::Num)
+                    .ok_or_else(|| "PAGENUMBER: no field context".to_string())
+            }
+            "PAGENAME" => {
+                if !args.is_empty() {
+                    return Err(format!("{name} takes no arguments"));
+                }
+                self.ctx
+                    .page_name
+                    .clone()
+                    .map(Value::Str)
+                    .ok_or_else(|| "PAGENAME: no field context".to_string())
+            }
+            "DOCLASTSAVE" | "DOCLASTEDIT" => {
+                if !args.is_empty() {
+                    return Err(format!("{name} takes no arguments"));
+                }
+                let v = if upper_name == "DOCLASTSAVE" {
+                    &self.ctx.doc_last_save
+                } else {
+                    &self.ctx.doc_last_edit
+                };
+                v.clone()
+                    .map(Value::Str)
+                    .ok_or_else(|| format!("{name}: no field context"))
+            }
+            // NOW(): deliberately unresolvable in this renderer — the
+            // FieldCtx carries no wall clock, so renders stay
+            // deterministic and the cached V serves instead.
+            "NOW" => Err("NOW: no field context (renders are deterministic)".into()),
+            "DATE" => {
+                if args.len() != 3 {
+                    return Err(format!("{name} takes three arguments"));
+                }
+                let (y, m, d) = (arg(&args, 0)?, arg(&args, 1)?, arg(&args, 2)?);
+                Ok(Value::Num(
+                    crate::fieldfmt::days_from_civil(y as i64, m as i64, d as i64) as f64,
+                ))
+            }
+            "FORMAT" | "FORMATEX" => {
+                // FORMAT(value, picture); FORMATEX's optional trailing
+                // unit arguments (src/dst) have no attested corpus use
+                // beyond the picture itself, so they are accepted and
+                // ignored — the value is already in internal units.
+                if args.len() < 2 {
+                    return Err(format!("{name} takes (value, picture[, ...])"));
+                }
+                let pic = args[1].clone().coerce_str();
+                Ok(Value::Str(match (args[0].as_f64(), args[0].clone()) {
+                    (Some(n), _) => crate::fieldfmt::apply_picture(Some(n), None, &pic),
+                    (_, Value::Str(s)) => crate::fieldfmt::apply_picture(None, Some(&s), &pic),
+                    _ => String::new(),
+                }))
+            }
+            "FIELDPICTURE" => {
+                if args.len() != 1 {
+                    return Err(format!("{name} takes one argument"));
+                }
+                // The table pinned from the corpus's own F→V pairs
+                // (2026-11-16 census): the esc range generalizes, 20
+                // is the date placeholder "ddddd", 37/39 the string
+                // pictures, 200/202 the {<n>} datetime forms.
+                let code = arg(&args, 0)? as i64;
+                let pic = match code {
+                    20 => "ddddd".to_string(),
+                    37 => "@".to_string(),
+                    39 => "@+".to_string(),
+                    200..=202 => format!("{{<{code}>}}"),
+                    n => format!("esc({n})"),
+                };
+                Ok(Value::Str(pic))
             }
             // ---- #122/FS-033 breadth slice ----
             // Math: the corpus composes ABS/ATAN2/CEILING/INT with the
@@ -1703,3 +1892,100 @@ mod tests {
         assert!((v - 0.2362204724409449 / 2.0).abs() < 1e-12);
     }
 }
+
+    /// ---- #267 field evaluation ----
+    #[cfg(test)]
+    mod field {
+        use super::*;
+
+        fn ctx() -> FieldCtx {
+            FieldCtx {
+                page_name: Some("Page-1".into()),
+                page_number: Some(2.0),
+                master_name: Some("Process".into()),
+                doc_last_save: Some("2015-02-08T09:30:00".into()),
+                doc_last_edit: Some("2014-05-15T00:00:00".into()),
+            }
+        }
+
+        fn ev(expr: &str) -> Value {
+            eval_field(expr, &Env::new(), &StrEnv::new(), &ctx(), &NoText).unwrap()
+        }
+
+        fn ev_err(expr: &str) -> bool {
+            eval_field(expr, &Env::new(), &StrEnv::new(), &ctx(), &NoText).is_err()
+        }
+
+        #[test]
+        fn string_layer_resolves_after_the_numeric_env() {
+            let mut strs = StrEnv::new();
+            strs.insert("User.Label".to_string(), "Solution Architect".to_string());
+            let mut env = Env::new();
+            env.insert("User.Label".to_string(), 2.5);
+            // Numeric wins.
+            let v = eval_field("User.Label&\"\"", &env, &strs, &ctx(), &NoText).unwrap();
+            assert_eq!(v, Value::Str("2.5".into()));
+            // Numeric gap → string.
+            let v = eval_field("User.Label", &Env::new(), &strs, &ctx(), &NoText).unwrap();
+            assert_eq!(v, Value::Str("Solution Architect".into()));
+            // Neither → error (cached-V fallback).
+            assert!(eval_field("User.None", &Env::new(), &strs, &ctx(), &NoText).is_err());
+        }
+
+        #[test]
+        fn index_is_zero_based_with_a_separator() {
+            assert_eq!(ev("INDEX(0,\"a.b.c\",\".\")"), Value::Str("a".into()));
+            assert_eq!(ev("INDEX(1,\"a:b:c\",\":\")"), Value::Str("b".into()));
+            // The corpus classic: master name split at ":" then ".".
+            assert_eq!(
+                ev("INDEX(0,INDEX(0,MASTERNAME(),\":\"),\".\")"),
+                Value::Str("Process".into())
+            );
+            assert!(ev_err("INDEX(5,\"a\",\",\")"));
+        }
+
+        #[test]
+        fn strsame_is_case_insensitive() {
+            assert_eq!(ev("STRSAME(\"Process\",\"process\")"), Value::Num(1.0));
+            assert_eq!(ev("STRSAME(\"a\",\"b\")"), Value::Num(0.0));
+        }
+
+        #[test]
+        fn context_functions_read_the_ctx() {
+            assert_eq!(ev("MASTERNAME()"), Value::Str("Process".into()));
+            assert_eq!(ev("PAGENUMBER()"), Value::Num(2.0));
+            assert_eq!(ev("PAGENAME()"), Value::Str("Page-1".into()));
+            assert_eq!(ev("DOCLASTSAVE()"), Value::Str("2015-02-08T09:30:00".into()));
+            assert_eq!(ev("DOCLASTEDIT()"), Value::Str("2014-05-15T00:00:00".into()));
+            // NOW() is deliberately unresolvable (deterministic renders).
+            assert!(ev_err("NOW()"));
+        }
+
+        #[test]
+        fn fieldpicture_matches_the_corpus_table() {
+            assert_eq!(ev("FIELDPICTURE(0)"), Value::Str("esc(0)".into()));
+            assert_eq!(ev("FIELDPICTURE(8)"), Value::Str("esc(8)".into()));
+            assert_eq!(ev("FIELDPICTURE(20)"), Value::Str("ddddd".into()));
+            assert_eq!(ev("FIELDPICTURE(37)"), Value::Str("@".into()));
+            assert_eq!(ev("FIELDPICTURE(39)"), Value::Str("@+".into()));
+            assert_eq!(ev("FIELDPICTURE(200)"), Value::Str("{<200>}".into()));
+        }
+
+        #[test]
+        fn format_applies_pictures() {
+            assert_eq!(ev("FORMAT(42005,\"{{d MMMM yyyy}}\")"), Value::Str("1 January 2015".into()));
+            assert_eq!(ev("FORMAT(2,\"esc(8)\")"), Value::Str("2.000".into()));
+            assert_eq!(
+                ev("FORMAT(DOCLASTEDIT(),\"c\")"),
+                Value::Str("5/15/2014".into())
+            );
+            // FORMATEX accepts the unit tail and formats the value.
+            assert_eq!(ev("FORMATEX(1.5,\"esc(0)\",\"in\",\"cm\")"), Value::Str("1.5".into()));
+        }
+
+        #[test]
+        fn date_yields_the_serial() {
+            // 2015-01-01 = serial 42005 in the Excel epoch.
+            assert_eq!(ev("DATE(2015,1,1)"), Value::Num(42005.0));
+        }
+    }

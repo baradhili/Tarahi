@@ -291,3 +291,132 @@ fn editor_apply_and_undo_route_their_touches() {
     let (_, touched) = ed.redo().unwrap().unwrap();
     assert_eq!(touched.shapes[0].touch, Touch::Move);
 }
+
+/// #267 live field re-eval: a `Prop.X` row edit damages every
+/// field-bearing shape whose Value formula references it, on top of
+/// the edited shape's own touch; an unrelated row edit does not.
+#[test]
+fn prop_row_edits_damage_field_shapes_referencing_the_row() {
+    use vsdx::model::{Cell, Row, Section, SheetChild};
+
+    let mut ed = doc_with_shape();
+    // A second shape carrying a Field row referencing Prop.Name.
+    let mut field_shape = vsdx::model::Shape {
+        id: 2,
+        type_: Some("Shape".into()),
+        ..vsdx::model::Shape::default()
+    };
+    field_shape.sheet.children.push(SheetChild::Section(Section {
+        name: "Field".into(),
+        ix: 0,
+        attrs: vec![("N".into(), "Field".into())],
+        cells: Vec::new(),
+        rows: vec![Row {
+            t: None,
+            ix: 0,
+            n: None,
+            attrs: vec![("IX".into(), "0".into())],
+            cells: vec![
+                (
+                    "Value".into(),
+                    Cell {
+                        v: Some(String::new()),
+                        u: Some("STR".into()),
+                        f: Some("Prop.Name".into()),
+                        ..Cell::default()
+                    },
+                ),
+                ("Format".into(), Cell::value("esc(0)")),
+            ],
+        }],
+    }));
+    let page = ed
+        .doc
+        .pages
+        .iter_mut()
+        .find(|p| p.id == 0)
+        .unwrap();
+    page.shapes.push(field_shape);
+
+    // A Prop.Name edit touches BOTH shapes.
+    let cmd = SetRowCell::new(Scope::Shape { page: 0, shape: 1 }, "Prop", 0, RowSel::Named("Name".into()), "Value", vsdx::model::Cell::value("New"));
+    let touched = touched_of(&ed, &cmd);
+    let touched_shapes: Vec<i64> = touched.shapes.iter().map(|t| t.shape).collect();
+    assert!(touched_shapes.contains(&1), "the edited shape");
+    assert!(touched_shapes.contains(&2), "the field shape referencing Prop.Name");
+    assert!(
+        touched
+            .shapes
+            .iter()
+            .all(|t| t.touch == Touch::Ink),
+        "field damage is ink"
+    );
+
+    // An unrelated row edit does not drag the field shape in.
+    let cmd = SetRowCell::new(Scope::Shape { page: 0, shape: 1 }, "Prop", 0, RowSel::Named("Other".into()), "Value", vsdx::model::Cell::value("New"));
+    let touched = touched_of(&ed, &cmd);
+    assert!(
+        !touched.shapes.iter().any(|t| t.shape == 2),
+        "unrelated row: no field damage"
+    );
+}
+
+/// #267 Insert Field: the row lands, the marker appends to the raw
+/// text, and undo restores both in one step.
+#[test]
+fn insert_field_writes_row_and_marker_and_undoes_whole() {
+    use dc_core::commands::InsertField;
+    use vsdx::model::SheetChild;
+
+    let mut ed = doc_with_shape();
+    let scope = Scope::Shape { page: 0, shape: 1 };
+    ed.apply(InsertField::new(scope.clone(), "MASTERNAME()", "esc(0)", 0.0))
+        .unwrap();
+    let page = ed.doc.pages.iter().find(|p| p.id == 0).unwrap();
+    let s = &page.shapes[0];
+    let rows = s
+        .sheet
+        .sections_named("Field")
+        .into_iter()
+        .next()
+        .expect("the Field section materializes");
+    assert_eq!(rows.rows.len(), 1);
+    assert_eq!(rows.rows[0].ix, 0);
+    assert_eq!(
+        rows.rows[0].cell("Value").and_then(|c| c.f.as_deref()),
+        Some("MASTERNAME()")
+    );
+    assert_eq!(rows.rows[0].cell("Format").and_then(|c| c.v.as_deref()), Some("esc(0)"));
+    assert_eq!(s.sheet.text_raw.as_deref(), Some("<fld IX='0'/>"));
+
+    // A second insert continues the IX sequence.
+    ed.apply(InsertField::new(scope.clone(), "PAGENUMBER()", "0", 0.0))
+        .unwrap();
+    let page = ed.doc.pages.iter().find(|p| p.id == 0).unwrap();
+    let s = &page.shapes[0];
+    let rows = s.sheet.sections_named("Field").into_iter().next().unwrap();
+    assert_eq!(rows.rows[1].ix, 1);
+    assert_eq!(s.sheet.text_raw.as_deref(), Some("<fld IX='0'/><fld IX='1'/>"));
+
+    // One undo removes the second row AND its marker.
+    ed.undo().unwrap();
+    let page = ed.doc.pages.iter().find(|p| p.id == 0).unwrap();
+    let s = &page.shapes[0];
+    let rows = s.sheet.sections_named("Field").into_iter().next().unwrap();
+    assert_eq!(rows.rows.len(), 1);
+    assert_eq!(s.sheet.text_raw.as_deref(), Some("<fld IX='0'/>"));
+
+    // Undoing the first insert removes the whole section and marker.
+    ed.undo().unwrap();
+    let page = ed.doc.pages.iter().find(|p| p.id == 0).unwrap();
+    let s = &page.shapes[0];
+    assert!(
+        !s.sheet
+            .children
+            .iter()
+            .any(|c| matches!(c, SheetChild::Section(sec) if sec.name == "Field")),
+        "the created Field section disappears on undo"
+    );
+    // The fixture carried no text at all — undo restores the absence.
+    assert_eq!(s.sheet.text_raw.as_deref(), None);
+}

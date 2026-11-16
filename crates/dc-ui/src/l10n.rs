@@ -1962,7 +1962,98 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "fields-planned",
+        message: "field",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-category-custom-formula",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-category-document-info",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-category-object-info",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-category-page-info",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-custom-formula-label",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-dialog-category",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-dialog-field",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-dialog-format",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-doc-last-edited",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-doc-last-saved",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-master-name",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-page-name",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-page-number",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -2600,6 +2691,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "insert-control",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "insert-field-tip",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -4496,6 +4594,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "select-a-shape-to-insert-a-field",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "select-all",
         attribute: None,
         vars: &[],
@@ -6376,11 +6481,11 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..45097,
-            Self::En => 45097..88854,
-            Self::Es => 88854..137021,
-            Self::Fa => 137021..194428,
-            Self::ZhHans => 194428..236124,
+            Self::De => 0..45755,
+            Self::En => 45755..90100,
+            Self::Es => 90100..138973,
+            Self::Fa => 138973..197075,
+            Self::ZhHans => 197075..239350,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -7537,8 +7642,47 @@ impl L10nLanguage {
             .msg("extracting-built-in-stencils-to", Some(_args))
             .unwrap()
     }
-    pub fn msg_fields_planned(&self) -> String {
-        self.0.msg("fields-planned", None).unwrap()
+    pub fn msg_field(&self) -> String {
+        self.0.msg("field", None).unwrap()
+    }
+    pub fn msg_field_category_custom_formula(&self) -> String {
+        self.0.msg("field-category-custom-formula", None).unwrap()
+    }
+    pub fn msg_field_category_document_info(&self) -> String {
+        self.0.msg("field-category-document-info", None).unwrap()
+    }
+    pub fn msg_field_category_object_info(&self) -> String {
+        self.0.msg("field-category-object-info", None).unwrap()
+    }
+    pub fn msg_field_category_page_info(&self) -> String {
+        self.0.msg("field-category-page-info", None).unwrap()
+    }
+    pub fn msg_field_custom_formula_label(&self) -> String {
+        self.0.msg("field-custom-formula-label", None).unwrap()
+    }
+    pub fn msg_field_dialog_category(&self) -> String {
+        self.0.msg("field-dialog-category", None).unwrap()
+    }
+    pub fn msg_field_dialog_field(&self) -> String {
+        self.0.msg("field-dialog-field", None).unwrap()
+    }
+    pub fn msg_field_dialog_format(&self) -> String {
+        self.0.msg("field-dialog-format", None).unwrap()
+    }
+    pub fn msg_field_doc_last_edited(&self) -> String {
+        self.0.msg("field-doc-last-edited", None).unwrap()
+    }
+    pub fn msg_field_doc_last_saved(&self) -> String {
+        self.0.msg("field-doc-last-saved", None).unwrap()
+    }
+    pub fn msg_field_master_name(&self) -> String {
+        self.0.msg("field-master-name", None).unwrap()
+    }
+    pub fn msg_field_page_name(&self) -> String {
+        self.0.msg("field-page-name", None).unwrap()
+    }
+    pub fn msg_field_page_number(&self) -> String {
+        self.0.msg("field-page-number", None).unwrap()
     }
     pub fn msg_file(&self) -> String {
         self.0.msg("file", None).unwrap()
@@ -7864,6 +8008,9 @@ impl L10nLanguage {
     }
     pub fn msg_insert_control(&self) -> String {
         self.0.msg("insert-control", None).unwrap()
+    }
+    pub fn msg_insert_field_tip(&self) -> String {
+        self.0.msg("insert-field-tip", None).unwrap()
     }
     pub fn msg_insert_page(&self) -> String {
         self.0.msg("insert-page", None).unwrap()
@@ -8932,6 +9079,11 @@ impl L10nLanguage {
     pub fn msg_select_a_shape_to_edit_its_hyper(&self) -> String {
         self.0
             .msg("select-a-shape-to-edit-its-hyper", None)
+            .unwrap()
+    }
+    pub fn msg_select_a_shape_to_insert_a_field(&self) -> String {
+        self.0
+            .msg("select-a-shape-to-insert-a-field", None)
             .unwrap()
     }
     pub fn msg_select_all(&self) -> String {

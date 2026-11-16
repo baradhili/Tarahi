@@ -85,6 +85,65 @@ enum FormatSection {
     Text,
 }
 
+/// The Insert Field dialog's draft (#267): which category, which of
+/// its fields, which format picture, and the custom-formula entry.
+#[derive(Clone, Default)]
+struct FieldDraft {
+    category: usize,
+    field: usize,
+    format: usize,
+    custom: String,
+}
+
+/// One insertable field: its list label (a catalog message ID routed
+/// at draw time), the `Value` formula, and the Field `Type` cell the
+/// row carries (the `Format` picture comes from the dropdown).
+struct FieldEntry {
+    label: &'static str,
+    formula: &'static str,
+    field_type: f64,
+}
+
+/// The static categories (Shape Data's entries come from the shape's
+/// Prop rows at draw time; the rest are the corpus-attested set).
+const FIELD_CATEGORIES: [&str; 5] = [
+    "ss-section-shape-data",
+    "field-category-page-info",
+    "field-category-document-info",
+    "field-category-object-info",
+    "field-category-custom-formula",
+];
+
+fn field_entries(category: usize) -> Vec<FieldEntry> {
+    match category {
+        1 => vec![
+            FieldEntry { label: "field-page-name", formula: "PAGENAME()", field_type: 0.0 },
+            FieldEntry { label: "field-page-number", formula: "PAGENUMBER()", field_type: 0.0 },
+        ],
+        2 => vec![
+            FieldEntry { label: "field-doc-last-saved", formula: "DOCLASTSAVE()", field_type: 5.0 },
+            FieldEntry { label: "field-doc-last-edited", formula: "DOCLASTEDIT()", field_type: 5.0 },
+        ],
+        3 => vec![FieldEntry {
+            label: "field-master-name",
+            formula: "MASTERNAME()",
+            field_type: 0.0,
+        }],
+        4 => vec![FieldEntry {
+            label: "field-category-custom-formula",
+            formula: "",
+            field_type: 0.0,
+        }],
+        _ => Vec::new(), // Shape Data: the Prop rows, at draw time
+    }
+}
+
+/// The Format dropdown's options: the picture strings the corpus
+/// carries (pictures are model vocabulary — never translated).
+const FIELD_FORMATS: [&str; 8] = [
+    "esc(0)", "esc(1)", "@", "0", "0.00", "0u", "{{M/d/yyyy}}", "c",
+];
+
 pub struct App {
     ed: Option<Editor>,
     path: PathBuf,
@@ -106,6 +165,10 @@ pub struct App {
     reorder_open: bool,
     /// The Hyperlinks dialog is open for this shape (#28).
     hyperlink_open: Option<i64>,
+    /// The Insert Field dialog is open for this shape (#267).
+    field_open: Option<i64>,
+    /// The Insert Field dialog's draft (#267).
+    field_draft: FieldDraft,
     /// Draft row being added/edited in the Hyperlinks dialog (#28).
     hyperlink_draft: Option<HyperlinkDraft>,
     /// The Comments popup is open for this shape (#29 rework: the
@@ -671,6 +734,8 @@ impl App {
             tab_scroll_to_active: false,
             reorder_open: false,
             hyperlink_open: None,
+            field_open: None,
+            field_draft: FieldDraft::default(),
             hyperlink_draft: None,
             comment_target: None,
             comment_body: String::new(),
@@ -8286,6 +8351,17 @@ impl App {
             Action::Group => self.group_selection(),
             Action::ContainerDisband => self.disband_container(),
             Action::Ungroup => self.ungroup_selection(),
+            Action::InsertField => {
+                // #267 Insert ▸ Field: the dialog on the primary
+                // selection; no selection notes it.
+                match self.sel {
+                    Some((_, sid)) => {
+                        self.field_open = Some(sid);
+                        self.field_draft = FieldDraft::default();
+                    }
+                    None => self.status = crate::i18n::strs().msg_select_a_shape_to_insert_a_field(),
+                }
+            }
             Action::Hyperlink => {
                 // #252 Insert ▸ Links: the Hyperlinks dialog (#28/#71)
                 // on the primary selection; no selection notes it.
@@ -11764,6 +11840,214 @@ impl App {
         }
     }
 
+    /// The Insert Field dialog (#267): Category / Field / Format in
+    /// the 2016 layout. OK writes the Field row AND appends the
+    /// `<fld IX>` marker to the shape's text in ONE undo step (the
+    /// dc-core `InsertField` command).
+    fn field_window(&mut self, ctx: &egui::Context) {
+        use crate::i18n::strs;
+        let Some(shape_id) = self.field_open else {
+            return;
+        };
+        // Close automatically when the shape or page goes away.
+        let alive = self
+            .ed()
+            .and_then(|ed| ed.doc.pages.get(self.page_idx))
+            .is_some_and(|p| vsdx::model::find_shape_by_id(&p.shapes, shape_id).is_some());
+        if !alive {
+            self.field_open = None;
+            return;
+        }
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
+        let strs = strs();
+        let mut draft = std::mem::take(&mut self.field_draft);
+        let mut apply: Option<(String, String, f64)> = None;
+        let mut close = false;
+        // The title-bar X routes through the same close flag as
+        // OK/Cancel (nothing else mutates `open`).
+        let mut open = true;
+        egui::Window::new(strs.msg_field())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                let dir = if crate::i18n::rtl() {
+                    egui::Layout::top_down(egui::Align::RIGHT)
+                } else {
+                    egui::Layout::top_down(egui::Align::LEFT)
+                };
+                ui.with_layout(dir, |ui| {
+                    // Prop rows of the shape (Shape Data category's
+                    // entries, resolved live).
+                    let props: Vec<String> = self
+                        .ed()
+                        .and_then(|ed| ed.doc.pages.get(self.page_idx))
+                        .and_then(|p| vsdx::model::find_shape_by_id(&p.shapes, shape_id))
+                        .map(|s| {
+                            let mut names: Vec<String> = s
+                                .sheet
+                                .sections_named("Prop")
+                                .iter()
+                                .flat_map(|sec| &sec.rows)
+                                .filter_map(|r| r.n.clone())
+                                .collect();
+                            if let Some(src) = self
+                                .ed()
+                                .and_then(|ed| {
+                                    let chain = dc_core::shape_chain(
+                                        &ed.doc,
+                                        page_id,
+                                        shape_id,
+                                    )
+                                    .ok()?;
+                                    ed.doc.instance_source(s, &chain)
+                                })
+                            {
+                                for sec in src.sheet.sections_named("Prop") {
+                                    for r in &sec.rows {
+                                        if let Some(n) = &r.n {
+                                            if !names.contains(n) {
+                                                names.push(n.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            names.sort();
+                            names
+                        })
+                        .unwrap_or_default();
+                    let field_names: Vec<String> = if draft.category == 0 {
+                        props.clone()
+                    } else {
+                        field_entries(draft.category)
+                            .iter()
+                            .map(|e| {
+                                match e.label {
+                                    "field-page-name" => strs.msg_field_page_name(),
+                                    "field-page-number" => strs.msg_field_page_number(),
+                                    "field-doc-last-saved" => strs.msg_field_doc_last_saved(),
+                                    "field-doc-last-edited" => strs.msg_field_doc_last_edited(),
+                                    "field-master-name" => strs.msg_field_master_name(),
+                                    _ => strs.msg_field_category_custom_formula(),
+                                }
+                            })
+                            .collect()
+                    };
+                    // Clamp the draft against category switches.
+                    if draft.category == 0 && draft.field >= field_names.len() {
+                        draft.field = 0;
+                    }
+                    ui.label(strs.msg_field_dialog_category());
+                    ui.add_space(2.0);
+                    for (i, cat) in FIELD_CATEGORIES.iter().enumerate() {
+                        let label = match *cat {
+                            "ss-section-shape-data" => strs.msg_shape_data(),
+                            "field-category-page-info" => strs.msg_field_category_page_info(),
+                            "field-category-document-info" => {
+                                strs.msg_field_category_document_info()
+                            }
+                            "field-category-object-info" => strs.msg_field_category_object_info(),
+                            _ => strs.msg_field_category_custom_formula(),
+                        };
+                        if ui
+                            .radio(draft.category == i, label)
+                            .clicked()
+                        {
+                            draft.category = i;
+                            draft.field = 0;
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.label(strs.msg_field_dialog_field());
+                    ui.add_space(2.0);
+                    for (i, name) in field_names.iter().enumerate() {
+                        if ui.radio(draft.field == i, name).clicked() {
+                            draft.field = i;
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let current = FIELD_FORMATS
+                            .get(draft.format)
+                            .copied()
+                            .unwrap_or("esc(0)");
+                        // from_label draws the caption AND carries the
+                        // combo's accessibility name (the kittest
+                        // a11y audit).
+                        egui::ComboBox::from_label(strs.msg_field_dialog_format())
+                            .selected_text(current)
+                            .width(140.0)
+                            .show_ui(ui, |ui| {
+                                for (i, f) in FIELD_FORMATS.iter().enumerate() {
+                                    ui.selectable_value(
+                                        &mut draft.format,
+                                        i,
+                                        *f,
+                                    );
+                                }
+                            });
+                    });
+                    if draft.category == 4 {
+                        ui.horizontal(|ui| {
+                            ui.label(strs.msg_field_custom_formula_label());
+                            ui.add(
+                                egui::TextEdit::singleline(&mut draft.custom)
+                                    .desired_width(220.0),
+                            );
+                        });
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(strs.msg_ok()).clicked() {
+                            // Resolve the draft into (formula, picture,
+                            // type) at click time.
+                            let (formula, field_type) = if draft.category == 0 {
+                                let name = field_names
+                                    .get(draft.field)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                (format!("Prop.{name}"), 0.0)
+                            } else {
+                                let entries = field_entries(draft.category);
+                                match entries.get(draft.field) {
+                                    Some(e) if draft.category != 4 => {
+                                        (e.formula.to_string(), e.field_type)
+                                    }
+                                    _ => (draft.custom.trim().to_string(), 0.0),
+                                }
+                            };
+                            if !formula.is_empty() {
+                                let picture = FIELD_FORMATS
+                                    .get(draft.format)
+                                    .copied()
+                                    .unwrap_or("esc(0)");
+                                apply = Some((formula, picture.to_string(), field_type));
+                            }
+                            close = true;
+                        }
+                        if ui.button(strs.msg_cancel()).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        self.field_draft = draft;
+        if let Some((formula, picture, field_type)) = apply {
+            let scope = Scope::Shape {
+                page: page_id,
+                shape: shape_id,
+            };
+            self.apply(dc_core::InsertField::new(scope, formula, picture, field_type));
+        }
+        if close || !open {
+            self.field_open = None;
+        }
+    }
+
     fn hyperlink_window(&mut self, ctx: &egui::Context) {
         let Some(shape_id) = self.hyperlink_open else {
             return;
@@ -15012,6 +15296,7 @@ impl App {
         self.snap_glue_window(&ctx);
         self.language_window(&ctx);
         self.hyperlink_window(&ctx);
+        self.field_window(&ctx);
         self.comment_window(&ctx);
         self.shape_data_window(&ctx);
         self.color_palette_window(&ctx);

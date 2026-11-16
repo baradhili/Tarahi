@@ -133,6 +133,7 @@ pub fn render_masters(doc: &Document) -> anyhow::Result<String> {
                 &m.part,
                 None,
                 None,
+                &FieldsCtx::masterless(),
                 None,
                 &mut svg,
             );
@@ -246,6 +247,7 @@ pub fn render_master(doc: &Document, m: &vsdx::Master) -> anyhow::Result<String>
             &m.part,
             None,
             None,
+            &FieldsCtx::masterless(),
             None,
             &mut svg,
         );
@@ -1028,6 +1030,10 @@ fn render_shape_layer_inner(
         ph = bh * PX_PER_IN,
     );
     if !hidden_member(shape) {
+        let fields = FieldsCtx::for_page(
+            page,
+            doc.pages.iter().position(|p| std::ptr::eq(p, page)).unwrap_or(0),
+        );
         render_shape(
             doc,
             shape,
@@ -1036,6 +1042,7 @@ fn render_shape_layer_inner(
             &page.part,
             skip_text,
             greek.as_ref(),
+            &fields,
             cull,
             &mut svg,
         );
@@ -1117,6 +1124,10 @@ fn render_page_full(
             .and_then(|c| c.numeric())
             .is_some_and(|m| hidden.contains(&(m as i64)))
     };
+    let fields = FieldsCtx::for_page(
+        page,
+        doc.pages.iter().position(|p| std::ptr::eq(p, page)).unwrap_or(0),
+    );
     for shape in &page.shapes {
         if hidden_member(shape) {
             continue;
@@ -1140,6 +1151,7 @@ fn render_page_full(
             &page.part,
             skip_text,
             None,
+            &fields,
             None,
             &mut svg,
         );
@@ -1486,6 +1498,34 @@ pub fn parent_local_point_to_page(
 /// wraps geometry, master mirroring, sub-shape recursion, and the
 /// text block.
 #[allow(clippy::too_many_arguments)] // the walk carries its whole environment
+/// The per-render field context (#267): the page-level formula facts
+/// plus this page's shape list (the cross-sheet `Sheet.N!` retry's
+/// search space). Master contact sheets render page-less —
+/// [`FieldsCtx::masterless`] leaves the page/master facts unresolved,
+/// and those fields fall back to their cached values exactly as
+/// before this module existed.
+pub struct FieldsCtx<'a> {
+    pub ctx: vsdx::formula::FieldCtx,
+    pub page_shapes: &'a [Shape],
+}
+
+impl<'a> FieldsCtx<'a> {
+    pub fn for_page(page: &'a vsdx::Page, page_ix: usize) -> Self {
+        Self {
+            ctx: crate::fields::page_ctx(page, page_ix),
+            page_shapes: &page.shapes,
+        }
+    }
+    pub fn masterless() -> FieldsCtx<'static> {
+        const EMPTY: &[Shape] = &[];
+        FieldsCtx {
+            ctx: vsdx::formula::FieldCtx::default(),
+            page_shapes: EMPTY,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // the render walk's context rides one call
 fn render_shape<'a>(
     doc: &'a Document,
     s: &'a Shape,
@@ -1494,6 +1534,7 @@ fn render_shape<'a>(
     part: &str,
     skip_text: Option<i64>,
     greek: Option<&GreekCtx>,
+    fields: &FieldsCtx,
     cull: Option<&InkCull>,
     out: &mut String,
 ) {
@@ -1556,9 +1597,9 @@ fn render_shape<'a>(
         if cull.is_some_and(|c| c.skips(sub.id)) {
             continue;
         }
-        render_shape_local(doc, sub, &chain, part, skip_text, greek, cull, out);
+        render_shape_local(doc, sub, &chain, part, skip_text, greek, fields, cull, out);
     }
-    mirror_master(doc, s, &chain, width, height, greek, out);
+    mirror_master(doc, s, &chain, width, height, greek, fields, out);
 
     emit_text(
         doc,
@@ -1570,6 +1611,7 @@ fn render_shape<'a>(
         sy,
         skip_text == Some(s.id),
         greek,
+        fields,
         out,
     );
     let _ = writeln!(out, "</g>");
@@ -1585,6 +1627,7 @@ fn render_shape_local<'a>(
     part: &str,
     skip_text: Option<i64>,
     greek: Option<&GreekCtx>,
+    fields: &FieldsCtx,
     cull: Option<&InkCull>,
     out: &mut String,
 ) {
@@ -1626,9 +1669,9 @@ fn render_shape_local<'a>(
         if cull.is_some_and(|c| c.skips(sub.id)) {
             continue;
         }
-        render_shape_local(doc, sub, &chain, part, skip_text, greek, cull, out);
+        render_shape_local(doc, sub, &chain, part, skip_text, greek, fields, cull, out);
     }
-    mirror_master(doc, s, &chain, width, height, greek, out);
+    mirror_master(doc, s, &chain, width, height, greek, fields, out);
     // Group-local rendering applies no flip scale of its own, so the text
     // needs no flip compensation here.
     emit_text(
@@ -1641,6 +1684,7 @@ fn render_shape_local<'a>(
         1.0,
         skip_text == Some(s.id),
         greek,
+        fields,
         out,
     );
     let _ = writeln!(out, "</g>");
@@ -1669,6 +1713,7 @@ fn multi_root_master(doc: &Document, s: &Shape) -> bool {
 ///   emitting a corrective transform per child. Cells we cannot
 ///   evaluate fall back to the uniform instance/master scale, so masters
 ///   without authored formulas keep their historical rendering.
+#[allow(clippy::too_many_arguments)]
 fn mirror_master(
     doc: &Document,
     s: &Shape,
@@ -1676,6 +1721,7 @@ fn mirror_master(
     width: f64,
     height: f64,
     greek: Option<&GreekCtx>,
+    fields: &FieldsCtx,
     out: &mut String,
 ) {
     if !s.sub_shapes.is_empty() {
@@ -1726,7 +1772,7 @@ fn mirror_master(
             // Master-canvas roots of a multi-root master: the union
             // bbox maps into the instance rect, which the node's own
             // ink box bounds — no cull of their own (#236).
-            render_shape_local(doc, r, &[], mpart, None, greek, None, out);
+            render_shape_local(doc, r, &[], mpart, None, greek, fields, None, out);
         }
         let _ = writeln!(out, "</g>");
     } else if let Some(root) = m.shapes.first() {
@@ -1753,7 +1799,7 @@ fn mirror_master(
             // Mirrored master children map into the instance's local
             // frame, bounded by the node's own ink box — no cull of
             // their own (#236).
-            render_shape_local(doc, sub, chain, mpart, None, greek, None, out);
+            render_shape_local(doc, sub, chain, mpart, None, greek, fields, None, out);
             if wrapper.is_some() {
                 let _ = writeln!(out, "</g>");
             }
@@ -2822,6 +2868,7 @@ fn emit_text(
     sy: f64,
     skip: bool,
     greek: Option<&GreekCtx>,
+    fields: &FieldsCtx,
     out: &mut String,
 ) {
     if skip {
@@ -2842,13 +2889,28 @@ fn emit_text(
     // hangs past the margin in Visio, so the blanket `str::trim_end`
     // (whose whitespace set includes U+00A0) must not eat it.
     const TRAILING_TRIM: [char; 4] = ['\r', '\n', ' ', '\t'];
-    let Some(text) = s
-        .sheet
-        .text
-        .as_deref()
-        .map(|t| t.trim_end_matches(TRAILING_TRIM))
-        .filter(|t| !t.is_empty())
-    else {
+    let plain = s.sheet.text.as_deref().unwrap_or("");
+    // Field substitution FIRST (#267): the `<fld>` markers resolve to
+    // their evaluated, formatted values and the SUBSTITUTED string is
+    // what lays out, wraps, and paints — a marker occupies no visible
+    // text, so an all-field block whose plain form is empty still
+    // renders (the trim/empty gate runs on the substituted form).
+    let substituted;
+    let text_src: &str = if crate::fields::has_fields(s) {
+        substituted = crate::fields::substituted_text(
+            doc,
+            fields.page_shapes,
+            &fields.ctx,
+            s,
+            chain,
+            plain,
+        );
+        &substituted
+    } else {
+        plain
+    };
+    let trimmed = text_src.trim_end_matches(TRAILING_TRIM);
+    let Some(text) = (!trimmed.is_empty()).then_some(trimmed) else {
         return;
     };
     let tb = resolve_text_block(doc, s, chain, width, height);
@@ -6670,7 +6732,7 @@ mod tests {
         }
         let chain: Vec<&Shape> = Vec::new();
         let mut out = String::new();
-        render_shape(&doc, &inst, 8.5, &chain, "", None, None, None, &mut out);
+        render_shape(&doc, &inst, 8.5, &chain, "", None, None, &FieldsCtx::masterless(), None, &mut out);
         // The controls land at gx·W: 0.5 → 2.0 and 0.75 → 3.0; the y
         // fraction 0.5 of H=2 → 1.0 (emitted negated). The old
         // double-scale put them at 4.0 and 6.0.
@@ -6720,7 +6782,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, &FieldsCtx::masterless(), None, &mut out);
             out
         };
         // 0 = no head at all.
@@ -6878,7 +6940,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, &FieldsCtx::masterless(), None, &mut out);
             out
         };
         // A closed rectangle walk (returns to its start) with both
@@ -6956,7 +7018,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, &FieldsCtx::masterless(), None, &mut out);
             out
         };
         let flat = render("0");
@@ -6989,7 +7051,7 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+        render_shape(&doc, &s, 11.0, &chain, "", None, None, &FieldsCtx::masterless(), None, &mut out);
         assert!(
             out.contains(r#"stroke-width="0.00000""#),
             "an explicit zero stays zero: {out}"
@@ -7062,7 +7124,7 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+        render_shape(&doc, &s, 11.0, &chain, "", None, None, &FieldsCtx::masterless(), None, &mut out);
         // ONE even-odd fill element, first among the paths (under the
         // ink), carrying exactly the three fill-eligible subpaths.
         assert_eq!(
@@ -7116,7 +7178,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
             out
         };
         let hex = emit("#ED7D31");
@@ -7139,7 +7201,7 @@ mod tests {
         s.sheet.set_cell("TxtWidth", Cell::value("2.0"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
         assert!(
             out.contains(r##"fill="#000000""##),
             "default text is black: {out}"
@@ -7253,7 +7315,7 @@ mod tests {
         s.sheet.text = Some("hello".into());
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
         assert!(
             out.contains(r#"font-family="Arial, 'Liberation Sans', Carlito, sans-serif""#),
             "emitted text element: {out}"
@@ -7298,6 +7360,7 @@ mod tests {
             1.0,
             false,
             Some(&ctx),
+            &FieldsCtx::masterless(),
             &mut out,
         );
         assert!(
@@ -7324,6 +7387,7 @@ mod tests {
             1.0,
             false,
             Some(&ctx),
+            &FieldsCtx::masterless(),
             &mut out,
         );
         assert!(out.contains("tiny text"), "glyph path unchanged: {out}");
@@ -7342,7 +7406,7 @@ mod tests {
         let s = tiny("0.02");
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
         assert!(out.contains("tiny text"), "export never greeks: {out}");
     }
 
@@ -7398,7 +7462,7 @@ mod tests {
         let s = shape_with_pinned_text(txt_angle_deg);
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, sx, sy, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 2.0, 1.0, sx, sy, false, None, &FieldsCtx::masterless(), &mut out);
         let t = out
             .split("transform=\"")
             .nth(1)?
@@ -8876,7 +8940,7 @@ mod tests {
         let s = shape_1065();
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
         let lines = text_lines(&out);
         assert_eq!(
             lines,
@@ -8900,7 +8964,7 @@ mod tests {
         {
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
             assert!(out.is_empty(), "no text, no text element: {out}");
         }
 
@@ -8911,7 +8975,7 @@ mod tests {
         s.sheet.text = Some("  opened\r\na  b\n   \n\nend ".into());
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
         assert_eq!(
             text_lines(&out),
             vec!["  opened", "a  b", "   ", "", "end"],
@@ -9039,7 +9103,7 @@ mod tests {
         s.sheet.text = Some("\u{0633}\u{0644}\u{0627}\u{0645} \u{0639}\u{0644}\u{06CC}\u{06A9}\u{0645}".into());
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 3.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 3.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
         // The isolate pair wraps the line content.
         assert!(out.contains('\u{2067}'), "the RTL line carries an RLI: {out}");
         assert!(out.contains('\u{2069}'), "the RTL line carries a PDI: {out}");
@@ -9065,7 +9129,7 @@ mod tests {
         }
         let chain = [&s];
         let mut out2 = String::new();
-        emit_text(&doc, &s, &chain, 3.0, 1.0, 1.0, 1.0, false, None, &mut out2);
+        emit_text(&doc, &s, &chain, 3.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out2);
         let x2: f64 = out2
             .split(r#"<tspan x=""#)
             .nth(1)
@@ -9120,7 +9184,7 @@ mod tests {
         s.sheet.text = Some(format!("{fa}\r\n{fa}"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 3.0, 1.2, 1.5, 0.6, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 3.0, 1.2, 1.5, 0.6, false, None, &FieldsCtx::masterless(), &mut out);
         let ys: Vec<f64> = out
             .split(r#" y=""#)
             .skip(1)
@@ -9182,7 +9246,7 @@ mod tests {
         s.sheet.text = Some(format!("one\r\n\u{202B}{fa}"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 3.0, 1.4, 1.5, 0.7, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 3.0, 1.4, 1.5, 0.7, false, None, &FieldsCtx::masterless(), &mut out);
         let ys: Vec<f64> = out
             .split(r#" y=""#)
             .skip(1)
@@ -9212,7 +9276,7 @@ mod tests {
         s.sheet.text = Some("plain latin".into());
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
         assert!(!out.contains("direction="), "no direction attr: {out}");
         assert!(!out.contains('\u{2067}'), "no isolates: {out}");
     }
@@ -9290,7 +9354,7 @@ mod tests {
         s.sheet.set_cell("RightMargin", Cell::value("0"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
         assert_eq!(
             text_lines(&out),
             vec!["a", " ", "b"],
@@ -9310,7 +9374,7 @@ mod tests {
         s.sheet.set_cell("TxtWidth", Cell::value("0.8"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
         let lines = text_lines(&out);
         assert!(lines.len() > 1, "must wrap: {lines:?}");
         // The greedy invariant: every line except the last is full —
@@ -9339,7 +9403,7 @@ mod tests {
         s.sheet.set_cell("TxtWidth", Cell::value("0.5"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
         let lines = text_lines(&out);
         assert!(
             lines.len() > 1,
@@ -9364,7 +9428,7 @@ mod tests {
         s.sheet.set_cell("TxtWidth", Cell::value("8.0"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 8.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 8.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
         assert_eq!(
             text_lines(&out),
             vec!["one", "two", "three"],
@@ -9752,7 +9816,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
             out
         };
         // Baseline: no Pos cell → nominal draw, no shift.
@@ -9832,7 +9896,7 @@ mod tests {
             }
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
             out
         };
         // 0 and 255 paint nothing.
@@ -9871,7 +9935,7 @@ mod tests {
         );
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
         assert!(
             out.contains(r##"fill="#ffffff""##),
             "the theme-default label paints its cached white: {out}"
@@ -9909,7 +9973,7 @@ mod tests {
         s.sheet.set_cell("TextBkgnd", Cell::value("1"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
         assert!(
             out.contains(r##"fill="#000000""##) && out.contains("<rect"),
             "an all-RTL block paints its text background: {out}"
@@ -9952,7 +10016,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
             out
         };
         // Built-in style 1 draws a PATH dot (never a text glyph), at
@@ -10035,7 +10099,7 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
         // The element anchor is middle; only the bullet tspan pins
         // "start" (the main text tspan's override carries no
         // font-size, so this substring matches the bullet alone).
@@ -10071,7 +10135,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &FieldsCtx::masterless(), &mut out);
             out
         };
         for v in ["-1", "1.5", "256", "0.0"] {
@@ -10228,6 +10292,117 @@ mod tests {
             assert!(
                 !line.text.starts_with(['」', '。', '，', '、']),
                 "no line starts on closing punctuation: {lines:?}"
+            );
+        }
+    }
+
+    /// #267 render integration: a shape whose text is a `<fld>`
+    /// marker renders its EVALUATED Field value — the substituted
+    /// string is what lays out and paints, and a marker-free shape's
+    /// SVG is byte-identical to the pre-field behavior.
+    #[test]
+    fn field_text_renders_the_evaluated_value() {
+        let mut s = Shape {
+            id: 1,
+            ..Default::default()
+        };
+        s.sheet.set_cell("PinX", Cell::value("1.0"));
+        s.sheet.set_cell("PinY", Cell::value("1.0"));
+        s.sheet.set_cell("Width", Cell::value("2.0"));
+        s.sheet.set_cell("Height", Cell::value("1.0"));
+        s.sheet.set_cell("TxtWidth", Cell::value("2.0"));
+        s.sheet.set_cell("TxtHeight", Cell::value("1.0"));
+        s.sheet.children.push(SheetChild::Section(vsdx::model::Section {
+            name: "Prop".into(),
+            ix: 0,
+            attrs: vec![("N".into(), "Prop".into())],
+            cells: Vec::new(),
+            rows: vec![vsdx::model::Row {
+                t: Some("Named".into()),
+                ix: 0,
+                n: Some("Name".into()),
+                attrs: vec![("N".into(), "Name".into())],
+                cells: vec![("Value".into(), Cell::value("Solution Architect"))],
+            }],
+        }));
+        s.sheet.children.push(SheetChild::Section(vsdx::model::Section {
+            name: "Field".into(),
+            ix: 0,
+            attrs: vec![("N".into(), "Field".into())],
+            cells: Vec::new(),
+            rows: vec![vsdx::model::Row {
+                t: None,
+                ix: 0,
+                n: None,
+                attrs: vec![("IX".into(), "0".into())],
+                cells: vec![
+                    (
+                        "Value".into(),
+                        Cell {
+                            v: Some(String::new()),
+                            f: Some("Prop.Name".into()),
+                            ..Cell::default()
+                        },
+                    ),
+                    ("Format".into(), Cell::value("esc(0)")),
+                ],
+            }],
+        }));
+        s.sheet.text = Some(String::new());
+        s.sheet.text_raw = Some("<fld IX='0'/>".into());
+        {
+            let doc = Document::default();
+            let chain = [&s];
+            let mut out = String::new();
+            emit_text(
+                &doc,
+                &s,
+                &chain,
+                2.0,
+                1.0,
+                1.0,
+                1.0,
+                false,
+                None,
+                &FieldsCtx::masterless(),
+                &mut out,
+            );
+            assert!(
+                out.contains("Solution Architect"),
+                "the evaluated field renders: {out}"
+            );
+        }
+
+        // The live re-eval: a Prop edit flows through on the next
+        // render (substitution reads the CURRENT model, no cache).
+        if let Some(SheetChild::Section(sec)) = s
+            .sheet
+            .children
+            .iter_mut()
+            .find(|c| matches!(c, SheetChild::Section(sec) if sec.name == "Prop"))
+        {
+            sec.rows[0].cells[0] = ("Value".into(), Cell::value("Senior Architect"));
+        }
+        {
+            let doc = Document::default();
+            let chain = [&s];
+            let mut out = String::new();
+            emit_text(
+                &doc,
+                &s,
+                &chain,
+                2.0,
+                1.0,
+                1.0,
+                1.0,
+                false,
+                None,
+                &FieldsCtx::masterless(),
+                &mut out,
+            );
+            assert!(
+                out.contains("Senior Architect"),
+                "a Prop edit re-evaluates: {out}"
             );
         }
     }

@@ -11,12 +11,15 @@
 //! back to an OPC package, preserving everything the model retained
 //! (unknown parts verbatim, element order, all attributes, raw markup).
 
+pub mod fieldfmt;
 pub mod formula;
 pub mod model;
 pub mod opc;
 pub mod parse;
+pub mod text;
 pub mod write;
 
 pub use model::{Cell, Document, Master, Page, Row, Section, Shape, Sheet};
 pub use opc::Package;
+pub use text::{text_pieces, TextPiece};
 pub use write::{canonical_form, save, save_with};

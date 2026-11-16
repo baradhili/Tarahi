@@ -648,3 +648,58 @@ fn page_tab_rename_edits_inline() {
     h.run();
     assert_eq!(h.state().debug_page_names(), vec!["One", "Two"]);
 }
+
+/// #267 Insert Field dialog flow: select a shape, open the dialog from
+/// Insert ▸ Field, pick a Page Info field, OK writes the row + marker
+/// (the status names the command; the row/marker semantics are
+/// unit-pinned in dc-core's touch tests).
+#[test]
+fn insert_field_dialog_flow() {
+    use egui_kittest::kittest::Queryable;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let doc = fixture_pages(tmp.path(), &["Page-1"]);
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(
+            |ui, app: &mut App| {
+                dc_ui::theme::install(ui.ctx());
+                app.draw(ui);
+            },
+            App::with_doc(&doc),
+        );
+    h.run();
+    h.run();
+    h.state_mut().select_shape_for_test(0, 1);
+    h.run();
+    // Insert ▸ Field (the icon-only button's a11y label is its Text
+    // Field alt).
+    h.get_all_by_label_contains("Insert").next().expect("Insert tab").click();
+    h.run();
+    h.get_all_by_label_contains("Text Field").next().expect("Field button").click();
+    h.run();
+    h.run();
+    // The dialog is up: its Category caption leads.
+    h.get_by_label_contains("Category:");
+    // Switch to Page Info and pick Page Number.
+    h.get_by_label_contains("Page Info").click();
+    h.run();
+    // The ribbon carries its own Page Number placeholder — the
+    // dialog's list radio renders later in the tree.
+    h.get_all_by_label_contains("Page Number")
+        .last()
+        .expect("Page Number field entry")
+        .click();
+    h.run();
+    // OK — inserts with the chosen picture.
+    h.get_by_label("OK").click();
+    h.run();
+    h.run();
+    let status = h.state().debug_status().to_string();
+    assert!(
+        status.contains("insert field PAGENUMBER"),
+        "status names the field insert: {status}"
+    );
+}

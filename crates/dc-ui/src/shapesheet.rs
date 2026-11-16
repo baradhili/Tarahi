@@ -375,6 +375,7 @@ fn section_rank(name: &str) -> i32 {
         "Hyperlinks" => 300,
         "Actions" => 310,
         "Control" => 320,
+        "Field" => 330, // the corpus's section name is SINGULAR (#267)
         "Fields" => 330,
         "Scratch" => 340,
         name if name.starts_with("Geometry") => 400,
@@ -397,6 +398,7 @@ fn section_display_name(n: &str, ix: i64) -> String {
         "LineGradient" => strs.msg_ss_section_line_gradient_stops(),
         "Prop" => strs.msg_ss_section_shape_data(),
         "SmartTags" => strs.msg_ss_section_smart_tags(),
+        "Field" => strs.msg_ss_section_text_fields(),
         "Fields" => strs.msg_ss_section_text_fields(),
         "Control" => strs.msg_ss_section_control_points(),
         "Geometry" => strs.msg_ss_section_geometry_n(ix + 1),

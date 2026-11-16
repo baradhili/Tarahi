@@ -3,6 +3,7 @@
 
 pub mod curve;
 pub mod edit;
+pub mod fields;
 pub mod export;
 pub mod geom;
 pub mod pdf;

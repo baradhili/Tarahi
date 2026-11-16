@@ -5,7 +5,7 @@
 //! so an undone edit leaves the serialized package byte-identical.
 
 use anyhow::{bail, Context, Result};
-use vsdx::model::{Attrs, Cell, Document, IndexChild, Page, Row, Shape};
+use vsdx::model::{Attrs, Cell, Document, IndexChild, Page, Row, SheetChild, Shape};
 
 use crate::connects::{Connect, ConnectsOwner};
 use crate::scope::{find_shape_mut, sheet_mut, Scope};
@@ -649,7 +649,7 @@ impl SetRowCell {
 
 impl crate::Command for SetRowCell {
     fn touched(&self, doc: &Document) -> crate::TouchList {
-        match &self.scope {
+        let base = match &self.scope {
             Scope::Shape { page, shape } => {
                 match crate::scope::top_level_ancestor(doc, *page, *shape) {
                     Some(root) => crate::TouchList {
@@ -666,7 +666,27 @@ impl crate::Command for SetRowCell {
             }
             Scope::PageSheet { page } => crate::TouchList::page(*page),
             _ => crate::TouchList::all_pages(doc),
+        };
+        // Live field re-evaluation (#267): a User/Prop row edit
+        // damages every field-bearing shape whose Value formula
+        // references the row.
+        if matches!(self.section.as_str(), "User" | "Prop") {
+            let row = match &self.row {
+                RowSel::Named(n) => n.as_str(),
+                RowSel::Ix(_) => return base, // unnamed rows carry no referenceable name
+            };
+            let page_id = match &self.scope {
+                Scope::Shape { page, .. } | Scope::PageSheet { page } => *page,
+                _ => return base,
+            };
+            if let Some(row) = row.strip_prefix("Row_") {
+                // Visio's default row names (Row_1) are referenced
+                // verbatim in formulas.
+                return with_field_damage(doc, base, page_id, &self.section, row);
+            }
+            return with_field_damage(doc, base, page_id, &self.section, row);
         }
+        base
     }
 
     fn label(&self) -> String {
@@ -3512,4 +3532,242 @@ impl crate::Command for Macro {
 /// captures).
 fn path_root(page: &vsdx::model::Page, path: &[usize]) -> i64 {
     page.shapes.get(path[0]).map(|s| s.id).unwrap_or(-1)
+}
+
+// ---------------------------------------------------------------------------
+// Fields (#267)
+// ---------------------------------------------------------------------------
+
+/// The top-level shapes on `page` whose Field `Value` formulas mention
+/// `{section}.{row}` (#267 live re-eval): a `User.X`/`Prop.X` edit
+/// damages every field-bearing shape that references it — the issue's
+/// page-level walk at edit time in place of a dependency graph (the
+/// corpus's cross-sheet `Sheet.5!Prop.*` refs resolve per render
+/// anyway).
+fn field_shapes_referencing(doc: &Document, page_id: i64, section: &str, row: &str) -> Vec<i64> {
+    let Some(page) = doc.pages.iter().find(|p| p.id == page_id) else {
+        return Vec::new();
+    };
+    let needle = format!("{section}.{row}");
+    let mut out = Vec::new();
+    fn walk(shapes: &[vsdx::model::Shape], needle: &str, out: &mut Vec<i64>) {
+        for s in shapes {
+            let referenced = s.sheet.sections_named("Field").iter().any(|sec| {
+                sec.rows.iter().any(|r| {
+                    r.cell("Value")
+                        .and_then(|c| c.f.as_deref())
+                        .is_some_and(|f| f.contains(needle))
+                })
+            });
+            if referenced {
+                out.push(s.id);
+            }
+            walk(&s.sub_shapes, needle, out);
+        }
+    }
+    walk(&page.shapes, &needle, &mut out);
+    out
+}
+
+/// Extend a `TouchList` with the field-bearing shapes a User/Prop row
+/// edit invalidates (deduped, rolled up to their top-level ancestors,
+/// Ink without a sub — the whole subtree re-renders).
+fn with_field_damage(
+    doc: &Document,
+    mut list: crate::TouchList,
+    page: i64,
+    section: &str,
+    row: &str,
+) -> crate::TouchList {
+    for id in field_shapes_referencing(doc, page, section, row) {
+        let Some(root) = crate::scope::top_level_ancestor(doc, page, id) else {
+            continue;
+        };
+        let entry = crate::Touched {
+            page,
+            shape: root,
+            touch: crate::Touch::Ink,
+            sub: None,
+        };
+        if !list.shapes.contains(&entry) {
+            list.shapes.push(entry);
+        }
+    }
+    list
+}
+
+/// InsertField's undo snapshot: the text pair plus the Field
+/// section's prior state (`None` + created-flag when apply() created
+/// it).
+type InsertFieldSnapshot = (
+    Option<String>,
+    Option<String>,
+    Option<vsdx::model::Section>,
+    bool,
+);
+
+/// Insert a Field row and its `<fld IX>` text marker in ONE undo step
+/// (#267 — Insert Field). The row mirrors the corpus's saved shape
+/// (`Value` V=""/U="STR" with the formula, `Format` V=picture, `Type`,
+/// and the five default trailing cells), and the marker appends to the
+/// text's raw form — where the renderer's field substitution renders
+/// it. Undo restores the text pair and the Field section's prior state.
+pub struct InsertField {
+    pub scope: Scope,
+    /// The `Value` cell's formula ("" → `No Formula`).
+    pub formula: String,
+    /// The `Format` cell's picture string (e.g. `esc(0)`).
+    pub picture: String,
+    /// The `Type` cell's value (0 = custom formula, 5 = date/time).
+    pub field_type: f64,
+    old: Option<InsertFieldSnapshot>,
+    inserted_ix: i64,
+}
+
+impl InsertField {
+    pub fn new(
+        scope: Scope,
+        formula: impl Into<String>,
+        picture: impl Into<String>,
+        field_type: f64,
+    ) -> InsertField {
+        InsertField {
+            scope,
+            formula: formula.into(),
+            picture: picture.into(),
+            field_type,
+            old: None,
+            inserted_ix: 0,
+        }
+    }
+}
+
+impl crate::Command for InsertField {
+    fn touched(&self, doc: &Document) -> crate::TouchList {
+        match &self.scope {
+            Scope::Shape { page, shape } => {
+                match crate::scope::top_level_ancestor(doc, *page, *shape) {
+                    Some(root) => crate::TouchList {
+                        pages: vec![],
+                        shapes: vec![crate::Touched {
+                            page: *page,
+                            shape: root,
+                            touch: crate::Touch::Ink,
+                            sub: sub_shape(root, *shape),
+                        }],
+                    },
+                    None => crate::TouchList::page(*page),
+                }
+            }
+            _ => crate::TouchList::all_pages(doc),
+        }
+    }
+
+    fn label(&self) -> String {
+        format!("insert field {} ({})", self.formula, self.picture)
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<()> {
+        let sheet = sheet_mut(doc, &self.scope)?;
+        let section_ix = sheet
+            .sections_named("Field")
+            .first()
+            .map(|s| s.ix)
+            .unwrap_or(0);
+        let section = sheet.sections_named("Field").into_iter().next();
+        self.old = Some((
+            sheet.text.clone(),
+            sheet.text_raw.clone(),
+            section.cloned(),
+            section.is_none(),
+        ));
+        // Next row IX: past the last existing one (markers reference
+        // rows by IX, so a reuse would hijack an existing field).
+        let next_ix = section
+            .and_then(|s| s.rows.iter().map(|r| r.ix).max())
+            .map_or(0, |max| max + 1);
+        self.inserted_ix = next_ix;
+        let formula = if self.formula.is_empty() {
+            "No Formula".to_string()
+        } else {
+            self.formula.clone()
+        };
+        let row = vsdx::Row {
+            t: None,
+            ix: next_ix,
+            n: None,
+            attrs: vec![("IX".into(), next_ix.to_string())],
+            cells: vec![
+                (
+                    "Value".into(),
+                    Cell {
+                        v: Some(String::new()),
+                        u: Some("STR".into()),
+                        f: Some(formula),
+                        ..Cell::default()
+                    },
+                ),
+                ("Format".into(), Cell::value(&self.picture)),
+                ("Type".into(), Cell::value(format!("{}", self.field_type))),
+                ("UICat".into(), Cell { v: Some("0".into()), f: Some("No Formula".into()), ..Cell::default() }),
+                ("UICod".into(), Cell { v: Some("0".into()), f: Some("No Formula".into()), ..Cell::default() }),
+                ("UIFmt".into(), Cell { v: Some("0".into()), f: Some("No Formula".into()), ..Cell::default() }),
+                ("Calendar".into(), Cell { v: Some("0".into()), f: Some("No Formula".into()), ..Cell::default() }),
+                ("ObjectKind".into(), Cell { v: Some("0".into()), f: Some("No Formula".into()), ..Cell::default() }),
+            ],
+        };
+        if let Some(sec) = sheet
+            .children
+            .iter_mut()
+            .find_map(|c| match c {
+                SheetChild::Section(s) if s.name == "Field" => Some(s),
+                _ => None,
+            })
+        {
+            sec.rows.push(row);
+        } else {
+            sheet.children.push(SheetChild::Section(vsdx::model::Section {
+                name: "Field".into(),
+                ix: section_ix,
+                attrs: vec![("N".into(), "Field".into())],
+                cells: Vec::new(),
+                rows: vec![row],
+            }));
+        }
+        // The marker joins the text's RAW form — the renderer's field
+        // substitution renders it there. The plain `text` gains
+        // nothing (a self-closing marker occupies no characters).
+        let raw = sheet.text_raw.clone().unwrap_or_default();
+        sheet.text_raw = Some(format!("{raw}<fld IX='{next_ix}'/>"));
+        if sheet.text.is_none() {
+            sheet.text = Some(String::new());
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<()> {
+        let Some((text, raw, section, created)) = self.old.take() else {
+            return Ok(());
+        };
+        let sheet = sheet_mut(doc, &self.scope)?;
+        sheet.text = text;
+        sheet.text_raw = raw;
+        if created {
+            sheet
+                .children
+                .retain(|c| !matches!(c, SheetChild::Section(s) if s.name == "Field"));
+        } else if let Some(old_sec) = section {
+            if let Some(sec) = sheet
+                .children
+                .iter_mut()
+                .find_map(|c| match c {
+                    SheetChild::Section(s) if s.name == "Field" => Some(s),
+                    _ => None,
+                })
+            {
+                *sec = old_sec;
+            }
+        }
+        Ok(())
+    }
 }
