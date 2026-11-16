@@ -68,12 +68,33 @@ impl SheetTextMeasure {
         }
     }
 
-    /// The #230 script reduction of the block's family (1.0 for
-    /// unwitnessed families / Pos 0) — composed metrics measure at
-    /// the DRAWN size.
-    fn script_reduce(&self) -> f64 {
-        crate::svg::script_metrics(self.tb.font.as_deref(), self.tb.pos)
-            .map_or(1.0, |(r, _)| r)
+    /// The per-direction PAINT metrics — the faces and sizes
+    /// `emit_text` draws each paragraph direction with (#257/#230):
+    /// LTR paragraphs the Latin family at `font_size` × ITS script
+    /// reduction, RTL paragraphs the complex-script chain (CS font,
+    /// else the Latin family per the spec's zero semantics) at
+    /// `cs_size` × THAT chain's reduction. TEXTWIDTH and the
+    /// TEXTHEIGHT wrap both measure on this pair (Greptile PR #284
+    /// round 6): measuring RTL on the Latin family's reduction saved
+    /// ~⅓-narrow TxtWidth boxes whenever the two chains' witness
+    /// states differed — e.g. a witnessed Calibri (0.667) against an
+    /// unwitnessed Segoe UI painting full size.
+    fn paint_metrics(
+        &self,
+    ) -> (
+        crate::textmetrics::ResolvedFace,
+        crate::textmetrics::ResolvedFace,
+        f64,
+        f64,
+    ) {
+        let face = crate::textmetrics::resolve(self.tb.font.as_deref(), self.tb.bold, self.tb.italic);
+        let cs_chain = self.tb.cs_font.as_deref().or(self.tb.font.as_deref());
+        let cs_face = crate::textmetrics::resolve(cs_chain, self.tb.bold, self.tb.italic);
+        let red_l = crate::svg::script_metrics(self.tb.font.as_deref(), self.tb.pos)
+            .map_or(1.0, |(r, _)| r);
+        let red_r = crate::svg::script_metrics(cs_chain, self.tb.pos).map_or(1.0, |(r, _)| r);
+        let cs_size = self.tb.cs_size.unwrap_or(self.tb.font_size);
+        (face, cs_face, self.tb.font_size * red_l, cs_size * red_r)
     }
 
     /// The composed line slot (#234): the font size quantized onto
@@ -128,23 +149,14 @@ impl SheetTextMeasure {
     /// or a bulleted multi-line block's TxtHeight disagrees with the
     /// laid-out lines.
     fn lines_at(&self, text: &str, width: f64) -> Vec<crate::svg::WrapLine> {
-        let face =
-            crate::textmetrics::resolve(self.tb.font.as_deref(), self.tb.bold, self.tb.italic);
-        // The complex-script pair, resolved exactly as the renderer
-        // resolves it (#257 text-direction) so a TEXTHEIGHT refresh
-        // wraps an RTL paragraph at the size its glyphs paint with.
-        let cs_chain = self.tb.cs_font.as_deref().or(self.tb.font.as_deref());
-        let cs_face = crate::textmetrics::resolve(cs_chain, self.tb.bold, self.tb.italic);
+        // Per-direction paint metrics (CodeRabbit local review +
+        // Greptile PR #284 round 6): LTR paragraphs wrap at the Latin
+        // family's drawn size, RTL paragraphs at the complex-script
+        // chain's — the same faces and sizes `emit_text` paints with
+        // (shared with `text_width` via `paint_metrics`).
+        let (face, cs_face, size_l, size_r) = self.paint_metrics();
         let cs_fallback =
             crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic);
-        // Per-direction script reductions (CodeRabbit local review):
-        // LTR paragraphs wrap at the Latin family's drawn size, RTL
-        // paragraphs at the complex-script family's — the same faces
-        // emit_text paints with.
-        let red_l = crate::svg::script_metrics(self.tb.font.as_deref(), self.tb.pos)
-            .map_or(1.0, |(r, _)| r);
-        let red_r = crate::svg::script_metrics(cs_chain, self.tb.pos)
-            .map_or(1.0, |(r, _)| r);
         let usable = (width - self.tb.insets.0 - self.tb.insets.1).max(0.02);
         // The first-line offset the RENDERER lays out (inches): the
         // bullet's tab stop for a bulleted block, max(IndFirst, 0)
@@ -158,10 +170,10 @@ impl SheetTextMeasure {
         crate::svg::wrap_block_text(
             &face,
             text,
-            self.tb.font_size * red_l,
+            size_l,
             usable,
             &cs_face,
-            self.tb.cs_size.unwrap_or(self.tb.font_size) * red_r,
+            size_r,
             &cs_fallback,
             first_off,
             self.tb.ind_left,
@@ -175,8 +187,6 @@ impl TextMeasure for SheetTextMeasure {
     }
 
     fn text_width(&self, text: &str) -> Option<f64> {
-        let face =
-            crate::textmetrics::resolve(self.tb.font.as_deref(), self.tb.bold, self.tb.italic);
         // TEXTWIDTH = the COMPOSED width (#234): the size quantized
         // onto the 18-fractional-bit grid, per-glyph advances rounded
         // onto that grid, PLUS one terminal-run space advance (from
@@ -188,15 +198,25 @@ impl TextMeasure for SheetTextMeasure {
         // 10 pt 'PK\r\n' eyeballed as Segoe UI's bare P+K — predates
         // the measured rules; Visio's composition always carries the
         // terminal space.)
+        //
+        // Each paragraph measures on the face and size it PAINTS
+        // with (Greptile PR #284 round 6): LTR on the Latin family,
+        // RTL on the complex-script chain — the same per-direction
+        // pair `lines_at` wraps with below.
         let text = text.trim_end_matches(TRAILING_TRIM);
         if text.is_empty() {
             return Some(0.0);
         }
-        let q = crate::textmetrics::quantize18(self.tb.font_size * self.script_reduce());
+        let (face, cs_face, size_l, size_r) = self.paint_metrics();
         let mut best = 0.0;
         for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
-            let w =
-                face.composed_width_in(para, q) + face.space_advance_in(q);
+            let (f, size) = if crate::svg::paragraph_base_rtl(para) {
+                (&cs_face, size_r)
+            } else {
+                (&face, size_l)
+            };
+            let q = crate::textmetrics::quantize18(size);
+            let w = f.composed_width_in(para, q) + f.space_advance_in(q);
             if w > best {
                 best = w;
             }
@@ -505,6 +525,70 @@ mod tests {
         assert!(
             (qh - 1.2 * crate::textmetrics::quantize18(m.tb.font_size)).abs() < 1e-12,
             "the Pos slot quantizes the NOMINAL size: {qh}"
+        );
+    }
+
+    /// Greptile PR #284 round 6: TEXTWIDTH measures each paragraph on
+    /// the face and size it PAINTS with — an RTL paragraph rides the
+    /// complex-script chain at ITS reduction. A block whose Latin
+    /// family is script-witnessed (Calibri → 0.667) but whose CS
+    /// family is not (Segoe UI → nominal) must measure RTL at FULL
+    /// size, not a third small: the saved TxtWidth has to cover the
+    /// drawn glyphs or an edit wraps needlessly.
+    #[test]
+    fn rtl_text_width_measures_the_complex_script_chain() {
+        let doc = Document::default();
+        let mut s = text_aware_shape();
+        s.sheet.children.push(SheetChild::Section(vsdx::Section {
+            name: "Character".into(),
+            rows: vec![vsdx::Row {
+                cells: vec![
+                    ("Font".to_string(), Cell::value("Calibri")),
+                    ("ComplexScriptFont".to_string(), Cell::value("Segoe UI")),
+                    ("Pos".to_string(), Cell::value("1")),
+                ],
+                ..vsdx::Row::default()
+            }],
+            ..vsdx::Section::default()
+        }));
+        let m = SheetTextMeasure::new(&doc, &s, &[&s], "");
+        let fa = "\u{0633}\u{0644}\u{0627}\u{0645}"; // base-RTL Arabic
+        assert!(
+            crate::svg::paragraph_base_rtl(fa),
+            "fixture: the paragraph is base-RTL"
+        );
+        // The CS pair this block paints RTL with: chain = Segoe UI,
+        // reduction NONE (unwitnessed family) → the nominal size.
+        let (face_l, cs_face, size_l, size_r) = m.paint_metrics();
+        assert!(
+            size_r > size_l * 1.4,
+            "fixture: the CS chain draws full size while Calibri scripts at 0.667 \
+             ({size_r} vs {size_l})"
+        );
+        let q = crate::textmetrics::quantize18(size_r);
+        let want = cs_face.composed_width_in(fa, q) + cs_face.space_advance_in(q) + COMPOSED_SLACK;
+        let got = m.text_width(fa).unwrap();
+        assert!(
+            (got - want).abs() < 1e-9,
+            "RTL width composes on the CS chain at its drawn size: {got} vs {want}"
+        );
+        // The pre-fix form — the Latin family at its 0.667 reduction —
+        // measured a third smaller; the gap is the regression guard.
+        let q_l = crate::textmetrics::quantize18(size_l);
+        let old = face_l.composed_width_in(fa, q_l) + face_l.space_advance_in(q_l) + COMPOSED_SLACK;
+        assert!(
+            got > old,
+            "the CS-chain measure must outrun the Latin-reduced one: {got} vs {old}"
+        );
+        // …while an LTR paragraph in the SAME block still measures on
+        // the Latin chain at its reduction.
+        let ltr = "label";
+        let q_ltr = crate::textmetrics::quantize18(size_l);
+        let want_ltr =
+            face_l.composed_width_in(ltr, q_ltr) + face_l.space_advance_in(q_ltr) + COMPOSED_SLACK;
+        assert!(
+            (m.text_width(ltr).unwrap() - want_ltr).abs() < 1e-9,
+            "LTR width still composes on the Latin chain"
         );
     }
 

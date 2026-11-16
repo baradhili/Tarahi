@@ -109,24 +109,34 @@ fn ctrl_wheel_zooms_without_scrolling_the_wheel_step() {
     h.run();
     h.run();
     zoom_into_page(&mut h);
-    let (z_before, _, _) = h.state().debug_view_for_test();
+    let (z_before, px_before, py_before) = h.state().debug_view_for_test();
     let canvas = h.state().debug_canvas_rect();
     let c = canvas.center();
     wheel_at(&mut h, c, 0.0, -10.0, true);
     h.run();
     h.run();
-    let (z_after, _, _) = h.state().debug_view_for_test();
+    let (z_after, px_after, py_after) = h.state().debug_view_for_test();
     assert!(
         z_after < z_before,
         "ctrl+wheel-down zooms out: {z_before} → {z_after}"
     );
-    // #286: panning is UNRESTRICTED — a ctrl+wheel-down step zooms
-    // out and pan moves only by the anchored-zoom relation (the
-    // removed #283 clamp would have pinned pan at the paper+margin
-    // bound, so this assertion guards that no limit crept back in):
-    // pan is finite and the drawing stays reachable by further pans.
-    let (_, _, py_after) = h.state().debug_view_for_test();
-    assert!(py_after.is_finite(), "pan stays finite: {py_after}");
+    // The zoom is ANCHORED — the hovered point keeps its page
+    // position — so BOTH pan axes move exactly by the relation
+    // pan' = anchor − (anchor − pan)·k, k = z_after/z_before (Greptile
+    // PR #284 round 6: an is_finite() check caught nothing — a wheel
+    // delta that ALSO scrolled, or any pan limit creeping back in
+    // (#286 removed them), breaks this equality instead).
+    let k = z_after / z_before;
+    let ex = c.x - (c.x - px_before) * k;
+    let ey = c.y - (c.y - py_before) * k;
+    assert!(
+        (px_after - ex).abs() < 0.25,
+        "x pan follows the anchored zoom: {px_after} vs {ex}"
+    );
+    assert!(
+        (py_after - ey).abs() < 0.25,
+        "y pan follows the anchored zoom: {py_after} vs {ey}"
+    );
 }
 
 /// The vertical thumb drag pans the view; a track click page-jumps.

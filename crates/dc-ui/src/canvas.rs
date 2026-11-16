@@ -2044,7 +2044,7 @@ pub fn show(
         page.w_in as f32 * view.px_per_in(),
         page.h_in as f32 * view.px_per_in(),
     );
-    draw_scrollbars(ui, canvas_r, view, content_origin, &page_px, &t);
+    draw_scrollbars(ui, canvas_r, view, content_origin, content, &page_px, &t);
 
     out
 }
@@ -2052,14 +2052,15 @@ pub fn show(
 /// The scrollbars themselves (#283): track + thumb per axis, thumb
 /// drag, and track click (a Visio-style page jump — the thumb centers
 /// on the clicked point). Colors follow the egui visuals so the bars
-/// sit right in both shell themes; a fitted view draws full-length
-/// thumbs (nothing to scroll, layout stays stable across the
-/// fit→manual transition).
+/// sit right in both shell themes; the thumb geometry speaks viewport
+/// SIZE and pan RELATIVE to the content origin (`thumb_geom`'s
+/// contract — see the call-site note below).
 fn draw_scrollbars(
     ui: &mut Ui,
     canvas_r: Rect,
     view: &mut View,
     content_origin: Pos2,
+    content: Vec2,
     page_px: &Vec2,
     t: &ShellTokens,
 ) {
@@ -2091,11 +2092,16 @@ fn draw_scrollbars(
     );
     let hr = ui.allocate_rect(hbar_r, Sense::click_and_drag());
     p.rect_filled(hbar_r, 2.0, track_fill);
+    // `thumb_geom` speaks viewport SIZE and pan RELATIVE to the
+    // content origin (Greptile PR #284 round 6): passing the origin
+    // and the absolute pan — the #286 clamp-removal casualty — pinned
+    // fitted pages' thumbs at the track start and jumped the page on
+    // the first drag. Read `pan - origin`, write `origin + result`.
     let hg = thumb_geom(
         track.width(),
-        content_origin.x,
+        content.x,
         page_px.x,
-        view.pan.x,
+        view.pan.x - content_origin.x,
     );
     let hthumb = Rect::from_min_size(
         Pos2::new(track.left() + hg.pos, track.top()),
@@ -2117,12 +2123,13 @@ fn draw_scrollbars(
                 ui.input(|i| i.pointer.press_origin()).unwrap_or(pos).x - track.left(),
                 hg.pos,
             );
-            view.pan.x = pan_from_thumb(
-                pos.x - track.left() - off,
-                track.width(),
-                content_origin.x,
-                page_px.x,
-            );
+            view.pan.x = content_origin.x
+                + pan_from_thumb(
+                    pos.x - track.left() - off,
+                    track.width(),
+                    content.x,
+                    page_px.x,
+                );
             view.fit_mode = false;
         }
     } else {
@@ -2134,18 +2141,14 @@ fn draw_scrollbars(
                 if !hthumb.contains(pos) {
                     let g = thumb_geom(
                         track.width(),
-                        content_origin.x,
+                        content.x,
                         page_px.x,
-                        view.pan.x,
+                        view.pan.x - content_origin.x,
                     );
                     let span = (track.width() - g.len).max(1.0);
                     let target = (pos.x - track.left() - g.len / 2.0).clamp(0.0, span);
-                    view.pan.x = pan_from_thumb(
-                        target,
-                        track.width(),
-                        content_origin.x,
-                        page_px.x,
-                    );
+                    view.pan.x = content_origin.x
+                        + pan_from_thumb(target, track.width(), content.x, page_px.x);
                     view.fit_mode = false;
                 }
             }
@@ -2161,9 +2164,9 @@ fn draw_scrollbars(
     p.rect_filled(vbar_r, 2.0, track_fill);
     let vg = thumb_geom(
         track.height(),
-        content_origin.y,
+        content.y,
         page_px.y,
-        view.pan.y,
+        view.pan.y - content_origin.y,
     );
     let vthumb = Rect::from_min_size(
         Pos2::new(track.left(), track.top() + vg.pos),
@@ -2178,12 +2181,13 @@ fn draw_scrollbars(
                 ui.input(|i| i.pointer.press_origin()).unwrap_or(pos).y - track.top(),
                 vg.pos,
             );
-            view.pan.y = pan_from_thumb(
-                pos.y - track.top() - off,
-                track.height(),
-                content_origin.y,
-                page_px.y,
-            );
+            view.pan.y = content_origin.y
+                + pan_from_thumb(
+                    pos.y - track.top() - off,
+                    track.height(),
+                    content.y,
+                    page_px.y,
+                );
             view.fit_mode = false;
         }
     } else {
@@ -2193,18 +2197,14 @@ fn draw_scrollbars(
                 if !vthumb.contains(pos) {
                     let g = thumb_geom(
                         track.height(),
-                        content_origin.y,
+                        content.y,
                         page_px.y,
-                        view.pan.y,
+                        view.pan.y - content_origin.y,
                     );
                     let span = (track.height() - g.len).max(1.0);
                     let target = (pos.y - track.top() - g.len / 2.0).clamp(0.0, span);
-                    view.pan.y = pan_from_thumb(
-                        target,
-                        track.height(),
-                        content_origin.y,
-                        page_px.y,
-                    );
+                    view.pan.y = content_origin.y
+                        + pan_from_thumb(target, track.height(), content.y, page_px.y);
                     view.fit_mode = false;
                 }
             }
