@@ -771,9 +771,27 @@ fn node_ink_box(
             get("TxtPinX", &text_env).unwrap_or(width / 2.0),
             get("TxtPinY", &text_env).unwrap_or(height / 2.0),
         );
+        // #231 outdented bullets hang LEFT of the text frame: a
+        // negative IndFirst draws the glyph at the text area's left +
+        // IndFirst, which can precede the frame (and the shape box) —
+        // the frame-only bounds let that ink escape the ink box, so
+        // the layer viewBox clips it and the #236 cull skips the
+        // child (local CodeRabbit round 3 + final pass). Computed
+        // once for BOTH branches: the unrotated branch extends the
+        // left edge exactly; the rotated branch widens its
+        // circumscribed square — the escape rotates with the block.
+        let tb = resolve_text_block(doc, s, chain, width, height);
+        let bullet_escape = tb.bullet.as_ref().map_or(0.0, |b| {
+            let escape = tb.insets.0 + tb.ind_first;
+            if escape < 0.0 {
+                -escape + bullet_advance_in(&tb, b)
+            } else {
+                0.0
+            }
+        });
         if get("TxtAngle", &text_env).unwrap_or(0.0) != 0.0 {
             // Rotated text: bound by the circumscribed square.
-            let side = tw.max(th);
+            let side = tw.max(th) + bullet_escape;
             let (cx, cy) = (tx - tlx + tw / 2.0, -(ty - tly + th / 2.0));
             box_union(
                 cx - side / 2.0,
@@ -785,23 +803,14 @@ fn node_ink_box(
             );
         } else {
             let (x0, y0) = (tx - tlx, -(ty - tly + th));
-            // #231 outdented bullets hang LEFT of the text frame: a
-            // negative IndFirst draws the glyph at the text area's
-            // left + IndFirst, which can precede the frame (and the
-            // shape box) — the frame-only union lets that ink escape
-            // the ink box, so the layer viewBox clips it and the
-            // #236 cull skips the child (local CodeRabbit round 3).
-            // Extend the LEFT edge only, by the bullet's escape plus
-            // its glyph advance; the frame's right edge stays put.
-            let mut bx0 = x0;
-            let tb = resolve_text_block(doc, s, chain, width, height);
-            if let Some(b) = tb.bullet.as_ref() {
-                let escape = tb.insets.0 + tb.ind_first;
-                if escape < 0.0 {
-                    bx0 += escape - bullet_advance_in(&tb, b);
-                }
-            }
-            box_union(bx0, y0, x0 + tw, y0 + th, &a, &mut u);
+            box_union(
+                x0 - bullet_escape,
+                y0,
+                x0 + tw,
+                y0 + th,
+                &a,
+                &mut u,
+            );
         }
     }
     (u.acc.unwrap_or((0.0, 0.0, 0.0, 0.0)), a)
@@ -2297,16 +2306,21 @@ pub(crate) fn resolve_text_block(
             // fallback (CodeRabbit local review): "256" overflows u8
             // and "1.0"/"0.0" fail an integer parse — either way the
             // old path painted the literal as a custom bullet.
-            // Integral 1–7 → the round set; any other numeric → no
-            // bullet; genuinely non-numeric text → a custom bullet.
-            let numeric = v
-                .parse::<f64>()
-                .ok()
-                .filter(|n| n.fract() == 0.0 && *n >= 0.0);
-            let glyph = match (custom, numeric.map(|n| n as u8)) {
+            // Integral 1–7 → the round set; any other NUMERIC value
+            // (final CodeRabbit pass: including negatives like "-1"
+            // and fractionals like "1.5" — a number that failed the
+            // style filter is an unsupported style, not custom text)
+            // → no bullet; genuinely non-numeric text → a custom
+            // bullet.
+            let parsed = v.parse::<f64>().ok();
+            let glyph = match (custom, parsed) {
                 (Some(st), _) => BulletGlyph::Str(st),
-                (None, Some(n @ 1..=7)) => BulletGlyph::Round(n),
-                (None, Some(_)) => return None, // other numerics: no bullet
+                (None, Some(n))
+                    if n.fract() == 0.0 && (1.0..=7.0).contains(&n) =>
+                {
+                    BulletGlyph::Round(n as u8)
+                }
+                (None, Some(_)) => return None, // unsupported numerics: no bullet
                 (None, None) => BulletGlyph::Str(v),
             };
             // BulletFont: a family name, else inherit the paragraph
@@ -8229,6 +8243,51 @@ mod tests {
         );
     }
 
+    /// The rotated twin (final local CodeRabbit pass): under
+    /// TxtAngle ≠ 0 the circumscribed-square bound widens by the
+    /// bullet escape — the glyph rotates with the block, and a
+    /// square sized to the frame alone would clip/cull it.
+    #[test]
+    fn ink_bounds_cover_outdented_bullets_rotated() {
+        let mk = |bullet: bool| {
+            let mut s = shape_at(1, (4.0, 5.0), 2.0, 1.0, 0.0);
+            s.sheet.text = Some("bullet".into());
+            s.sheet.set_cell(
+                "TxtAngle",
+                Cell::value(std::f64::consts::FRAC_PI_2.to_string()),
+            );
+            if bullet {
+                s.sheet.children.push(SheetChild::Section(Section {
+                    name: "Paragraph".into(),
+                    rows: vec![Row {
+                        cells: vec![
+                            ("Bullet".to_string(), Cell::value("1")),
+                            ("IndFirst".to_string(), Cell::value("-1")),
+                        ],
+                        ..Row::default()
+                    }],
+                    ..Section::default()
+                }));
+            }
+            s
+        };
+        let plain = mk(false);
+        let (doc, page) = page_fixture(vec![plain.clone()]);
+        let (_, _, w0, h0) = shape_ink_bounds(&doc, &page, 1).unwrap();
+        let bulleted = mk(true);
+        let (doc, page) = page_fixture(vec![bulleted.clone()]);
+        let (_, _, w1, h1) = shape_ink_bounds(&doc, &page, 1).unwrap();
+        // The square grows by the escape in BOTH page dimensions.
+        let chain = [&bulleted];
+        let tb = resolve_text_block(&doc, &bulleted, &chain, 2.0, 1.0);
+        let b = tb.bullet.as_ref().expect("the block is bulleted");
+        let ext = -(tb.insets.0 + tb.ind_first) + bullet_advance_in(&tb, b);
+        assert!(
+            (w1 - w0 - ext).abs() < 1e-9 && (h1 - h0 - ext).abs() < 1e-9,
+            "the rotated square widens by the escape {ext}: {w0}→{w1}, {h0}→{h1}"
+        );
+    }
+
     /// Local CodeRabbit round 3 + Greptile round 7: paragraph cells
     /// inherit through the TEXT-STYLE stylesheet cascade like
     /// character cells do (`char_cell`'s walk) — a styled shape with
@@ -9763,6 +9822,59 @@ mod tests {
         assert!(
             out.contains(r#"text-anchor="start" font-size"#),
             "the centered custom bullet pins its own start anchor: {out}"
+        );
+    }
+
+    /// Final local CodeRabbit pass: numeric Bullet values that fail
+    /// the style filter are UNSUPPORTED STYLES, not custom text —
+    /// "-1"/"1.5" arm nothing (the old filter conflated them with
+    /// non-numeric strings and painted the literal as a glyph).
+    #[test]
+    fn unsupported_numeric_bullets_stay_off() {
+        let doc = Document::default();
+        let emit = |bullet: &str| {
+            let mut s = Shape::default();
+            s.sheet.text = Some("bulleted".into());
+            s.sheet.set_cell("Width", Cell::value("4.0"));
+            s.sheet.set_cell("LeftMargin", Cell::value("0"));
+            s.sheet.set_cell("RightMargin", Cell::value("0"));
+            s.sheet.children.push(SheetChild::Section(Section {
+                name: "Paragraph".into(),
+                rows: vec![Row {
+                    cells: vec![
+                        ("Bullet".to_string(), Cell::value(bullet)),
+                        ("HorzAlign".to_string(), Cell::value("0")),
+                    ],
+                    ..Row::default()
+                }],
+                ..Section::default()
+            }));
+            let chain = [&s];
+            let mut out = String::new();
+            emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            out
+        };
+        for v in ["-1", "1.5", "256", "0.0"] {
+            let out = emit(v);
+            assert!(
+                !out.contains(r#"<path transform="translate("#),
+                "{v} draws no round-set path bullet: {out}"
+            );
+            // …and no tab stop is reserved — the text starts at the
+            // margin like an unbULLETED block.
+            let tx: f64 = out
+                .split(r#"<tspan x=""#)
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .and_then(|x| x.parse().ok())
+                .unwrap_or(-1.0);
+            assert!((tx).abs() < 1e-3, "{v} reserves no bullet tab stop: x={tx}");
+        }
+        // A genuinely non-numeric string still arms the custom bullet.
+        let out = emit("\u{2022}");
+        assert!(
+            out.contains(r#"<path transform="translate("#) || out.contains('\u{2022}'),
+            "a custom string bullet still draws"
         );
     }
 

@@ -2120,25 +2120,32 @@ fn draw_scrollbars(
     p.rect_filled(hthumb, 3.0, thumb_of(&hr));
     if hr.dragged() || hr.drag_stopped() {
         if let Some(pos) = hr.interact_pointer_pos() {
-            // The grab offset (pointer − thumb leading edge) is
-            // latched at drag start FROM THE PRESS POSITION (CodeRabbit
-            // local review): egui reports drag_started only after the
-            // 6 px threshold, so measuring from the current frame would
-            // swallow the movement before it. The release frame applies
-            // its final position with the stored offset before cleanup,
-            // so movement+release in one frame still lands.
-            let off = grab_offset(
+            // The drag state (grab offset + press-time pan/input) is
+            // latched FROM THE PRESS POSITION (CodeRabbit local
+            // review: egui reports drag_started only after the 6 px
+            // threshold). The release frame applies its final
+            // position with the latched state before cleanup, so
+            // movement+release in one frame still lands — and the
+            // RELATIVE mapping keeps a saturated thumb (a pan past
+            // the mapped range after #286's unrestricted panning)
+            // from snapping the view back into range.
+            let (off, pan0, in0) = grab_state(
                 ui,
                 &hr,
                 ui.input(|i| i.pointer.press_origin()).unwrap_or(pos).x - track.left(),
                 hg.pos,
+                view.pan.x - content_origin.x,
             );
+            let input = pos.x - track.left() - off;
             view.pan.x = content_origin.x
-                + pan_from_thumb(
-                    pos.x - track.left() - off,
+                + pan_from_drag(
+                    input,
+                    in0,
+                    pan0,
                     track.width(),
-                    content.x,
+                    hg.len,
                     page_px.x,
+                    content.x,
                 );
             view.fit_mode = false;
         }
@@ -2185,18 +2192,23 @@ fn draw_scrollbars(
     p.rect_filled(vthumb, 3.0, thumb_of(&vr));
     if vr.dragged() || vr.drag_stopped() {
         if let Some(pos) = vr.interact_pointer_pos() {
-            let off = grab_offset(
+            let (off, pan0, in0) = grab_state(
                 ui,
                 &vr,
                 ui.input(|i| i.pointer.press_origin()).unwrap_or(pos).y - track.top(),
                 vg.pos,
+                view.pan.y - content_origin.y,
             );
+            let input = pos.y - track.top() - off;
             view.pan.y = content_origin.y
-                + pan_from_thumb(
-                    pos.y - track.top() - off,
+                + pan_from_drag(
+                    input,
+                    in0,
+                    pan0,
                     track.height(),
-                    content.y,
+                    vg.len,
                     page_px.y,
+                    content.y,
                 );
             view.fit_mode = false;
         }
@@ -2222,26 +2234,54 @@ fn draw_scrollbars(
     }
 }
 
-/// The latched thumb grab offset for one bar (pointer position minus
-/// the thumb's leading edge, track-local px). Latched from the PRESS
-/// position (CodeRabbit local review): egui reports drag_started only
-/// after the 6 px threshold, so the first frame would otherwise
-/// swallow the movement before it.
-fn grab_offset(ui: &Ui, r: &egui::Response, press_track_pos: f32, thumb_pos: f32) -> f32 {
+/// The latched thumb-drag state for one bar: the grab offset
+/// (pointer − thumb leading edge, track-local px), the press-time
+/// RELATIVE pan, and the press-time thumb input — all latched from
+/// the PRESS position (CodeRabbit local review: egui reports
+/// drag_started only after the 6 px threshold, so measuring from the
+/// current frame would swallow the movement before it). The drag
+/// applies SCALED POINTER DISPLACEMENT to the press-time pan instead
+/// of the absolute thumb inverse: inside the mapped range the two
+/// are the same linear map, but OUTSIDE it — a thumb pinned at a
+/// track edge after unrestricted panning (#286) — the absolute
+/// inverse snapped the view back into the range on the first pixel
+/// (final local CodeRabbit pass: a 10 px grab jumped the view by
+/// ~1540 px on the review's fixture).
+fn grab_state(
+    ui: &Ui,
+    r: &egui::Response,
+    press_track_pos: f32,
+    thumb_pos: f32,
+    pan_rel_press: f32,
+) -> (f32, f32, f32) {
     let id = egui::Id::unique(("dc-scroll-grab", r.id));
-    if r.drag_started() || ui.ctx().memory(|m| m.data.get_temp::<f32>(id).is_none()) {
-        ui.ctx()
-            .memory_mut(|m| m.data.insert_temp(id, press_track_pos - thumb_pos));
+    if r.drag_started() || ui.ctx().memory(|m| m.data.get_temp::<(f32, f32, f32)>(id).is_none()) {
+        ui.ctx().memory_mut(|m| {
+            m.data.insert_temp(id, (press_track_pos - thumb_pos, pan_rel_press, thumb_pos))
+        });
     }
-    ui.ctx().memory(|m| m.data.get_temp::<f32>(id).unwrap_or(0.0))
+    ui.ctx()
+        .memory(|m| m.data.get_temp::<(f32, f32, f32)>(id).unwrap_or((0.0, 0.0, 0.0)))
 }
 
-/// Clear the latched grab offset once the drag is over.
+/// Clear the latched drag state once the drag is over.
 fn grab_offset_clear(ui: &Ui, r: &egui::Response) {
     let id = egui::Id::unique(("dc-scroll-grab", r.id));
     if !r.dragged() {
-        ui.ctx().memory_mut(|m| m.data.remove::<f32>(id));
+        ui.ctx().memory_mut(|m| m.data.remove::<(f32, f32, f32)>(id));
     }
+}
+
+/// The RELATIVE pan for a thumb input position: the press-time pan
+/// moved by the pointer's displacement scaled through the track↔span
+/// map (`thumb_geom`'s own slope, negated — dragging the thumb toward
+/// the track's end scrolls toward the content's end). Equal to
+/// `pan_from_thumb` inside the mapped range; continuous outside it
+/// (no snap from a saturated thumb).
+fn pan_from_drag(input: f32, input_press: f32, pan_press: f32, track_len: f32, thumb_len: f32, page_px: f32, view_px: f32) -> f32 {
+    let total = (page_px + view_px).max(1.0);
+    let span = (track_len - thumb_len).max(1.0);
+    pan_press - (input - input_press) * (total / span)
 }
 
 fn draw_rulers(

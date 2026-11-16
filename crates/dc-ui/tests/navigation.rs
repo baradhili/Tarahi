@@ -491,3 +491,71 @@ fn scrollbar_drag_over_a_shape_moves_only_the_view() {
         "the shape under the scrollbar did not move (y)"
     );
 }
+
+/// Final local CodeRabbit pass: grabbing a SATURATED thumb — the view
+/// parked far past the mapped range by #286's unrestricted panning —
+/// must not snap back into range on the first pixel. The drag moves
+/// the pan by the scaled pointer displacement (~4 px of pan per track
+/// px on this fixture); the old absolute inverse jumped the view by
+/// the whole out-of-range overshoot (tens of thousands of px here).
+#[test]
+fn saturated_thumb_drag_moves_the_view_smoothly() {
+    let mut h = harness_with_blank();
+    h.run();
+    h.run();
+    zoom_into_page(&mut h);
+    // Scroll far past the paper: pan leaves thumb_geom's mapped
+    // range and the thumb pins at a track edge.
+    let c = h.state().debug_canvas_rect().center();
+    for _ in 0..6 {
+        wheel_at(&mut h, c, 0.0, -500.0, false);
+    }
+    // Let egui's wheel-smoothing tail drain (it decays for a few
+    // frames after the events — the measurement must be stable).
+    for _ in 0..12 {
+        h.run();
+    }
+    let (_, _, py0) = h.state().debug_view_for_test();
+    h.run();
+    h.run();
+    let (_, _, py0b) = h.state().debug_view_for_test();
+    assert!(
+        (py0 - py0b).abs() < 0.5,
+        "fixture: the view settled before the drag ({py0} vs {py0b})"
+    );
+    // A SHORT thumb drag from mid-track: the pan moves smoothly.
+    let canvas = h.state().debug_canvas_rect();
+    let bar_x = canvas.right() - 7.0;
+    let press_y = canvas.center().y;
+    h.hover_at(egui::pos2(bar_x, press_y));
+    h.event(egui::Event::PointerButton {
+        pos: egui::pos2(bar_x, press_y),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    for k in 1..=3 {
+        h.hover_at(egui::pos2(bar_x, press_y + 10.0 * k as f32));
+        h.run();
+    }
+    h.event(egui::Event::PointerButton {
+        pos: egui::pos2(bar_x, press_y + 30.0),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    let (_, _, py1) = h.state().debug_view_for_test();
+    assert!(py1 < py0, "the drag still scrolls: {py0} → {py1}");
+    // The drag pans by the pointer displacement × the track↔span
+    // scale — ≈18× on this fixture (the synthetic wheel events push
+    // zoom to its 8.0 clamp, page ≈ 8400 px, so a 30 px drag moves
+    // the view ≈530 px). The old absolute inverse snapped by the
+    // whole out-of-range overshoot (tens of thousands of px here) —
+    // a bound of 1500 separates the two decisively.
+    assert!(
+        py0 - py1 < 1500.0,
+        "no snap from the saturated range: Δ = {}",
+        py0 - py1
+    );
+}
