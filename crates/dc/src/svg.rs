@@ -2580,6 +2580,106 @@ pub fn paragraph_base_rtl(para: &str) -> bool {
 /// measure the line without the terminal NBSP's advance while the
 /// NBSP stays in the line's character-exact content.
 #[allow(clippy::too_many_arguments)] // the pair faces/sizes + the two indent offsets
+/// CJK line-break class (#282): a character a wrapped line may break
+/// AFTER (and the next line start with) — Han, Kana, Hangul
+/// syllables, and the CJK punctuation/fullwidth block. Latin words,
+/// digits and Western punctuation never carry a break inside them:
+/// they ride the atomic-run units, so an unbroken non-CJK paragraph
+/// tokenizes exactly like the old space-split wrap.
+fn cjk_breakable(c: char) -> bool {
+    matches!(c as u32,
+        0x3000..=0x303F       // CJK punctuation and symbols (、。〈〉《》「」…)
+        | 0x3041..=0x30FF     // Hiragana / Katakana
+        | 0x3400..=0x4DBF     // CJK Extension A
+        | 0x4E00..=0x9FFF     // CJK Unified Ideographs
+        | 0xAC00..=0xD7A3     // Hangul syllables
+        | 0xF900..=0xFAFF     // CJK compatibility ideographs
+        | 0xFF01..=0xFF60     // fullwidth forms
+        | 0x20000..=0x2FA1F   // CJK Extensions B+
+    )
+}
+
+/// Kinsoku-lite (#282), line-START side: CJK punctuation a wrapped
+/// line may not BEGIN with — closing and terminal forms (Visio pulls
+/// them onto the previous line, which may then slightly overflow its
+/// margin rather than strand a lone bracket/comma at a line head).
+/// A CJK-only subset of the full UAX #14 / kinsoku tables; extendable.
+fn cjk_no_line_start(c: char) -> bool {
+    matches!(c as u32,
+        0x3001..=0x3003                 // 、 。 〃
+        | 0x3005..=0x3007               // 々 〇 〆
+        | 0x3009 | 0x300B | 0x300D      // 〉 》 」
+        | 0x300F | 0x3011 | 0x3015      // 』 】 〕
+        | 0x3017 | 0x3019 | 0x301B      // 〗 〙 〛
+        | 0x301E..=0x301F               // 〞 〟
+        | 0x309B..=0x309C               // ゛ ゜
+        | 0x30FB..=0x30FE               // ・ ヽ ヾ ー
+        | 0x2026                        // …
+        | 0xFF01 | 0xFF09 | 0xFF0C      // ！ ） ，
+        | 0xFF0E | 0xFF1A..=0xFF1B      // ． ： ；
+        | 0xFF1F | 0xFF3D | 0xFF5D      // ？ ］ ｝
+        | 0xFF5E | 0xFF64               // ～ ､
+    )
+}
+
+/// Kinsoku-lite (#282), line-END side: CJK punctuation a wrapped line
+/// may not END with — opening brackets (they move to the next line
+/// with what follows).
+fn cjk_no_line_end(c: char) -> bool {
+    matches!(c as u32,
+        0x3008 | 0x300A | 0x300C | 0x300E // 〈 《 「 『
+        | 0x3010 | 0x3014 | 0x3016 | 0x3018 // 【 〖 〘 〚
+        | 0x301D                        // 〝
+        | 0xFF08 | 0xFF3B | 0xFF5B      // （ ［ ｛
+        | 0xFF62                        // ｢
+    )
+}
+
+/// One wrap unit: the authored separator that precedes it (`""` for
+/// the first unit or a CJK break boundary, `" "` — or a longer
+/// authored space run — after a space) and the unit text. Atomic
+/// units are maximal runs of non-space, non-CJK chars (words never
+/// split internally); a CJK breakable character is its own unit, so
+/// a Han run breaks between any two ideographs. A paragraph with no
+/// CJK character yields exactly the old `split(' ')` word list.
+fn wrap_units(para: &str) -> Vec<(String, String)> {
+    let mut units: Vec<(String, String)> = Vec::new();
+    let has_cjk = para.chars().any(cjk_breakable);
+    if !has_cjk {
+        for (i, word) in para.split(' ').enumerate() {
+            units.push((
+                if i == 0 { "" } else { " " }.to_string(),
+                word.to_string(),
+            ));
+        }
+        return units;
+    }
+    let mut sep = String::new();
+    let mut atomic: Option<String> = None;
+    for c in para.chars() {
+        if c == ' ' {
+            // A space flushes any atomic run and joins the pending
+            // separator (authored space runs stay content — #144).
+            if let Some(run) = atomic.take() {
+                units.push((std::mem::take(&mut sep), run));
+            }
+            sep.push(' ');
+        } else if cjk_breakable(c) {
+            if let Some(run) = atomic.take() {
+                units.push((std::mem::take(&mut sep), run));
+            }
+            units.push((std::mem::take(&mut sep), c.to_string()));
+        } else {
+            atomic.get_or_insert_with(String::new).push(c);
+        }
+    }
+    if let Some(run) = atomic.take() {
+        units.push((std::mem::take(&mut sep), run));
+    }
+    units
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn wrap_block_text(
     face: &crate::textmetrics::ResolvedFace,
     text: &str,
@@ -2588,25 +2688,28 @@ pub(crate) fn wrap_block_text(
     cs_face: &crate::textmetrics::ResolvedFace,
     cs_size: f64,
     cs_fallback: &crate::textmetrics::ResolvedFace,
+    cjk_fallback: &crate::textmetrics::ResolvedFace,
     first_off: f64,
     left_off: f64,
 ) -> Vec<WrapLine> {
     let mut lines: Vec<WrapLine> = Vec::new();
     for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
         let rtl = paragraph_base_rtl(para);
-        // An RTL paragraph measures RUN BY RUN with the faces the
-        // raster paints it with (PR #269 review): the resolved CS
-        // face, and the vendored Vazirmatn for runs it lacks — usvg's
-        // per-cluster fallback draws those clusters with the fallback
-        // face, so the wrap's advances must agree or line breaks and
-        // start-aligned edges drift. A pure-script paragraph (Latin
-        // text merely MARKED rtl, or straight Arabic) measures as one
-        // run through the same single-face path as before.
+        // A paragraph measures RUN BY RUN with the faces the raster
+        // paints it with (PR #269 review; #282 grows the fallback
+        // chain): the resolved CS face for RTL base order, the Latin
+        // face otherwise, then the vendored fallbacks for runs those
+        // lack — Vazirmatn (Arabic), Noto Sans SC (Han) — usvg's
+        // per-cluster fallback draws those clusters with the same
+        // faces, so the wrap's advances must agree or line breaks and
+        // start-aligned edges drift. A pure-Latin paragraph measures
+        // as one run through the same single-face path as before.
+        let others = [cs_fallback, cjk_fallback];
         let width_in = |s: &str| {
             if rtl {
-                cs_face.width_in_runs(cs_fallback, s, cs_size)
+                cs_face.width_in_runs(&others, s, cs_size)
             } else {
-                face.width_in(s, size)
+                face.width_in_runs(&others, s, size)
             }
         };
         // #235: the hang measure — a terminal no-break space's
@@ -2622,14 +2725,27 @@ pub(crate) fn wrap_block_text(
         let line_usable = |wrapped: bool| usable_w - if wrapped { left_off } else { first_off };
         let mut cur = String::new();
         let mut started = false;
-        for word in para.split(' ') {
+        for (sep, unit) in wrap_units(para) {
             let candidate = if started {
-                format!("{cur} {word}")
+                format!("{cur}{sep}{unit}")
             } else {
-                word.to_string()
+                unit.clone()
             };
             let usable = line_usable(wrapped);
-            if started && width_in(hang_trim(&candidate)) > usable {
+            let overflow = started && width_in(hang_trim(&candidate)) > usable;
+            // Kinsoku-lite (#282): a break that would START a line on
+            // CJK closing punctuation — or END one on CJK opening
+            // punctuation — is not a break: the unit stays on the
+            // current line, which may then overflow its margin. An
+            // EMPTY current line has nothing to protect and must
+            // break regardless.
+            let kinsoku_pulls = (!cur.is_empty()
+                && unit.starts_with(cjk_no_line_start))
+                || cur.ends_with(cjk_no_line_end);
+            // The pulled unit skips the hard-split below — the pull
+            // exists to keep it whole on the line.
+            let skip_hard_split = overflow && kinsoku_pulls;
+            if overflow && !kinsoku_pulls {
                 if cur.is_empty() {
                     // The break lands on a pending separator space (an
                     // authored space run or a leading indent too wide
@@ -2637,7 +2753,7 @@ pub(crate) fn wrap_block_text(
                     // content (#144 review) — it becomes a line of its
                     // own, never an empty line, never dropped.
                     lines.push(WrapLine {
-                        text: " ".to_string(),
+                        text: sep.to_string(),
                         rtl,
                         first_of_para: !wrapped,
                     });
@@ -2648,17 +2764,22 @@ pub(crate) fn wrap_block_text(
                         first_of_para: !wrapped,
                     });
                 }
-                cur = word.to_string();
+                cur = unit;
                 wrapped = true;
             } else {
+                // Fits, or the kinsoku-pulled unit rides the current
+                // line — `candidate` already carries cur+sep+unit.
                 cur = candidate;
             }
             started = true;
-            // A single word wider than the line: hard-split at the
+            // A single unit wider than the line: hard-split at the
             // longest character prefix that fits (always ≥1 char, so
             // the loop makes progress).
             let mut usable = line_usable(wrapped);
-            while width_in(hang_trim(&cur)) > usable && cur.chars().count() > 1 {
+            while !skip_hard_split
+                && width_in(hang_trim(&cur)) > usable
+                && cur.chars().count() > 1
+            {
                 let mut split_at = cur
                     .char_indices()
                     .nth(1)
@@ -2791,10 +2912,12 @@ fn emit_text(
     // document names no CS face.
     let cs_chain = tb.cs_font.as_deref().or(tb.font.as_deref());
     let cs_face = crate::textmetrics::resolve(cs_chain, tb.bold, tb.italic);
-    // The per-cluster fallback face (the vendored Vazirmatn — see the
-    // wrap's probe note); unregistered, it resolves like the Latin
-    // default and the probe never fires.
+    // The per-cluster fallback faces (the vendored Vazirmatn for the
+    // Arabic script, Noto Sans SC for Han — #282 — see the wrap's
+    // probe note); unregistered, they resolve like the Latin default
+    // and the probes never fire.
     let cs_fallback = crate::textmetrics::resolve(Some("Vazirmatn"), tb.bold, tb.italic);
+    let cjk_fallback = crate::textmetrics::resolve(Some("Noto Sans SC"), tb.bold, tb.italic);
     let cs_size = tb.cs_size.unwrap_or(size);
     let script_cs = script_metrics(cs_chain, tb.pos);
     let script_r = script_cs;
@@ -2859,7 +2982,7 @@ fn emit_text(
     let (lines, bar_widths) = if greeked {
         let mut bars = Vec::new();
         for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
-            let w = face.width_in(para, size);
+            let w = face.width_in_runs(&[&cs_fallback, &cjk_fallback], para, size);
             if w <= usable_w {
                 bars.push(w.max(usable_w * 0.2));
             } else {
@@ -2884,6 +3007,7 @@ fn emit_text(
                 &cs_face,
                 cs_paint_size,
                 &cs_fallback,
+                &cjk_fallback,
                 first_off,
                 left_off,
             ),
@@ -2993,8 +3117,11 @@ fn emit_text(
             // element-level attrs stay Latin. (Bullets and paragraph
             // indents stay unwitnessed on RTL lines — #231 open
             // questions — so RTL keeps the plain band placement.)
-            let lw = cs_face
-                .width_in_runs(&cs_fallback, &line.text, cs_paint_size);
+            let lw = cs_face.width_in_runs(
+                &[&cs_fallback, &cjk_fallback],
+                &line.text,
+                cs_paint_size,
+            );
             let content = format!("\u{2067}{}\u{2069}", line.text);
             let vx = match halign {
                 0 | 3 => right_x - lw, // start (reading order) = visual right edge
@@ -3067,7 +3194,11 @@ fn emit_text(
             // Under the inherited `end` anchor a tspan's x is where
             // the glyphs END — halign 2 keeps the anchor and derives
             // the left edge from the line width.
-            let line_w = face.width_in(&line.text, paint_size);
+            let line_w = face.width_in_runs(
+                &[&cs_fallback, &cjk_fallback],
+                &line.text,
+                paint_size,
+            );
             let bulleted = line.first_of_para && bullet_layout.is_some();
             let band_off = if bulleted {
                 // The unit math below places the line outright.
@@ -5853,13 +5984,19 @@ fn is_stock_visio_font(name: &str) -> bool {
 
 /// The measurement/paint infrastructure faces (#232): families THIS
 /// app names itself (the vendored deterministic floor, the #257 RTL
-/// fallback) resolve as themselves — they never appear in Visio files,
-/// so exempting them has no parity cost, and the RTL fallback would
-/// regress to Carlito if the stock rule swallowed them.
+/// fallback, the #282 CJK fallback) resolve as themselves — they never
+/// appear in Visio files, so exempting them has no parity cost, and
+/// the RTL/CJK fallbacks would regress to Carlito if the stock rule
+/// swallowed them.
 fn is_app_font(name: &str) -> bool {
     matches!(
         name.trim().to_ascii_lowercase().as_str(),
-        "carlito" | "liberation sans" | "liberation serif" | "liberation mono" | "vazirmatn"
+        "carlito"
+            | "liberation sans"
+            | "liberation serif"
+            | "liberation mono"
+            | "vazirmatn"
+            | "noto sans sc"
     )
 }
 
@@ -8809,6 +8946,7 @@ mod tests {
     fn rtl_wrap_stays_single_face_without_a_registered_fallback() {
         let latin = crate::textmetrics::resolve(None, false, false);
         let fallback = crate::textmetrics::resolve(Some("Vazirmatn"), false, false);
+        let cjk = crate::textmetrics::resolve(Some("Noto Sans SC"), false, false);
         let alef = '\u{0627}';
         assert!(!fallback.covers(alef), "unregistered vazirmatn covers nothing");
         let fa = "\u{0633}\u{0644}\u{0627}\u{0645}";
@@ -8821,6 +8959,7 @@ mod tests {
                 &latin,
                 0.13889,
                 &fallback,
+                &cjk,
                 0.0,
                 0.0,
             );
@@ -8830,7 +8969,7 @@ mod tests {
             // single-face measurement the wrap always used.
             let w = lines[0].text.clone();
             let expect = latin.width_in(&w, 0.13889);
-            let got = latin.width_in_runs(&fallback, &w, 0.13889);
+            let got = latin.width_in_runs(&[&fallback, &cjk], &w, 0.13889);
             assert!(
                 (expect - got).abs() < 1e-9,
                 "single-run text keeps byte-identical widths: {expect} vs {got}"
@@ -9966,6 +10105,7 @@ mod tests {
     fn terminal_nbsp_hangs_past_the_margin() {
         let latin = crate::textmetrics::resolve(None, false, false);
         let fallback = crate::textmetrics::resolve(Some("Vazirmatn"), false, false);
+        let cjk = crate::textmetrics::resolve(Some("Noto Sans SC"), false, false);
         // Grow a word until word+NBSP just exceeds a 0.5 in line
         // while the word alone still fits: the hang rule must keep
         // that word whole (the NBSP paints past the margin), where
@@ -9986,6 +10126,7 @@ mod tests {
             &latin,
             0.13889,
             &fallback,
+            &cjk,
             0.0,
             0.0,
         );
@@ -10004,6 +10145,7 @@ mod tests {
             &latin,
             0.13889,
             &fallback,
+            &cjk,
             0.0,
             0.0,
         );
@@ -10021,12 +10163,99 @@ mod tests {
             &latin,
             0.13889,
             &fallback,
+            &cjk,
             0.0,
             0.0,
         );
         assert_eq!(
             lines_plain[0].text, word,
             "the control: a plain trailing space wraps"
+        );
+    }
+
+    /// #282 CJK wrap: a no-space Han paragraph breaks BETWEEN
+    /// ideographs (each line fits its margin; the joined lines carry
+    /// NO invented spaces), an embedded Latin word stays whole, and
+    /// closing punctuation never starts a line (kinsoku pull). The
+    /// faces here are the deliberately-unregistered test set — Han
+    /// measures on the conservative per-char estimate, wide enough
+    /// to force breaks — so the STRUCTURE is what the test pins.
+    #[test]
+    fn cjk_wrap_breaks_between_ideographs_and_pulls_punctuation() {
+        let latin = crate::textmetrics::resolve(None, false, false);
+        let fallback = crate::textmetrics::resolve(Some("Vazirmatn"), false, false);
+        let cjk = crate::textmetrics::resolve(Some("Noto Sans SC"), false, false);
+        let wrap = |para: &str, usable_w: f64| {
+            wrap_block_text(
+                &latin, para, 0.13889, usable_w, &latin, 0.13889, &fallback, &cjk, 0.0, 0.0,
+            )
+        };
+        // A Han run long enough to exceed a narrow line: the source
+        // text carries no spaces, the wrapped lines must rejoin to it
+        // exactly, and every line but the last must actually fit.
+        let para = "流程图形状库的设计与实现流程图形状库的设计与实现";
+        let lines = wrap(para, 0.5);
+        assert!(lines.len() > 1, "a wide Han paragraph wraps: {lines:?}");
+        let joined: String = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(joined, para, "CJK breaks invent no separators");
+        for line in &lines[..lines.len() - 1] {
+            assert!(
+                latin.width_in(&line.text, 0.13889) <= 0.5 + 1e-9,
+                "each wrapped line fits: {:?}",
+                line.text
+            );
+        }
+        // The embedded Latin word stays atomic inside a mixed run
+        // (the line is wide enough that "PowerPoint" alone fits — a
+        // word wider than the margin hard-splits, the long-word rule
+        // that predates CJK).
+        let mixed = "使用PowerPoint制作流程图";
+        let lines = wrap(mixed, 0.9);
+        let joined: String = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(joined, mixed);
+        assert!(
+            lines.iter().any(|l| l.text.contains("PowerPoint")),
+            "the Latin word never splits mid-word: {lines:?}"
+        );
+        // Kinsoku-lite: the line break before a closing bracket pulls
+        // it onto the previous line instead of stranding it at a
+        // line head.
+        let para = "打开的文件、保存的设置。关闭窗口」";
+        let lines = wrap(para, 0.42);
+        let joined: String = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(joined, para);
+        for line in &lines[1..] {
+            assert!(
+                !line.text.starts_with(['」', '。', '，', '、']),
+                "no line starts on closing punctuation: {lines:?}"
+            );
+        }
+    }
+
+    /// #282: a paragraph with no CJK character tokenizes exactly like
+    /// the old space-split wrap — the mixed-wrap unit path is only
+    /// reachable when a breakable CJK character is present.
+    #[test]
+    fn non_cjk_paragraphs_keep_the_word_wrap_path() {
+        let latin = crate::textmetrics::resolve(None, false, false);
+        let fallback = crate::textmetrics::resolve(Some("Vazirmatn"), false, false);
+        let cjk = crate::textmetrics::resolve(Some("Noto Sans SC"), false, false);
+        let lines = wrap_block_text(
+            &latin,
+            "alpha beta gamma",
+            0.13889,
+            latin.width_in("alpha beta", 0.13889),
+            &latin,
+            0.13889,
+            &fallback,
+            &cjk,
+            0.0,
+            0.0,
+        );
+        assert_eq!(
+            lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
+            vec!["alpha beta", "gamma"],
+            "the space-split wrap is unchanged without CJK"
         );
     }
 

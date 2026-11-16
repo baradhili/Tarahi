@@ -903,6 +903,9 @@ start-an-empty-drawing = Start an empty drawing
 start-an-empty-drawing-on-a-lett = Start an empty drawing on a letter-size page.
 start-an-empty-us-letter-drawing = Start an empty US-Letter drawing (Ctrl+N)
 status = Status
+# $name (String) - the active page's name
+# $count (Number) - total page count
+status-page-of = { $name } of { $count }
 stealth-dart = Stealth Dart
 stencil = Stencil
 stencil-editing-planned-scope-ca = Stencil editing — planned (scope call on #252)

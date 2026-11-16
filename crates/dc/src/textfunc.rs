@@ -157,6 +157,8 @@ impl SheetTextMeasure {
         let (face, cs_face, size_l, size_r) = self.paint_metrics();
         let cs_fallback =
             crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic);
+        let cjk_fallback =
+            crate::textmetrics::resolve(Some("Noto Sans SC"), self.tb.bold, self.tb.italic);
         let usable = (width - self.tb.insets.0 - self.tb.insets.1).max(0.02);
         // The first-line offset the RENDERER lays out (inches): the
         // bullet's tab stop for a bulleted block, max(IndFirst, 0)
@@ -175,6 +177,7 @@ impl SheetTextMeasure {
             &cs_face,
             size_r,
             &cs_fallback,
+            &cjk_fallback,
             first_off,
             self.tb.ind_left,
         )
@@ -216,17 +219,24 @@ impl TextMeasure for SheetTextMeasure {
         let (face, cs_face, size_l, size_r) = self.paint_metrics();
         let cs_fallback =
             crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic);
+        let cjk_fallback =
+            crate::textmetrics::resolve(Some("Noto Sans SC"), self.tb.bold, self.tb.italic);
         let mut best = 0.0;
         for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
+            // BOTH directions run-split (#282 grew the fallback chain
+            // onto the LTR side too): a paragraph's Han tail measures
+            // on the vendored Noto Sans SC, its Arabic tail on
+            // Vazirmatn — the faces the raster paints with — instead
+            // of missing-glyph estimates.
+            let others = [&cs_fallback, &cjk_fallback];
             let w = if crate::svg::paragraph_base_rtl(para) {
                 let q = crate::textmetrics::quantize18(size_r);
-                cs_face.composed_width_in_runs(&cs_fallback, para, size_r)
-                    + cs_face
-                        .final_run_face(&cs_fallback, para)
-                        .space_advance_in(q)
+                cs_face.composed_width_in_runs(&others, para, size_r)
+                    + cs_face.final_run_face(&others, para).space_advance_in(q)
             } else {
                 let q = crate::textmetrics::quantize18(size_l);
-                face.composed_width_in(para, size_l) + face.space_advance_in(q)
+                face.composed_width_in_runs(&others, para, size_l)
+                    + face.final_run_face(&others, para).space_advance_in(q)
             };
             if w > best {
                 best = w;

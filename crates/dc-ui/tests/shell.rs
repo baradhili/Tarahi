@@ -372,6 +372,7 @@ fn shell_snapshot_multi_page_tabs() {
     run_shell("dc_ui_shell_pages", app);
 }
 
+
 #[test]
 fn page_tabs_switch_restore_selection_and_name_status() {
     use egui_kittest::kittest::Queryable;
@@ -402,8 +403,12 @@ fn page_tabs_switch_restore_selection_and_name_status() {
     h.run();
     assert_eq!(h.state().debug_active_page_name(), "Two");
     assert!(h.state().debug_sel().is_none(), "selection is per-page");
+    // The status page label is catalog chrome now (#282) — Fluent
+    // wraps each placeable in bidi-isolation marks, so the query uses
+    // the composed message, not a bare literal.
+    let expect = dc_ui::i18n::strs().msg_status_page_of("Two", 3);
     assert!(
-        h.query_all_by_label_contains("Two of 3").count() > 0,
+        h.query_all_by_label_contains(&expect).count() > 0,
         "status bar names the active page"
     );
     h.get_by_label("One").click();

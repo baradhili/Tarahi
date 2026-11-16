@@ -255,23 +255,24 @@ impl ResolvedFace {
 }
 
 /// Split `text` into contiguous runs by which face covers each
-/// character: `(uses_other, text)` pairs where a character the first
-/// face lacks — and the second covers — joins an `other` run (PR
-/// #269 review). Shaping then happens per run with the face that
-/// paints it, exactly like the raster's per-cluster fallback; only
+/// character: `(face_index, text)` pairs where index 0 is the primary
+/// face and 1.. are the fallbacks IN ORDER — a character the primary
+/// lacks joins the FIRST fallback that covers it, mirroring the
+/// raster's per-cluster fallback order (PR #269 review; #282 grows
+/// the chain from one Arabic fallback to fallbackS — Vazirmatn, then
+/// Noto Sans SC). A character NOTHING covers stays on index 0: the
+/// raster paints its best-effort face there and the measure's
+/// conservative per-char estimate applies. Shaping happens per run
+/// with the face that paints it, exactly like the raster; only
 /// cross-script run boundaries forgo cross-run kerning, which does
 /// not exist across scripts anyway.
-pub(crate) fn split_runs(
-    text: &str,
-    self_covers: impl Fn(char) -> bool,
-    other_covers: impl Fn(char) -> bool,
-) -> Vec<(bool, String)> {
-    let mut runs: Vec<(bool, String)> = Vec::new();
+pub(crate) fn split_runs(text: &str, chain: &[&ResolvedFace]) -> Vec<(usize, String)> {
+    let mut runs: Vec<(usize, String)> = Vec::new();
     for c in text.chars() {
-        let uses_other = !self_covers(c) && other_covers(c);
+        let face = chain.iter().position(|f| f.covers(c)).unwrap_or(0);
         match runs.last_mut() {
-            Some((last_other, buf)) if *last_other == uses_other => buf.push(c),
-            _ => runs.push((uses_other, c.to_string())),
+            Some((last_face, buf)) if *last_face == face => buf.push(c),
+            _ => runs.push((face, c.to_string())),
         }
     }
     runs
@@ -429,12 +430,13 @@ impl ResolvedFace {
     /// run measured on the face that covers it — the renderer's
     /// fallback runs. A paragraph the primary face cannot cover must
     /// not compose its width from missing-glyph estimates the paint
-    /// never draws. Single-coverage text (or a fallback that covers
-    /// nothing, as in the unregistered test world) is byte-identical
-    /// to [`Self::composed_width_in`]: every run lands on `self`.
+    /// never draws. Single-coverage text (or a fallback set that
+    /// covers nothing, as in the unregistered test world) is
+    /// byte-identical to [`Self::composed_width_in`]: every run lands
+    /// on `self`.
     pub fn composed_width_in_runs(
         &self,
-        other: &ResolvedFace,
+        others: &[&ResolvedFace],
         text: &str,
         size_in: f64,
     ) -> f64 {
@@ -442,14 +444,11 @@ impl ResolvedFace {
             return 0.0;
         }
         let q = quantize18(size_in);
-        split_runs(text, |c| self.covers(c), |c| other.covers(c))
+        split_runs(text, &self.run_chain(others))
             .into_iter()
-            .map(|(uses_other, run)| {
-                if uses_other {
-                    other.composed_run_in(&run, q)
-                } else {
-                    self.composed_run_in(&run, q)
-                }
+            .map(|(face, run)| match face {
+                0 => self.composed_run_in(&run, q),
+                i => others[i - 1].composed_run_in(&run, q),
             })
             .sum()
     }
@@ -457,15 +456,16 @@ impl ResolvedFace {
     /// The face covering `text`'s FINAL run — where the terminal-run
     /// space of a composed width comes from (the runs variant of
     /// taking the measuring face's space advance).
-    pub fn final_run_face<'a>(&'a self, other: &'a ResolvedFace, text: &str) -> &'a ResolvedFace {
-        split_runs(text, |c| self.covers(c), |c| other.covers(c))
+    pub fn final_run_face<'a>(
+        &'a self,
+        others: &'a [&'a ResolvedFace],
+        text: &str,
+    ) -> &'a ResolvedFace {
+        split_runs(text, &self.run_chain(others))
             .last()
-            .map_or(self, |(uses_other, _)| {
-                if *uses_other {
-                    other
-                } else {
-                    self
-                }
+            .map_or(self, |(face, _)| match face {
+                0 => self,
+                i => others[i - 1],
             })
     }
 
@@ -511,27 +511,34 @@ impl ResolvedFace {
         width
     }
 
-    /// Shaped width where `other` covers the runs this face lacks
+    /// Shaped width where the fallbackS cover the runs this face lacks
     /// (see [`split_runs`]) — a mixed paragraph's script tail measures
     /// with the face the raster actually paints it with, instead of
     /// missing-glyph estimates. Single-run text takes the same
     /// single-face shaped path as [`Self::width_in`]: unmixed text
     /// keeps byte-identical widths.
-    pub fn width_in_runs(&self, other: &ResolvedFace, text: &str, size_in: f64) -> f64 {
+    pub fn width_in_runs(&self, others: &[&ResolvedFace], text: &str, size_in: f64) -> f64 {
         if text.is_empty() {
             return 0.0;
         }
-        let total: f64 = split_runs(text, |c| self.covers(c), |c| other.covers(c))
+        let total: f64 = split_runs(text, &self.run_chain(others))
             .into_iter()
-            .map(|(uses_other, run)| {
-                if uses_other {
-                    other.shaped_width_em(&run)
-                } else {
-                    self.shaped_width_em(&run)
-                }
+            .map(|(face, run)| match face {
+                0 => self.shaped_width_em(&run),
+                i => others[i - 1].shaped_width_em(&run),
             })
             .sum();
         total * size_in
+    }
+
+    /// The run-splitting chain for `self` and its fallbacks: `[self,
+    /// others…]` — [`split_runs`] picks each character's face by
+    /// first coverage in this order.
+    fn run_chain<'a>(&'a self, others: &'a [&'a ResolvedFace]) -> Vec<&'a ResolvedFace> {
+        let mut chain = Vec::with_capacity(others.len() + 1);
+        chain.push(self);
+        chain.extend(others.iter().copied());
+        chain
     }
 
     /// The face's ascender in em units (hhea) — the GUI overlay places
@@ -746,35 +753,32 @@ pub fn face_data(font: Option<&str>, bold: bool, italic: bool) -> Option<FaceDat
 mod tests {
 
     /// PR #269 review: runs split by which face covers each char —
-    /// only chars the FIRST face lacks AND the second covers switch
-    /// runs; chars both lack stay on the first face (their advance
-    /// falls through the missing-glyph chain either way).
+    /// only chars the FIRST face lacks AND a fallback covers switch
+    /// runs; chars nobody in the chain covers stay on the first face
+    /// (their advance falls through the missing-glyph chain either
+    /// way). #282: the chain is N faces deep and the index follows
+    /// the chain order. Carlito lacks U+0476 (Ѷ) while Liberation
+    /// Sans carries it; 中 (U+4E2D) sits in BOTH vendored metric
+    /// faces' blind spot, so it stays on the primary face — the run
+    /// chain is explicit, independent of what else the database
+    /// carries.
     #[test]
     fn split_runs_follows_per_char_coverage() {
-        let lower = |c: char| c.is_ascii_lowercase();
-        let upper = |c: char| c.is_ascii_uppercase();
-        let runs = split_runs("ab CD EF gh", lower, upper);
-        let flat: Vec<(bool, String)> = runs
-            .into_iter()
-            .map(|(o, t): (bool, String)| (o, t.chars().filter(|c| !c.is_whitespace()).collect::<String>()))
-            .filter(|(_, t)| !t.is_empty())
-            .collect();
-        assert_eq!(
-            flat,
-            vec![
-                (false, "ab".into()),
-                (true, "CD".into()),
-                (true, "EF".into()),
-                (false, "gh".into()),
-            ],
-            "contiguous covered spans join; the split follows coverage, not script"
+        let carlito = resolve(Some("Carlito"), false, false);
+        let libsans = resolve(Some("Liberation Sans"), false, false);
+        assert!(
+            !carlito.covers('\u{476}') && libsans.covers('\u{476}'),
+            "fixture: Ѷ splits the two vendored faces"
         );
-        // Chars NEITHER face covers stay on the primary run.
-        let runs = split_runs("a中b", lower, upper);
+        let runs = split_runs("a\u{476}b中c", &[&carlito, &libsans]);
         assert_eq!(
             runs,
-            vec![(false, "a中b".to_string())],
-            "uncovered chars never switch runs"
+            vec![
+                (0, "a".to_string()),
+                (1, "\u{476}".to_string()),
+                (0, "b中c".to_string()),
+            ],
+            "contiguous covered spans join; uncovered chars stay primary"
         );
     }
 
@@ -802,7 +806,7 @@ mod tests {
         let want = carlito.composed_width_in("a", size)
             + libsans.composed_width_in("\u{476}", size)
             + carlito.composed_width_in("b", size);
-        let got = carlito.composed_width_in_runs(&libsans, text, size);
+        let got = carlito.composed_width_in_runs(&[&libsans], text, size);
         assert!(
             (got - want).abs() < 1e-12,
             "the runs compose per covering face: {got} vs {want}"
@@ -818,9 +822,8 @@ mod tests {
         // A fallback that covers nothing degenerates to the plain
         // composed width (the unregistered test world — every run
         // stays on the primary face).
-        let none = resolve(Some("NoSuchFamily At All"), false, false);
         assert_eq!(
-            carlito.composed_width_in_runs(&none, text, size),
+            carlito.composed_width_in_runs(&[], text, size),
             whole,
             "an uncovered fallback keeps plain composition"
         );
@@ -831,11 +834,12 @@ mod tests {
     fn final_run_face_picks_the_covering_face() {
         let carlito = resolve(Some("Carlito"), false, false);
         let libsans = resolve(Some("Liberation Sans"), false, false);
+        let others = [&libsans];
         // Trailing covered run → the fallback owns the line's end.
-        let ptr = carlito.final_run_face(&libsans, "a\u{476}");
+        let ptr = carlito.final_run_face(&others, "a\u{476}");
         assert!(std::ptr::eq(ptr, &libsans), "the final run's face wins");
         // Trailing primary run → the primary face.
-        let ptr = carlito.final_run_face(&libsans, "\u{476}b");
+        let ptr = carlito.final_run_face(&others, "\u{476}b");
         assert!(std::ptr::eq(ptr, &carlito), "a primary-run ending stays");
     }
 

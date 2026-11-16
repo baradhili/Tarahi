@@ -8840,7 +8840,9 @@ impl App {
             if let Some(ed) = self.ed() {
                 let geom = self.page_geom();
                 // Visio names the active page in the status bar (#54),
-                // e.g. "Page-2 of 4".
+                // e.g. "Page-2 of 4" — the conjunction is catalog
+                // chrome (#282 sweep); the page NAME is model
+                // vocabulary and stays as authored.
                 let page_name = ed
                     .doc
                     .pages
@@ -8848,9 +8850,9 @@ impl App {
                     .map(|p| p.name.as_str())
                     .unwrap_or("Page");
                 left = format!(
-                    "{} of {}    {}",
-                    page_name,
-                    ed.doc.pages.len(),
+                    "{}    {}",
+                    crate::i18n::strs()
+                        .msg_status_page_of(page_name, ed.doc.pages.len() as i64),
                     self.view.unit.fmt(geom.w_in)
                         + " × "
                         + &self

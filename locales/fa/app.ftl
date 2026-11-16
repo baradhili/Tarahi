@@ -835,6 +835,9 @@ start-an-empty-drawing = آغاز یک نقاشی خالی
 start-an-empty-drawing-on-a-lett = آغاز یک نقاشی خالی روی صفحهٔ اندازهٔ Letter.
 start-an-empty-us-letter-drawing = آغاز یک نقاشی خالی US-Letter (Ctrl+N)
 status = وضعیت
+# $name - نام صفحه فعال
+# $count - تعداد کل صفحات
+status-page-of = { $name } از { $count }
 stealth-dart = دارهٔ پنهان‌کار
 stencil = شابلون
 stencil-editing-planned-scope-ca = ویرایش شابلون — برنامه‌ریزی‌شده (تصمیم دامنه در #252)

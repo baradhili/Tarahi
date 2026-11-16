@@ -835,6 +835,9 @@ start-an-empty-drawing = Eine leere Zeichnung beginnen
 start-an-empty-drawing-on-a-lett = Eine leere Zeichnung auf einer Letter-Seite beginnen.
 start-an-empty-us-letter-drawing = Eine leere Zeichnung im US-Letter-Format beginnen (Strg+N)
 status = Status
+# $name - Name der aktiven Seite
+# $count - Seitenanzahl
+status-page-of = { $name } von { $count }
 stealth-dart = Tarnpfeil
 stencil = Schablone
 stencil-editing-planned-scope-ca = Schablonenbearbeitung — geplant (Rahmenentscheid zu #252)

@@ -333,8 +333,10 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
     );
     // #257 item 2: Vazirmatn (OFL) covers the Arabic script — the
     // Persian UI falls through to it after the Latin faces, so Latin
-    // metrics never move. The bytes are dc's ONE vendored drop
-    // (provenance in dc/assets/fonts/vazirmatn/README.md).
+    // metrics never move. #282: Noto Sans SC (OFL) does the same for
+    // Han — the Simplified-Chinese UI falls through to it after
+    // Vazirmatn. The bytes are dc's ONE vendored drops (provenance in
+    // dc/assets/fonts/{vazirmatn,noto-sc}/README.md).
     fonts.font_data.insert(
         "vazirmatn".into(),
         egui::FontData::from_static(dc::VAZIRMATN_REGULAR).into(),
@@ -342,6 +344,14 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
     fonts.font_data.insert(
         "vazirmatn-bold".into(),
         egui::FontData::from_static(dc::VAZIRMATN_BOLD).into(),
+    );
+    fonts.font_data.insert(
+        "noto-sc".into(),
+        egui::FontData::from_static(dc::NOTO_SC_REGULAR).into(),
+    );
+    fonts.font_data.insert(
+        "noto-sc-bold".into(),
+        egui::FontData::from_static(dc::NOTO_SC_BOLD).into(),
     );
     let prop = fonts
         .families
@@ -351,8 +361,11 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
     prop.insert(1, "opensans-semibold".into());
     prop.push("vazirmatn".into());
     prop.push("vazirmatn-bold".into());
+    prop.push("noto-sc".into());
+    prop.push("noto-sc-bold".into());
     if let Some(mono) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
         mono.push("vazirmatn".into());
+        mono.push("noto-sc".into());
     }
     ctx.set_fonts(fonts);
     // #257 text-direction coordination: the SAME Vazirmatn drop feeds

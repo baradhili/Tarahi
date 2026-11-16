@@ -5294,6 +5294,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "status-page-of",
+        attribute: None,
+        vars: &["name", "count"],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "stealth-dart",
         attribute: None,
         vars: &[],
@@ -6282,12 +6289,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
 ];
 #[allow(dead_code)]
-static ALL_LANGS: [L10n; 4] = [
+static ALL_LANGS: [L10n; 5] = [
     // languages as an array
     L10n::De,
     L10n::En,
     L10n::Es,
     L10n::Fa,
+    L10n::ZhHans,
 ];
 
 /// The languages that have translations available.
@@ -6297,6 +6305,7 @@ pub enum L10n {
     En,
     Es,
     Fa,
+    ZhHans,
 }
 
 impl Default for L10n {
@@ -6314,6 +6323,7 @@ impl FromStr for L10n {
             "en" => Ok(Self::En),
             "es" => Ok(Self::Es),
             "fa" => Ok(Self::Fa),
+            "zh-Hans" => Ok(Self::ZhHans),
             _ => Err(format!("Unknown language: {}", s)),
         }
     }
@@ -6327,6 +6337,7 @@ impl Deref for L10n {
             Self::En => "en",
             Self::Es => "es",
             Self::Fa => "fa",
+            Self::ZhHans => "zh-Hans",
         }
     }
 }
@@ -6359,15 +6370,17 @@ impl L10n {
             Self::En => "English",
             Self::Es => "Español",
             Self::Fa => "فارسی",
+            Self::ZhHans => "简体中文",
         }
     }
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..44998,
-            Self::En => 44998..88635,
-            Self::Es => 88635..136686,
-            Self::Fa => 136686..193977,
+            Self::De => 0..45097,
+            Self::En => 45097..88854,
+            Self::Es => 88854..137021,
+            Self::Fa => 137021..194428,
+            Self::ZhHans => 194428..236124,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -9357,6 +9370,18 @@ impl L10nLanguage {
     }
     pub fn msg_status(&self) -> String {
         self.0.msg("status", None).unwrap()
+    }
+    /// $name (String) - the active page's name
+    /// $count (Number) - total page count
+    pub fn msg_status_page_of<F0: AsRef<str>, F1: Into<FluentNumber>>(
+        &self,
+        name: F0,
+        count: F1,
+    ) -> String {
+        let mut _args = FluentArgs::new();
+        _args.set("name", name.as_ref());
+        _args.set("count", count.into());
+        self.0.msg("status-page-of", Some(_args)).unwrap()
     }
     pub fn msg_stealth_dart(&self) -> String {
         self.0.msg("stealth-dart", None).unwrap()

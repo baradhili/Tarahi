@@ -194,10 +194,14 @@ fn detect_from_envs(lookup: impl Fn(&str) -> Option<String>) -> L10n {
     L10n::En
 }
 
-/// `de_DE.UTF-8` → German; unknown or `C` locales → `None`.
+/// `de_DE.UTF-8` → German; unknown or `C` locales → `None`. The bare
+/// `zh` (from `zh_CN.UTF-8` etc.) aliases to the shipped script form
+/// `zh-Hans` (#282 — the catalog folder code is the CLDR script
+/// form, which `LANG` values never spell).
 fn parse_locale(value: &str) -> Option<L10n> {
     let code = value.split('.').next().unwrap_or("");
     let code = code.split('_').next().unwrap_or("");
+    let code = if code == "zh" { "zh-Hans" } else { code };
     L10n::from_str(code).ok()
 }
 
@@ -293,9 +297,9 @@ mod tests {
         // The boundary strips them and keeps every other character.
         assert_eq!(to_native_surface(&drawing1), "Drawing1");
         // A full title composes clean in EVERY shipped catalog (fa's
-        // whole-chrome isolation is the sharpest case; es joins the
-        // set with #282).
-        for lang in [L10n::En, L10n::De, L10n::Fa, L10n::Es] {
+        // whole-chrome isolation is the sharpest case; zh-Hans joins
+        // the set with #282).
+        for lang in [L10n::En, L10n::De, L10n::Fa, L10n::Es, L10n::ZhHans] {
             let name = strs_for(lang).msg_drawing_n(1);
             let title = to_native_surface(&format!("{name} - Tarahi"));
             assert!(

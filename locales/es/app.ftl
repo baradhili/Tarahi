@@ -900,6 +900,9 @@ start-an-empty-drawing = Iniciar un dibujo vacío
 start-an-empty-drawing-on-a-lett = Iniciar un dibujo vacío en una página tamaño carta.
 start-an-empty-us-letter-drawing = Iniciar un dibujo vacío tamaño carta de EE. UU. (Ctrl+N)
 status = Estado
+# $name - nombre de la página activa
+# $count - número total de páginas
+status-page-of = { $name } de { $count }
 stealth-dart = Dardo sigiloso
 stencil = Galería
 stencil-editing-planned-scope-ca = Edición de galerías — planeado (decisión de alcance en #252)
