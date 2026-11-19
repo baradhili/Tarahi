@@ -4,6 +4,7 @@
 pub mod curve;
 pub mod edit;
 pub mod export;
+pub mod fields;
 pub mod geom;
 pub mod pdf;
 pub mod raster;
@@ -30,8 +31,7 @@ pub const VAZIRMATN_BOLD: &[u8] = include_bytes!("../assets/fonts/vazirmatn/Vazi
 pub const NOTO_SANS_SC_REGULAR: &[u8] =
     include_bytes!("../assets/fonts/noto-sc/NotoSansSC-Regular.otf");
 /// The bold weight of [`NOTO_SANS_SC_REGULAR`].
-pub const NOTO_SANS_SC_BOLD: &[u8] =
-    include_bytes!("../assets/fonts/noto-sc/NotoSansSC-Bold.otf");
+pub const NOTO_SANS_SC_BOLD: &[u8] = include_bytes!("../assets/fonts/noto-sc/NotoSansSC-Bold.otf");
 
 /// Register the non-Latin fallback faces into BOTH font databases —
 /// `textmetrics` (wrap measurement) and `raster` (the usvg fontdb) —

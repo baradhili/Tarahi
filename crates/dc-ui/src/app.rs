@@ -108,6 +108,14 @@ pub struct App {
     hyperlink_open: Option<i64>,
     /// Draft row being added/edited in the Hyperlinks dialog (#28).
     hyperlink_draft: Option<HyperlinkDraft>,
+    /// The Insert Field dialog is open for this shape (#267).
+    fields_open: Option<i64>,
+    /// The caret captured when the dialog opened from a live text
+    /// edit — the opening click commits the edit (#22), the field
+    /// still lands at the caret (#267): (page, shape, plain offset).
+    fields_caret: Option<(i64, i64, usize)>,
+    /// The Insert Field dialog's edit state (#267).
+    fields_draft: Option<crate::fields_dlg::FieldsDraft>,
     /// The Comments popup is open for this shape (#29 rework: the
     /// Visio 2016 thread view — author header, edit/delete/reply).
     comment_target: Option<i64>,
@@ -672,6 +680,9 @@ impl App {
             reorder_open: false,
             hyperlink_open: None,
             hyperlink_draft: None,
+            fields_open: None,
+            fields_caret: None,
+            fields_draft: None,
             comment_target: None,
             comment_body: String::new(),
             comment_edit: None,
@@ -833,13 +844,9 @@ impl App {
     /// control, looked up by its label in the current badge set.
     #[doc(hidden)]
     pub fn debug_keytip_letter(&self, label: &str) -> Option<char> {
-        self.keytips.badges.iter().find_map(|b| {
-            match &b.hit {
-                crate::keytips::Hit::Action { label: l, .. } if l == label => {
-                    b.key.chars().next()
-                }
-                _ => None,
-            }
+        self.keytips.badges.iter().find_map(|b| match &b.hit {
+            crate::keytips::Hit::Action { label: l, .. } if l == label => b.key.chars().next(),
+            _ => None,
         })
     }
     /// #184 tests: the active ribbon tab (a strip keytip's effect).
@@ -1080,9 +1087,8 @@ impl App {
                 // document-open entry lands through this fn) with a status
                 // note, and the app stays up.
                 if ed.pages.is_empty() {
-                    self.status = crate::i18n::strs().msg_open_failed_no_pages(
-                        path.display().to_string(),
-                    );
+                    self.status =
+                        crate::i18n::strs().msg_open_failed_no_pages(path.display().to_string());
                     return false;
                 }
                 self.status = crate::i18n::strs().msg_opened_path(path.display().to_string());
@@ -1716,10 +1722,8 @@ impl App {
             let p = dir.join(entry.trim_start_matches(['/', '\\']));
             if p.is_file() {
                 if let Err(e) = self.stencils.open_file(&p) {
-                    self.status = crate::i18n::strs().msg_default_stencil_failed(
-                        format!("{entry:?}"),
-                        format!("{e:#}"),
-                    );
+                    self.status = crate::i18n::strs()
+                        .msg_default_stencil_failed(format!("{entry:?}"), format!("{e:#}"));
                 }
             }
         }
@@ -1821,10 +1825,14 @@ impl App {
                 Some(p) => p,
                 None => match kind {
                     PendingKind::Open => rfd::FileDialog::new()
-                        .add_filter(crate::i18n::strs().msg_visio_vsdx_family(), &["vsdx", "vstx", "vssx"])
+                        .add_filter(
+                            crate::i18n::strs().msg_visio_vsdx_family(),
+                            &["vsdx", "vstx", "vssx"],
+                        )
                         .pick_file(),
                     PendingKind::OpenStencil => {
-                        let mut dlg = rfd::FileDialog::new().add_filter(crate::i18n::strs().msg_visio_stencil(), &["vssx"]);
+                        let mut dlg = rfd::FileDialog::new()
+                            .add_filter(crate::i18n::strs().msg_visio_stencil(), &["vssx"]);
                         if let Some(dir) = Self::my_shapes_dir() {
                             let _ = std::fs::create_dir_all(&dir);
                             dlg = dlg.set_directory(dir);
@@ -1832,7 +1840,10 @@ impl App {
                         dlg.pick_file()
                     }
                     PendingKind::SaveAs => rfd::FileDialog::new()
-                        .add_filter(crate::i18n::strs().msg_visio_drawing(), &["vsdx", "vstx", "vssx"])
+                        .add_filter(
+                            crate::i18n::strs().msg_visio_drawing(),
+                            &["vsdx", "vstx", "vssx"],
+                        )
                         .set_file_name(&default_name)
                         .save_file(),
                     PendingKind::OpenPicture => rfd::FileDialog::new()
@@ -1847,11 +1858,10 @@ impl App {
                             dc::export::Format::Png => crate::i18n::strs().msg_filter_png(),
                             dc::export::Format::Pdf => crate::i18n::strs().msg_filter_pdf(),
                         };
-                        rfd::FileDialog::new()
-                            .add_filter(label.as_str(), format.extensions())
+                        rfd::FileDialog::new().add_filter(label.as_str(), format.extensions())
                     }
-                        .set_file_name(&default_export_name)
-                        .save_file(),
+                    .set_file_name(&default_export_name)
+                    .save_file(),
                 },
             };
             let _ = tx.send(picked);
@@ -1877,18 +1887,16 @@ impl App {
         // Drain everything ready this frame (the writer is fast).
         match h.poll() {
             Some(crate::stencil::disk::ExtractionMsg::Progress { done, total }) => {
-                self.status =
-                    crate::i18n::strs().msg_extracting_built_in_stencils_to(done, total);
+                self.status = crate::i18n::strs().msg_extracting_built_in_stencils_to(done, total);
                 self.stencil_extract = Some(h);
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
             Some(crate::stencil::disk::ExtractionMsg::Done(e)) => {
                 if e.failed > 0 {
-                    self.status = crate::i18n::strs()
-                        .msg_builtin_extracted_summary(e.written, e.failed);
+                    self.status =
+                        crate::i18n::strs().msg_builtin_extracted_summary(e.written, e.failed);
                 } else if e.written > 0 {
-                    self.status = crate::i18n::strs()
-                        .msg_builtin_extracted_to(e.written);
+                    self.status = crate::i18n::strs().msg_builtin_extracted_to(e.written);
                 }
                 // Nothing written (files already current): no noise.
             }
@@ -2720,9 +2728,8 @@ impl App {
                 )
                 .is_some()
                 {
-                    self.status = crate::i18n::strs().msg_vertex_drag_refused(format!(
-                        "Geometry{section_ix}.{name}{row_ix}"
-                    ));
+                    self.status = crate::i18n::strs()
+                        .msg_vertex_drag_refused(format!("Geometry{section_ix}.{name}{row_ix}"));
                     return;
                 }
                 // Row-cell formulas live on the row cell itself too.
@@ -2731,9 +2738,8 @@ impl App {
                     .and_then(|c| c.f.as_deref())
                     .is_some_and(|f| f != "Inh" && f != "No Formula")
                 {
-                    self.status = crate::i18n::strs().msg_vertex_drag_refused(format!(
-                        "row {row_ix}'s {name}"
-                    ));
+                    self.status = crate::i18n::strs()
+                        .msg_vertex_drag_refused(format!("row {row_ix}'s {name}"));
                     return;
                 }
             }
@@ -2945,8 +2951,7 @@ impl App {
         ));
         if customizes {
             if let canvas::GeoCell::NurbsPt(_) = cell {
-                self.status =
-                    crate::i18n::strs().msg_nurbs_control_customized_the_e_f();
+                self.status = crate::i18n::strs().msg_nurbs_control_customized_the_e_f();
             } else {
                 self.status = crate::i18n::strs().msg_curve_control_customized_row_row(row_ix);
             }
@@ -3040,7 +3045,11 @@ impl App {
                 if !consumed {
                     if matches!(
                         self.tool,
-                        Tool::Connector | Tool::Lasso | Tool::ConnectionPoint | Tool::Freeform | Tool::Pan
+                        Tool::Connector
+                            | Tool::Lasso
+                            | Tool::ConnectionPoint
+                            | Tool::Freeform
+                            | Tool::Pan
                     ) {
                         self.tool = Tool::Pointer;
                     }
@@ -3230,10 +3239,7 @@ impl App {
         }
         // The tap gate also refuses to arm while a text field owns
         // the keyboard (consistent with the app's other shortcuts).
-        if alt_tap
-            && !self.shell_surface_open()
-            && !ctx.egui_wants_keyboard_input()
-        {
+        if alt_tap && !self.shell_surface_open() && !ctx.egui_wants_keyboard_input() {
             // A bare Alt (re)starts at the strip level, Office-style.
             self.keytips.mode = Some(crate::keytips::Mode::Strip);
         } else if back && armed {
@@ -3276,11 +3282,10 @@ impl App {
                             pressed: true,
                             ..
                         } if is_keytip_key(*k) => k.name().starts_with(c),
-                        egui::Event::Text(t) => {
-                            t.chars()
-                                .next()
-                                .is_some_and(|t| t.to_ascii_uppercase() == c)
-                        }
+                        egui::Event::Text(t) => t
+                            .chars()
+                            .next()
+                            .is_some_and(|t| t.to_ascii_uppercase() == c),
                         _ => false,
                     };
                     !eats
@@ -3300,12 +3305,8 @@ impl App {
         // only its own badges. (Control letters may repeat a strip
         // letter — "Rulers" R vs the Review tab R — resolved by
         // scope, never by vec order.)
-        let is_control = |b: &crate::keytips::Badge| {
-            matches!(&b.hit, crate::keytips::Hit::Action { label, .. } if !label.is_empty())
-        };
-        let is_qat = |b: &crate::keytips::Badge| {
-            matches!(&b.hit, crate::keytips::Hit::Action { label, .. } if label.is_empty())
-        };
+        let is_control = |b: &crate::keytips::Badge| matches!(&b.hit, crate::keytips::Hit::Action { label, .. } if !label.is_empty());
+        let is_qat = |b: &crate::keytips::Badge| matches!(&b.hit, crate::keytips::Hit::Action { label, .. } if label.is_empty());
         let find = |pred: &dyn Fn(&crate::keytips::Badge) -> bool| {
             self.keytips
                 .badges
@@ -3314,9 +3315,7 @@ impl App {
                 .map(|b| b.hit.clone())
         };
         let hit = match self.keytips.mode {
-            Some(crate::keytips::Mode::Controls) => {
-                find(&is_control).or_else(|| find(&is_qat))
-            }
+            Some(crate::keytips::Mode::Controls) => find(&is_control).or_else(|| find(&is_qat)),
             _ => find(&|b| !is_control(b)),
         };
         match hit {
@@ -3432,7 +3431,10 @@ impl App {
             }
             cmds.extend(self.connect_cleanup_cmds(page_id, &ids));
             let n = ids.len();
-            self.apply(Macro::new(crate::i18n::strs().msg_undo_delete_n_shapes(n as i64), cmds));
+            self.apply(Macro::new(
+                crate::i18n::strs().msg_undo_delete_n_shapes(n as i64),
+                cmds,
+            ));
         } else {
             let shape_id = self.sel.unwrap().1;
             self.delete_one(page_id, shape_id);
@@ -4313,10 +4315,8 @@ impl App {
         }
         if !cmds.is_empty() {
             self.apply(Macro::new(
-                crate::i18n::strs().msg_undo_add_n_to_container(
-                    members.len() as i64,
-                    container.to_string(),
-                ),
+                crate::i18n::strs()
+                    .msg_undo_add_n_to_container(members.len() as i64, container.to_string()),
                 cmds,
             ));
         }
@@ -4872,10 +4872,7 @@ impl App {
         }
         cmds.push(Box::new(reroute));
         self.apply(Macro::new(
-            crate::i18n::strs().msg_undo_glue_connector(
-                sid,
-                crate::connectors::endpoint_word(end),
-            ),
+            crate::i18n::strs().msg_undo_glue_connector(sid, crate::connectors::endpoint_word(end)),
             cmds,
         ));
     }
@@ -5360,8 +5357,7 @@ impl App {
             })
             .unwrap_or(false);
         if !local {
-            self.status =
-                crate::i18n::strs().msg_connection_point_ix_is_inherited(ix);
+            self.status = crate::i18n::strs().msg_connection_point_ix_is_inherited(ix);
             return;
         }
         self.apply(Macro::new(
@@ -5460,7 +5456,10 @@ impl App {
                 )));
             }
         }
-        self.apply(Macro::new(crate::i18n::strs().msg_set_connector_route_style(), cmds));
+        self.apply(Macro::new(
+            crate::i18n::strs().msg_set_connector_route_style(),
+            cmds,
+        ));
     }
 
     /// The plain endpoint-move command (the #59 derived-cell set) for
@@ -5782,7 +5781,10 @@ impl App {
                 }));
             }
         }
-        self.apply(Macro::new(crate::i18n::strs().msg_undo_add_connector(id), cmds));
+        self.apply(Macro::new(
+            crate::i18n::strs().msg_undo_add_connector(id),
+            cmds,
+        ));
         self.set_selection(Some((page_id, id)));
         self.sel_set = vec![(page_id, id)];
         self.status = match (beg_t, end_t) {
@@ -5826,8 +5828,7 @@ impl App {
         ));
         self.set_selection(Some((page_id, id)));
         self.sel_set = vec![(page_id, id)];
-        self.status =
-            crate::i18n::strs().msg_freeform_shape_created_segs_segm(segs);
+        self.status = crate::i18n::strs().msg_freeform_shape_created_segs_segm(segs);
     }
 
     /// #108 reroute: a deferred [`crate::cmd::RerouteConnectors`]
@@ -5879,8 +5880,9 @@ impl App {
         self.set_selection(Some((page_id, id)));
         self.sel_set = vec![(page_id, id)];
         self.status = match kind {
-            GuideKind::Vertical => crate::i18n::strs()
-                    .msg_guide_added_vertical(self.view.unit.fmt(at.0)),
+            GuideKind::Vertical => {
+                crate::i18n::strs().msg_guide_added_vertical(self.view.unit.fmt(at.0))
+            }
             GuideKind::Horizontal => {
                 crate::i18n::strs().msg_guide_added_horizontal(self.view.unit.fmt(at.1))
             }
@@ -6005,7 +6007,10 @@ impl App {
         // the endpoint snap, exactly as the release path snaps.
         let to = {
             let ep = self.endpoint_preview.as_ref()?;
-            snap(true, (ptr_page.0 + ep.grab_off.0, ptr_page.1 + ep.grab_off.1))
+            snap(
+                true,
+                (ptr_page.0 + ep.grab_off.0, ptr_page.1 + ep.grab_off.1),
+            )
         };
         // The endpoint pair in DOCUMENT order: the dragged end moves
         // to `to`, the anchored end stays at its resolved position (a
@@ -6047,13 +6052,7 @@ impl App {
             let conn = vsdx::model::find_shape_by_id(&page2.shapes, sid)?;
             let chain2 = shape_chain(&ep.doc, page_id, sid).ok()?;
             crate::cmd::plan_connector_frame(
-                &ep.doc,
-                conn,
-                &chain2,
-                beg,
-                endp,
-                ep.pre_end,
-                ep.pre_beg,
+                &ep.doc, conn, &chain2, beg, endp, ep.pre_end, ep.pre_beg,
             )
         };
         // Apply the plan's writes to the snapshot (plain cache writes
@@ -6390,10 +6389,8 @@ impl App {
         self.apply(Macro::new(crate::i18n::strs().msg_set_page_size(), cmds));
         self.view.fit_pending = true;
         self.layers.set_page(-1); // force re-key on the new geometry
-        self.status = crate::i18n::strs().msg_page_size_set(
-            self.view.unit.fmt(w),
-            self.view.unit.fmt(h),
-        );
+        self.status =
+            crate::i18n::strs().msg_page_size_set(self.view.unit.fmt(w), self.view.unit.fmt(h));
     }
 
     /// #113 (URS-1113): probe the OS clipboard for an image on a
@@ -6562,13 +6559,14 @@ impl App {
                         pick = Some(None);
                     }
                     if entries.is_empty() {
-                        ui.weak(
-                            crate::i18n::strs().msg_no_background_pages_right_click(),
-                        );
+                        ui.weak(crate::i18n::strs().msg_no_background_pages_right_click());
                     }
                     for (id, name) in &entries {
                         if ui
-                            .radio(current == Some(*id), crate::i18n::strs().msg_name_page_id(name, id))
+                            .radio(
+                                current == Some(*id),
+                                crate::i18n::strs().msg_name_page_id(name, id),
+                            )
                             .clicked()
                         {
                             pick = Some(Some(*id));
@@ -6863,12 +6861,7 @@ impl App {
         });
         self.set_selection(Some((page_id, id)));
         self.sel_set = vec![(page_id, id)];
-        self.status = crate::i18n::strs().msg_picture_inserted(
-            mw as i64,
-            mh as i64,
-            w,
-            h,
-        );
+        self.status = crate::i18n::strs().msg_picture_inserted(mw as i64, mh as i64, w, h);
     }
 
     /// #113 (URS-1200): render the selection as a PNG at `factor`
@@ -7025,7 +7018,10 @@ impl App {
             .show(ctx, |ui| {
                 ui.with_layout(dialog_dir(), |ui| {
                     ui.strong(crate::i18n::strs().msg_resolution());
-                    if ui.radio(self.copypic_svg, crate::i18n::strs().msg_vector_svg()).clicked() {
+                    if ui
+                        .radio(self.copypic_svg, crate::i18n::strs().msg_vector_svg())
+                        .clicked()
+                    {
                         self.copypic_svg = true;
                     }
                     for (f, label) in [
@@ -7084,7 +7080,10 @@ impl App {
                                 );
                             }
                         }
-                        Err(e) => self.status = crate::i18n::strs().msg_copy_as_picture_failed_e(e.to_string()),
+                        Err(e) => {
+                            self.status =
+                                crate::i18n::strs().msg_copy_as_picture_failed_e(e.to_string())
+                        }
                     }
                 }
                 None => self.status = crate::i18n::strs().msg_nothing_selected_to_copy(),
@@ -7196,205 +7195,211 @@ impl App {
             .show(ctx, |ui| {
                 // #257 item 3: the dialog pass mirrors the window.
                 let mut __rtl_body = |ui: &mut Ui| {
-                ui.label(crate::i18n::strs().msg_current());
-                ui.label(format!(
-                    "{:.1} × {:.1} {}",
-                    cw.max(ch),
-                    cw.min(ch),
-                    unit.suffix()
-                ));
-                ui.separator();
-                ui.strong(crate::i18n::strs().msg_preset_sizes());
-                let mut picked: Option<(f64, f64)> = None;
-                egui::Grid::new("dc-sizes")
-                    .num_columns(3)
-                    .spacing(egui::vec2(8.0, 4.0))
-                    .show(ui, |ui| {
-                        // #257: an RTL grid fills its rows right-to-left.
-                        let rows: Vec<Vec<(&str, f64, f64)>> = if crate::i18n::rtl() {
-                            SIZES
-                                .chunks(3)
-                                .map(|c| {
-                                    let mut v: Vec<_> = c.to_vec();
-                                    v.reverse();
-                                    v
-                                })
-                                .collect()
-                        } else {
-                            SIZES.chunks(3).map(|c| c.to_vec()).collect()
-                        };
-                        for chunk in rows {
-                            for (name, w, h) in chunk {
-                                if ui.button(name).clicked() {
-                                    picked = Some((w, h));
+                    ui.label(crate::i18n::strs().msg_current());
+                    ui.label(format!(
+                        "{:.1} × {:.1} {}",
+                        cw.max(ch),
+                        cw.min(ch),
+                        unit.suffix()
+                    ));
+                    ui.separator();
+                    ui.strong(crate::i18n::strs().msg_preset_sizes());
+                    let mut picked: Option<(f64, f64)> = None;
+                    egui::Grid::new("dc-sizes")
+                        .num_columns(3)
+                        .spacing(egui::vec2(8.0, 4.0))
+                        .show(ui, |ui| {
+                            // #257: an RTL grid fills its rows right-to-left.
+                            let rows: Vec<Vec<(&str, f64, f64)>> = if crate::i18n::rtl() {
+                                SIZES
+                                    .chunks(3)
+                                    .map(|c| {
+                                        let mut v: Vec<_> = c.to_vec();
+                                        v.reverse();
+                                        v
+                                    })
+                                    .collect()
+                            } else {
+                                SIZES.chunks(3).map(|c| c.to_vec()).collect()
+                            };
+                            for chunk in rows {
+                                for (name, w, h) in chunk {
+                                    if ui.button(name).clicked() {
+                                        picked = Some((w, h));
+                                    }
                                 }
+                                ui.end_row();
                             }
-                            ui.end_row();
+                        });
+                    if let Some(p) = picked {
+                        apply = Some(p);
+                    }
+                    ui.separator();
+                    ui.strong(crate::i18n::strs().msg_custom());
+                    let mut wd = cw;
+                    let mut ht = ch;
+                    // The range is ~10 mm .. 2 m, expressed in display
+                    // units so inches never clamps at 10 in.
+                    let (lo, hi) = (unit.from_in(10.0 / 25.4), unit.from_in(2000.0 / 25.4));
+                    // #257: mirrored emission under RTL — ui::horizontal
+                    // keeps the wrap-aware measure (a with_layout flip here
+                    // reserves the parent's full cross space and balloons
+                    // the window).
+                    let wd_label = crate::i18n::strs().msg_width();
+                    let ht_label = crate::i18n::strs().msg_height();
+                    let width_first = !crate::i18n::rtl();
+                    ui.horizontal(|ui| {
+                        let (first_label, second_label) = if width_first {
+                            (wd_label.as_str(), ht_label.as_str())
+                        } else {
+                            (ht_label.as_str(), wd_label.as_str())
+                        };
+                        let mut first_val = if width_first { wd } else { ht };
+                        let mut second_val = if width_first { ht } else { wd };
+                        ui.label(first_label);
+                        ui.add(
+                            egui::DragValue::new(&mut first_val)
+                                .range(lo..=hi)
+                                .suffix(unit.suffix()),
+                        );
+                        ui.label(second_label);
+                        ui.add(
+                            egui::DragValue::new(&mut second_val)
+                                .range(lo..=hi)
+                                .suffix(unit.suffix()),
+                        );
+                        // The RTL dialog swaps the FIELDS (height first);
+                        // the write-back must swap with them — the fixed
+                        // order traded a Persian page's W and H on every
+                        // Apply (PR #269 review).
+                        wd = if width_first { first_val } else { second_val };
+                        ht = if width_first { second_val } else { first_val };
+                    });
+                    if ui
+                        .button(crate::i18n::strs().msg_apply_custom_size())
+                        .clicked()
+                        && wd > 0.0
+                        && ht > 0.0
+                    {
+                        custom = Some((unit.to_in(wd), unit.to_in(ht)));
+                    }
+                    ui.separator();
+                    ui.strong(crate::i18n::strs().msg_orientation());
+                    // #257: mirrored emission under RTL (horizontal keeps
+                    // the wrap-aware measure).
+                    let rtl_ori = crate::i18n::rtl();
+                    let (mut p_clicked, mut l_clicked) = (false, false);
+                    ui.horizontal(|ui| {
+                        if rtl_ori {
+                            if ui
+                                .selectable_label(
+                                    geom.w_in > geom.h_in,
+                                    crate::i18n::strs().msg_landscape(),
+                                )
+                                .clicked()
+                                && geom.w_in <= geom.h_in
+                            {
+                                l_clicked = true;
+                            }
+                            if ui
+                                .selectable_label(
+                                    geom.w_in <= geom.h_in,
+                                    crate::i18n::strs().msg_portrait(),
+                                )
+                                .clicked()
+                                && geom.w_in > geom.h_in
+                            {
+                                p_clicked = true;
+                            }
+                        } else {
+                            if ui
+                                .selectable_label(
+                                    geom.w_in <= geom.h_in,
+                                    crate::i18n::strs().msg_portrait(),
+                                )
+                                .clicked()
+                                && geom.w_in > geom.h_in
+                            {
+                                p_clicked = true;
+                            }
+                            if ui
+                                .selectable_label(
+                                    geom.w_in > geom.h_in,
+                                    crate::i18n::strs().msg_landscape(),
+                                )
+                                .clicked()
+                                && geom.w_in <= geom.h_in
+                            {
+                                l_clicked = true;
+                            }
                         }
                     });
-                if let Some(p) = picked {
-                    apply = Some(p);
-                }
-                ui.separator();
-                ui.strong(crate::i18n::strs().msg_custom());
-                let mut wd = cw;
-                let mut ht = ch;
-                // The range is ~10 mm .. 2 m, expressed in display
-                // units so inches never clamps at 10 in.
-                let (lo, hi) = (unit.from_in(10.0 / 25.4), unit.from_in(2000.0 / 25.4));
-                // #257: mirrored emission under RTL — ui::horizontal
-                // keeps the wrap-aware measure (a with_layout flip here
-                // reserves the parent's full cross space and balloons
-                // the window).
-                let wd_label = crate::i18n::strs().msg_width();
-                let ht_label = crate::i18n::strs().msg_height();
-                let width_first = !crate::i18n::rtl();
-                ui.horizontal(|ui| {
-                    let (first_label, second_label) = if width_first {
-                        (wd_label.as_str(), ht_label.as_str())
-                    } else {
-                        (ht_label.as_str(), wd_label.as_str())
-                    };
-                    let mut first_val = if width_first { wd } else { ht };
-                    let mut second_val = if width_first { ht } else { wd };
-                    ui.label(first_label);
-                    ui.add(
-                        egui::DragValue::new(&mut first_val)
-                            .range(lo..=hi)
-                            .suffix(unit.suffix()),
-                    );
-                    ui.label(second_label);
-                    ui.add(
-                        egui::DragValue::new(&mut second_val)
-                            .range(lo..=hi)
-                            .suffix(unit.suffix()),
-                    );
-                    // The RTL dialog swaps the FIELDS (height first);
-                    // the write-back must swap with them — the fixed
-                    // order traded a Persian page's W and H on every
-                    // Apply (PR #269 review).
-                    wd = if width_first { first_val } else { second_val };
-                    ht = if width_first { second_val } else { first_val };
-                });
-                if ui.button(crate::i18n::strs().msg_apply_custom_size()).clicked() && wd > 0.0 && ht > 0.0 {
-                    custom = Some((unit.to_in(wd), unit.to_in(ht)));
-                }
-                ui.separator();
-                ui.strong(crate::i18n::strs().msg_orientation());
-                // #257: mirrored emission under RTL (horizontal keeps
-                // the wrap-aware measure).
-                let rtl_ori = crate::i18n::rtl();
-                let (mut p_clicked, mut l_clicked) = (false, false);
-                ui.horizontal(|ui| {
-                    if rtl_ori {
-                        if ui
-                            .selectable_label(
-                                geom.w_in > geom.h_in,
-                                crate::i18n::strs().msg_landscape(),
-                            )
-                            .clicked()
-                            && geom.w_in <= geom.h_in
-                        {
-                            l_clicked = true;
-                        }
-                        if ui
-                            .selectable_label(
-                                geom.w_in <= geom.h_in,
-                                crate::i18n::strs().msg_portrait(),
-                            )
-                            .clicked()
-                            && geom.w_in > geom.h_in
-                        {
-                            p_clicked = true;
-                        }
-                    } else {
-                        if ui
-                            .selectable_label(
-                                geom.w_in <= geom.h_in,
-                                crate::i18n::strs().msg_portrait(),
-                            )
-                            .clicked()
-                            && geom.w_in > geom.h_in
-                        {
-                            p_clicked = true;
-                        }
-                        if ui
-                            .selectable_label(
-                                geom.w_in > geom.h_in,
-                                crate::i18n::strs().msg_landscape(),
-                            )
-                            .clicked()
-                            && geom.w_in <= geom.h_in
-                        {
-                            l_clicked = true;
-                        }
+                    if p_clicked {
+                        apply = Some((geom.w_in.min(geom.h_in), geom.w_in.max(geom.h_in)));
                     }
-                });
-                if p_clicked {
-                    apply = Some((geom.w_in.min(geom.h_in), geom.w_in.max(geom.h_in)));
-                }
-                if l_clicked {
-                    apply = Some((geom.h_in.max(geom.w_in), geom.h_in.min(geom.w_in)));
-                }
-                // Layout and Routing (#251): the line-jump display
-                // switch and jump size — Visio's Page Setup group,
-                // persisted on the PageSheet.
-                ui.separator();
-                ui.strong(crate::i18n::strs().msg_line_jumps());
-                let mut show_toggle = self
-                    .ed
-                    .as_ref()
-                    .map(|ed| {
-                        ed.doc.pages
-                            [self.page_idx.min(ed.doc.pages.len() - 1)]
-                            .line_jumps_shown()
-                    })
-                    .unwrap_or(true);
-                if ui.checkbox(&mut show_toggle, crate::i18n::strs().msg_show_line_jumps()).changed() {
-                    self.apply_line_jumps_shown(show_toggle);
-                }
-                let doc_factor = self
-                    .ed
-                    .as_ref()
-                    .map(|ed| {
-                        ed.doc.pages
-                            [self.page_idx.min(ed.doc.pages.len() - 1)]
-                            .line_jump_factor()
-                    })
-                    .unwrap_or(1.0) as f32;
-                let mut jump_factor = self.line_jump_draft.unwrap_or(doc_factor);
-                // #257: mirrored emission under RTL (horizontal).
-                let jump_label = crate::i18n::strs().msg_jump_size();
-                ui.horizontal(|ui| {
-                    let mut factor_row = |ui: &mut egui::Ui| {
-                        let r = ui.add(
-                            egui::DragValue::new(&mut jump_factor)
-                                .range(0.5..=3.0)
-                                .speed(0.05)
-                                .suffix("×"),
-                        );
-                        // Draft while dragging; commit ONCE at drag end
-                        // (or immediately for typed input) — the value
-                        // reloads from the document each frame, so the
-                        // draft is what carries the drag (#218 review).
-                        if r.dragged() {
-                            self.line_jump_draft = Some(jump_factor);
-                        }
-                        if r.drag_stopped() || (r.changed() && !r.dragged()) {
-                            self.line_jump_draft = None;
-                            if (jump_factor - doc_factor).abs() > 1e-6 {
-                                self.apply_line_jump_factor(jump_factor as f64);
+                    if l_clicked {
+                        apply = Some((geom.h_in.max(geom.w_in), geom.h_in.min(geom.w_in)));
+                    }
+                    // Layout and Routing (#251): the line-jump display
+                    // switch and jump size — Visio's Page Setup group,
+                    // persisted on the PageSheet.
+                    ui.separator();
+                    ui.strong(crate::i18n::strs().msg_line_jumps());
+                    let mut show_toggle = self
+                        .ed
+                        .as_ref()
+                        .map(|ed| {
+                            ed.doc.pages[self.page_idx.min(ed.doc.pages.len() - 1)]
+                                .line_jumps_shown()
+                        })
+                        .unwrap_or(true);
+                    if ui
+                        .checkbox(&mut show_toggle, crate::i18n::strs().msg_show_line_jumps())
+                        .changed()
+                    {
+                        self.apply_line_jumps_shown(show_toggle);
+                    }
+                    let doc_factor = self
+                        .ed
+                        .as_ref()
+                        .map(|ed| {
+                            ed.doc.pages[self.page_idx.min(ed.doc.pages.len() - 1)]
+                                .line_jump_factor()
+                        })
+                        .unwrap_or(1.0) as f32;
+                    let mut jump_factor = self.line_jump_draft.unwrap_or(doc_factor);
+                    // #257: mirrored emission under RTL (horizontal).
+                    let jump_label = crate::i18n::strs().msg_jump_size();
+                    ui.horizontal(|ui| {
+                        let mut factor_row = |ui: &mut egui::Ui| {
+                            let r = ui.add(
+                                egui::DragValue::new(&mut jump_factor)
+                                    .range(0.5..=3.0)
+                                    .speed(0.05)
+                                    .suffix("×"),
+                            );
+                            // Draft while dragging; commit ONCE at drag end
+                            // (or immediately for typed input) — the value
+                            // reloads from the document each frame, so the
+                            // draft is what carries the drag (#218 review).
+                            if r.dragged() {
+                                self.line_jump_draft = Some(jump_factor);
                             }
+                            if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                self.line_jump_draft = None;
+                                if (jump_factor - doc_factor).abs() > 1e-6 {
+                                    self.apply_line_jump_factor(jump_factor as f64);
+                                }
+                            }
+                        };
+                        if !crate::i18n::rtl() {
+                            ui.label(jump_label);
+                            factor_row(ui);
+                        } else {
+                            factor_row(ui);
+                            ui.label(jump_label);
                         }
-                    };
-                    if !crate::i18n::rtl() {
-                        ui.label(jump_label);
-                        factor_row(ui);
-                    } else {
-                        factor_row(ui);
-                        ui.label(jump_label);
-                    }
-                });
+                    });
                 };
                 if crate::i18n::rtl() {
                     ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
@@ -7751,7 +7756,10 @@ impl App {
                             if let Some(r) = self.reroute_cmd(page_id, &ids_for_reroute) {
                                 cmds.push(r);
                             }
-                            self.apply(Macro::new(crate::i18n::strs().msg_move_container_and_members(), cmds));
+                            self.apply(Macro::new(
+                                crate::i18n::strs().msg_move_container_and_members(),
+                                cmds,
+                            ));
                         }
                     } else {
                         let Some(ed) = self.ed() else { return };
@@ -8199,8 +8207,7 @@ impl App {
             Action::PageBackgrounds => self.backgrounds_open = !self.backgrounds_open,
             Action::ConnectorTool => {
                 self.tool = Tool::Connector;
-                self.status =
-                    crate::i18n::strs().msg_connector_tool_drag_from_one_sha();
+                self.status = crate::i18n::strs().msg_connector_tool_drag_from_one_sha();
             }
             Action::ContainerStyle(name) => self.apply_container_style(name),
             Action::ContainerGallery => self.contgal_open = !self.contgal_open,
@@ -8213,8 +8220,7 @@ impl App {
                 } else {
                     self.tool = Tool::ConnectionPoint;
                     self.connpt_sel = None;
-                    self.status =
-                        crate::i18n::strs().msg_connpoint_tool_status();
+                    self.status = crate::i18n::strs().msg_connpoint_tool_status();
                 }
             }
             Action::FreeformTool => {
@@ -8225,8 +8231,7 @@ impl App {
                     self.status = crate::i18n::strs().msg_freeform_off();
                 } else {
                     self.tool = Tool::Freeform;
-                    self.status =
-                        crate::i18n::strs().msg_freeform_drag_on_the_page_to_dra();
+                    self.status = crate::i18n::strs().msg_freeform_drag_on_the_page_to_dra();
                 }
             }
             Action::PanTool => {
@@ -8248,8 +8253,7 @@ impl App {
                     self.status = crate::i18n::strs().msg_lasso_select_off();
                 } else {
                     self.tool = Tool::Lasso;
-                    self.status =
-                        crate::i18n::strs().msg_lasso_select_drag_a_freehand_tra();
+                    self.status = crate::i18n::strs().msg_lasso_select_drag_a_freehand_tra();
                 }
             }
             Action::ToggleUnits => {
@@ -8269,7 +8273,9 @@ impl App {
                     self.shapesheets.clear();
                 }
             }
-            Action::Macros => self.status = crate::i18n::strs().msg_macros_arrive_with_m7_vba_vsdm_m(),
+            Action::Macros => {
+                self.status = crate::i18n::strs().msg_macros_arrive_with_m7_vba_vsdm_m()
+            }
             Action::FillMenu | Action::LineMenu | Action::TextColorMenu => {
                 self.color_pick = Some(match a {
                     Action::FillMenu => ColorTarget::Fill,
@@ -8294,7 +8300,27 @@ impl App {
                         self.hyperlink_open = Some(sid);
                         self.hyperlink_draft = None;
                     }
-                    None => self.status = crate::i18n::strs().msg_select_a_shape_to_edit_its_hyper(),
+                    None => {
+                        self.status = crate::i18n::strs().msg_select_a_shape_to_edit_its_hyper()
+                    }
+                }
+            }
+            Action::InsertField => {
+                // #267 Insert ▸ Text: the Insert Field dialog on the
+                // primary selection — caret-precise when the in-place
+                // text editor is open on it. The click that opened the
+                // dialog also commits the edit (#22's click-away), so
+                // the caret is captured NOW — the insertion lands
+                // where the caret sat, in the committed raw.
+                self.fields_caret = self.text_edit.as_ref().map(|s| (s.page, s.shape, s.caret));
+                match self.sel {
+                    Some((_, sid)) => {
+                        self.fields_open = Some(sid);
+                        self.fields_draft = None;
+                    }
+                    None => {
+                        self.status = crate::i18n::strs().msg_select_a_shape_to_insert_a_field()
+                    }
                 }
             }
         }
@@ -8359,7 +8385,11 @@ impl App {
                     // The painted text never reaches the accessibility
                     // tree on its own (GitHub #56).
                     fresp.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::Button, true, crate::i18n::strs().msg_file())
+                        egui::WidgetInfo::labeled(
+                            egui::Role::Button,
+                            true,
+                            crate::i18n::strs().msg_file(),
+                        )
                     });
                     ui.painter().rect_filled(
                         fr,
@@ -8503,7 +8533,11 @@ impl App {
                         // Painted placeholder, so name the control for
                         // screen readers (GitHub #56).
                         presp.widget_info(|| {
-                            egui::WidgetInfo::labeled(egui::Role::Button, true, crate::i18n::strs().msg_tell_me())
+                            egui::WidgetInfo::labeled(
+                                egui::Role::Button,
+                                true,
+                                crate::i18n::strs().msg_tell_me(),
+                            )
                         });
                         let hot = presp.hovered();
                         ui.painter().rect_filled(pr, 2, tk.tellme_bg);
@@ -8528,9 +8562,12 @@ impl App {
                             egui::FontId::proportional(11.0),
                             tk.hint_text,
                         );
-                        let presp = presp.on_hover_text(crate::i18n::strs().msg_tell_me_planned_for_a_later_mile());
+                        let presp = presp.on_hover_text(
+                            crate::i18n::strs().msg_tell_me_planned_for_a_later_mile(),
+                        );
                         if presp.clicked() {
-                            self.status = crate::i18n::strs().msg_tell_me_search_arrives_with_a_la();
+                            self.status =
+                                crate::i18n::strs().msg_tell_me_search_arrives_with_a_la();
                         }
                         // #184: Tell Me badges Q (Office's Alt+Q).
                         self.keytips.badges.push(crate::keytips::Badge {
@@ -8550,12 +8587,40 @@ impl App {
                         // #184: the digit badges ride the QAT buttons
                         // themselves (1..=9 by position, Office's
                         // rule).
-                        qat_button(ui, Icon::Save, &crate::i18n::strs().msg_save_ctrl_s(), || Action::Save, self, 1);
-                        qat_button(ui, Icon::Undo, &crate::i18n::strs().msg_undo_ctrl_z(), || Action::Undo, self, 2);
-                        qat_button(ui, Icon::Redo, &crate::i18n::strs().msg_redo_ctrl_y(), || Action::Redo, self, 3);
+                        qat_button(
+                            ui,
+                            Icon::Save,
+                            &crate::i18n::strs().msg_save_ctrl_s(),
+                            || Action::Save,
+                            self,
+                            1,
+                        );
+                        qat_button(
+                            ui,
+                            Icon::Undo,
+                            &crate::i18n::strs().msg_undo_ctrl_z(),
+                            || Action::Undo,
+                            self,
+                            2,
+                        );
+                        qat_button(
+                            ui,
+                            Icon::Redo,
+                            &crate::i18n::strs().msg_redo_ctrl_y(),
+                            || Action::Redo,
+                            self,
+                            3,
+                        );
                         // #242: Help lives in the QAT (the owner's
                         // placement) — opens the About window.
-                        qat_button(ui, Icon::Help, &crate::i18n::strs().msg_help_about(), || Action::About, self, 4);
+                        qat_button(
+                            ui,
+                            Icon::Help,
+                            &crate::i18n::strs().msg_help_about(),
+                            || Action::About,
+                            self,
+                            4,
+                        );
                     });
                 });
                 // #184: the armed veil covers the strip's rect
@@ -8664,8 +8729,12 @@ impl App {
     /// Whether any selected shape on the current page is a group
     /// (#252 Home ▸ Arrange Ungroup enablement).
     fn selection_has_group(&self) -> bool {
-        let Some(page_id) = self.page_id() else { return false };
-        let Some(ed) = self.ed.as_ref() else { return false };
+        let Some(page_id) = self.page_id() else {
+            return false;
+        };
+        let Some(ed) = self.ed.as_ref() else {
+            return false;
+        };
         let Some(page) = ed.doc.pages.iter().find(|p| p.id == page_id) else {
             return false;
         };
@@ -8722,7 +8791,13 @@ impl App {
                     self.switch_page(to);
                 }
             };
-            nav(ui, "<<", &crate::i18n::strs().msg_first_page(), page_idx > 0, 0);
+            nav(
+                ui,
+                "<<",
+                &crate::i18n::strs().msg_first_page(),
+                page_idx > 0,
+                0,
+            );
             nav(
                 ui,
                 "<",
@@ -8737,7 +8812,13 @@ impl App {
                 page_idx + 1 < n,
                 (page_idx + 1).min(n - 1),
             );
-            nav(ui, ">>", &crate::i18n::strs().msg_last_page(), page_idx + 1 < n, n - 1);
+            nav(
+                ui,
+                ">>",
+                &crate::i18n::strs().msg_last_page(),
+                page_idx + 1 < n,
+                n - 1,
+            );
             ui.separator();
             // Tabs fill the strip; overflow clips and the nav cluster /
             // wheel scrolling reach the rest (Visio shows no scrollbar).
@@ -8790,9 +8871,9 @@ impl App {
                                     .small()
                                     .fill(if active { t.tab_active } else { t.tabs_bg })
                                     .frame(true);
-                                let resp =
-                                    ui.add(b)
-                                        .on_hover_text(crate::i18n::strs().msg_page_tab_tooltip(i + 1, id));
+                                let resp = ui.add(b).on_hover_text(
+                                    crate::i18n::strs().msg_page_tab_tooltip(i + 1, id),
+                                );
                                 if active && scroll_to_active {
                                     resp.scroll_to_me(Some(egui::Align::Center));
                                 }
@@ -8899,15 +8980,25 @@ impl App {
                     );
                     let mut z = self.view.zoom;
                     let slider = egui::Slider::new(&mut z, 0.1..=8.0).show_value(false);
-                    let sresp = ui.add_sized([110.0, 14.0], slider).on_hover_text(crate::i18n::strs().msg_zoom());
+                    let sresp = ui
+                        .add_sized([110.0, 14.0], slider)
+                        .on_hover_text(crate::i18n::strs().msg_zoom());
                     if sresp.changed() {
                         self.view.zoom = z.clamp(0.1, 8.0);
                         self.view.fit_mode = false;
                     }
-                    if ui.button("−").on_hover_text(crate::i18n::strs().msg_zoom_out()).clicked() {
+                    if ui
+                        .button("−")
+                        .on_hover_text(crate::i18n::strs().msg_zoom_out())
+                        .clicked()
+                    {
                         self.dispatch(Action::ZoomOut);
                     }
-                    if ui.button("+").on_hover_text(crate::i18n::strs().msg_zoom_in()).clicked() {
+                    if ui
+                        .button("+")
+                        .on_hover_text(crate::i18n::strs().msg_zoom_in())
+                        .clicked()
+                    {
                         self.dispatch(Action::ZoomIn);
                     }
                     ui.separator();
@@ -8980,7 +9071,10 @@ impl App {
             )));
         }
         if !cmds.is_empty() {
-            self.apply(Macro::new(crate::i18n::strs().msg_undo_set_cell(name), cmds));
+            self.apply(Macro::new(
+                crate::i18n::strs().msg_undo_set_cell(name),
+                cmds,
+            ));
         }
     }
 
@@ -9072,14 +9166,13 @@ impl App {
         let focus = self.format_pane_focus;
         let mut scrolled = false;
 
-        egui::ScrollArea::vertical()
-            .show(ui, |ui| {
-        let mut fill_hdr =
-            egui::CollapsingHeader::new(crate::i18n::strs().msg_fill()).default_open(true);
-        if focus == Some(FormatSection::Fill) {
-            fill_hdr = fill_hdr.open(Some(true));
-        }
-        let fill_rsp = fill_hdr.show(ui, |ui| {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            let mut fill_hdr =
+                egui::CollapsingHeader::new(crate::i18n::strs().msg_fill()).default_open(true);
+            if focus == Some(FormatSection::Fill) {
+                fill_hdr = fill_hdr.open(Some(true));
+            }
+            let fill_rsp = fill_hdr.show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(crate::i18n::strs().msg_foreground());
                     if ui
@@ -9124,17 +9217,19 @@ impl App {
                     set_cell = Some(("FillPattern".into(), v));
                 }
             });
-        if focus == Some(FormatSection::Fill) {
-            fill_rsp.header_response.scroll_to_me(Some(egui::Align::Min));
-            scrolled = true;
-        }
-        ui.add_space(2.0);
-        let mut line_hdr =
-            egui::CollapsingHeader::new(crate::i18n::strs().msg_line()).default_open(true);
-        if focus == Some(FormatSection::Line) {
-            line_hdr = line_hdr.open(Some(true));
-        }
-        let line_rsp = line_hdr.show(ui, |ui| {
+            if focus == Some(FormatSection::Fill) {
+                fill_rsp
+                    .header_response
+                    .scroll_to_me(Some(egui::Align::Min));
+                scrolled = true;
+            }
+            ui.add_space(2.0);
+            let mut line_hdr =
+                egui::CollapsingHeader::new(crate::i18n::strs().msg_line()).default_open(true);
+            if focus == Some(FormatSection::Line) {
+                line_hdr = line_hdr.open(Some(true));
+            }
+            let line_rsp = line_hdr.show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(crate::i18n::strs().msg_color());
                     if ui
@@ -9154,7 +9249,11 @@ impl App {
                             .custom_formatter(|v, _| format!("{v:.2} pt")),
                     );
                     r.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::Slider, true, crate::i18n::strs().msg_line_weight())
+                        egui::WidgetInfo::labeled(
+                            egui::Role::Slider,
+                            true,
+                            crate::i18n::strs().msg_line_weight(),
+                        )
                     });
                     if r.drag_stopped() && (pt - cur_pt).abs() > 1e-6 {
                         set_cell = Some(("LineWeight".into(), format!("{:.6}", pt / 72.0)));
@@ -9254,7 +9353,11 @@ impl App {
                     let buf = bufs.entry("rounding".into()).or_insert(cur);
                     let r = ui.add(egui::TextEdit::singleline(buf).desired_width(70.0));
                     r.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::TextInput, true, crate::i18n::strs().msg_rounding())
+                        egui::WidgetInfo::labeled(
+                            egui::Role::TextInput,
+                            true,
+                            crate::i18n::strs().msg_rounding(),
+                        )
                     });
                     if r.lost_focus() {
                         if let Ok(v) = buf.trim().parse::<f64>() {
@@ -9264,24 +9367,30 @@ impl App {
                     }
                 });
             });
-        if focus == Some(FormatSection::Line) {
-            line_rsp.header_response.scroll_to_me(Some(egui::Align::Min));
-            scrolled = true;
-        }
-        ui.add_space(2.0);
-        let mut text_hdr =
-            egui::CollapsingHeader::new(crate::i18n::strs().msg_text()).default_open(true);
-        if focus == Some(FormatSection::Text) {
-            text_hdr = text_hdr.open(Some(true));
-        }
-        let text_rsp = text_hdr.show(ui, |ui| {
+            if focus == Some(FormatSection::Line) {
+                line_rsp
+                    .header_response
+                    .scroll_to_me(Some(egui::Align::Min));
+                scrolled = true;
+            }
+            ui.add_space(2.0);
+            let mut text_hdr =
+                egui::CollapsingHeader::new(crate::i18n::strs().msg_text()).default_open(true);
+            if focus == Some(FormatSection::Text) {
+                text_hdr = text_hdr.open(Some(true));
+            }
+            let text_rsp = text_hdr.show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(crate::i18n::strs().msg_font());
                     let cur = self.eff_row_str("Character", "Font").unwrap_or_default();
                     let buf = bufs.entry("font".into()).or_insert(cur);
                     let r = ui.add(egui::TextEdit::singleline(buf).desired_width(120.0));
                     r.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::TextInput, true, crate::i18n::strs().msg_font())
+                        egui::WidgetInfo::labeled(
+                            egui::Role::TextInput,
+                            true,
+                            crate::i18n::strs().msg_font(),
+                        )
                     });
                     if r.lost_focus() {
                         let v = buf.trim().to_string();
@@ -9301,7 +9410,11 @@ impl App {
                     let buf = bufs.entry("size".into()).or_insert(format!("{cur:.1}"));
                     let r = ui.add(egui::TextEdit::singleline(buf).desired_width(70.0));
                     r.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::TextInput, true, crate::i18n::strs().msg_size_pt())
+                        egui::WidgetInfo::labeled(
+                            egui::Role::TextInput,
+                            true,
+                            crate::i18n::strs().msg_size_pt(),
+                        )
                     });
                     if r.lost_focus() {
                         if let Ok(pt) = buf.trim().parse::<f64>() {
@@ -9324,7 +9437,11 @@ impl App {
                     let mut italic = bits & 2 != 0;
                     let rb = ui.checkbox(&mut bold, "B");
                     rb.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::CheckBox, true, crate::i18n::strs().msg_bold())
+                        egui::WidgetInfo::labeled(
+                            egui::Role::CheckBox,
+                            true,
+                            crate::i18n::strs().msg_bold(),
+                        )
                     });
                     if rb.changed() {
                         set_row = Some((
@@ -9335,7 +9452,11 @@ impl App {
                     }
                     let ri = ui.checkbox(&mut italic, "I");
                     ri.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::CheckBox, true, crate::i18n::strs().msg_italic())
+                        egui::WidgetInfo::labeled(
+                            egui::Role::CheckBox,
+                            true,
+                            crate::i18n::strs().msg_italic(),
+                        )
                     });
                     if ri.changed() {
                         set_row = Some((
@@ -9364,16 +9485,22 @@ impl App {
                     ui,
                     &cur,
                     &|k: &str| k.to_string(),
-                    &[("0", crate::i18n::strs().msg_align_left()), ("1", crate::i18n::strs().msg_center()), ("2", crate::i18n::strs().msg_align_right())],
+                    &[
+                        ("0", crate::i18n::strs().msg_align_left()),
+                        ("1", crate::i18n::strs().msg_center()),
+                        ("2", crate::i18n::strs().msg_align_right()),
+                    ],
                 ) {
                     set_row = Some(("Paragraph".into(), "HorzAlign".into(), v));
                 }
             });
-        if focus == Some(FormatSection::Text) {
-            text_rsp.header_response.scroll_to_me(Some(egui::Align::Min));
-            scrolled = true;
-        }
-            });
+            if focus == Some(FormatSection::Text) {
+                text_rsp
+                    .header_response
+                    .scroll_to_me(Some(egui::Align::Min));
+                scrolled = true;
+            }
+        });
         if scrolled {
             self.format_pane_focus = None;
         }
@@ -9564,7 +9691,9 @@ impl App {
                         ui.add_space(6.0);
                         if ui
                             .button(crate::i18n::strs().msg_blank_drawing())
-                            .on_hover_text(crate::i18n::strs().msg_start_an_empty_us_letter_drawing())
+                            .on_hover_text(
+                                crate::i18n::strs().msg_start_an_empty_us_letter_drawing(),
+                            )
                             .clicked()
                         {
                             self.do_new();
@@ -9618,11 +9747,16 @@ impl App {
             let mut pop = false;
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new(crate::i18n::strs().msg_group_breadcrumb(names.join(" › ")))
-                        .small()
-                        .color(ui.visuals().weak_text_color()),
+                    egui::RichText::new(
+                        crate::i18n::strs().msg_group_breadcrumb(names.join(" › ")),
+                    )
+                    .small()
+                    .color(ui.visuals().weak_text_color()),
                 );
-                if ui.small_button(crate::i18n::strs().msg_close_group()).clicked() {
+                if ui
+                    .small_button(crate::i18n::strs().msg_close_group())
+                    .clicked()
+                {
                     pop = true;
                 }
             });
@@ -10340,7 +10474,10 @@ impl App {
                                 let (target, note) = match glue {
                                     Some((p, hit)) => (
                                         p,
-                                        Some(crate::i18n::strs().msg_endpoint_glued_to(snap_hit_text(hit))),
+                                        Some(
+                                            crate::i18n::strs()
+                                                .msg_endpoint_glued_to(snap_hit_text(hit)),
+                                        ),
                                     ),
                                     None => (raw, None),
                                 };
@@ -10465,6 +10602,10 @@ impl App {
                 }
             }
             match flow {
+                // A click that opened the Insert Field dialog does
+                // NOT also end the edit (#267: the dialog inserts at
+                // the caret mid-edit, like Visio's).
+                crate::textedit::EditFlow::Commit if self.fields_open.is_some() => {}
                 crate::textedit::EditFlow::Commit => self.end_text_edit(true),
                 crate::textedit::EditFlow::Abandon => self.end_text_edit(false),
                 crate::textedit::EditFlow::Active => {}
@@ -10530,7 +10671,13 @@ impl App {
             if ctx_item(ui, None, &crate::i18n::strs().msg_rename_page(), "", true) {
                 act = Some(Act::Rename);
             }
-            if ctx_item(ui, None, &crate::i18n::strs().msg_duplicate_page(), "", true) {
+            if ctx_item(
+                ui,
+                None,
+                &crate::i18n::strs().msg_duplicate_page(),
+                "",
+                true,
+            ) {
                 act = Some(Act::Duplicate);
             }
             // #113 remainder: mark a page AS a background (Visio's Page
@@ -10549,8 +10696,20 @@ impl App {
                 act = Some(Act::MarkBg);
             }
             ui.separator();
-            ctx_item(ui, None, &crate::i18n::strs().msg_page_setup_menu(), "(later milestone)", false);
-            if ctx_item(ui, None, &crate::i18n::strs().msg_reorder_pages_menu(), "", true) {
+            ctx_item(
+                ui,
+                None,
+                &crate::i18n::strs().msg_page_setup_menu(),
+                "(later milestone)",
+                false,
+            );
+            if ctx_item(
+                ui,
+                None,
+                &crate::i18n::strs().msg_reorder_pages_menu(),
+                "",
+                true,
+            ) {
                 act = Some(Act::Reorder);
             }
         });
@@ -10740,7 +10899,10 @@ impl App {
         }
         match cmd.arg(&address).spawn() {
             Ok(_) => self.status = crate::i18n::strs().msg_opened_address(address.clone()),
-            Err(e) => self.status = crate::i18n::strs().msg_could_not_open_address_e(address, e.to_string()),
+            Err(e) => {
+                self.status =
+                    crate::i18n::strs().msg_could_not_open_address_e(address, e.to_string())
+            }
         }
     }
 
@@ -10875,7 +11037,10 @@ impl App {
         cmds.push(user_row("AnnotationRef", &shape_id.to_string()));
         cmds.push(user_row("AnnotationAuthor", &author));
         cmds.push(user_row("AnnotationDate", &date));
-        self.apply(dc_core::Macro::new(crate::i18n::strs().msg_comment_add_inline(), cmds));
+        self.apply(dc_core::Macro::new(
+            crate::i18n::strs().msg_comment_add_inline(),
+            cmds,
+        ));
     }
 
     /// The shape's comment thread (#29): annotation shapes whose
@@ -10951,148 +11116,155 @@ impl App {
             .show(ctx, |ui| {
                 // #257 item 3: the dialog pass mirrors the window.
                 ui.with_layout(dialog_dir(), |ui| {
-                if thread.is_empty() {
-                    ui.weak(crate::i18n::strs().msg_no_comments_on_this_shape_yet());
-                }
-                for (ann_id, author, date, cbody) in &thread {
-                    let card = egui::Frame::new()
-                        .inner_margin(egui::Margin::same(6))
-                        .stroke(egui::Stroke::new(
-                            1.0,
-                            ui.visuals().widgets.noninteractive.bg_stroke.color,
-                        ))
-                        .corner_radius(4.0)
-                        .show(ui, |ui| {
-                            // 2016 header: avatar initial + author + date
-                            // (mirrored with the chrome under RTL).
-                            row(ui, |ui| {
-                                let initial = author
-                                    .chars()
-                                    .next()
-                                    .map(|c| c.to_string())
-                                    .unwrap_or_else(|| "?".into());
-                                let (c, _) =
-                                    ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-                                ui.painter().circle_filled(
-                                    c.center(),
-                                    8.0,
-                                    ui.visuals().selection.bg_fill,
-                                );
-                                ui.painter().text(
-                                    c.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    initial,
-                                    egui::FontId::proportional(10.0),
-                                    Color32::WHITE,
-                                );
-                                ui.label(
-                                    egui::RichText::new(format!("{author}  {date}"))
-                                        .small()
-                                        .weak(),
-                                );
-                            });
-                            let editing_here = edit.as_ref().is_some_and(|(id, _)| id == ann_id);
-                            let mut edit_buf = edit
-                                .as_mut()
-                                .filter(|(id, _)| id == ann_id)
-                                .map(|(_, b)| std::mem::take(b));
-                            let mut edit_done = false;
-                            if editing_here {
-                                let buf = edit_buf.as_mut().unwrap();
-                                let r = ui.add(
-                                    egui::TextEdit::multiline(buf)
-                                        .desired_rows(2)
-                                        .desired_width(f32::INFINITY),
-                                );
-                                r.widget_info(|| {
-                                    egui::WidgetInfo::labeled(
-                                        egui::Role::TextInput,
-                                        true,
-                                        crate::i18n::strs().msg_edit_comment(),
-                                    )
-                                });
+                    if thread.is_empty() {
+                        ui.weak(crate::i18n::strs().msg_no_comments_on_this_shape_yet());
+                    }
+                    for (ann_id, author, date, cbody) in &thread {
+                        let card = egui::Frame::new()
+                            .inner_margin(egui::Margin::same(6))
+                            .stroke(egui::Stroke::new(
+                                1.0,
+                                ui.visuals().widgets.noninteractive.bg_stroke.color,
+                            ))
+                            .corner_radius(4.0)
+                            .show(ui, |ui| {
+                                // 2016 header: avatar initial + author + date
+                                // (mirrored with the chrome under RTL).
                                 row(ui, |ui| {
-                                    if ui.button(crate::i18n::strs().msg_save()).clicked() && !buf.trim().is_empty() {
-                                        let author = author.clone();
-                                        let date = date.clone();
-                                        let new_text =
-                                            format!("{} — {}: {}", author, date, buf.trim());
-                                        // One undo step incl. text-derived
-                                        // cache refresh (#147).
-                                        let scope = Scope::Shape {
-                                            page: page_id,
-                                            shape: *ann_id,
-                                        };
-                                        let doc = self.ed().map(|ed| &ed.doc);
-                                        if let Some(doc) = doc {
-                                            self.apply(dc::textfunc::text_edit_macro(
-                                                doc, &scope, &new_text,
-                                            ));
+                                    let initial = author
+                                        .chars()
+                                        .next()
+                                        .map(|c| c.to_string())
+                                        .unwrap_or_else(|| "?".into());
+                                    let (c, _) =
+                                        ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+                                    ui.painter().circle_filled(
+                                        c.center(),
+                                        8.0,
+                                        ui.visuals().selection.bg_fill,
+                                    );
+                                    ui.painter().text(
+                                        c.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        initial,
+                                        egui::FontId::proportional(10.0),
+                                        Color32::WHITE,
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!("{author}  {date}"))
+                                            .small()
+                                            .weak(),
+                                    );
+                                });
+                                let editing_here =
+                                    edit.as_ref().is_some_and(|(id, _)| id == ann_id);
+                                let mut edit_buf = edit
+                                    .as_mut()
+                                    .filter(|(id, _)| id == ann_id)
+                                    .map(|(_, b)| std::mem::take(b));
+                                let mut edit_done = false;
+                                if editing_here {
+                                    let buf = edit_buf.as_mut().unwrap();
+                                    let r = ui.add(
+                                        egui::TextEdit::multiline(buf)
+                                            .desired_rows(2)
+                                            .desired_width(f32::INFINITY),
+                                    );
+                                    r.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::Role::TextInput,
+                                            true,
+                                            crate::i18n::strs().msg_edit_comment(),
+                                        )
+                                    });
+                                    row(ui, |ui| {
+                                        if ui.button(crate::i18n::strs().msg_save()).clicked()
+                                            && !buf.trim().is_empty()
+                                        {
+                                            let author = author.clone();
+                                            let date = date.clone();
+                                            let new_text =
+                                                format!("{} — {}: {}", author, date, buf.trim());
+                                            // One undo step incl. text-derived
+                                            // cache refresh (#147).
+                                            let scope = Scope::Shape {
+                                                page: page_id,
+                                                shape: *ann_id,
+                                            };
+                                            let doc = self.ed().map(|ed| &ed.doc);
+                                            if let Some(doc) = doc {
+                                                self.apply(dc::textfunc::text_edit_macro(
+                                                    doc, &scope, &new_text,
+                                                ));
+                                            }
+                                            edit_done = true;
                                         }
-                                        edit_done = true;
-                                    }
-                                    if ui.button(crate::i18n::strs().msg_cancel()).clicked() {
-                                        edit_done = true;
-                                    }
-                                });
-                            }
-                            if !editing_here {
-                                ui.label(egui::RichText::new(cbody).size(12.0));
-                                row(ui, |ui| {
-                                    if ui.button(crate::i18n::strs().msg_edit()).clicked() {
-                                        edit = Some((*ann_id, cbody.clone()));
-                                    }
-                                    if ui.button(crate::i18n::strs().msg_delete()).clicked() {
-                                        self.apply(RemoveShape::new(page_id, *ann_id));
-                                    }
-                                });
-                            }
-                            // Write the (possibly typed-into) buffer
-                            // back unless the editor closed.
-                            if let Some(b) = edit_buf {
-                                if let Some((id, slot)) = edit.as_mut() {
-                                    if id == ann_id && !edit_done {
-                                        *slot = b;
+                                        if ui.button(crate::i18n::strs().msg_cancel()).clicked() {
+                                            edit_done = true;
+                                        }
+                                    });
+                                }
+                                if !editing_here {
+                                    ui.label(egui::RichText::new(cbody).size(12.0));
+                                    row(ui, |ui| {
+                                        if ui.button(crate::i18n::strs().msg_edit()).clicked() {
+                                            edit = Some((*ann_id, cbody.clone()));
+                                        }
+                                        if ui.button(crate::i18n::strs().msg_delete()).clicked() {
+                                            self.apply(RemoveShape::new(page_id, *ann_id));
+                                        }
+                                    });
+                                }
+                                // Write the (possibly typed-into) buffer
+                                // back unless the editor closed.
+                                if let Some(b) = edit_buf {
+                                    if let Some((id, slot)) = edit.as_mut() {
+                                        if id == ann_id && !edit_done {
+                                            *slot = b;
+                                        }
                                     }
                                 }
-                            }
-                        });
-                    let _ = card;
-                    ui.add_space(4.0);
-                }
-                ui.separator();
-                // Reply (or the first comment when the thread is empty).
-                let r = ui.add(
-                    egui::TextEdit::multiline(&mut body)
-                        .desired_rows(2)
-                        .desired_width(f32::INFINITY)
-                        .hint_text(if thread.is_empty() {
-                            crate::i18n::strs().msg_add_a_comment()
+                            });
+                        let _ = card;
+                        ui.add_space(4.0);
+                    }
+                    ui.separator();
+                    // Reply (or the first comment when the thread is empty).
+                    let r = ui.add(
+                        egui::TextEdit::multiline(&mut body)
+                            .desired_rows(2)
+                            .desired_width(f32::INFINITY)
+                            .hint_text(if thread.is_empty() {
+                                crate::i18n::strs().msg_add_a_comment()
+                            } else {
+                                crate::i18n::strs().msg_reply()
+                            }),
+                    );
+                    r.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::TextInput,
+                            true,
+                            if thread.is_empty() {
+                                crate::i18n::strs().msg_review_new_comment()
+                            } else {
+                                crate::i18n::strs().msg_reply()
+                            },
+                        )
+                    });
+                    row(ui, |ui| {
+                        let caption = if thread.is_empty() {
+                            crate::i18n::strs().msg_ok()
                         } else {
                             crate::i18n::strs().msg_reply()
-                        }),
-                );
-                r.widget_info(|| {
-                    egui::WidgetInfo::labeled(
-                        egui::Role::TextInput,
-                        true,
-                        if thread.is_empty() {
-                            crate::i18n::strs().msg_review_new_comment()
-                        } else {
-                            crate::i18n::strs().msg_reply()
-                        },
-                    )
-                });
-                row(ui, |ui| {
-                    let caption = if thread.is_empty() { crate::i18n::strs().msg_ok() } else { crate::i18n::strs().msg_reply() };
-                    if ui.button(caption).clicked() && !body.trim().is_empty() {
-                        self.add_comment(shape_id, &body);
-                        body.clear();
-                    }
-                    if ui.button(crate::i18n::strs().msg_close()).clicked() {
-                        close = true;
-                    }
-                });
+                        };
+                        if ui.button(caption).clicked() && !body.trim().is_empty() {
+                            self.add_comment(shape_id, &body);
+                            body.clear();
+                        }
+                        if ui.button(crate::i18n::strs().msg_close()).clicked() {
+                            close = true;
+                        }
+                    });
                 });
             });
         if !close {
@@ -11194,91 +11366,56 @@ impl App {
                 // property grid swaps its columns under RTL (field
                 // visual-left, label visual-right).
                 ui.with_layout(dialog_dir(), |ui| {
-                let rtl_grid = crate::i18n::rtl();
-                let emit_label = |ui: &mut egui::Ui, label: &str, tip: &str| {
-                    ui.label(label).on_hover_text(tip);
-                };
-                egui::Grid::new("dc-shape-data")
-                    .num_columns(2)
-                    .spacing(egui::vec2(8.0, 6.0))
-                    .show(ui, |ui| {
-                        for (name, row) in &rows {
-                            if crate::props::invisible(row) {
-                                continue;
-                            }
-                            let label = crate::props::label(row, name);
-                            let current = row
-                                .cell("Value")
-                                .and_then(|c| c.v.clone())
-                                .unwrap_or_default();
-                            let tip = row
-                                .cell("Prompt")
-                                .and_then(|c| c.v.clone())
-                                .unwrap_or_default();
-                            if !rtl_grid {
-                                emit_label(ui, &label, &tip);
-                            }
-                            let _field_id = ();
-                            match crate::props::field_kind(row) {
-                                crate::props::FieldKind::Bool => {
-                                    let mut on = current.trim() == "1";
-                                    let r = ui.checkbox(&mut on, "");
-                                    r.widget_info(|| {
-                                        egui::WidgetInfo::labeled(
-                                            egui::Role::CheckBox,
-                                            true,
-                                            &label,
-                                        )
-                                    });
-                                    if r.changed() {
-                                        write_value(
-                                            self,
-                                            page_id,
-                                            shape_id,
-                                            name,
-                                            if on { "1" } else { "0" },
-                                        );
-                                    }
+                    let rtl_grid = crate::i18n::rtl();
+                    let emit_label = |ui: &mut egui::Ui, label: &str, tip: &str| {
+                        ui.label(label).on_hover_text(tip);
+                    };
+                    egui::Grid::new("dc-shape-data")
+                        .num_columns(2)
+                        .spacing(egui::vec2(8.0, 6.0))
+                        .show(ui, |ui| {
+                            for (name, row) in &rows {
+                                if crate::props::invisible(row) {
+                                    continue;
                                 }
-                                crate::props::FieldKind::List(choices) => {
-                                    // A manual dropdown: the stock
-                                    // ComboBox's arrow glyph is missing
-                                    // from the pinned font set.
-                                    let r = ui.button(format!("{current}  ›")).on_hover_text(&tip);
-                                    r.widget_info(|| {
-                                        egui::WidgetInfo::labeled(
-                                            egui::Role::ComboBox,
-                                            true,
-                                            &label,
-                                        )
-                                    });
-                                    let mut picked: Option<String> = None;
-                                    egui::Popup::menu(&r)
-                                        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
-                                        .show(|ui| {
-                                            ui.set_min_width(120.0);
-                                            for c in &choices {
-                                                if ui.selectable_label(*c == current, c).clicked() {
-                                                    picked = Some(c.clone());
-                                                }
-                                            }
+                                let label = crate::props::label(row, name);
+                                let current = row
+                                    .cell("Value")
+                                    .and_then(|c| c.v.clone())
+                                    .unwrap_or_default();
+                                let tip = row
+                                    .cell("Prompt")
+                                    .and_then(|c| c.v.clone())
+                                    .unwrap_or_default();
+                                if !rtl_grid {
+                                    emit_label(ui, &label, &tip);
+                                }
+                                let _field_id = ();
+                                match crate::props::field_kind(row) {
+                                    crate::props::FieldKind::Bool => {
+                                        let mut on = current.trim() == "1";
+                                        let r = ui.checkbox(&mut on, "");
+                                        r.widget_info(|| {
+                                            egui::WidgetInfo::labeled(
+                                                egui::Role::CheckBox,
+                                                true,
+                                                &label,
+                                            )
                                         });
-                                    if let Some(v) = picked {
-                                        write_value(self, page_id, shape_id, name, &v);
+                                        if r.changed() {
+                                            write_value(
+                                                self,
+                                                page_id,
+                                                shape_id,
+                                                name,
+                                                if on { "1" } else { "0" },
+                                            );
+                                        }
                                     }
-                                }
-                                crate::props::FieldKind::VarList(choices) => {
-                                    // Variable list (Type 4): the same
-                                    // dropdown over the Format choices,
-                                    // plus "＋" to reveal an add row —
-                                    // adding a choice writes the row's
-                                    // Value AND appends to Format (one
-                                    // undo step), so the list grows
-                                    // the way Visio's variable list
-                                    // does.
-                                    let mut picked: Option<String> = None;
-                                    let mut open_add = false;
-                                    ui.horizontal(|ui| {
+                                    crate::props::FieldKind::List(choices) => {
+                                        // A manual dropdown: the stock
+                                        // ComboBox's arrow glyph is missing
+                                        // from the pinned font set.
                                         let r =
                                             ui.button(format!("{current}  ›")).on_hover_text(&tip);
                                         r.widget_info(|| {
@@ -11288,6 +11425,7 @@ impl App {
                                                 &label,
                                             )
                                         });
+                                        let mut picked: Option<String> = None;
                                         egui::Popup::menu(&r)
                                             .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
                                             .show(|ui| {
@@ -11301,201 +11439,258 @@ impl App {
                                                     }
                                                 }
                                             });
-                                        if ui.small_button("+").clicked() {
-                                            open_add = true;
+                                        if let Some(v) = picked {
+                                            write_value(self, page_id, shape_id, name, &v);
                                         }
-                                    });
-                                    if open_add {
-                                        self.prop_add = Some(name.clone());
                                     }
-                                    if let Some(v) = picked {
-                                        write_value(self, page_id, shape_id, name, &v);
-                                    }
-                                    // The add row (label column empty —
-                                    // mirrored with the grid under RTL).
-                                    if self.prop_add.as_deref() == Some(name.as_str()) {
-                                        if rtl_grid {
-                                            // The PROPERTY row's second cell —
-                                            // emitted before the row closes, or
-                                            // the label would land in the add
-                                            // row below it (PR #269 review).
-                                            emit_label(ui, &label, &tip);
-                                        }
-                                        ui.end_row();
-                                        if rtl_grid {
-                                            // the editor lands visual-left
-                                        } else {
-                                            ui.label("");
-                                        }
-                                        let add_key = format!("{name}#add");
-                                        let mut commit = false;
-                                        let mut cancel = false;
-                                        {
-                                            let buf = bufs.entry(add_key.clone()).or_default();
-                                            ui.horizontal(|ui| {
-                                                let edit = ui.add(
-                                                    egui::TextEdit::singleline(buf)
-                                                        .hint_text(crate::i18n::strs().msg_new_choice()),
-                                                );
-                                                edit.widget_info(|| {
-                                                    egui::WidgetInfo::labeled(
-                                                        egui::Role::TextInput,
-                                                        true,
-                                                        &label,
-                                                    )
-                                                });
-                                                if ui.button(crate::i18n::strs().msg_add()).clicked()
-                                                    || (edit.lost_focus()
-                                                        && ui.input(|i| {
-                                                            i.key_pressed(egui::Key::Enter)
-                                                        }))
-                                                {
-                                                    commit = true;
-                                                }
-                                                if ui.button(crate::i18n::strs().msg_cancel()).clicked() {
-                                                    cancel = true;
-                                                }
+                                    crate::props::FieldKind::VarList(choices) => {
+                                        // Variable list (Type 4): the same
+                                        // dropdown over the Format choices,
+                                        // plus "＋" to reveal an add row —
+                                        // adding a choice writes the row's
+                                        // Value AND appends to Format (one
+                                        // undo step), so the list grows
+                                        // the way Visio's variable list
+                                        // does.
+                                        let mut picked: Option<String> = None;
+                                        let mut open_add = false;
+                                        ui.horizontal(|ui| {
+                                            let r = ui
+                                                .button(format!("{current}  ›"))
+                                                .on_hover_text(&tip);
+                                            r.widget_info(|| {
+                                                egui::WidgetInfo::labeled(
+                                                    egui::Role::ComboBox,
+                                                    true,
+                                                    &label,
+                                                )
                                             });
+                                            egui::Popup::menu(&r)
+                                                .close_behavior(
+                                                    egui::PopupCloseBehavior::CloseOnClick,
+                                                )
+                                                .show(|ui| {
+                                                    ui.set_min_width(120.0);
+                                                    for c in &choices {
+                                                        if ui
+                                                            .selectable_label(*c == current, c)
+                                                            .clicked()
+                                                        {
+                                                            picked = Some(c.clone());
+                                                        }
+                                                    }
+                                                });
+                                            if ui.small_button("+").clicked() {
+                                                open_add = true;
+                                            }
+                                        });
+                                        if open_add {
+                                            self.prop_add = Some(name.clone());
                                         }
-                                        if rtl_grid {
-                                            ui.label("");
+                                        if let Some(v) = picked {
+                                            write_value(self, page_id, shape_id, name, &v);
                                         }
-                                        if cancel {
-                                            bufs.remove(&add_key);
-                                            self.prop_add = None;
-                                        } else if commit {
-                                            let v = bufs
-                                                .get(&add_key)
-                                                .map(|b| b.trim().to_string())
-                                                .unwrap_or_default();
-                                            if v.contains(';') {
-                                                // A choice is one ";"-separated
-                                                // Format entry — an embedded
-                                                // separator would split into
-                                                // phantom choices. Keep the add
-                                                // row open for correction.
-                                                self.status =
-                                                    crate::i18n::strs().msg_label_a_choice_cannot_contain(label.clone());
-                                            } else if !v.is_empty() {
-                                                bufs.remove(&add_key);
-                                                self.prop_add = None;
-                                                let fmt = row
-                                                    .cell("Format")
-                                                    .and_then(|c| c.v.clone())
-                                                    .unwrap_or_default();
-                                                if fmt.split(';').any(|c| c.trim() == v) {
-                                                    // Already a choice: select it,
-                                                    // don't duplicate it in Format.
-                                                    write_value(self, page_id, shape_id, name, &v);
-                                                } else {
-                                                    let new_fmt = if fmt.trim().is_empty() {
-                                                        v.clone()
-                                                    } else {
-                                                        format!("{};{}", fmt.trim_end(), v)
-                                                    };
-                                                    let scope = Scope::Shape {
-                                                        page: page_id,
-                                                        shape: shape_id,
-                                                    };
-                                                    let row_sel = dc_core::commands::RowSel::Named(
-                                                        name.clone(),
-                                                    );
-                                                    self.apply(dc_core::Macro::new(
-                                                        crate::i18n::strs()
-                                                            .msg_undo_add_choice(
-                                                                name.clone(),
-                                                                format!("{v:?}"),
-                                                            ),
-                                                        vec![
-                                                            Box::new(dc_core::SetRowCell::new(
-                                                                scope.clone(),
-                                                                "Prop",
-                                                                0,
-                                                                row_sel.clone(),
-                                                                "Value",
-                                                                vsdx::model::Cell::value(v),
-                                                            )),
-                                                            Box::new(dc_core::SetRowCell::new(
-                                                                scope,
-                                                                "Prop",
-                                                                0,
-                                                                row_sel,
-                                                                "Format",
-                                                                vsdx::model::Cell::value(new_fmt),
-                                                            )),
-                                                        ],
-                                                    ));
-                                                }
+                                        // The add row (label column empty —
+                                        // mirrored with the grid under RTL).
+                                        if self.prop_add.as_deref() == Some(name.as_str()) {
+                                            if rtl_grid {
+                                                // The PROPERTY row's second cell —
+                                                // emitted before the row closes, or
+                                                // the label would land in the add
+                                                // row below it (PR #269 review).
+                                                emit_label(ui, &label, &tip);
+                                            }
+                                            ui.end_row();
+                                            if rtl_grid {
+                                                // the editor lands visual-left
                                             } else {
+                                                ui.label("");
+                                            }
+                                            let add_key = format!("{name}#add");
+                                            let mut commit = false;
+                                            let mut cancel = false;
+                                            {
+                                                let buf = bufs.entry(add_key.clone()).or_default();
+                                                ui.horizontal(|ui| {
+                                                    let edit = ui.add(
+                                                        egui::TextEdit::singleline(buf).hint_text(
+                                                            crate::i18n::strs().msg_new_choice(),
+                                                        ),
+                                                    );
+                                                    edit.widget_info(|| {
+                                                        egui::WidgetInfo::labeled(
+                                                            egui::Role::TextInput,
+                                                            true,
+                                                            &label,
+                                                        )
+                                                    });
+                                                    if ui
+                                                        .button(crate::i18n::strs().msg_add())
+                                                        .clicked()
+                                                        || (edit.lost_focus()
+                                                            && ui.input(|i| {
+                                                                i.key_pressed(egui::Key::Enter)
+                                                            }))
+                                                    {
+                                                        commit = true;
+                                                    }
+                                                    if ui
+                                                        .button(crate::i18n::strs().msg_cancel())
+                                                        .clicked()
+                                                    {
+                                                        cancel = true;
+                                                    }
+                                                });
+                                            }
+                                            if rtl_grid {
+                                                ui.label("");
+                                            }
+                                            if cancel {
                                                 bufs.remove(&add_key);
                                                 self.prop_add = None;
+                                            } else if commit {
+                                                let v = bufs
+                                                    .get(&add_key)
+                                                    .map(|b| b.trim().to_string())
+                                                    .unwrap_or_default();
+                                                if v.contains(';') {
+                                                    // A choice is one ";"-separated
+                                                    // Format entry — an embedded
+                                                    // separator would split into
+                                                    // phantom choices. Keep the add
+                                                    // row open for correction.
+                                                    self.status = crate::i18n::strs()
+                                                        .msg_label_a_choice_cannot_contain(
+                                                            label.clone(),
+                                                        );
+                                                } else if !v.is_empty() {
+                                                    bufs.remove(&add_key);
+                                                    self.prop_add = None;
+                                                    let fmt = row
+                                                        .cell("Format")
+                                                        .and_then(|c| c.v.clone())
+                                                        .unwrap_or_default();
+                                                    if fmt.split(';').any(|c| c.trim() == v) {
+                                                        // Already a choice: select it,
+                                                        // don't duplicate it in Format.
+                                                        write_value(
+                                                            self, page_id, shape_id, name, &v,
+                                                        );
+                                                    } else {
+                                                        let new_fmt = if fmt.trim().is_empty() {
+                                                            v.clone()
+                                                        } else {
+                                                            format!("{};{}", fmt.trim_end(), v)
+                                                        };
+                                                        let scope = Scope::Shape {
+                                                            page: page_id,
+                                                            shape: shape_id,
+                                                        };
+                                                        let row_sel =
+                                                            dc_core::commands::RowSel::Named(
+                                                                name.clone(),
+                                                            );
+                                                        self.apply(dc_core::Macro::new(
+                                                            crate::i18n::strs()
+                                                                .msg_undo_add_choice(
+                                                                    name.clone(),
+                                                                    format!("{v:?}"),
+                                                                ),
+                                                            vec![
+                                                                Box::new(dc_core::SetRowCell::new(
+                                                                    scope.clone(),
+                                                                    "Prop",
+                                                                    0,
+                                                                    row_sel.clone(),
+                                                                    "Value",
+                                                                    vsdx::model::Cell::value(v),
+                                                                )),
+                                                                Box::new(dc_core::SetRowCell::new(
+                                                                    scope,
+                                                                    "Prop",
+                                                                    0,
+                                                                    row_sel,
+                                                                    "Format",
+                                                                    vsdx::model::Cell::value(
+                                                                        new_fmt,
+                                                                    ),
+                                                                )),
+                                                            ],
+                                                        ));
+                                                    }
+                                                } else {
+                                                    bufs.remove(&add_key);
+                                                    self.prop_add = None;
+                                                }
                                             }
                                         }
                                     }
-                                }
-                                crate::props::FieldKind::Number => {
-                                    let buf =
-                                        bufs.entry(name.clone()).or_insert_with(|| current.clone());
-                                    let r =
-                                        ui.add(egui::TextEdit::singleline(buf).hint_text("0.0"));
-                                    r.widget_info(|| {
-                                        egui::WidgetInfo::labeled(
-                                            egui::Role::TextInput,
-                                            true,
-                                            &label,
-                                        )
-                                    });
-                                    if r.lost_focus() && buf.as_str() != current {
-                                        match buf.trim().parse::<f64>() {
-                                            Ok(_) => {
-                                                let v = buf.trim().to_string();
-                                                write_value(self, page_id, shape_id, name, &v);
+                                    crate::props::FieldKind::Number => {
+                                        let buf = bufs
+                                            .entry(name.clone())
+                                            .or_insert_with(|| current.clone());
+                                        let r = ui
+                                            .add(egui::TextEdit::singleline(buf).hint_text("0.0"));
+                                        r.widget_info(|| {
+                                            egui::WidgetInfo::labeled(
+                                                egui::Role::TextInput,
+                                                true,
+                                                &label,
+                                            )
+                                        });
+                                        if r.lost_focus() && buf.as_str() != current {
+                                            match buf.trim().parse::<f64>() {
+                                                Ok(_) => {
+                                                    let v = buf.trim().to_string();
+                                                    write_value(self, page_id, shape_id, name, &v);
+                                                }
+                                                Err(_) => {
+                                                    self.status = crate::i18n::strs()
+                                                        .msg_label_not_a_number(label.clone());
+                                                }
                                             }
-                                            Err(_) => {
-                                                self.status = crate::i18n::strs().msg_label_not_a_number(label.clone());
-                                            }
+                                            bufs.remove(name);
                                         }
-                                        bufs.remove(name);
+                                    }
+                                    crate::props::FieldKind::Str
+                                    | crate::props::FieldKind::Formatted(_) => {
+                                        let buf = bufs
+                                            .entry(name.clone())
+                                            .or_insert_with(|| current.clone());
+                                        let r = ui.add(egui::TextEdit::singleline(buf));
+                                        r.widget_info(|| {
+                                            egui::WidgetInfo::labeled(
+                                                egui::Role::TextInput,
+                                                true,
+                                                &label,
+                                            )
+                                        });
+                                        if r.lost_focus() && buf.as_str() != current {
+                                            let v = buf.trim().to_string();
+                                            write_value(self, page_id, shape_id, name, &v);
+                                            bufs.remove(name);
+                                        }
                                     }
                                 }
-                                crate::props::FieldKind::Str
-                                | crate::props::FieldKind::Formatted(_) => {
-                                    let buf =
-                                        bufs.entry(name.clone()).or_insert_with(|| current.clone());
-                                    let r = ui.add(egui::TextEdit::singleline(buf));
-                                    r.widget_info(|| {
-                                        egui::WidgetInfo::labeled(
-                                            egui::Role::TextInput,
-                                            true,
-                                            &label,
-                                        )
-                                    });
-                                    if r.lost_focus() && buf.as_str() != current {
-                                        let v = buf.trim().to_string();
-                                        write_value(self, page_id, shape_id, name, &v);
-                                        bufs.remove(name);
-                                    }
+                                if rtl_grid && self.prop_add.as_deref() != Some(name.as_str()) {
+                                    // The mirrored row's second cell (the
+                                    // add-row variant emitted its own above,
+                                    // before its row closed).
+                                    emit_label(ui, &label, &tip);
                                 }
+                                ui.end_row();
                             }
-                            if rtl_grid && self.prop_add.as_deref() != Some(name.as_str()) {
-                                // The mirrored row's second cell (the
-                                // add-row variant emitted its own above,
-                                // before its row closed).
-                                emit_label(ui, &label, &tip);
+                        });
+                    // Always-visible action bar: Close bottom-right —
+                    // #257: mirrored to the bottom-left under RTL.
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        row_rev(ui, |ui| {
+                            if ui.button(crate::i18n::strs().msg_close()).clicked() {
+                                close_btn = true;
                             }
-                            ui.end_row();
-                        }
+                        });
                     });
-                // Always-visible action bar: Close bottom-right —
-                // #257: mirrored to the bottom-left under RTL.
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    row_rev(ui, |ui| {
-                        if ui.button(crate::i18n::strs().msg_close()).clicked() {
-                            close_btn = true;
-                        }
-                    });
-                });
                 });
             });
         if open && !close_btn {
@@ -11559,7 +11754,10 @@ impl App {
                                                 row.ix,
                                                 row.cell("Name")
                                                     .and_then(|c| c.v.clone())
-                                                    .unwrap_or_else(|| crate::i18n::strs().msg_layer_ix_fallback(row.ix)),
+                                                    .unwrap_or_else(|| {
+                                                        crate::i18n::strs()
+                                                            .msg_layer_ix_fallback(row.ix)
+                                                    }),
                                             )
                                         })
                                     })
@@ -11600,42 +11798,50 @@ impl App {
             .show(ctx, |ui| {
                 // #257 item 3: the dialog pass mirrors the window.
                 ui.with_layout(dialog_dir(), |ui| {
-                row(ui, |ui| {
-                    ui.label(crate::i18n::strs().msg_select_by());
-                    for (i, label) in [crate::i18n::strs().msg_shape_type(), crate::i18n::strs().msg_master(), crate::i18n::strs().msg_layer()].into_iter().enumerate() {
-                        if ui
-                            .selectable_label(self.selby_criterion == i as u8, label)
-                            .clicked()
+                    row(ui, |ui| {
+                        ui.label(crate::i18n::strs().msg_select_by());
+                        for (i, label) in [
+                            crate::i18n::strs().msg_shape_type(),
+                            crate::i18n::strs().msg_master(),
+                            crate::i18n::strs().msg_layer(),
+                        ]
+                        .into_iter()
+                        .enumerate()
                         {
-                            self.selby_criterion = i as u8;
-                            self.selby_value.clear();
+                            if ui
+                                .selectable_label(self.selby_criterion == i as u8, label)
+                                .clicked()
+                            {
+                                self.selby_criterion = i as u8;
+                                self.selby_value.clear();
+                            }
+                        }
+                    });
+                    ui.separator();
+                    if pairs.is_empty() {
+                        ui.weak(crate::i18n::strs().msg_nothing_on_this_page_matches_the());
+                    } else {
+                        ui.label(crate::i18n::strs().msg_value());
+                        for (label, _, ids) in &pairs {
+                            if ui
+                                .selectable_label(
+                                    self.selby_value == *label,
+                                    crate::i18n::strs()
+                                        .msg_select_value_n_shapes(label.clone(), ids.len() as i64),
+                                )
+                                .clicked()
+                            {
+                                self.selby_value = label.clone();
+                            }
                         }
                     }
-                });
-                ui.separator();
-                if pairs.is_empty() {
-                    ui.weak(crate::i18n::strs().msg_nothing_on_this_page_matches_the());
-                } else {
-                    ui.label(crate::i18n::strs().msg_value());
-                    for (label, _, ids) in &pairs {
-                        if ui
-                            .selectable_label(
-                                self.selby_value == *label,
-                                crate::i18n::strs().msg_select_value_n_shapes(label.clone(), ids.len() as i64),
-                            )
-                            .clicked()
-                        {
-                            self.selby_value = label.clone();
-                        }
+                    ui.add_space(6.0);
+                    let can = !self.selby_value.is_empty();
+                    let btn = egui::Button::new(crate::i18n::strs().msg_select());
+                    let r = ui.add_enabled(can, btn);
+                    if r.clicked() {
+                        apply = true;
                     }
-                }
-                ui.add_space(6.0);
-                let can = !self.selby_value.is_empty();
-                let btn = egui::Button::new(crate::i18n::strs().msg_select());
-                let r = ui.add_enabled(can, btn);
-                if r.clicked() {
-                    apply = true;
-                }
                 });
             });
         if apply {
@@ -11655,8 +11861,7 @@ impl App {
                         1 => crate::i18n::strs().msg_master(),
                         _ => crate::i18n::strs().msg_layer(),
                     };
-                    self.status = crate::i18n::strs()
-                        .msg_selected_n_by_criterion(n as i64, crit);
+                    self.status = crate::i18n::strs().msg_selected_n_by_criterion(n as i64, crit);
                 }
             }
         }
@@ -11685,73 +11890,113 @@ impl App {
                 // #257 item 3: the dialog pass mirrors the window; the
                 // two columns swap (Glue column reads first under RTL).
                 ui.with_layout(dialog_dir(), |ui| {
-                let s = &mut self.snap;
-                let snap_col = |ui: &mut egui::Ui, s: &mut crate::snap::SnapSettings, changed: &mut bool| {
-                    ui.vertical(|ui| {
-                        ui.strong(crate::i18n::strs().msg_snap());
-                        if ui.checkbox(&mut s.snap_active, crate::i18n::strs().msg_active()).changed() {
-                            *changed = true;
-                        }
-                        ui.add_enabled_ui(s.snap_active, |ui| {
-                            ui.label(crate::i18n::strs().msg_snap_to());
-                            for (v, label) in [
-                                (&mut s.snap_ruler_subdivisions, crate::i18n::strs().msg_ruler_subdivisions()),
-                                (&mut s.snap_grid, crate::i18n::strs().msg_grid()),
-                                (&mut s.snap_guides, crate::i18n::strs().msg_guides()),
-                                (&mut s.snap_alignment_boxes, crate::i18n::strs().msg_alignment_boxes()),
-                                (&mut s.snap_shape_extensions, crate::i18n::strs().msg_shape_extensions()),
-                                (&mut s.snap_shape_intersections, crate::i18n::strs().msg_shape_intersections()),
-                                (&mut s.snap_connection_points, crate::i18n::strs().msg_snap_conn_points()),
-                            ] {
-                                if ui.checkbox(v, label).changed() {
-                                    *changed = true;
-                                }
+                    let s = &mut self.snap;
+                    let snap_col = |ui: &mut egui::Ui,
+                                    s: &mut crate::snap::SnapSettings,
+                                    changed: &mut bool| {
+                        ui.vertical(|ui| {
+                            ui.strong(crate::i18n::strs().msg_snap());
+                            if ui
+                                .checkbox(&mut s.snap_active, crate::i18n::strs().msg_active())
+                                .changed()
+                            {
+                                *changed = true;
                             }
-                        });
-                    });
-                };
-                let glue_col = |ui: &mut egui::Ui, s: &mut crate::snap::SnapSettings, changed: &mut bool| {
-                    ui.vertical(|ui| {
-                        ui.strong(crate::i18n::strs().msg_glue());
-                        if ui.checkbox(&mut s.glue_active, crate::i18n::strs().msg_active()).changed() {
-                            *changed = true;
-                        }
-                        ui.add_enabled_ui(s.glue_active, |ui| {
-                            ui.label(crate::i18n::strs().msg_glue_to());
-                            for (v, label) in [
-                                (&mut s.glue_guides, crate::i18n::strs().msg_guides()),
-                                (&mut s.glue_shape_handles, crate::i18n::strs().msg_shape_handles()),
-                                (&mut s.glue_shape_vertices, crate::i18n::strs().msg_shape_vertices()),
-                                (&mut s.glue_connection_points, crate::i18n::strs().msg_snap_conn_points()),
-                            ] {
-                                if ui.checkbox(v, label).changed() {
-                                    *changed = true;
+                            ui.add_enabled_ui(s.snap_active, |ui| {
+                                ui.label(crate::i18n::strs().msg_snap_to());
+                                for (v, label) in [
+                                    (
+                                        &mut s.snap_ruler_subdivisions,
+                                        crate::i18n::strs().msg_ruler_subdivisions(),
+                                    ),
+                                    (&mut s.snap_grid, crate::i18n::strs().msg_grid()),
+                                    (&mut s.snap_guides, crate::i18n::strs().msg_guides()),
+                                    (
+                                        &mut s.snap_alignment_boxes,
+                                        crate::i18n::strs().msg_alignment_boxes(),
+                                    ),
+                                    (
+                                        &mut s.snap_shape_extensions,
+                                        crate::i18n::strs().msg_shape_extensions(),
+                                    ),
+                                    (
+                                        &mut s.snap_shape_intersections,
+                                        crate::i18n::strs().msg_shape_intersections(),
+                                    ),
+                                    (
+                                        &mut s.snap_connection_points,
+                                        crate::i18n::strs().msg_snap_conn_points(),
+                                    ),
+                                ] {
+                                    if ui.checkbox(v, label).changed() {
+                                        *changed = true;
+                                    }
                                 }
-                            }
+                            });
                         });
+                    };
+                    let glue_col = |ui: &mut egui::Ui,
+                                    s: &mut crate::snap::SnapSettings,
+                                    changed: &mut bool| {
+                        ui.vertical(|ui| {
+                            ui.strong(crate::i18n::strs().msg_glue());
+                            if ui
+                                .checkbox(&mut s.glue_active, crate::i18n::strs().msg_active())
+                                .changed()
+                            {
+                                *changed = true;
+                            }
+                            ui.add_enabled_ui(s.glue_active, |ui| {
+                                ui.label(crate::i18n::strs().msg_glue_to());
+                                for (v, label) in [
+                                    (&mut s.glue_guides, crate::i18n::strs().msg_guides()),
+                                    (
+                                        &mut s.glue_shape_handles,
+                                        crate::i18n::strs().msg_shape_handles(),
+                                    ),
+                                    (
+                                        &mut s.glue_shape_vertices,
+                                        crate::i18n::strs().msg_shape_vertices(),
+                                    ),
+                                    (
+                                        &mut s.glue_connection_points,
+                                        crate::i18n::strs().msg_snap_conn_points(),
+                                    ),
+                                ] {
+                                    if ui.checkbox(v, label).changed() {
+                                        *changed = true;
+                                    }
+                                }
+                            });
+                        });
+                    };
+                    // #257: explicit emission order in a plain horizontal
+                    // (the generic `row` flip reserves too little wrap
+                    // width for the vertical columns under RTL).
+                    ui.horizontal(|ui| {
+                        if crate::i18n::rtl() {
+                            glue_col(ui, s, &mut changed);
+                            ui.separator();
+                            snap_col(ui, s, &mut changed);
+                        } else {
+                            snap_col(ui, s, &mut changed);
+                            ui.separator();
+                            glue_col(ui, s, &mut changed);
+                        }
                     });
-                };
-                // #257: explicit emission order in a plain horizontal
-                // (the generic `row` flip reserves too little wrap
-                // width for the vertical columns under RTL).
-                ui.horizontal(|ui| {
-                    if crate::i18n::rtl() {
-                        glue_col(ui, s, &mut changed);
-                        ui.separator();
-                        snap_col(ui, s, &mut changed);
-                    } else {
-                        snap_col(ui, s, &mut changed);
-                        ui.separator();
-                        glue_col(ui, s, &mut changed);
+                    ui.separator();
+                    ui.strong(crate::i18n::strs().msg_drawing_aids());
+                    if ui
+                        .checkbox(
+                            &mut s.dynamic_grid,
+                            crate::i18n::strs().msg_snap_dynamic_grid(),
+                        )
+                        .changed()
+                    {
+                        changed = true;
                     }
-                });
-                ui.separator();
-                ui.strong(crate::i18n::strs().msg_drawing_aids());
-                if ui.checkbox(&mut s.dynamic_grid, crate::i18n::strs().msg_snap_dynamic_grid()).changed() {
-                    changed = true;
-                }
-                ui.add_space(3.0);
-                ui.weak(crate::i18n::strs().msg_snapglue_note());
+                    ui.add_space(3.0);
+                    ui.weak(crate::i18n::strs().msg_snapglue_note());
                 });
             });
         if !open {
@@ -11759,6 +12004,142 @@ impl App {
         }
         if changed {
             self.apply_snap_settings();
+        }
+    }
+
+    /// The Insert Field dialog (#267): Category/Field/Format over the
+    /// formula engine's field set, with a live preview. OK inserts
+    /// the Field row AND the `<fld>` marker in one undo step — at the
+    /// caret when the in-place editor is open on the shape (the
+    /// display value parks in the draft), appended to the raw text
+    /// otherwise.
+    fn fields_insert_window(&mut self, ctx: &egui::Context) {
+        use crate::fields_dlg::{self, FieldsOutcome};
+        let Some(shape_id) = self.fields_open else {
+            return;
+        };
+        // Close automatically when the shape or page goes away.
+        let alive = self
+            .ed()
+            .and_then(|ed| ed.doc.pages.get(self.page_idx))
+            .is_some_and(|p| vsdx::model::find_shape_by_id(&p.shapes, shape_id).is_some());
+        if !alive {
+            self.fields_open = None;
+            self.fields_draft = None;
+            return;
+        }
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
+        // The shape's Prop row names — Shape Data entries (model
+        // vocabulary, never translated).
+        let shape_data: Vec<String> = self
+            .ed()
+            .and_then(|ed| {
+                let page = ed.doc.pages.iter().find(|p| p.id == page_id)?;
+                let s = vsdx::model::find_shape_by_id(&page.shapes, shape_id)?;
+                let mut names: Vec<String> = s
+                    .sheet
+                    .sections_named("Prop")
+                    .iter()
+                    .flat_map(|sec| sec.rows.iter().filter_map(|r| r.n.clone()))
+                    .collect();
+                names.sort();
+                names.dedup();
+                Some(names)
+            })
+            .unwrap_or_default();
+        let mut draft = self.fields_draft.take().unwrap_or_default();
+        let value_f = draft.value_f(&shape_data);
+        let formats = fields_dlg::format_entries();
+        let format_f = formats
+            .get(draft.fmt)
+            .map(|f| f.format_f.clone())
+            .unwrap_or_else(|| "FIELDPICTURE(0)".to_string());
+
+        // The preview: evaluated against the shape's field
+        // environment (page facts included).
+        let preview = self
+            .ed()
+            .and_then(|ed| {
+                let page = ed.doc.pages.iter().find(|p| p.id == page_id)?;
+                let s = vsdx::model::find_shape_by_id(&page.shapes, shape_id)?;
+                let chain = dc_core::scope::shape_chain(&ed.doc, page_id, shape_id).ok()?;
+                let fctx = dc::fields::FieldsCtx::for_page(&ed.doc, page);
+                Some(dc::fields::preview_field(
+                    &ed.doc,
+                    s,
+                    &chain,
+                    Some(&fctx),
+                    &value_f,
+                    Some(&format_f),
+                ))
+            })
+            .unwrap_or_default();
+
+        let mut open = true;
+        let outcome =
+            fields_dlg::window(ctx, &mut open, &mut draft, &shape_data, &preview, &value_f);
+        self.fields_draft = Some(draft);
+        if !open || outcome == FieldsOutcome::Cancel {
+            self.fields_open = None;
+            self.fields_draft = None;
+            return;
+        }
+        if outcome != FieldsOutcome::Ok {
+            return;
+        }
+        // The insertion.
+        if value_f.is_empty() {
+            self.status = crate::i18n::strs().msg_enter_a_field_formula_first();
+            return;
+        }
+        self.fields_open = None;
+        self.fields_draft = None;
+        // Caret-precise, in priority order: a LIVE editor session on
+        // this shape parks the display at the caret (the keytip path
+        // — a keyboard action never commits the edit); else the caret
+        // CAPTURED when the dialog opened (the opening click already
+        // committed the edit, #22); else append at the raw end.
+        let session_live = self
+            .text_edit
+            .as_ref()
+            .map(|s| (s.page, s.shape))
+            .is_some_and(|(p, s)| p == page_id && s == shape_id);
+        if session_live {
+            let mark = crate::textedit::FieldMark {
+                offset: 0, // park_field places it at the caret
+                display: preview.clone(),
+                value_f: value_f.clone(),
+                format_f: Some(format_f),
+            };
+            if let Some(sess) = self.text_edit.as_mut() {
+                sess.park_field(mark);
+            }
+            return;
+        }
+        let insert = match self.fields_caret.take() {
+            Some((p, s, caret)) if p == page_id && s == shape_id => {
+                dc_core::FieldInsert::ReplacePlain {
+                    offset: caret,
+                    len: 0,
+                }
+            }
+            _ => dc_core::FieldInsert::End,
+        };
+        let cmd = dc_core::InsertField::new(
+            Scope::Shape {
+                page: page_id,
+                shape: shape_id,
+            },
+            value_f.clone(),
+            insert,
+        )
+        .with_format(format_f.clone())
+        .with_display(preview.clone());
+        self.apply(cmd);
+        if preview.is_empty() {
+            self.status = crate::i18n::strs().msg_field_inserted_no_preview();
         }
     }
 
@@ -11820,9 +12201,7 @@ impl App {
                 // would lose the layering); Enter commits the draft
                 // (the dialog's default OK button). Skipped while the
                 // in-place text editor owns the keyboard (#22).
-                if self.text_edit.is_none()
-                    && ui.input(|i| i.key_pressed(egui::Key::Escape))
-                {
+                if self.text_edit.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     if draft.is_some() {
                         draft = None;
                     } else {
@@ -11831,7 +12210,10 @@ impl App {
                 }
                 // The 2016 storage toggle (#71) sits above the list.
                 if ui
-                    .checkbox(&mut relative_paths, crate::i18n::strs().msg_use_relative_paths_for_hyperlink())
+                    .checkbox(
+                        &mut relative_paths,
+                        crate::i18n::strs().msg_use_relative_paths_for_hyperlink(),
+                    )
                     .changed()
                 {
                     self.relative_paths.set(&self.path, relative_paths);
@@ -11870,7 +12252,10 @@ impl App {
                                 desc: row.desc.clone(),
                             });
                         }
-                        let remove = ui.add_enabled(!row.inherited, egui::Button::new(crate::i18n::strs().msg_remove()));
+                        let remove = ui.add_enabled(
+                            !row.inherited,
+                            egui::Button::new(crate::i18n::strs().msg_remove()),
+                        );
                         if row.inherited {
                             remove.on_disabled_hover_text(
                                 crate::i18n::strs().msg_inherited_from_the_shape_s_maste(),
@@ -11912,19 +12297,27 @@ impl App {
                                 if ui.button(crate::i18n::strs().msg_browse()).clicked() {
                                     self.begin_dialog(PendingKind::HyperlinkAddress);
                                 }
-                                input_cell(ui, crate::i18n::strs().msg_hl_address().as_str(), &mut d.address);
+                                input_cell(
+                                    ui,
+                                    crate::i18n::strs().msg_hl_address().as_str(),
+                                    &mut d.address,
+                                );
                                 ui.label(crate::i18n::strs().msg_hl_address());
                                 ui.end_row();
                             } else {
-                            field(ui, crate::i18n::strs().msg_hl_address().as_str(), &mut d.address);
-                            // Browse… (#71): the native file picker (the
-                            // Open/Save As worker-thread pattern); the
-                            // pick lands in the Address field once the
-                            // dialog resolves.
-                            if ui.button(crate::i18n::strs().msg_browse()).clicked() {
-                                self.begin_dialog(PendingKind::HyperlinkAddress);
-                            }
-                            ui.end_row();
+                                field(
+                                    ui,
+                                    crate::i18n::strs().msg_hl_address().as_str(),
+                                    &mut d.address,
+                                );
+                                // Browse… (#71): the native file picker (the
+                                // Open/Save As worker-thread pattern); the
+                                // pick lands in the Address field once the
+                                // dialog resolves.
+                                if ui.button(crate::i18n::strs().msg_browse()).clicked() {
+                                    self.begin_dialog(PendingKind::HyperlinkAddress);
+                                }
+                                ui.end_row();
                             }
                             if rtl_grid {
                                 let combo = egui::ComboBox::from_id_salt("dc-hyperlink-sub-page")
@@ -11946,40 +12339,56 @@ impl App {
                                         crate::i18n::strs().msg_sub_address_page(),
                                     )
                                 });
-                                input_cell(ui, crate::i18n::strs().msg_hl_subaddress().as_str(), &mut d.sub);
+                                input_cell(
+                                    ui,
+                                    crate::i18n::strs().msg_hl_subaddress().as_str(),
+                                    &mut d.sub,
+                                );
                                 ui.label(crate::i18n::strs().msg_hl_subaddress());
                                 ui.end_row();
-                                input_cell(ui, crate::i18n::strs().msg_hl_description().as_str(), &mut d.desc);
+                                input_cell(
+                                    ui,
+                                    crate::i18n::strs().msg_hl_description().as_str(),
+                                    &mut d.desc,
+                                );
                                 ui.label(crate::i18n::strs().msg_hl_description());
                                 ui.end_row();
                             } else {
-                            field(ui, crate::i18n::strs().msg_hl_subaddress().as_str(), &mut d.sub);
-                            // Page picker (#71): a SubAddress names a
-                            // page — the dropdown offers the document's.
-                            // The accessible name satisfies the dialog
-                            // label requirement (#56 pattern).
-                            let combo = egui::ComboBox::from_id_salt("dc-hyperlink-sub-page")
-                                .selected_text(if d.sub.is_empty() {
-                                    crate::i18n::strs().msg_hyperlink_pages()
-                                } else {
-                                    d.sub.clone()
-                                })
-                                .width(110.0)
-                                .show_ui(ui, |ui| {
-                                    for name in &page_names {
-                                        ui.selectable_value(&mut d.sub, name.clone(), name);
-                                    }
+                                field(
+                                    ui,
+                                    crate::i18n::strs().msg_hl_subaddress().as_str(),
+                                    &mut d.sub,
+                                );
+                                // Page picker (#71): a SubAddress names a
+                                // page — the dropdown offers the document's.
+                                // The accessible name satisfies the dialog
+                                // label requirement (#56 pattern).
+                                let combo = egui::ComboBox::from_id_salt("dc-hyperlink-sub-page")
+                                    .selected_text(if d.sub.is_empty() {
+                                        crate::i18n::strs().msg_hyperlink_pages()
+                                    } else {
+                                        d.sub.clone()
+                                    })
+                                    .width(110.0)
+                                    .show_ui(ui, |ui| {
+                                        for name in &page_names {
+                                            ui.selectable_value(&mut d.sub, name.clone(), name);
+                                        }
+                                    });
+                                combo.response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::Role::ComboBox,
+                                        true,
+                                        crate::i18n::strs().msg_sub_address_page(),
+                                    )
                                 });
-                            combo.response.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::Role::ComboBox,
-                                    true,
-                                    crate::i18n::strs().msg_sub_address_page(),
-                                )
-                            });
-                            ui.end_row();
-                            field(ui, crate::i18n::strs().msg_hl_description().as_str(), &mut d.desc);
-                            ui.end_row();
+                                ui.end_row();
+                                field(
+                                    ui,
+                                    crate::i18n::strs().msg_hl_description().as_str(),
+                                    &mut d.desc,
+                                );
+                                ui.end_row();
                             }
                         });
                     let (edit_row, from_master, address, sub, desc) = (
@@ -12008,9 +12417,8 @@ impl App {
                     // feeds it back so a second commit EDITS the row
                     // instead of duplicating it (CodeRabbit).
                     let commit = |self_: &mut Self| -> Option<i64> {
-                        let ix = edit_row.unwrap_or_else(|| {
-                            rows.iter().map(|r| r.ix).max().unwrap_or(-1) + 1
-                        });
+                        let ix = edit_row
+                            .unwrap_or_else(|| rows.iter().map(|r| r.ix).max().unwrap_or(-1) + 1);
                         let mut cmds: Vec<Box<dyn dc_core::Command>> = Vec::new();
                         if let Some(old) = edit_row {
                             // An instance edit replaces its row. A
@@ -12069,7 +12477,10 @@ impl App {
                         if cmds.is_empty() {
                             return None;
                         }
-                        self_.apply(dc_core::Macro::new(crate::i18n::strs().msg_edit_hyperlink(), cmds));
+                        self_.apply(dc_core::Macro::new(
+                            crate::i18n::strs().msg_edit_hyperlink(),
+                            cmds,
+                        ));
                         Some(ix)
                     };
                     row(ui, |ui| {
@@ -12092,9 +12503,7 @@ impl App {
                     });
                     // #110 audit: Enter is the dialog's OK (Visio's
                     // default button) — commits and closes the draft.
-                    if ui.input(|i| {
-                        i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
-                    }) {
+                    if ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) {
                         commit(self);
                         close_draft = true;
                     }
@@ -12107,7 +12516,9 @@ impl App {
                 // hidden behind editor state): New… left, Close right.
                 ui.add_space(4.0);
                 row(ui, |ui| {
-                    if draft.is_none() && ui.button(crate::i18n::strs().msg_hyperlink_new()).clicked() {
+                    if draft.is_none()
+                        && ui.button(crate::i18n::strs().msg_hyperlink_new()).clicked()
+                    {
                         draft = Some(HyperlinkDraft {
                             edit_row: None,
                             from_master: false,
@@ -12174,13 +12585,21 @@ impl App {
                             };
                             if rtl_grid {
                                 if ui
-                                    .add_enabled(i > 0, egui::Button::new(crate::i18n::strs().msg_move_up()).small())
+                                    .add_enabled(
+                                        i > 0,
+                                        egui::Button::new(crate::i18n::strs().msg_move_up())
+                                            .small(),
+                                    )
                                     .clicked()
                                 {
                                     up_clicked = true;
                                 }
                                 if ui
-                                    .add_enabled(i + 1 < n, egui::Button::new(crate::i18n::strs().msg_move_down()).small())
+                                    .add_enabled(
+                                        i + 1 < n,
+                                        egui::Button::new(crate::i18n::strs().msg_move_down())
+                                            .small(),
+                                    )
                                     .clicked()
                                 {
                                     down_clicked = true;
@@ -12189,13 +12608,21 @@ impl App {
                             } else {
                                 name_cell(ui, name);
                                 if ui
-                                    .add_enabled(i > 0, egui::Button::new(crate::i18n::strs().msg_move_up()).small())
+                                    .add_enabled(
+                                        i > 0,
+                                        egui::Button::new(crate::i18n::strs().msg_move_up())
+                                            .small(),
+                                    )
                                     .clicked()
                                 {
                                     up_clicked = true;
                                 }
                                 if ui
-                                    .add_enabled(i + 1 < n, egui::Button::new(crate::i18n::strs().msg_move_down()).small())
+                                    .add_enabled(
+                                        i + 1 < n,
+                                        egui::Button::new(crate::i18n::strs().msg_move_down())
+                                            .small(),
+                                    )
                                     .clicked()
                                 {
                                     down_clicked = true;
@@ -12388,18 +12815,16 @@ impl App {
         };
         match dc_core::commands::shape_action_commands(scope, &row.action, &env) {
             Ok(cmds) if cmds.is_empty() => {
-                self.status = crate::i18n::strs()
-                    .msg_action_display_only(format!("{:?}", row.menu));
+                self.status =
+                    crate::i18n::strs().msg_action_display_only(format!("{:?}", row.menu));
             }
             Ok(cmds) => {
                 let label = format!("run shape action {:?}", row.menu);
                 self.apply(dc_core::Macro::new(label, cmds));
             }
             Err(why) => {
-                self.status = crate::i18n::strs().msg_action_deferred(
-                    format!("{:?}", row.menu),
-                    why.clone(),
-                );
+                self.status =
+                    crate::i18n::strs().msg_action_deferred(format!("{:?}", row.menu), why.clone());
             }
         }
     }
@@ -12450,7 +12875,9 @@ impl App {
     /// container — every member's `msvSDContainerShape` reference is
     /// released and the container shape removed, in one undo step.
     fn disband_container(&mut self) {
-        let Some(page_id) = self.page_id() else { return };
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
         let Some(cont) = self.sel_container_id() else {
             self.status = crate::i18n::strs().msg_select_a_container_to_disband();
             return;
@@ -12463,7 +12890,11 @@ impl App {
         let mut cmds: Vec<Box<dyn dc_core::Command>> =
             vec![Box::new(dc_core::commands::RemoveShape::new(page_id, cont))];
         if let Some(ed) = self.ed() {
-            cmds.extend(dc_core::container_membership_cleanup(&ed.doc, page_id, &[cont]));
+            cmds.extend(dc_core::container_membership_cleanup(
+                &ed.doc,
+                page_id,
+                &[cont],
+            ));
         }
         cmds.extend(self.connect_cleanup_cmds(page_id, &[cont]));
         self.apply(dc_core::Macro::new(
@@ -12491,7 +12922,9 @@ impl App {
     /// same command the ctx menu fires, including #95's
     /// group-into-group nesting.
     fn group_selection(&mut self) {
-        let Some(page_id) = self.page_id() else { return };
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
         let members: Vec<i64> = self
             .sel_set
             .iter()
@@ -12508,11 +12941,8 @@ impl App {
         let nest = self.nest_group_target(&members);
         let cmd = match nest {
             Some((parent, local_pin)) => {
-                let nested: Vec<i64> =
-                    members.iter().copied().filter(|id| *id != parent).collect();
-                dc_core::commands::GroupShapes::into_group(
-                    page_id, nested, parent, local_pin,
-                )
+                let nested: Vec<i64> = members.iter().copied().filter(|id| *id != parent).collect();
+                dc_core::commands::GroupShapes::into_group(page_id, nested, parent, local_pin)
             }
             None => dc_core::commands::GroupShapes::new(page_id, members),
         };
@@ -12525,7 +12955,9 @@ impl App {
     /// #252 Home ▸ Arrange: ungroup every selected group — one Macro
     /// (one undo step); the first ex-member becomes the selection.
     fn ungroup_selection(&mut self) {
-        let Some(page_id) = self.page_id() else { return };
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
         let Some(ed) = self.ed.as_ref() else { return };
         let Some(page) = ed.doc.pages.iter().find(|p| p.id == page_id) else {
             return;
@@ -12550,7 +12982,10 @@ impl App {
             return;
         }
         let n = cmds.len();
-        self.apply(dc_core::Macro::new(crate::i18n::strs().msg_undo_ungroup_n(n), cmds));
+        self.apply(dc_core::Macro::new(
+            crate::i18n::strs().msg_undo_ungroup_n(n),
+            cmds,
+        ));
         // The selection becomes the first EX-MEMBER of a group that
         // was actually ungrouped — `groups.first()` can be a plain
         // shape (None member), which left sel_set holding the removed
@@ -12910,10 +13345,22 @@ impl App {
                 act = Some(Act::ShapeSheet);
             }
             ui.separator();
-            if ctx_item(ui, Some(crate::ribbon::Icon::Cut), &crate::i18n::strs().msg_cut(), "Ctrl+X", true) {
+            if ctx_item(
+                ui,
+                Some(crate::ribbon::Icon::Cut),
+                &crate::i18n::strs().msg_cut(),
+                "Ctrl+X",
+                true,
+            ) {
                 act = Some(Act::Cut);
             }
-            if ctx_item(ui, Some(crate::ribbon::Icon::Copy), &crate::i18n::strs().msg_copy(), "Ctrl+C", true) {
+            if ctx_item(
+                ui,
+                Some(crate::ribbon::Icon::Copy),
+                &crate::i18n::strs().msg_copy(),
+                "Ctrl+C",
+                true,
+            ) {
                 act = Some(Act::Copy);
             }
             if ctx_item(
@@ -12925,10 +13372,22 @@ impl App {
             ) {
                 act = Some(Act::Paste);
             }
-            if ctx_item(ui, None, &crate::i18n::strs().msg_duplicate(), "Ctrl+D", true) {
+            if ctx_item(
+                ui,
+                None,
+                &crate::i18n::strs().msg_duplicate(),
+                "Ctrl+D",
+                true,
+            ) {
                 act = Some(Act::Duplicate);
             }
-            if ctx_item(ui, Some(crate::ribbon::Icon::Delete), &crate::i18n::strs().msg_delete(), "Del", true) {
+            if ctx_item(
+                ui,
+                Some(crate::ribbon::Icon::Delete),
+                &crate::i18n::strs().msg_delete(),
+                "Del",
+                true,
+            ) {
                 act = Some(Act::Delete);
             }
             ui.separator();
@@ -12972,7 +13431,13 @@ impl App {
             if ctx_item(ui, None, &crate::i18n::strs().msg_flip_vertical(), "", true) {
                 act = Some(Act::FlipV);
             }
-            if ctx_item(ui, None, &crate::i18n::strs().msg_flip_horizontal(), "", true) {
+            if ctx_item(
+                ui,
+                None,
+                &crate::i18n::strs().msg_flip_horizontal(),
+                "",
+                true,
+            ) {
                 act = Some(Act::FlipH);
             }
             ui.separator();
@@ -13018,13 +13483,31 @@ impl App {
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
                 .show(|ui| {
                     ui.set_min_width(210.0);
-                    if ctx_item(ui, None, &crate::i18n::strs().msg_group(), "Ctrl+G", can_group) {
+                    if ctx_item(
+                        ui,
+                        None,
+                        &crate::i18n::strs().msg_group(),
+                        "Ctrl+G",
+                        can_group,
+                    ) {
                         act = Some(Act::Group);
                     }
-                    if ctx_item(ui, None, &crate::i18n::strs().msg_ungroup(), "Ctrl+Shift+G", is_group) {
+                    if ctx_item(
+                        ui,
+                        None,
+                        &crate::i18n::strs().msg_ungroup(),
+                        "Ctrl+Shift+G",
+                        is_group,
+                    ) {
                         act = Some(Act::Ungroup);
                     }
-                    if ctx_item(ui, None, &crate::i18n::strs().msg_open_group_label(group_label), "", is_group) {
+                    if ctx_item(
+                        ui,
+                        None,
+                        &crate::i18n::strs().msg_open_group_label(group_label),
+                        "",
+                        is_group,
+                    ) {
                         act = Some(Act::OpenGroup(shape_id));
                     }
                 });
@@ -13054,11 +13537,22 @@ impl App {
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
                 .show(|ui| {
                     ui.set_min_width(210.0);
-                    if ctx_item(ui, None, &crate::i18n::strs().msg_add_to_new_container(), "", true) {
+                    if ctx_item(
+                        ui,
+                        None,
+                        &crate::i18n::strs().msg_add_to_new_container(),
+                        "",
+                        true,
+                    ) {
                         sub_action = true;
                     }
-                    if ctx_item(ui, None, &crate::i18n::strs().msg_add_to_underlying_container(), "", can_underlying)
-                        && can_underlying
+                    if ctx_item(
+                        ui,
+                        None,
+                        &crate::i18n::strs().msg_add_to_underlying_container(),
+                        "",
+                        can_underlying,
+                    ) && can_underlying
                     {
                         underlying_action = true;
                     }
@@ -13080,31 +13574,73 @@ impl App {
                     })
                 });
                 if is_conn {
-                    if ctx_item(ui, None, &crate::i18n::strs().msg_straight_connector(), "", true) {
+                    if ctx_item(
+                        ui,
+                        None,
+                        &crate::i18n::strs().msg_straight_connector(),
+                        "",
+                        true,
+                    ) {
                         act = Some(Act::RouteStraight);
                     }
-                    if ctx_item(ui, None, &crate::i18n::strs().msg_right_angle_connector(), "", true) {
+                    if ctx_item(
+                        ui,
+                        None,
+                        &crate::i18n::strs().msg_right_angle_connector(),
+                        "",
+                        true,
+                    ) {
                         act = Some(Act::RouteRightAngle);
                     }
-                    if ctx_item(ui, None, &crate::i18n::strs().msg_curved_connector(), "", true) {
+                    if ctx_item(
+                        ui,
+                        None,
+                        &crate::i18n::strs().msg_curved_connector(),
+                        "",
+                        true,
+                    ) {
                         act = Some(Act::RouteCurved);
                     }
                     ui.separator();
                 }
             }
-            if ctx_item(ui, None, &crate::i18n::strs().msg_copy_as_picture_menu(), "", self.sel.is_some()) {
+            if ctx_item(
+                ui,
+                None,
+                &crate::i18n::strs().msg_copy_as_picture_menu(),
+                "",
+                self.sel.is_some(),
+            ) {
                 act = Some(Act::CopyAsPicture);
             }
-            if ctx_item(ui, None, &crate::i18n::strs().msg_hyperlink_menu(), "Ctrl+K", true) {
+            if ctx_item(
+                ui,
+                None,
+                &crate::i18n::strs().msg_hyperlink_menu(),
+                "Ctrl+K",
+                true,
+            ) {
                 act = Some(Act::Hyperlink);
             }
             if ctx_item(ui, None, &crate::i18n::strs().msg_comment_add(), "", true) {
                 act = Some(Act::AddComment);
             }
-            if ctx_item(ui, None, &crate::i18n::strs().msg_shape_data_menu(), "", true) {
+            if ctx_item(
+                ui,
+                None,
+                &crate::i18n::strs().msg_shape_data_menu(),
+                "",
+                true,
+            ) {
                 act = Some(Act::ShapeData);
             }
-            if ctx_item(ui, None, &crate::i18n::strs().msg_format_shape_menu(), "", true) {
+            if ctx_item(
+                ui,
+                None,
+                &crate::i18n::strs().msg_format_shape_menu(),
+                "",
+                true,
+            ) {
                 act = Some(Act::FormatShape);
             }
             ui.separator();
@@ -13201,9 +13737,8 @@ impl App {
                         vsdx::model::find_shape_by_id(&p.shapes, gid).and_then(|s| s.name_u.clone())
                     })
                 });
-                self.status = crate::i18n::strs().msg_opened_group(
-                    name.unwrap_or_else(|| format!("Group.{gid}")),
-                );
+                self.status = crate::i18n::strs()
+                    .msg_opened_group(name.unwrap_or_else(|| format!("Group.{gid}")));
             }
             Act::Cut | Act::Copy => {
                 self.copy_selection();
@@ -13431,17 +13966,78 @@ impl App {
         let Some(current) = current else {
             return;
         };
-        if sess.draft != current {
-            // One undo step: the text plus refreshed cached Vs for
-            // text-derived block cells (#147).
+        // #267: parked field insertions commit with the text — the
+        // marker lands where each display chunk sits (caret-precise),
+        // in the SAME undo step as any typing. With no typing beyond
+        // the parked displays, the raw text is untouched and each
+        // marker inserts at its plain offset, preserving every
+        // existing formatting marker.
+        let strip_marks = |draft: &str, marks: &[crate::textedit::FieldMark]| -> String {
+            let mut spans: Vec<(usize, usize)> = marks
+                .iter()
+                .map(|m| (m.offset, m.offset + m.display.chars().count()))
+                .collect();
+            spans.sort();
+            draft
+                .chars()
+                .enumerate()
+                .filter(|(pos, _)| !spans.iter().any(|(a, b)| pos >= a && pos < b))
+                .map(|(_, c)| c)
+                .collect()
+        };
+        let typed = strip_marks(&sess.draft, &sess.field_marks) != current;
+        if !sess.field_marks.is_empty() || sess.draft != current {
             let scope = Scope::Shape {
                 page: sess.page,
                 shape: sess.shape,
             };
             let doc = self.ed.as_ref().map(|ed| &ed.doc);
             if let Some(doc) = doc {
-                let mac = dc::textfunc::text_edit_macro(doc, &scope, &sess.draft);
-                self.apply(mac);
+                let mut cmds: Vec<Box<dyn dc_core::Command>> = Vec::new();
+                if typed {
+                    // The typed text first: raw = escaped draft (the
+                    // parked display chunks are part of it), with the
+                    // #147 cache refreshes.
+                    cmds.push(Box::new(dc::textfunc::text_edit_macro(
+                        doc,
+                        &scope,
+                        &sess.draft,
+                    )));
+                }
+                for m in &sess.field_marks {
+                    let len = if typed {
+                        m.display.chars().count()
+                    } else {
+                        // The raw never carried the display — insert
+                        // at the plain offset, replacing nothing.
+                        0
+                    };
+                    let mut cmd = dc_core::InsertField::new(
+                        scope.clone(),
+                        m.value_f.clone(),
+                        dc_core::FieldInsert::ReplacePlain {
+                            offset: m.offset,
+                            len,
+                        },
+                    )
+                    .with_display(m.display.clone());
+                    if let Some(f) = &m.format_f {
+                        cmd = cmd.with_format(f.clone());
+                    }
+                    cmds.push(Box::new(cmd));
+                }
+                if cmds.len() == 1 && !typed {
+                    // A single field, no typing: the InsertField alone
+                    // is the undo step.
+                    let cmd = cmds.remove(0);
+                    self.apply_boxed(&crate::i18n::strs().msg_insert_field(), cmd);
+                } else {
+                    let mac = dc_core::Macro::new(
+                        crate::i18n::strs().msg_insert_field().to_string(),
+                        cmds,
+                    );
+                    self.apply(mac);
+                }
             }
         }
     }
@@ -14618,6 +15214,35 @@ impl App {
     }
     /// A shape's current text (double-click edit tests).
     #[doc(hidden)]
+    /// #267: the open text editor's current draft (kittest).
+    #[doc(hidden)]
+    pub fn debug_text_edit_draft(&self) -> Option<String> {
+        self.text_edit.as_ref().map(|s| s.draft.clone())
+    }
+
+    /// #267: the shape's Field rows (Value formulas) and raw text, for
+    /// the Insert Field kittest flow.
+    #[doc(hidden)]
+    pub fn debug_field_state(&self, shape_id: i64) -> Option<(Vec<String>, Option<String>)> {
+        let s = self.ed.as_ref().and_then(|ed| {
+            ed.doc
+                .pages
+                .get(self.page_idx)
+                .and_then(|p| vsdx::model::find_shape_by_id(&p.shapes, shape_id))
+        })?;
+        let formulas = s
+            .sheet
+            .sections_named("Field")
+            .iter()
+            .flat_map(|sec| {
+                sec.rows
+                    .iter()
+                    .filter_map(|r| r.cell("Value").and_then(|c| c.f.clone()))
+            })
+            .collect();
+        Some((formulas, s.sheet.text_raw.clone()))
+    }
+
     pub fn debug_shape_text(&self, shape_id: i64) -> Option<String> {
         self.selected_text(shape_id)
     }
@@ -14771,46 +15396,49 @@ impl App {
             ColorTarget::Text => crate::i18n::strs().msg_color_text_window(),
         };
         egui::Window::new(title)
-        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .open(&mut open)
-        .show(ctx, |ui| {
-            // #257 item 3: the dialog pass mirrors the window (the
-            // swatch grid itself is symmetric — the palette sweep
-            // stays LTR either way).
-            ui.with_layout(dialog_dir(), |ui| {
-            let theme_colors = [
-                "#000000", "#FFFFFF", "#EEEEEE", "#969696", "#4472C4", "#5B9BD5", "#70AD47",
-                "#ED7D31", "#FFC000", "#FF0000", "#7030A0", "#00B0F0", "#FFF2CC", "#DEEAF6",
-                "#E2EFDA", "#FCE4D6",
-            ];
-            egui::Grid::new("theme-palette")
-                .num_columns(8)
-                .spacing([6.0, 6.0])
-                .show(ui, |ui| {
-                    for (i, c) in theme_colors.iter().enumerate() {
-                        // from_hex requires the leading '#'.
-                        let color = egui::Color32::from_hex(c).unwrap_or(egui::Color32::GRAY);
-                        let (r, resp) =
-                            ui.allocate_exact_size(egui::vec2(24.0, 24.0), Sense::click());
-                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, c));
-                        ui.painter().rect_filled(r, 2.0, color);
-                        ui.painter().rect_stroke(
-                            r,
-                            2.0,
-                            Stroke::new(1.0, Color32::from_gray(120)),
-                            egui::StrokeKind::Middle,
-                        );
-                        if resp.clicked() {
-                            self.apply_color(target, c);
-                            self.color_pick = None;
-                        }
-                        if i % 8 == 7 {
-                            ui.end_row();
-                        }
-                    }
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                // #257 item 3: the dialog pass mirrors the window (the
+                // swatch grid itself is symmetric — the palette sweep
+                // stays LTR either way).
+                ui.with_layout(dialog_dir(), |ui| {
+                    let theme_colors = [
+                        "#000000", "#FFFFFF", "#EEEEEE", "#969696", "#4472C4", "#5B9BD5",
+                        "#70AD47", "#ED7D31", "#FFC000", "#FF0000", "#7030A0", "#00B0F0",
+                        "#FFF2CC", "#DEEAF6", "#E2EFDA", "#FCE4D6",
+                    ];
+                    egui::Grid::new("theme-palette")
+                        .num_columns(8)
+                        .spacing([6.0, 6.0])
+                        .show(ui, |ui| {
+                            for (i, c) in theme_colors.iter().enumerate() {
+                                // from_hex requires the leading '#'.
+                                let color =
+                                    egui::Color32::from_hex(c).unwrap_or(egui::Color32::GRAY);
+                                let (r, resp) =
+                                    ui.allocate_exact_size(egui::vec2(24.0, 24.0), Sense::click());
+                                resp.widget_info(|| {
+                                    egui::WidgetInfo::labeled(egui::Role::Button, true, c)
+                                });
+                                ui.painter().rect_filled(r, 2.0, color);
+                                ui.painter().rect_stroke(
+                                    r,
+                                    2.0,
+                                    Stroke::new(1.0, Color32::from_gray(120)),
+                                    egui::StrokeKind::Middle,
+                                );
+                                if resp.clicked() {
+                                    self.apply_color(target, c);
+                                    self.color_pick = None;
+                                }
+                                if i % 8 == 7 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
                 });
             });
-        });
         if !open {
             self.color_pick = None;
         }
@@ -14995,10 +15623,13 @@ impl App {
         if let Some(result) = self.export_pane.poll() {
             // The pane's own note carries the full message incl. any
             // density-cap notes; the status mirrors it.
-            self.status = self.export_pane.note_clone().unwrap_or_else(|| match result {
-                Ok(_) => crate::i18n::strs().msg_export_finished(),
-                Err(e) => crate::i18n::strs().msg_export_failed_e(e.to_string()),
-            });
+            self.status = self
+                .export_pane
+                .note_clone()
+                .unwrap_or_else(|| match result {
+                    Ok(_) => crate::i18n::strs().msg_export_finished(),
+                    Err(e) => crate::i18n::strs().msg_export_failed_e(e.to_string()),
+                });
         }
         self.handle_close_request(&ctx);
         self.reorder_pages_window(&ctx);
@@ -15010,6 +15641,7 @@ impl App {
         self.snap_glue_window(&ctx);
         self.language_window(&ctx);
         self.hyperlink_window(&ctx);
+        self.fields_insert_window(&ctx);
         self.comment_window(&ctx);
         self.shape_data_window(&ctx);
         self.color_palette_window(&ctx);
@@ -15157,7 +15789,10 @@ impl App {
                         if let Some(id) = armed {
                             self.status = crate::i18n::strs().msg_master_armed_click_place(id.1);
                         }
-                        if self.stencil.armed.is_some() && ui.button(crate::i18n::strs().msg_x_cancel_placement()).clicked()
+                        if self.stencil.armed.is_some()
+                            && ui
+                                .button(crate::i18n::strs().msg_x_cancel_placement())
+                                .clicked()
                         {
                             self.stencil.armed = None;
                         }
@@ -15170,9 +15805,9 @@ impl App {
             } else {
                 egui::Panel::right("format_pane")
             }
-                .default_size(240.0)
-                .resizable(true)
-                .show(ui, |ui| self.format_pane(ui));
+            .default_size(240.0)
+            .resizable(true)
+            .show(ui, |ui| self.format_pane(ui));
         }
         // #192 MDI: `central` hosts the drawing as a CHILD WINDOW
         // inside the client area (its own ui — the region the docked
@@ -15329,8 +15964,7 @@ impl App {
                     // The same routed message the sync landing uses
                     // (PR #269 review: this bare literal was the one
                     // unrouted status on the open path).
-                    self.status =
-                        crate::i18n::strs().msg_opened_path(path.display().to_string());
+                    self.status = crate::i18n::strs().msg_opened_path(path.display().to_string());
                     self.rendering = None;
                 } else {
                     scrim = Some((crate::i18n::strs().msg_rendering_scrim(), *started));
@@ -15386,9 +16020,10 @@ impl App {
                     // Inside the WINDOW — the outer ui paints on the
                     // shell behind it (#218 review).
                     ui.label(
-                        egui::RichText::new(crate::i18n::strs().msg_tarahi_v_cargo_pkg_version_clean(
-                            env!("CARGO_PKG_VERSION"),
-                        ))
+                        egui::RichText::new(
+                            crate::i18n::strs()
+                                .msg_tarahi_v_cargo_pkg_version_clean(env!("CARGO_PKG_VERSION")),
+                        )
                         .size(12.0),
                     );
                 });
@@ -15420,23 +16055,20 @@ impl App {
                     egui::Layout::top_down(egui::Align::LEFT)
                 };
                 ui.with_layout(dir, |ui| {
-                ui.label(crate::i18n::strs().msg_choose_the_display_language_for());
-                ui.add_space(6.0);
-                let current = crate::i18n::current();
-                for lang in crate::i18n::L10n::iter() {
-                    if ui
-                        .radio(*lang == current, lang.language_name())
-                        .clicked()
-                    {
-                        picked = Some(*lang);
+                    ui.label(crate::i18n::strs().msg_choose_the_display_language_for());
+                    ui.add_space(6.0);
+                    let current = crate::i18n::current();
+                    for lang in crate::i18n::L10n::iter() {
+                        if ui.radio(*lang == current, lang.language_name()).clicked() {
+                            picked = Some(*lang);
+                        }
                     }
-                }
-                ui.add_space(6.0);
-                ui.weak(crate::i18n::strs().msg_applies_to_the_ribbon_menus_and());
-                ui.add_space(8.0);
-                if ui.button(crate::i18n::strs().msg_close()).clicked() {
-                    close = true;
-                }
+                    ui.add_space(6.0);
+                    ui.weak(crate::i18n::strs().msg_applies_to_the_ribbon_menus_and());
+                    ui.add_space(8.0);
+                    if ui.button(crate::i18n::strs().msg_close()).clicked() {
+                        close = true;
+                    }
                 });
             });
         if let Some(lang) = picked {
@@ -15510,37 +16142,37 @@ impl App {
         egui::Modal::new(egui::Id::unique("dc-confirm-close")).show(ctx, |ui| {
             // #257 item 3: the modal mirrors with the chrome.
             ui.with_layout(dialog_dir(), |ui| {
-            ui.strong(crate::i18n::strs().msg_save_changes());
-            ui.add_space(4.0);
-            ui.label(crate::i18n::strs().msg_save_changes_to_name(name));
-            row(ui, |ui| {
-                if ui.button(crate::i18n::strs().msg_save()).clicked() {
-                    self.confirm_close = None;
-                    // New and close chains are mutually exclusive.
-                    self.new_after_save = false;
-                    if self.path.as_os_str().is_empty() {
-                        // pick a file first; the close continues
-                        // after the dialog completes
-                        self.close_after_save = Some(target);
-                        self.begin_dialog(PendingKind::SaveAs);
-                    } else {
-                        let p = self.path.clone();
-                        self.save_to(&p);
-                        if !self.dirty {
-                            self.finish_close(ctx, target);
+                ui.strong(crate::i18n::strs().msg_save_changes());
+                ui.add_space(4.0);
+                ui.label(crate::i18n::strs().msg_save_changes_to_name(name));
+                row(ui, |ui| {
+                    if ui.button(crate::i18n::strs().msg_save()).clicked() {
+                        self.confirm_close = None;
+                        // New and close chains are mutually exclusive.
+                        self.new_after_save = false;
+                        if self.path.as_os_str().is_empty() {
+                            // pick a file first; the close continues
+                            // after the dialog completes
+                            self.close_after_save = Some(target);
+                            self.begin_dialog(PendingKind::SaveAs);
+                        } else {
+                            let p = self.path.clone();
+                            self.save_to(&p);
+                            if !self.dirty {
+                                self.finish_close(ctx, target);
+                            }
+                            // save failed — stay open; the status bar
+                            // carries the error
                         }
-                        // save failed — stay open; the status bar
-                        // carries the error
                     }
-                }
-                if ui.button(crate::i18n::strs().msg_don_t_save()).clicked() {
-                    self.confirm_close = None;
-                    self.finish_close(ctx, target);
-                }
-                if ui.button(crate::i18n::strs().msg_cancel()).clicked() {
-                    self.confirm_close = None;
-                }
-            });
+                    if ui.button(crate::i18n::strs().msg_don_t_save()).clicked() {
+                        self.confirm_close = None;
+                        self.finish_close(ctx, target);
+                    }
+                    if ui.button(crate::i18n::strs().msg_cancel()).clicked() {
+                        self.confirm_close = None;
+                    }
+                });
             });
         });
     }
@@ -15674,30 +16306,30 @@ impl App {
         egui::Modal::new(egui::Id::unique("dc-confirm-new")).show(ctx, |ui| {
             // #257 item 3: the modal mirrors with the chrome.
             ui.with_layout(dialog_dir(), |ui| {
-            ui.strong(crate::i18n::strs().msg_save_changes());
-            ui.add_space(4.0);
-            ui.label(crate::i18n::strs().msg_the_current_drawing_has_unsaved());
-            row(ui, |ui| {
-                if ui.button(crate::i18n::strs().msg_save_new()).clicked() {
-                    self.confirm_new = false;
-                    if self.path.as_os_str().is_empty() {
-                        // pick a file first; the new document
-                        // starts after the dialog completes
-                        self.new_after_save = true;
-                        self.begin_dialog(PendingKind::SaveAs);
-                    } else {
-                        let p = self.path.clone();
-                        self.save_to(&p);
+                ui.strong(crate::i18n::strs().msg_save_changes());
+                ui.add_space(4.0);
+                ui.label(crate::i18n::strs().msg_the_current_drawing_has_unsaved());
+                row(ui, |ui| {
+                    if ui.button(crate::i18n::strs().msg_save_new()).clicked() {
+                        self.confirm_new = false;
+                        if self.path.as_os_str().is_empty() {
+                            // pick a file first; the new document
+                            // starts after the dialog completes
+                            self.new_after_save = true;
+                            self.begin_dialog(PendingKind::SaveAs);
+                        } else {
+                            let p = self.path.clone();
+                            self.save_to(&p);
+                            self.start_new();
+                        }
+                    }
+                    if ui.button(crate::i18n::strs().msg_discard_new()).clicked() {
                         self.start_new();
                     }
-                }
-                if ui.button(crate::i18n::strs().msg_discard_new()).clicked() {
-                    self.start_new();
-                }
-                if ui.button(crate::i18n::strs().msg_cancel()).clicked() {
-                    self.confirm_new = false;
-                }
-            });
+                    if ui.button(crate::i18n::strs().msg_cancel()).clicked() {
+                        self.confirm_new = false;
+                    }
+                });
             });
         });
     }
@@ -15728,102 +16360,156 @@ impl App {
         } else {
             egui::Panel::left("backstage_rail")
         }
-            .frame(
-                egui::Frame::new()
-                    .fill(t.accent_band)
-                    .inner_margin(egui::Margin::same(10)),
-            )
-            .default_size(190.0)
-            .resizable(false)
-            .show(ui, |ui| {
-                ui.set_min_height(ui.available_height());
-                ui.vertical(|ui| {
-                    let back = egui::Button::new(
-                        egui::RichText::new("<  Back")
-                            .color(Color32::WHITE)
-                            .strong(),
-                    )
-                    .frame(false);
-                    if ui.add(back).clicked() {
-                        close_backstage = true;
+        .frame(
+            egui::Frame::new()
+                .fill(t.accent_band)
+                .inner_margin(egui::Margin::same(10)),
+        )
+        .default_size(190.0)
+        .resizable(false)
+        .show(ui, |ui| {
+            ui.set_min_height(ui.available_height());
+            ui.vertical(|ui| {
+                let back = egui::Button::new(
+                    egui::RichText::new("<  Back")
+                        .color(Color32::WHITE)
+                        .strong(),
+                )
+                .frame(false);
+                if ui.add(back).clicked() {
+                    close_backstage = true;
+                }
+                ui.add_space(10.0);
+                // One row builder for both bands: a command runs an
+                // action immediately; a destination switches pages.
+                let mut rail = |ui: &mut Ui,
+                                label: &str,
+                                enabled: bool,
+                                page: Option<BackPage>,
+                                act: Option<BackAction>| {
+                    let selected = page.is_some() && page == Some(self.backstage_page);
+                    let txt = egui::RichText::new(label).size(14.0).color(if enabled {
+                        Color32::WHITE
+                    } else {
+                        t.rail_disabled
+                    });
+                    let mut b = egui::Button::new(txt).frame(false);
+                    if selected {
+                        b = b.fill(t.rail_selected);
                     }
-                    ui.add_space(10.0);
-                    // One row builder for both bands: a command runs an
-                    // action immediately; a destination switches pages.
-                    let mut rail = |ui: &mut Ui,
-                                    label: &str,
-                                    enabled: bool,
-                                    page: Option<BackPage>,
-                                    act: Option<BackAction>| {
-                        let selected = page.is_some() && page == Some(self.backstage_page);
-                        let txt = egui::RichText::new(label).size(14.0).color(if enabled {
-                            Color32::WHITE
-                        } else {
-                            t.rail_disabled
-                        });
-                        let mut b = egui::Button::new(txt).frame(false);
-                        if selected {
-                            b = b.fill(t.rail_selected);
+                    let resp = ui.add_enabled(enabled, b);
+                    if resp.clicked() {
+                        if let Some(p) = page {
+                            self.backstage_page = p;
                         }
-                        let resp = ui.add_enabled(enabled, b);
-                        if resp.clicked() {
-                            if let Some(p) = page {
-                                self.backstage_page = p;
-                            }
-                            action = act;
-                        }
-                        resp
-                    };
-                    // Band 1 — the command cluster above the destinations
-                    // (2010's separation of actions from navigation, the
-                    // structure Apple's and Material's rail guidance ask
-                    // for).
-                    rail(ui, &crate::i18n::strs().msg_save(), has_doc, None, Some(BackAction::Save));
-                    rail(ui, &crate::i18n::strs().msg_save_as(), has_doc, None, Some(BackAction::SaveAs));
-                    rail(ui, &crate::i18n::strs().msg_close(), has_doc, None, Some(BackAction::CloseDoc));
-                    // Band divider.
-                    let (sep, _) = ui
-                        .allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
-                    ui.painter().hline(
-                        sep.left()..=sep.right(),
-                        sep.center().y,
-                        Stroke::new(1.0, Color32::from_white_alpha(60)),
-                    );
-                    ui.add_space(4.0);
-                    // Band 2 — destinations (six, inside M3's 3–7 window;
-                    // 2016's Share/Export split replaces 2010's
-                    // "Save & Send").
-                    rail(ui, &crate::i18n::strs().msg_info(), true, Some(BackPage::Info), None);
-                    rail(ui, &crate::i18n::strs().msg_recent(), true, Some(BackPage::Recent), None);
-                    rail(ui, &crate::i18n::strs().msg_rail_new(), true, Some(BackPage::New), None);
-                    rail(ui, &crate::i18n::strs().msg_rail_print(), true, Some(BackPage::Print), None)
-                        .on_hover_text(crate::i18n::strs().msg_print_the_current_drawing());
-                    rail(ui, &crate::i18n::strs().msg_share(), true, Some(BackPage::Share), None)
-                        .on_hover_text(crate::i18n::strs().msg_share_a_copy_of_the_drawing());
-                    rail(ui, &crate::i18n::strs().msg_rail_export(), true, Some(BackPage::Export), None)
-                        .on_hover_text(crate::i18n::strs().msg_export_entry_desc());
-                });
-                // Band 3 — pinned footer, non-critical items only (Apple:
-                // "avoid putting critical information or actions at the
-                // bottom of a sidebar").
-                let rail_footer_dir = if crate::i18n::rtl() {
-                    egui::Layout::bottom_up(egui::Align::RIGHT)
-                } else {
-                    egui::Layout::bottom_up(egui::Align::LEFT)
+                        action = act;
+                    }
+                    resp
                 };
-                ui.with_layout(rail_footer_dir, |ui| {
-                    ui.add_enabled(
-                        false,
-                        egui::Button::new(
-                            egui::RichText::new(crate::i18n::strs().msg_options())
-                                .size(14.0)
-                                .color(t.rail_disabled),
-                        )
-                        .frame(false),
-                    )
-                    .on_disabled_hover_text(crate::i18n::strs().msg_options_arrive_with_a_later_mile());
-                });
+                // Band 1 — the command cluster above the destinations
+                // (2010's separation of actions from navigation, the
+                // structure Apple's and Material's rail guidance ask
+                // for).
+                rail(
+                    ui,
+                    &crate::i18n::strs().msg_save(),
+                    has_doc,
+                    None,
+                    Some(BackAction::Save),
+                );
+                rail(
+                    ui,
+                    &crate::i18n::strs().msg_save_as(),
+                    has_doc,
+                    None,
+                    Some(BackAction::SaveAs),
+                );
+                rail(
+                    ui,
+                    &crate::i18n::strs().msg_close(),
+                    has_doc,
+                    None,
+                    Some(BackAction::CloseDoc),
+                );
+                // Band divider.
+                let (sep, _) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+                ui.painter().hline(
+                    sep.left()..=sep.right(),
+                    sep.center().y,
+                    Stroke::new(1.0, Color32::from_white_alpha(60)),
+                );
+                ui.add_space(4.0);
+                // Band 2 — destinations (six, inside M3's 3–7 window;
+                // 2016's Share/Export split replaces 2010's
+                // "Save & Send").
+                rail(
+                    ui,
+                    &crate::i18n::strs().msg_info(),
+                    true,
+                    Some(BackPage::Info),
+                    None,
+                );
+                rail(
+                    ui,
+                    &crate::i18n::strs().msg_recent(),
+                    true,
+                    Some(BackPage::Recent),
+                    None,
+                );
+                rail(
+                    ui,
+                    &crate::i18n::strs().msg_rail_new(),
+                    true,
+                    Some(BackPage::New),
+                    None,
+                );
+                rail(
+                    ui,
+                    &crate::i18n::strs().msg_rail_print(),
+                    true,
+                    Some(BackPage::Print),
+                    None,
+                )
+                .on_hover_text(crate::i18n::strs().msg_print_the_current_drawing());
+                rail(
+                    ui,
+                    &crate::i18n::strs().msg_share(),
+                    true,
+                    Some(BackPage::Share),
+                    None,
+                )
+                .on_hover_text(crate::i18n::strs().msg_share_a_copy_of_the_drawing());
+                rail(
+                    ui,
+                    &crate::i18n::strs().msg_rail_export(),
+                    true,
+                    Some(BackPage::Export),
+                    None,
+                )
+                .on_hover_text(crate::i18n::strs().msg_export_entry_desc());
             });
+            // Band 3 — pinned footer, non-critical items only (Apple:
+            // "avoid putting critical information or actions at the
+            // bottom of a sidebar").
+            let rail_footer_dir = if crate::i18n::rtl() {
+                egui::Layout::bottom_up(egui::Align::RIGHT)
+            } else {
+                egui::Layout::bottom_up(egui::Align::LEFT)
+            };
+            ui.with_layout(rail_footer_dir, |ui| {
+                ui.add_enabled(
+                    false,
+                    egui::Button::new(
+                        egui::RichText::new(crate::i18n::strs().msg_options())
+                            .size(14.0)
+                            .color(t.rail_disabled),
+                    )
+                    .frame(false),
+                )
+                .on_disabled_hover_text(crate::i18n::strs().msg_options_arrive_with_a_later_mile());
+            });
+        });
         // Page content (the 2010 white backstage surface).
         let mut open_browse = false;
         let mut open_recent: Option<PathBuf> = None;
@@ -15945,14 +16631,20 @@ impl App {
                             });
                             ui.add_space(14.0);
                             ui.horizontal(|ui| {
-                                ui.add_enabled(false, egui::Button::new(crate::i18n::strs().msg_protect_drawing()))
-                                    .on_disabled_hover_text(
-                                        crate::i18n::strs().msg_document_protection_arrives_with(),
-                                    );
-                                ui.add_enabled(false, egui::Button::new(crate::i18n::strs().msg_inspect_drawing()))
-                                    .on_disabled_hover_text(
-                                        crate::i18n::strs().msg_document_inspection_arrives_with(),
-                                    );
+                                ui.add_enabled(
+                                    false,
+                                    egui::Button::new(crate::i18n::strs().msg_protect_drawing()),
+                                )
+                                .on_disabled_hover_text(
+                                    crate::i18n::strs().msg_document_protection_arrives_with(),
+                                );
+                                ui.add_enabled(
+                                    false,
+                                    egui::Button::new(crate::i18n::strs().msg_inspect_drawing()),
+                                )
+                                .on_disabled_hover_text(
+                                    crate::i18n::strs().msg_document_inspection_arrives_with(),
+                                );
                             });
                         } else {
                             ui.heading(crate::i18n::strs().msg_no_document_open());
@@ -16029,7 +16721,12 @@ impl App {
                         let q = search_text.trim().to_lowercase();
                         let mut card_click = false;
                         ui.horizontal_wrapped(|ui| {
-                            if backstage_card(ui, Icon::New, &crate::i18n::strs().msg_blank_drawing(), q.is_empty()) {
+                            if backstage_card(
+                                ui,
+                                Icon::New,
+                                &crate::i18n::strs().msg_blank_drawing(),
+                                q.is_empty(),
+                            ) {
                                 card_click = true;
                             }
                             for (name, icon) in new_template_entries() {
@@ -16261,7 +16958,8 @@ fn row<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> egui::Respons
     } else {
         egui::Layout::left_to_right(egui::Align::Center)
     };
-    ui.horizontal(|inner| inner.with_layout(dir, add_contents)).response
+    ui.horizontal(|inner| inner.with_layout(dir, add_contents))
+        .response
 }
 
 /// The INVERSE of [`row`] — an end-pinned control bar whose LTR form
@@ -16272,7 +16970,8 @@ fn row_rev<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> egui::Res
     } else {
         egui::Layout::right_to_left(egui::Align::Center)
     };
-    ui.horizontal(|inner| inner.with_layout(dir, add_contents)).response
+    ui.horizontal(|inner| inner.with_layout(dir, add_contents))
+        .response
 }
 
 /// The horizontal-row twin of [`dialog_dir`] — the `right_to_left` /
@@ -16350,7 +17049,10 @@ fn ctx_item(
             tokens.hint,
         );
         ui.painter().galley(
-            Pos2::new(resp.rect.left() + 7.0, resp.rect.center().y - gal.size().y / 2.0),
+            Pos2::new(
+                resp.rect.left() + 7.0,
+                resp.rect.center().y - gal.size().y / 2.0,
+            ),
             gal,
             tokens.hint,
         );

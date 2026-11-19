@@ -37,6 +37,20 @@ use crate::canvas::{self, PageGeom, View};
 use dc::svg::{text_block, text_block_page_rect};
 use egui::{Color32, FontId, Pos2, Rect, Ui, Vec2};
 
+/// #267: a field insertion parked mid-edit — the display value the
+/// editor shows at `offset` (plain characters from the draft's
+/// start), committed as the `<fld/>` marker when the edit ends.
+/// Anchors shift through per-frame draft diffs (typing before a mark
+/// moves it; typing inside a mark's chunk pins it at the chunk
+/// start — the field is atomic, like Visio's).
+#[derive(Debug, Clone)]
+pub struct FieldMark {
+    pub offset: usize,
+    pub display: String,
+    pub value_f: String,
+    pub format_f: Option<String>,
+}
+
 /// One open editing session. Created by the app's entry points;
 /// `prev_view` restores the zoom/pan the user had before the edit.
 pub struct TextEditSession {
@@ -46,6 +60,14 @@ pub struct TextEditSession {
     pub page: i64,
     pub shape: i64,
     pub draft: String,
+    /// #267: the caret's plain-character offset (captured every frame
+    /// after the widget runs — the Insert Field dialog reads it to
+    /// insert at the caret).
+    pub caret: usize,
+    /// #267: field insertions parked for the commit.
+    pub field_marks: Vec<FieldMark>,
+    /// The draft as of the last frame (mark-anchor bookkeeping).
+    last_draft: String,
     /// View state (zoom, pan, fit flags) captured on entry — restored
     /// on exit.
     pub prev_view: View,
@@ -63,11 +85,73 @@ impl TextEditSession {
         TextEditSession {
             page,
             shape,
+            last_draft: draft.clone(),
             draft,
+            caret: 0,
+            field_marks: Vec::new(),
             prev_view: view.clone(),
             zoomed_in: false,
             focus_requested: false,
         }
+    }
+
+    /// Park a field insertion at the caret: the display value lands
+    /// in the draft (the editor shows it where Visio would) and the
+    /// mark remembers where the marker goes at commit.
+    pub fn park_field(&mut self, mark: FieldMark) {
+        let mut at = self.caret.min(self.draft.chars().count());
+        let mut prefix = String::new();
+        for c in self.draft.chars().take(at) {
+            prefix.push(c);
+        }
+        let suffix = self.draft.chars().skip(at).collect::<String>();
+        self.draft = format!("{prefix}{}{suffix}", mark.display);
+        at = prefix.chars().count();
+        self.field_marks.push(FieldMark { offset: at, ..mark });
+        self.last_draft = self.draft.clone();
+        // Park at the end of what was inserted — typing continues
+        // after the field.
+        self.caret = at + self.field_marks.last().unwrap().display.chars().count();
+    }
+
+    /// Record the frame's caret and shift mark anchors through the
+    /// draft diff (called after the widget ran).
+    pub fn sync_frame(&mut self, caret: Option<usize>) {
+        if let Some(c) = caret {
+            self.caret = c;
+        }
+        if self.field_marks.is_empty() || self.last_draft == self.draft {
+            self.last_draft = self.draft.clone();
+            return;
+        }
+        let old: Vec<char> = self.last_draft.chars().collect();
+        let new: Vec<char> = self.draft.chars().collect();
+        let mut p = 0usize;
+        while p < old.len() && p < new.len() && old[p] == new[p] {
+            p += 1;
+        }
+        let mut s = 0usize;
+        while s < old.len() - p
+            && s < new.len() - p
+            && old[old.len() - 1 - s] == new[new.len() - 1 - s]
+        {
+            s += 1;
+        }
+        let replaced_old = old.len() - p - s;
+        let delta = new.len() as isize - old.len() as isize;
+        for m in &mut self.field_marks {
+            let end = m.offset + m.display.chars().count();
+            if m.offset >= p + replaced_old {
+                // Edit landed after the mark: it shifts by the delta.
+                m.offset = (m.offset as isize + delta) as usize;
+            } else if end > p {
+                // Edit landed inside the chunk: the mark pins to the
+                // chunk start (the field is atomic).
+                m.offset = p;
+            }
+            // Before the edit: unchanged.
+        }
+        self.last_draft = self.draft.clone();
     }
 
     /// Apply the entry zoom once: the text block fills ~half the
@@ -264,9 +348,8 @@ pub fn show_overlay(
                         let ps = galley.pos_from_cursor(range.secondary);
                         // (row, x) lexicographic: primary is the
                         // visually-later endpoint when this is true.
-                        let primary_later =
-                            (pp.min.y, pp.min.x).ge(&(ps.min.y, ps.min.x))
-                                && (pp.min.y, pp.min.x) != (ps.min.y, ps.min.x);
+                        let primary_later = (pp.min.y, pp.min.x).ge(&(ps.min.y, ps.min.x))
+                            && (pp.min.y, pp.min.x) != (ps.min.y, ps.min.x);
                         let take_primary = if right { primary_later } else { !primary_later };
                         (
                             if take_primary {
@@ -304,8 +387,7 @@ pub fn show_overlay(
     // moves nothing. The overlay editor lays every row out at ONE
     // size, so its baseline uses the Latin ascent; the renderer's
     // per-line complex-script slots are its own.
-    let baseline_off_in =
-        dc::svg::text_first_baseline(&tb, n_lines * tb.line_height, tb.font_size);
+    let baseline_off_in = dc::svg::text_first_baseline(&tb, n_lines * tb.line_height, tb.font_size);
     let baseline_page_y_up = (by + bh) - baseline_off_in;
     let baseline_screen = canvas::page_to_screen(bx, baseline_page_y_up, view, geom).y;
     let editor_top = baseline_screen - (ascent_em * font_pts as f64) as f32;
@@ -332,6 +414,13 @@ pub fn show_overlay(
                 .stroke(egui::Stroke::NONE),
         );
     let resp = ui.put(place, edit);
+
+    // #267: capture the caret (plain-char offset) and shift any
+    // parked field marks through this frame's draft diff.
+    let caret = egui::text_edit::TextEditState::load(ui.ctx(), id)
+        .and_then(|st| st.cursor.char_range())
+        .map(|r| r.primary.index.0);
+    session.sync_frame(caret);
 
     // Esc discards: the shape's text reverts to its pre-edit value
     // (owner review, 2026-10-27).
@@ -630,7 +719,11 @@ mod tests {
         ctx.fonts_mut(|f| f.layout_job(job))
     }
 
-    fn wrapped_galley_of(ctx: &egui::Context, text: &str, wrap: f32) -> std::sync::Arc<egui::Galley> {
+    fn wrapped_galley_of(
+        ctx: &egui::Context,
+        text: &str,
+        wrap: f32,
+    ) -> std::sync::Arc<egui::Galley> {
         let job = egui::text::LayoutJob::simple(
             text.into(),
             egui::FontId::monospace(14.0),

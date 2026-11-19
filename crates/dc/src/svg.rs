@@ -124,6 +124,7 @@ pub fn render_masters(doc: &Document) -> anyhow::Result<String> {
             svg,
             r#"<g transform="translate({tx:.5},{ty:.5}) scale({k:.5},{k:.5})">"#,
         );
+        let fields = crate::fields::FieldsCtx::for_master(doc, &m.shapes);
         for shape in &m.shapes {
             render_shape(
                 doc,
@@ -134,6 +135,7 @@ pub fn render_masters(doc: &Document) -> anyhow::Result<String> {
                 None,
                 None,
                 None,
+                Some(&fields),
                 &mut svg,
             );
         }
@@ -237,6 +239,7 @@ pub fn render_master(doc: &Document, m: &vsdx::Master) -> anyhow::Result<String>
         svg,
         r#"<g transform="translate({tx:.5},{ty:.5}) scale({k:.5},{k:.5})">"#,
     );
+    let fields = crate::fields::FieldsCtx::for_master(doc, &m.shapes);
     for shape in &m.shapes {
         render_shape(
             doc,
@@ -247,6 +250,7 @@ pub fn render_master(doc: &Document, m: &vsdx::Master) -> anyhow::Result<String>
             None,
             None,
             None,
+            Some(&fields),
             &mut svg,
         );
     }
@@ -455,14 +459,17 @@ fn node_ink_box(
             get("LocPinY", &env).unwrap_or(height / 2.0),
         ))
     } else {
-        Affine::translate(get("PinX", &env).unwrap_or(0.0), -get("PinY", &env).unwrap_or(0.0))
-            .then(&Affine::rotate_deg(
-                -get("Angle", &env).unwrap_or(0.0).to_degrees(),
-            ))
-            .then(&Affine::translate(
-                -get("LocPinX", &env).unwrap_or(width / 2.0),
-                get("LocPinY", &env).unwrap_or(height / 2.0),
-            ))
+        Affine::translate(
+            get("PinX", &env).unwrap_or(0.0),
+            -get("PinY", &env).unwrap_or(0.0),
+        )
+        .then(&Affine::rotate_deg(
+            -get("Angle", &env).unwrap_or(0.0).to_degrees(),
+        ))
+        .then(&Affine::translate(
+            -get("LocPinX", &env).unwrap_or(width / 2.0),
+            get("LocPinY", &env).unwrap_or(height / 2.0),
+        ))
     };
     let a = to_page.then(&local);
     let mut u = Focus {
@@ -556,10 +563,8 @@ fn node_ink_box(
                             let key = match sec_name {
                                 "Scratch" => format!("Scratch.{}{}", name, row.ix + 1),
                                 _ => {
-                                    let rn = row
-                                        .n
-                                        .clone()
-                                        .unwrap_or_else(|| format!("Row_{}", row.ix));
+                                    let rn =
+                                        row.n.clone().unwrap_or_else(|| format!("Row_{}", row.ix));
                                     format!("Controls.{}.{}", rn, name)
                                 }
                             };
@@ -593,11 +598,7 @@ fn node_ink_box(
         let gname = format!("Geometry{}", walk_ix + 1);
         let mut cur = (0.0f64, 0.0f64);
         let mut first_pt: Option<(f64, f64)> = None;
-        fn row_num_in(
-            env: &vsdx::formula::Env,
-            row: &vsdx::Row,
-            n: &str,
-        ) -> f64 {
+        fn row_num_in(env: &vsdx::formula::Env, row: &vsdx::Row, n: &str) -> f64 {
             row.cell(n)
                 .and_then(|c| {
                     c.f.as_deref()
@@ -611,10 +612,7 @@ fn node_ink_box(
         for row in &geo.rows {
             let Some(t) = row.t.as_deref() else { continue };
             let rel = t.starts_with("Rel");
-            let (mut x, mut y) = (
-                row_num_in(genv, row, "X"),
-                row_num_in(genv, row, "Y"),
-            );
+            let (mut x, mut y) = (row_num_in(genv, row, "X"), row_num_in(genv, row, "Y"));
             if rel {
                 // Raw signed dims — rel_adjust (which the renderer
                 // uses) multiplies raw, so the bound must match.
@@ -721,7 +719,9 @@ fn node_ink_box(
         // union a conservative square (the gallery's largest reach) at
         // each end that carries a head. Same gate as the renderer's.
         let arrowed = |arrow: f64| arrow >= 0.5 && !(46.0..=50.5).contains(&arrow);
-        if get("BeginArrow", &text_env).is_some_and(arrowed) || get("EndArrow", &text_env).is_some_and(arrowed) {
+        if get("BeginArrow", &text_env).is_some_and(arrowed)
+            || get("EndArrow", &text_env).is_some_and(arrowed)
+        {
             let weight = get("LineWeight", &text_env).unwrap_or(0.75 / 72.0);
             let pad = |pt: (f64, f64), arrow: Option<f64>, sz: f64, u: &mut Focus| {
                 if !arrow.is_some_and(arrowed) {
@@ -824,23 +824,9 @@ fn node_ink_box(
             // rotated page coordinates around a shape-local pivot,
             // landing the hull far from the shape (Greptile round 9).
             let a_text = a.then(&text_tf);
-            box_union(
-                x0 - bullet_escape,
-                y0,
-                x0 + tw,
-                y0 + th,
-                &a_text,
-                &mut u,
-            );
+            box_union(x0 - bullet_escape, y0, x0 + tw, y0 + th, &a_text, &mut u);
         } else {
-            box_union(
-                x0 - bullet_escape,
-                y0,
-                x0 + tw,
-                y0 + th,
-                &a,
-                &mut u,
-            );
+            box_union(x0 - bullet_escape, y0, x0 + tw, y0 + th, &a, &mut u);
         }
     }
     (u.acc.unwrap_or((0.0, 0.0, 0.0, 0.0)), a)
@@ -1027,6 +1013,7 @@ fn render_shape_layer_inner(
         pw = bw * PX_PER_IN,
         ph = bh * PX_PER_IN,
     );
+    let fields = crate::fields::FieldsCtx::for_page(doc, page);
     if !hidden_member(shape) {
         render_shape(
             doc,
@@ -1037,6 +1024,7 @@ fn render_shape_layer_inner(
             skip_text,
             greek.as_ref(),
             cull,
+            Some(&fields),
             &mut svg,
         );
     }
@@ -1132,6 +1120,7 @@ fn render_page_full(
                 continue;
             }
         }
+        let fields = crate::fields::FieldsCtx::for_page(doc, page);
         render_shape(
             doc,
             shape,
@@ -1141,6 +1130,7 @@ fn render_page_full(
             skip_text,
             None,
             None,
+            Some(&fields),
             &mut svg,
         );
     }
@@ -1185,12 +1175,7 @@ fn append_jump(svg: &mut String, page_h: f64, j: &crate::geom::Jump) {
 
 /// [`append_jump`] with the page's jump-size multiplier (#251 — the
 /// PageSheet's `LineJumpFactorX`).
-fn append_jump_scaled(
-    svg: &mut String,
-    page_h: f64,
-    j: &crate::geom::Jump,
-    factor: f64,
-) {
+fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::geom::Jump, factor: f64) {
     let (r, w, uw) = (
         crate::geom::JUMP_RADIUS_IN * factor,
         j.weight,
@@ -1495,6 +1480,7 @@ fn render_shape<'a>(
     skip_text: Option<i64>,
     greek: Option<&GreekCtx>,
     cull: Option<&InkCull>,
+    fields: Option<&crate::fields::FieldsCtx<'_>>,
     out: &mut String,
 ) {
     let mut chain: Vec<&'a Shape> = chain.to_vec();
@@ -1556,7 +1542,7 @@ fn render_shape<'a>(
         if cull.is_some_and(|c| c.skips(sub.id)) {
             continue;
         }
-        render_shape_local(doc, sub, &chain, part, skip_text, greek, cull, out);
+        render_shape_local(doc, sub, &chain, part, skip_text, greek, cull, fields, out);
     }
     mirror_master(doc, s, &chain, width, height, greek, out);
 
@@ -1570,6 +1556,7 @@ fn render_shape<'a>(
         sy,
         skip_text == Some(s.id),
         greek,
+        fields,
         out,
     );
     let _ = writeln!(out, "</g>");
@@ -1586,6 +1573,7 @@ fn render_shape_local<'a>(
     skip_text: Option<i64>,
     greek: Option<&GreekCtx>,
     cull: Option<&InkCull>,
+    fields: Option<&crate::fields::FieldsCtx<'_>>,
     out: &mut String,
 ) {
     let mut chain: Vec<&'a Shape> = chain.to_vec();
@@ -1626,7 +1614,7 @@ fn render_shape_local<'a>(
         if cull.is_some_and(|c| c.skips(sub.id)) {
             continue;
         }
-        render_shape_local(doc, sub, &chain, part, skip_text, greek, cull, out);
+        render_shape_local(doc, sub, &chain, part, skip_text, greek, cull, fields, out);
     }
     mirror_master(doc, s, &chain, width, height, greek, out);
     // Group-local rendering applies no flip scale of its own, so the text
@@ -1641,6 +1629,7 @@ fn render_shape_local<'a>(
         1.0,
         skip_text == Some(s.id),
         greek,
+        fields,
         out,
     );
     let _ = writeln!(out, "</g>");
@@ -1726,7 +1715,7 @@ fn mirror_master(
             // Master-canvas roots of a multi-root master: the union
             // bbox maps into the instance rect, which the node's own
             // ink box bounds — no cull of their own (#236).
-            render_shape_local(doc, r, &[], mpart, None, greek, None, out);
+            render_shape_local(doc, r, &[], mpart, None, greek, None, None, out);
         }
         let _ = writeln!(out, "</g>");
     } else if let Some(root) = m.shapes.first() {
@@ -1753,7 +1742,7 @@ fn mirror_master(
             // Mirrored master children map into the instance's local
             // frame, bounded by the node's own ink box — no cull of
             // their own (#236).
-            render_shape_local(doc, sub, chain, mpart, None, greek, None, out);
+            render_shape_local(doc, sub, chain, mpart, None, greek, None, None, out);
             if wrapper.is_some() {
                 let _ = writeln!(out, "</g>");
             }
@@ -2318,80 +2307,77 @@ pub(crate) fn resolve_text_block(
 
     // #231 bullet machinery: a Bullet cell 1–7 (Word's round set) or a
     // non-numeric string (custom bullet) arms it; 0/empty stays off.
-    let bullet = para_cell("Bullet")
-        .and_then(|b| {
-            let v = b.v.as_deref().unwrap_or("").trim().to_string();
-            if v.is_empty() || v == "0" {
-                return None;
+    let bullet = para_cell("Bullet").and_then(|b| {
+        let v = b.v.as_deref().unwrap_or("").trim().to_string();
+        if v.is_empty() || v == "0" {
+            return None;
+        }
+        // A custom BulletString takes PRECEDENCE over the numeric
+        // style ([MS-VSDX], PR #284 review round 3): the string
+        // can ride along a nonzero numeric Bullet, and the round
+        // set must not swallow it.
+        let custom = para_cell("BulletString")
+            .and_then(|c| c.v.clone())
+            .map(|st| st.trim().to_string())
+            .filter(|st| !st.is_empty());
+        // Numeric forms classify BEFORE the custom-string
+        // fallback (CodeRabbit local review): "256" overflows u8
+        // and "1.0"/"0.0" fail an integer parse — either way the
+        // old path painted the literal as a custom bullet.
+        // Integral 1–7 → the round set; any other NUMERIC value
+        // (final CodeRabbit pass: including negatives like "-1"
+        // and fractionals like "1.5" — a number that failed the
+        // style filter is an unsupported style, not custom text)
+        // → no bullet; genuinely non-numeric text → a custom
+        // bullet.
+        let parsed = v.parse::<f64>().ok();
+        let glyph = match (custom, parsed) {
+            (Some(st), _) => BulletGlyph::Str(st),
+            (None, Some(n)) if n.fract() == 0.0 && (1.0..=7.0).contains(&n) => {
+                BulletGlyph::Round(n as u8)
             }
-            // A custom BulletString takes PRECEDENCE over the numeric
-            // style ([MS-VSDX], PR #284 review round 3): the string
-            // can ride along a nonzero numeric Bullet, and the round
-            // set must not swallow it.
-            let custom = para_cell("BulletString")
-                .and_then(|c| c.v.clone())
-                .map(|st| st.trim().to_string())
-                .filter(|st| !st.is_empty());
-            // Numeric forms classify BEFORE the custom-string
-            // fallback (CodeRabbit local review): "256" overflows u8
-            // and "1.0"/"0.0" fail an integer parse — either way the
-            // old path painted the literal as a custom bullet.
-            // Integral 1–7 → the round set; any other NUMERIC value
-            // (final CodeRabbit pass: including negatives like "-1"
-            // and fractionals like "1.5" — a number that failed the
-            // style filter is an unsupported style, not custom text)
-            // → no bullet; genuinely non-numeric text → a custom
-            // bullet.
-            let parsed = v.parse::<f64>().ok();
-            let glyph = match (custom, parsed) {
-                (Some(st), _) => BulletGlyph::Str(st),
-                (None, Some(n))
-                    if n.fract() == 0.0 && (1.0..=7.0).contains(&n) =>
-                {
-                    BulletGlyph::Round(n as u8)
-                }
-                (None, Some(_)) => return None, // unsupported numerics: no bullet
-                (None, None) => BulletGlyph::Str(v),
-            };
-            // BulletFont: a family name, else inherit the paragraph
-            // font (numeric legacy indexes and 0 both inherit).
-            let font = para_cell("BulletFont")
-                .and_then(|c| c.v.clone())
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty() && v.parse::<f64>().is_err());
-            // BulletFontSize: negative = percent of the text size
-            // (default −100 %), ≥ 0 = absolute inches.
-            let pct = para_cell("BulletFontSize")
-                .and_then(|c| c.numeric())
-                .unwrap_or(-100.0);
-            let size = if pct < 0.0 {
-                pct.abs() / 100.0 * font_size
-            } else if pct == 0.0 {
-                // 0 = the size of the first character after the bullet
-                // ([MS-VSDX] BulletFontSize — PR #284 review round 3):
-                // the paragraph's own size, not a 0.02 in sliver.
-                font_size
-            } else {
-                pct.max(0.02)
-            };
-            let pos_after = para_cell("TextPosAfterBullet")
-                .and_then(|c| c.numeric())
-                .unwrap_or(0.0);
-            // The tab-stop grid lives on the document sheet.
-            let tab_stop = doc
-                .sheet
-                .cell("DefaultTabStop")
-                .and_then(|c| c.numeric())
-                .unwrap_or(0.5)
-                .max(0.01);
-            Some(BulletSpec {
-                glyph,
-                font,
-                size,
-                pos_after,
-                tab_stop,
-            })
-        });
+            (None, Some(_)) => return None, // unsupported numerics: no bullet
+            (None, None) => BulletGlyph::Str(v),
+        };
+        // BulletFont: a family name, else inherit the paragraph
+        // font (numeric legacy indexes and 0 both inherit).
+        let font = para_cell("BulletFont")
+            .and_then(|c| c.v.clone())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty() && v.parse::<f64>().is_err());
+        // BulletFontSize: negative = percent of the text size
+        // (default −100 %), ≥ 0 = absolute inches.
+        let pct = para_cell("BulletFontSize")
+            .and_then(|c| c.numeric())
+            .unwrap_or(-100.0);
+        let size = if pct < 0.0 {
+            pct.abs() / 100.0 * font_size
+        } else if pct == 0.0 {
+            // 0 = the size of the first character after the bullet
+            // ([MS-VSDX] BulletFontSize — PR #284 review round 3):
+            // the paragraph's own size, not a 0.02 in sliver.
+            font_size
+        } else {
+            pct.max(0.02)
+        };
+        let pos_after = para_cell("TextPosAfterBullet")
+            .and_then(|c| c.numeric())
+            .unwrap_or(0.0);
+        // The tab-stop grid lives on the document sheet.
+        let tab_stop = doc
+            .sheet
+            .cell("DefaultTabStop")
+            .and_then(|c| c.numeric())
+            .unwrap_or(0.5)
+            .max(0.01);
+        Some(BulletSpec {
+            glyph,
+            font,
+            size,
+            pos_after,
+            tab_stop,
+        })
+    });
 
     // #229 TextBkgnd: 0 and 255 paint nothing; 1–24 select palette
     // entries 0–23; larger values index the document palette through
@@ -2530,7 +2516,7 @@ pub fn paragraph_base_rtl(para: &str) -> bool {
     // Leading explicit embedding marks decide outright.
     while let Some(&c) = chars.peek() {
         match c {
-            '\u{202B}' => return true, // RLE
+            '\u{202B}' => return true,  // RLE
             '\u{202A}' => return false, // LRE
             '\u{200E}' | '\u{200F}' | '\u{202C}' => {
                 chars.next();
@@ -2727,7 +2713,7 @@ pub(crate) fn wrap_block_text(
     lines
 }
 
-#[allow(clippy::too_many_arguments)] // placement + flip axes + the #22 skip + #124 greek ctx
+#[allow(clippy::too_many_arguments)] // placement + flip axes + the #22 skip + #124 greek ctx + #267 fields
 fn emit_text(
     doc: &Document,
     s: &Shape,
@@ -2738,6 +2724,7 @@ fn emit_text(
     sy: f64,
     skip: bool,
     greek: Option<&GreekCtx>,
+    fields: Option<&crate::fields::FieldsCtx<'_>>,
     out: &mut String,
 ) {
     if skip {
@@ -2758,10 +2745,14 @@ fn emit_text(
     // hangs past the margin in Visio, so the blanket `str::trim_end`
     // (whose whitespace set includes U+00A0) must not eat it.
     const TRAILING_TRIM: [char; 4] = ['\r', '\n', ' ', '\t'];
-    let Some(text) = s
-        .sheet
-        .text
+    // #267: a `<fld>`-bearing text renders its SUBSTITUTED string —
+    // evaluated, picture-formatted, laid out. The fast path returns
+    // None for the marker-free shape, keeping its plain text (and
+    // the marker-free packages) byte-identical.
+    let substituted = crate::fields::substituted_text(doc, s, chain, fields);
+    let Some(text) = substituted
         .as_deref()
+        .or(s.sheet.text.as_deref())
         .map(|t| t.trim_end_matches(TRAILING_TRIM))
         .filter(|t| !t.is_empty())
     else {
@@ -3039,8 +3030,7 @@ fn emit_text(
             // element-level attrs stay Latin. (Bullets and paragraph
             // indents stay unwitnessed on RTL lines — #231 open
             // questions — so RTL keeps the plain band placement.)
-            let lw = cs_face
-                .width_in_runs(&fb_chain, &line.text, cs_paint_size);
+            let lw = cs_face.width_in_runs(&fb_chain, &line.text, cs_paint_size);
             let content = format!("\u{2067}{}\u{2069}", line.text);
             let vx = match halign {
                 0 | 3 => right_x - lw, // start (reading order) = visual right edge
@@ -3072,8 +3062,7 @@ fn emit_text(
                 }
             );
             let line_size = effective_cs_size(&tb);
-            let y = top + line_size * 0.8
-                - script_r.map_or(0.0, |(_, shift)| shift * line_size);
+            let y = top + line_size * 0.8 - script_r.map_or(0.0, |(_, shift)| shift * line_size);
             // The RTL line's laid-out extent joins the #229 background
             // union too (PR review, wave 4) — an all-RTL block must
             // still paint its text background. The extent follows the
@@ -3101,8 +3090,7 @@ fn emit_text(
             // the reduced glyph em, so the shift base is the line's
             // NOMINAL size.
             let line_size = size;
-            let y = top + line_size * 0.8
-                - script_l.map_or(0.0, |(_, shift)| shift * line_size);
+            let y = top + line_size * 0.8 - script_l.map_or(0.0, |(_, shift)| shift * line_size);
             // LTR line placement: every line lays out in an indented
             // band — a bulleted paragraph's first line carries
             // bullet+gap+text as ONE unit anchored at the tab stop
@@ -3173,7 +3161,11 @@ fn emit_text(
                     // Paths go outside <text> (see `bullet_paths`).
                     BulletGlyph::Round(kind) => {
                         bullet_paths.push_str(&bullet_glyph_svg(
-                            *kind, bullet_x, by, bl.spec.size, &color,
+                            *kind,
+                            bullet_x,
+                            by,
+                            bl.spec.size,
+                            &color,
                         ));
                         String::new()
                     }
@@ -3274,11 +3266,7 @@ fn emit_text(
     // viewers that honor the attribute (usvg ignores it) so the
     // visual-left start anchor reads the same everywhere. LTR-only
     // blocks keep the pre-#257 byte form.
-    let dir_attr = if any_rtl {
-        r#" direction="ltr""#
-    } else {
-        ""
-    };
+    let dir_attr = if any_rtl { r#" direction="ltr""# } else { "" };
     // #229 text background: ONE rectangle spanning the logical line
     // extents (widest laid-out line × the union of line heights),
     // margins position the text but add no padding. It uses the text
@@ -3429,10 +3417,12 @@ fn bullet_glyph_svg(kind: u8, x: f64, y: f64, size: f64, color: &str) -> String 
         // Wingdings q)
         4 => "M-0.15 -0.15h0.30v0.30h-0.30ZM-0.08 -0.08h0.16v0.16h-0.16Z",
         // 5 ❖ four-diamond star
-        5 => "M0 -0.26l0.10 0.12l-0.10 0.12l-0.10 -0.12Z\
+        5 => {
+            "M0 -0.26l0.10 0.12l-0.10 0.12l-0.10 -0.12Z\
               M0 0.02l0.10 0.12l-0.10 0.12l-0.10 -0.12Z\
               M-0.19 -0.12l0.10 0.12l-0.10 0.12l-0.10 -0.12Z\
-              M0.19 -0.12l0.10 0.12l-0.10 0.12l-0.10 -0.12Z",
+              M0.19 -0.12l0.10 0.12l-0.10 0.12l-0.10 -0.12Z"
+        }
         // 6 ➢ concave arrowhead pointing right
         6 => "M-0.14 -0.15l0.29 0.15l-0.29 0.15l0.09 -0.15Z",
         // 7 ✓ a stroked check
@@ -3765,7 +3755,17 @@ fn render_all_geometry(
             // Instance frame: formulas and cached values are both in
             // instance units.
             let gname = format!("Geometry{}", i + 1);
-            render_geometry(doc, s, chain, geo, (1.0, 1.0), Frame::Instance, &gname, out, &mut paint);
+            render_geometry(
+                doc,
+                s,
+                chain,
+                geo,
+                (1.0, 1.0),
+                Frame::Instance,
+                &gname,
+                out,
+                &mut paint,
+            );
         }
         flush_shape_paint(&mut paint, out);
         return;
@@ -3806,10 +3806,7 @@ fn render_all_geometry(
                     let key = match sec_name {
                         "Scratch" => format!("Scratch.{}{}", name, row.ix + 1),
                         _ => {
-                            let rn = row
-                                .n
-                                .clone()
-                                .unwrap_or_else(|| format!("Row_{}", row.ix));
+                            let rn = row.n.clone().unwrap_or_else(|| format!("Row_{}", row.ix));
                             format!("Controls.{}.{}", rn, name)
                         }
                     };
@@ -3832,7 +3829,17 @@ fn render_all_geometry(
         // Master frame: rows are master-local; their formulas reference
         // the MASTER's dims and must not be re-evaluated in instance
         // units (that skews rectangles into triangles).
-        render_geometry(doc, s, chain, geo, scale, Frame::Master(&mut menv), &format!("Geometry{}", i + 1), out, &mut paint);
+        render_geometry(
+            doc,
+            s,
+            chain,
+            geo,
+            scale,
+            Frame::Master(&mut menv),
+            &format!("Geometry{}", i + 1),
+            out,
+            &mut paint,
+        );
     }
     flush_shape_paint(&mut paint, out);
 }
@@ -4442,10 +4449,26 @@ fn render_geometry(
         // CLOSED walk gets no frames — and so no heads — at all.
         if let Some((begin, end)) = path_frames(&d) {
             if let Some(k) = kind(begin_arrow) {
-                emit_arrow_head(&mut paint.strokes, k, bsz, head_weight, &line_color, begin.0, begin.1);
+                emit_arrow_head(
+                    &mut paint.strokes,
+                    k,
+                    bsz,
+                    head_weight,
+                    &line_color,
+                    begin.0,
+                    begin.1,
+                );
             }
             if let Some(k) = kind(end_arrow) {
-                emit_arrow_head(&mut paint.strokes, k, esz, head_weight, &line_color, end.0, end.1);
+                emit_arrow_head(
+                    &mut paint.strokes,
+                    k,
+                    esz,
+                    head_weight,
+                    &line_color,
+                    end.0,
+                    end.1,
+                );
             }
         }
     }
@@ -6099,20 +6122,14 @@ pub fn shape_env(doc: &Document, s: &Shape, chain: &[&Shape]) -> vsdx::formula::
                     if let Some(v) = cell.numeric() {
                         // Visio's Scratch references are 1-BASED
                         // (`Scratch.X1` is the first row's X).
-                        env.insert(
-                            format!("Scratch.{}{}", name, row.ix + 1),
-                            v,
-                        );
+                        env.insert(format!("Scratch.{}{}", name, row.ix + 1), v);
                     }
                 }
             }
         }
         for controls in sheet.sections_named("Controls") {
             for row in &controls.rows {
-                let rn = row
-                    .n
-                    .clone()
-                    .unwrap_or_else(|| format!("Row_{}", row.ix));
+                let rn = row.n.clone().unwrap_or_else(|| format!("Row_{}", row.ix));
                 for (name, cell) in &row.cells {
                     if let Some(v) = cell.numeric() {
                         env.insert(format!("Controls.{}.{}", rn, name), v);
@@ -6404,7 +6421,10 @@ mod tests {
         let arr = |p: f64| line_dasharray(p, w);
         assert_eq!(arr(2.0).as_deref(), Some("0.14000 0.10000")); // canonical 7/5
         assert_eq!(arr(3.0).as_deref(), Some("0.0000020000 0.10000"));
-        assert_eq!(arr(4.0).as_deref(), Some("0.14000 0.10000 0.0000020000 0.10000"));
+        assert_eq!(
+            arr(4.0).as_deref(),
+            Some("0.14000 0.10000 0.0000020000 0.10000")
+        );
         assert_eq!(
             arr(5.0).as_deref(),
             Some("0.14000 0.10000 0.0000020000 0.10000 0.0000020000 0.10000")
@@ -6547,9 +6567,7 @@ mod tests {
                         (
                             "E".into(),
                             Cell {
-                                v: Some(
-                                    "NURBS(3, 1, 0, 0, 0.5,0.5,1,1, 0.75,0.5,2,1)".into(),
-                                ),
+                                v: Some("NURBS(3, 1, 0, 0, 0.5,0.5,1,1, 0.75,0.5,2,1)".into()),
                                 ..Cell::default()
                             },
                         ),
@@ -6585,7 +6603,9 @@ mod tests {
         }
         let chain: Vec<&Shape> = Vec::new();
         let mut out = String::new();
-        render_shape(&doc, &inst, 8.5, &chain, "", None, None, None, &mut out);
+        render_shape(
+            &doc, &inst, 8.5, &chain, "", None, None, None, None, &mut out,
+        );
         // The controls land at gx·W: 0.5 → 2.0 and 0.75 → 3.0; the y
         // fraction 0.5 of H=2 → 1.0 (emitted negated). The old
         // double-scale put them at 4.0 and 6.0.
@@ -6597,7 +6617,10 @@ mod tests {
             out.contains("3.00000 -1.00000"),
             "control 2 (0.75·W) missing: {out}"
         );
-        assert!(!out.contains("6.00000"), "double-scaled control leaked: {out}");
+        assert!(
+            !out.contains("6.00000"),
+            "double-scaled control leaked: {out}"
+        );
     }
 
     #[test]
@@ -6635,7 +6658,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
             out
         };
         // 0 = no head at all.
@@ -6793,7 +6816,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
             out
         };
         // A closed rectangle walk (returns to its start) with both
@@ -6824,7 +6847,10 @@ mod tests {
             ],
             &[("EndArrow", "5")],
         );
-        assert!(open.contains("dc-ah"), "the open line keeps its head: {open}");
+        assert!(
+            open.contains("dc-ah"),
+            "the open line keeps its head: {open}"
+        );
         // A MULTI-subpath walk takes no heads either — Visio gives
         // them none (the trim_path evidence note; CodeRabbit flagged
         // the last-subpath-closed case, #278).
@@ -6864,14 +6890,21 @@ mod tests {
                     w3_row(
                         2,
                         "EllipticalArcTo",
-                        &[("X", "1"), ("Y", "0"), ("A", "0.5"), ("B", "1"), ("C", "0"), ("D", d)],
+                        &[
+                            ("X", "1"),
+                            ("Y", "0"),
+                            ("A", "0.5"),
+                            ("B", "1"),
+                            ("C", "0"),
+                            ("D", d),
+                        ],
                     ),
                 ],
                 ..Section::default()
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
             out
         };
         let flat = render("0");
@@ -6880,9 +6913,15 @@ mod tests {
             "D=0 draws the endpoint chord: {flat}"
         );
         assert!(!flat.contains("Q "), "no doubled-back quadratic: {flat}");
-        assert!(!flat.contains(" A "), "no solved arc for a zero-width row: {flat}");
+        assert!(
+            !flat.contains(" A "),
+            "no solved arc for a zero-width row: {flat}"
+        );
         let arc = render("0.5");
-        assert!(arc.contains(" A "), "a positive width still solves an arc: {arc}");
+        assert!(
+            arc.contains(" A "),
+            "a positive width still solves an arc: {arc}"
+        );
     }
 
     /// #235: an explicit-zero LineWeight keeps zero — SVG paints
@@ -6904,7 +6943,7 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
         assert!(
             out.contains(r#"stroke-width="0.00000""#),
             "an explicit zero stays zero: {out}"
@@ -6977,7 +7016,7 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
         // ONE even-odd fill element, first among the paths (under the
         // ink), carrying exactly the three fill-eligible subpaths.
         assert_eq!(
@@ -7031,7 +7070,9 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(
+                &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+            );
             out
         };
         let hex = emit("#ED7D31");
@@ -7054,7 +7095,9 @@ mod tests {
         s.sheet.set_cell("TxtWidth", Cell::value("2.0"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert!(
             out.contains(r##"fill="#000000""##),
             "default text is black: {out}"
@@ -7168,7 +7211,9 @@ mod tests {
         s.sheet.text = Some("hello".into());
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert!(
             out.contains(r#"font-family="Arial, 'Liberation Sans', Carlito, sans-serif""#),
             "emitted text element: {out}"
@@ -7213,6 +7258,7 @@ mod tests {
             1.0,
             false,
             Some(&ctx),
+            None,
             &mut out,
         );
         assert!(
@@ -7239,6 +7285,7 @@ mod tests {
             1.0,
             false,
             Some(&ctx),
+            None,
             &mut out,
         );
         assert!(out.contains("tiny text"), "glyph path unchanged: {out}");
@@ -7257,7 +7304,9 @@ mod tests {
         let s = tiny("0.02");
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert!(out.contains("tiny text"), "export never greeks: {out}");
     }
 
@@ -7313,7 +7362,9 @@ mod tests {
         let s = shape_with_pinned_text(txt_angle_deg);
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, sx, sy, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, sx, sy, false, None, None, &mut out,
+        );
         let t = out
             .split("transform=\"")
             .nth(1)?
@@ -7843,11 +7894,7 @@ mod tests {
             .unwrap()
             .set_cell("LineJumpFactorX", Cell::value("2"));
         let svg = render_page(&big, &big.pages[0]).unwrap();
-        let apex = format!(
-            "{:.5} {:.5}",
-            3.0,
-            6.0 - crate::geom::JUMP_RADIUS_IN * 2.0
-        );
+        let apex = format!("{:.5} {:.5}", 3.0, 6.0 - crate::geom::JUMP_RADIUS_IN * 2.0);
         assert!(svg.contains(&apex), "the 2× arc apex: {apex}");
     }
 
@@ -8308,8 +8355,7 @@ mod tests {
         let chain = [&s];
         let tb = resolve_text_block(&doc, &s, &chain, 2.0, 1.0);
         let b = tb.bullet.as_ref().expect("the block is bulleted");
-        let want_left =
-            3.0 + (tb.insets.0 + tb.ind_first) - bullet_advance_in(&tb, b) - PAD;
+        let want_left = 3.0 + (tb.insets.0 + tb.ind_first) - bullet_advance_in(&tb, b) - PAD;
         assert!(
             (x - want_left).abs() < 1e-9,
             "left edge covers the outdented bullet: {x} vs {want_left}"
@@ -8364,12 +8410,7 @@ mod tests {
         // (1, −0.5): (dx, dy) → (dy, −dx). Shape-local → page: the
         // pin line (local y = 0) maps to page y 6.5, x = 3 + local.
         let pivot = (1.0, -0.5);
-        let corners = [
-            (-e, -1.0),
-            (2.0, -1.0),
-            (2.0, 0.0),
-            (-e, 0.0),
-        ];
+        let corners = [(-e, -1.0), (2.0, -1.0), (2.0, 0.0), (-e, 0.0)];
         let mut pts = Vec::new();
         for (cx, cy) in corners {
             let (dx, dy) = (cx - pivot.0, cy - pivot.1);
@@ -8383,12 +8424,24 @@ mod tests {
         // shape-local pivot that contained everything; Greptile
         // round 9).
         let hull_x = (
-            pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min).min(3.0),
-            pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max).max(5.0),
+            pts.iter()
+                .map(|p| p.0)
+                .fold(f64::INFINITY, f64::min)
+                .min(3.0),
+            pts.iter()
+                .map(|p| p.0)
+                .fold(f64::NEG_INFINITY, f64::max)
+                .max(5.0),
         );
         let hull_y = (
-            pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min).min(5.5),
-            pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max).max(6.5),
+            pts.iter()
+                .map(|p| p.1)
+                .fold(f64::INFINITY, f64::min)
+                .min(5.5),
+            pts.iter()
+                .map(|p| p.1)
+                .fold(f64::NEG_INFINITY, f64::max)
+                .max(6.5),
         );
         assert!(
             (bx - (hull_x.0 - PAD)).abs() < 1e-9
@@ -8791,7 +8844,9 @@ mod tests {
         let s = shape_1065();
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         let lines = text_lines(&out);
         assert_eq!(
             lines,
@@ -8815,7 +8870,9 @@ mod tests {
         {
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(
+                &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+            );
             assert!(out.is_empty(), "no text, no text element: {out}");
         }
 
@@ -8826,7 +8883,9 @@ mod tests {
         s.sheet.text = Some("  opened\r\na  b\n   \n\nend ".into());
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert_eq!(
             text_lines(&out),
             vec!["  opened", "a  b", "   ", "", "end"],
@@ -8844,10 +8903,19 @@ mod tests {
     #[test]
     fn paragraph_base_follows_marks_then_first_strong() {
         assert!(!paragraph_base_rtl("hello world"), "latin → LTR");
-        assert!(paragraph_base_rtl("\u{0633}\u{0644}\u{0627}"), "arabic → RTL");
+        assert!(
+            paragraph_base_rtl("\u{0633}\u{0644}\u{0627}"),
+            "arabic → RTL"
+        );
         assert!(paragraph_base_rtl("\u{202B}hello"), "RLE override → RTL");
-        assert!(!paragraph_base_rtl("\u{202A}\u{0633}\u{0644}\u{0627}"), "LRE overrides arabic");
-        assert!(!paragraph_base_rtl("123 (x)"), "numbers+neutrals → LTR default");
+        assert!(
+            !paragraph_base_rtl("\u{202A}\u{0633}\u{0644}\u{0627}"),
+            "LRE overrides arabic"
+        );
+        assert!(
+            !paragraph_base_rtl("123 (x)"),
+            "numbers+neutrals → LTR default"
+        );
         assert!(!paragraph_base_rtl("   "), "all-neutral → LTR default");
     }
 
@@ -8865,20 +8933,15 @@ mod tests {
         let fallback = crate::textmetrics::resolve(Some("Vazirmatn"), false, false);
         let noto = crate::textmetrics::resolve(Some("Noto Sans SC"), false, false);
         let alef = '\u{0627}';
-        assert!(!fallback.covers(alef), "unregistered vazirmatn covers nothing");
+        assert!(
+            !fallback.covers(alef),
+            "unregistered vazirmatn covers nothing"
+        );
         let chain: Vec<&crate::textmetrics::ResolvedFace> = vec![&fallback, &noto];
         let fa = "\u{0633}\u{0644}\u{0627}\u{0645}";
         for para in [format!("\u{202B}{fa}"), format!("\u{202B}abc {fa}")] {
             let lines = wrap_block_text(
-                &latin,
-                &para,
-                0.13889,
-                2.0,
-                &latin,
-                0.13889,
-                &chain,
-                0.0,
-                0.0,
+                &latin, &para, 0.13889, 2.0, &latin, 0.13889, &chain, 0.0, 0.0,
             );
             assert_eq!(lines.len(), 1);
             assert!(lines[0].rtl, "the base is rtl");
@@ -8953,15 +9016,28 @@ mod tests {
             }],
             ..Section::default()
         }));
-        s.sheet.text = Some("\u{0633}\u{0644}\u{0627}\u{0645} \u{0639}\u{0644}\u{06CC}\u{06A9}\u{0645}".into());
+        s.sheet.text = Some(
+            "\u{0633}\u{0644}\u{0627}\u{0645} \u{0639}\u{0644}\u{06CC}\u{06A9}\u{0645}".into(),
+        );
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 3.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 3.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         // The isolate pair wraps the line content.
-        assert!(out.contains('\u{2067}'), "the RTL line carries an RLI: {out}");
-        assert!(out.contains('\u{2069}'), "the RTL line carries a PDI: {out}");
+        assert!(
+            out.contains('\u{2067}'),
+            "the RTL line carries an RLI: {out}"
+        );
+        assert!(
+            out.contains('\u{2069}'),
+            "the RTL line carries a PDI: {out}"
+        );
         // direction=ltr pins the element base for attribute-honoring viewers.
-        assert!(out.contains(r#"direction="ltr""#), "element base pinned: {out}");
+        assert!(
+            out.contains(r#"direction="ltr""#),
+            "element base pinned: {out}"
+        );
         // Start alignment under an RTL base puts the line's visual
         // left edge at (right edge - shaped width), NOT at left_x —
         // the tspan x must sit right of the block's left inset edge.
@@ -8982,7 +9058,9 @@ mod tests {
         }
         let chain = [&s];
         let mut out2 = String::new();
-        emit_text(&doc, &s, &chain, 3.0, 1.0, 1.0, 1.0, false, None, &mut out2);
+        emit_text(
+            &doc, &s, &chain, 3.0, 1.0, 1.0, 1.0, false, None, None, &mut out2,
+        );
         let x2: f64 = out2
             .split(r#"<tspan x=""#)
             .nth(1)
@@ -9037,7 +9115,9 @@ mod tests {
         s.sheet.text = Some(format!("{fa}\r\n{fa}"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 3.0, 1.2, 1.5, 0.6, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 3.0, 1.2, 1.5, 0.6, false, None, None, &mut out,
+        );
         let ys: Vec<f64> = out
             .split(r#" y=""#)
             .skip(1)
@@ -9099,7 +9179,9 @@ mod tests {
         s.sheet.text = Some(format!("one\r\n\u{202B}{fa}"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 3.0, 1.4, 1.5, 0.7, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 3.0, 1.4, 1.5, 0.7, false, None, None, &mut out,
+        );
         let ys: Vec<f64> = out
             .split(r#" y=""#)
             .skip(1)
@@ -9129,7 +9211,9 @@ mod tests {
         s.sheet.text = Some("plain latin".into());
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert!(!out.contains("direction="), "no direction attr: {out}");
         assert!(!out.contains('\u{2067}'), "no isolates: {out}");
     }
@@ -9181,11 +9265,7 @@ mod tests {
             let chain = [&s];
             resolve_text_block(&doc, &s, &chain, 3.0, 1.0).cs_size
         };
-        assert_eq!(
-            size,
-            Some(1.5 * size0),
-            "negative → |v|·Size/100"
-        );
+        assert_eq!(size, Some(1.5 * size0), "negative → |v|·Size/100");
     }
 
     /// #144 review: when a block is too narrow for `"a "` and `" b"`,
@@ -9207,7 +9287,9 @@ mod tests {
         s.sheet.set_cell("RightMargin", Cell::value("0"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert_eq!(
             text_lines(&out),
             vec!["a", " ", "b"],
@@ -9227,7 +9309,9 @@ mod tests {
         s.sheet.set_cell("TxtWidth", Cell::value("0.8"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         let lines = text_lines(&out);
         assert!(lines.len() > 1, "must wrap: {lines:?}");
         // The greedy invariant: every line except the last is full —
@@ -9256,7 +9340,9 @@ mod tests {
         s.sheet.set_cell("TxtWidth", Cell::value("0.5"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         let lines = text_lines(&out);
         assert!(
             lines.len() > 1,
@@ -9281,7 +9367,9 @@ mod tests {
         s.sheet.set_cell("TxtWidth", Cell::value("8.0"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 8.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 8.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert_eq!(
             text_lines(&out),
             vec!["one", "two", "three"],
@@ -9302,9 +9390,7 @@ mod tests {
         let total = 2.0 * 0.16667;
         let ascent = 0.13889 * 0.8;
         tb.valign = 1; // top
-        assert!(
-            (text_first_baseline(&tb, total, tb.font_size) - (0.0555 + ascent)).abs() < 1e-9
-        );
+        assert!((text_first_baseline(&tb, total, tb.font_size) - (0.0555 + ascent)).abs() < 1e-9);
         tb.valign = 2; // middle (default)
         assert!(
             (text_first_baseline(&tb, total, tb.font_size) - ((1.0 - total) / 2.0 + ascent)).abs()
@@ -9312,9 +9398,7 @@ mod tests {
         );
         tb.valign = 3; // bottom
         assert!(
-            (text_first_baseline(&tb, total, tb.font_size)
-                - (1.0 - 0.0555 - total + ascent))
-                .abs()
+            (text_first_baseline(&tb, total, tb.font_size) - (1.0 - 0.0555 - total + ascent)).abs()
                 < 1e-9
         );
         // More wrapped lines raise the first line in the middle band.
@@ -9329,7 +9413,11 @@ mod tests {
         let eff = effective_cs_size(&tb);
         assert_eq!(eff, tb.font_size * 2.0);
         assert_eq!(line_slot_height(&tb, true), tb.line_height * 2.0);
-        assert_eq!(line_slot_height(&tb, false), tb.line_height, "ltr keeps the latin slot");
+        assert_eq!(
+            line_slot_height(&tb, false),
+            tb.line_height,
+            "ltr keeps the latin slot"
+        );
         // A SMALLER complex-script size never shrinks the slot.
         tb.cs_size = Some(tb.font_size * 0.5);
         assert_eq!(line_slot_height(&tb, true), tb.line_height);
@@ -9380,10 +9468,7 @@ mod tests {
         // a gap — the earlier "filled" read was the low-res gallery's);
         // its dot stays filled, like 34's ring stays open.
         let d38 = arrow_spec(38).unwrap();
-        assert!(
-            d38[0].circle.is_some() && d38[0].filled,
-            "38's dot fills"
-        );
+        assert!(d38[0].circle.is_some() && d38[0].filled, "38's dot fills");
         assert!(
             !d38[1].filled && d38[1].circle.is_none(),
             "38's diamond strokes open"
@@ -9618,7 +9703,13 @@ mod tests {
     /// infrastructure faces stay themselves.
     #[test]
     fn non_stock_fonts_resolve_the_calibri_chain() {
-        for name in ["Roboto", "Helvetica", "Futura", "Fira Mono", "Certainly Not Installed"] {
+        for name in [
+            "Roboto",
+            "Helvetica",
+            "Futura",
+            "Fira Mono",
+            "Certainly Not Installed",
+        ] {
             let chain = family_chain(Some(name));
             assert_eq!(
                 chain,
@@ -9640,7 +9731,10 @@ mod tests {
         // The app infrastructure faces stay named (#232 exemption) —
         // the RTL fallback must never regress to Calibri.
         assert_eq!(family_chain(Some("Vazirmatn"))[0], "Vazirmatn");
-        assert_eq!(family_chain(Some("Liberation Serif"))[0], "Liberation Serif");
+        assert_eq!(
+            family_chain(Some("Liberation Serif"))[0],
+            "Liberation Serif"
+        );
         // No Font cell: Visio's default family is Calibri anyway.
         assert_eq!(family_chain(None)[0], "Calibri");
     }
@@ -9661,7 +9755,12 @@ mod tests {
                 name: "Character".into(),
                 rows: vec![Row {
                     cells: font
-                        .map(|f| vec![("Pos".to_string(), Cell::value(pos.to_string())), ("Font".to_string(), Cell::value(f))])
+                        .map(|f| {
+                            vec![
+                                ("Pos".to_string(), Cell::value(pos.to_string())),
+                                ("Font".to_string(), Cell::value(f)),
+                            ]
+                        })
                         .unwrap_or_else(|| vec![("Pos".to_string(), Cell::value(pos.to_string()))]),
                     ..Row::default()
                 }],
@@ -9669,12 +9768,17 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(
+                &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+            );
             out
         };
         // Baseline: no Pos cell → nominal draw, no shift.
         let plain = emit_pos(0, None);
-        assert!(plain.contains(r#"font-size="0.1389""#), "nominal size: {plain}");
+        assert!(
+            plain.contains(r#"font-size="0.1389""#),
+            "nominal size: {plain}"
+        );
         // Superscript on the default (Calibri) family: 2/3 em draw,
         // baseline raised 0.3 em from the nominal baseline.
         let sup = emit_pos(1, None);
@@ -9749,7 +9853,9 @@ mod tests {
             }
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(
+                &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+            );
             out
         };
         // 0 and 255 paint nothing.
@@ -9788,7 +9894,9 @@ mod tests {
         );
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert!(
             out.contains(r##"fill="#ffffff""##),
             "the theme-default label paints its cached white: {out}"
@@ -9806,8 +9914,14 @@ mod tests {
         // starts at 0.829 — the background sits BEHIND the text, not
         // at the left margin.
         let rect = &out[rect_at..text_at];
-        assert!(rect.contains(r#"x="0.8290""#), "rect behind the centered text: {rect}");
-        assert!(rect.contains(r#"y="-0.5833""#), "rect at the first line slot: {rect}");
+        assert!(
+            rect.contains(r#"x="0.8290""#),
+            "rect behind the centered text: {rect}"
+        );
+        assert!(
+            rect.contains(r#"y="-0.5833""#),
+            "rect at the first line slot: {rect}"
+        );
         let rect_w: f64 = rect
             .split(r#"width=""#)
             .nth(1)
@@ -9826,7 +9940,9 @@ mod tests {
         s.sheet.set_cell("TextBkgnd", Cell::value("1"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert!(
             out.contains(r##"fill="#000000""##) && out.contains("<rect"),
             "an all-RTL block paints its text background: {out}"
@@ -9869,13 +9985,18 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(
+                &doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+            );
             out
         };
         // Built-in style 1 draws a PATH dot (never a text glyph), at
         // the line start (bullet offset 0 with zero margins).
         let out = emit_bullet("1", &[]);
-        assert!(out.contains(r#"<path transform="translate(0.0000,"#), "path bullet: {out}");
+        assert!(
+            out.contains(r#"<path transform="translate(0.0000,"#),
+            "path bullet: {out}"
+        );
         // The path is a SIBLING of <text>, not a child (PR #284
         // review: SVG's text content model has no place for shapes —
         // usvg drops a <path> inside <text>, and the bullet would
@@ -9905,23 +10026,26 @@ mod tests {
         // tab stop (0.5) wins; Visio does not add TPAB to IndFirst
         // (that would read 0.35). TextPosAfterBullet 0.6 past the
         // bullet's start wins outright.
-        let early: f64 = emit_bullet(
-            "1",
-            &[("IndFirst", "0.25"), ("TextPosAfterBullet", "0.1")],
-        )
+        let early: f64 = emit_bullet("1", &[("IndFirst", "0.25"), ("TextPosAfterBullet", "0.1")])
             .split(r#"<tspan x=""#)
             .nth(1)
             .and_then(|rest| rest.split('"').next())
             .and_then(|v| v.parse().ok())
             .expect("a tspan x");
-        assert!((early - 0.5).abs() < 1e-3, "0.1 < the stop → tab wins: {early}");
+        assert!(
+            (early - 0.5).abs() < 1e-3,
+            "0.1 < the stop → tab wins: {early}"
+        );
         let late: f64 = emit_bullet("1", &[("TextPosAfterBullet", "0.6")])
             .split(r#"<tspan x=""#)
             .nth(1)
             .and_then(|rest| rest.split('"').next())
             .and_then(|v| v.parse().ok())
             .expect("a tspan x");
-        assert!((late - 0.6).abs() < 1e-3, "0.6 past the stop → wins: {late}");
+        assert!(
+            (late - 0.6).abs() < 1e-3,
+            "0.6 past the stop → wins: {late}"
+        );
         // A custom bullet string stays TEXT in its own face.
         let custom = emit_bullet("–", &[]);
         assert!(
@@ -9952,7 +10076,9 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         // The element anchor is middle; only the bullet tspan pins
         // "start" (the main text tspan's override carries no
         // font-size, so this substring matches the bullet alone).
@@ -9988,7 +10114,9 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(
+                &doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+            );
             out
         };
         for v in ["-1", "1.5", "256", "0.0"] {
@@ -10052,7 +10180,11 @@ mod tests {
             "word+NBSP never hard-splits on the hanging advance: {:?}",
             solo.iter().map(|l| &l.text).collect::<Vec<_>>()
         );
-        assert_eq!(solo[0].text, format!("{word}\u{a0}"), "the NBSP stays content");
+        assert_eq!(
+            solo[0].text,
+            format!("{word}\u{a0}"),
+            "the NBSP stays content"
+        );
         let lines = wrap_block_text(
             &latin,
             &format!("{word}\u{a0} next"),
@@ -10181,6 +10313,200 @@ mod tests {
         assert!(
             (sp * 262_144.0 - (sp * 262_144.0).round()).abs() < 1e-9,
             "the terminal space is a grid step"
+        );
+    }
+
+    // ---- #267 field substitution ----
+
+    /// The corpus's common shape: a master-root Field row referenced
+    /// by a self-closing marker on an instanced shape, with the
+    /// User row the Value formula reads living on the SAME sheet.
+    #[test]
+    fn field_marker_renders_the_substituted_value() {
+        let mut doc = Document::default();
+        let mut m = vsdx::Master {
+            id: 2,
+            name_u: Some("Card".into()),
+            ..vsdx::Master::default()
+        };
+        let mut root = Shape {
+            id: 1,
+            ..Shape::default()
+        };
+        root.sheet.set_cell("Width", Cell::value("2.0"));
+        root.sheet.set_cell("Height", Cell::value("1.0"));
+        root.sheet.children.push(SheetChild::Section(Section {
+            name: "User".into(),
+            rows: vec![Row {
+                n: Some("Label".into()),
+                cells: vec![("Value".to_string(), Cell::value("Hello"))],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        // The Field row, in the corpus's verbatim cell shape.
+        root.sheet.children.push(SheetChild::Section(Section {
+            name: "Field".into(),
+            rows: vec![Row {
+                ix: 0,
+                cells: vec![
+                    (
+                        "Value".to_string(),
+                        Cell {
+                            v: Some(String::new()),
+                            u: Some("STR".into()),
+                            f: Some("User.Label".into()),
+                            ..Cell::default()
+                        },
+                    ),
+                    (
+                        "Format".to_string(),
+                        Cell {
+                            v: Some("esc(0)".into()),
+                            u: Some("STR".into()),
+                            f: Some("FIELDPICTURE(0)".into()),
+                            ..Cell::default()
+                        },
+                    ),
+                ],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        root.sheet.text_raw = Some("<fld IX='0'/>".into());
+        root.sheet.text = Some(String::new());
+        m.shapes.push(root);
+        doc.masters.push(m);
+
+        // An instance of the master carrying the marker's text.
+        let mut inst = Shape {
+            id: 5,
+            master: Some(2),
+            ..Shape::default()
+        };
+        inst.sheet.set_cell("Width", Cell::value("2.0"));
+        inst.sheet.set_cell("Height", Cell::value("1.0"));
+        inst.sheet.text_raw = Some("due <fld IX='0'/>".into());
+        inst.sheet.text = Some("due ".into());
+        let page_sheet = |w: &str, h: &str| {
+            let mut sheet = Sheet::default();
+            sheet.set_cell("PageWidth", Cell::value(w));
+            sheet.set_cell("PageHeight", Cell::value(h));
+            sheet
+        };
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "Page-1".into(),
+            ..vsdx::Page::default()
+        };
+        page.children.push(IndexChild::Sheet {
+            tag: "PageSheet".into(),
+            sheet: page_sheet("8.5", "11.0"),
+        });
+        page.shapes.push(inst);
+        doc.pages.push(page);
+
+        let svg = render_page(&doc, &doc.pages[0]).unwrap();
+        assert!(
+            svg.contains("due Hello"),
+            "the marker substitutes the evaluated field: {svg}"
+        );
+    }
+
+    /// Unresolvable fields fall back marker content → cached V →
+    /// empty, never erroring the render.
+    #[test]
+    fn field_marker_falls_back_to_the_cached_display() {
+        let doc = Document::default();
+        let mut s = Shape::default();
+        s.sheet.set_cell("Width", Cell::value("2.0"));
+        s.sheet.set_cell("Height", Cell::value("1.0"));
+        // A Value formula that cannot evaluate (unknown cell), no
+        // cached V: the marker's own content serves.
+        s.sheet.children.push(SheetChild::Section(Section {
+            name: "Field".into(),
+            rows: vec![Row {
+                ix: 0,
+                cells: vec![(
+                    "Value".to_string(),
+                    Cell {
+                        u: Some("STR".into()),
+                        f: Some("User.Missing".into()),
+                        ..Cell::default()
+                    },
+                )],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        s.sheet.text_raw = Some("value: <fld IX='0'>4/17</fld>".into());
+        s.sheet.text = Some("value: 4/17".into());
+        let chain = [&s];
+        let mut out = String::new();
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
+        assert!(
+            out.contains("value: 4/17"),
+            "unresolvable field serves its cached display: {out}"
+        );
+    }
+
+    /// Page facts thread through the walk: PAGENUMBER()/PAGENAME()
+    /// evaluate live.
+    #[test]
+    fn field_page_number_renders_live() {
+        let mut doc = Document::default();
+        let mut s = Shape {
+            id: 1,
+            ..Shape::default()
+        };
+        s.sheet.set_cell("Width", Cell::value("2.0"));
+        s.sheet.set_cell("Height", Cell::value("1.0"));
+        s.sheet.children.push(SheetChild::Section(Section {
+            name: "Field".into(),
+            rows: vec![Row {
+                ix: 0,
+                cells: vec![(
+                    "Value".to_string(),
+                    Cell {
+                        u: Some("STR".into()),
+                        f: Some("PAGENUMBER()".into()),
+                        ..Cell::default()
+                    },
+                )],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        s.sheet.text_raw = Some("<fld IX='0'/>".into());
+        s.sheet.text = Some(String::new());
+        let mut sheet = Sheet::default();
+        sheet.set_cell("PageWidth", Cell::value("8.5"));
+        sheet.set_cell("PageHeight", Cell::value("11.0"));
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "Flowchart".into(),
+            ..vsdx::Page::default()
+        };
+        page.children.push(IndexChild::Sheet {
+            tag: "PageSheet".into(),
+            sheet,
+        });
+        page.shapes.push(s);
+        doc.pages.push(page);
+        // A second page so the first is page 1 of 2 — PAGENUMBER is
+        // the 1-based position.
+        doc.pages.push(vsdx::Page {
+            id: 1,
+            name: "Page-2".into(),
+            ..vsdx::Page::default()
+        });
+
+        let svg = render_page(&doc, &doc.pages[0]).unwrap();
+        assert!(
+            svg.contains(">1<"),
+            "PAGENUMBER renders the 1-based position: {svg}"
         );
     }
 }

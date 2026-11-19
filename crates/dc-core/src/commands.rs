@@ -325,6 +325,104 @@ impl SetCell {
     }
 }
 
+/// The touched entries for every field-bearing shape whose Value
+/// formula references the edited row — own Field rows or the
+/// instanced master's. A `Sheet.N!User.X` ref matches from ANY shape;
+/// a BARE `User.X` ref means the shape's own row, so it only matches
+/// the edited shape itself (Visio's bare-name scoping).
+fn field_dependents(
+    doc: &Document,
+    page_id: i64,
+    edited: i64,
+    refs: &str,
+) -> Vec<crate::TouchList> {
+    let Some(page) = doc.pages.iter().find(|p| p.id == page_id) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    // `root` rolls nested field-bearers up to their top-level
+    // ancestor — the TouchList contract's rendering unit.
+    let qualified = format!("Sheet.{edited}!{refs}");
+    #[allow(clippy::too_many_arguments)] // the walk's context, one flat set
+    fn walk(
+        doc: &Document,
+        shapes: &[vsdx::model::Shape],
+        page_id: i64,
+        refs: &str,
+        qualified: &str,
+        edited: i64,
+        root: Option<i64>,
+        out: &mut Vec<crate::TouchList>,
+    ) {
+        for s in shapes {
+            let root = root.or(Some(s.id));
+            if s.sheet
+                .text_raw
+                .as_deref()
+                .is_some_and(|r| r.contains("<fld"))
+            {
+                let mut formulas = String::new();
+                for sec in s.sheet.sections_named("Field") {
+                    for row in &sec.rows {
+                        if let Some(c) = row.cell("Value") {
+                            if let Some(f) = &c.f {
+                                formulas.push_str(f);
+                                formulas.push('\n');
+                            }
+                        }
+                    }
+                }
+                if let Some(src) = doc.instance_source(s, &[]) {
+                    for sec in src.sheet.sections_named("Field") {
+                        for row in &sec.rows {
+                            if let Some(c) = row.cell("Value") {
+                                if let Some(f) = &c.f {
+                                    formulas.push_str(f);
+                                    formulas.push('\n');
+                                }
+                            }
+                        }
+                    }
+                }
+                let hit =
+                    formulas.contains(qualified) || (s.id == edited && formulas.contains(refs));
+                if hit {
+                    out.push(crate::TouchList {
+                        pages: vec![],
+                        shapes: vec![crate::Touched {
+                            page: page_id,
+                            shape: root.unwrap_or(s.id),
+                            touch: crate::Touch::Ink,
+                            sub: None,
+                        }],
+                    });
+                }
+            }
+            walk(
+                doc,
+                &s.sub_shapes,
+                page_id,
+                refs,
+                qualified,
+                edited,
+                root,
+                out,
+            );
+        }
+    }
+    walk(
+        doc,
+        &page.shapes,
+        page_id,
+        refs,
+        &qualified,
+        edited,
+        None,
+        &mut out,
+    );
+    out
+}
+
 /// #219: the edited shape's own id when it is a nested sub-shape —
 /// the canvas layer store's damage-region key (`Touched::sub`). A
 /// top-level edit renders its whole (single-shape) layer either way,
@@ -651,7 +749,7 @@ impl crate::Command for SetRowCell {
     fn touched(&self, doc: &Document) -> crate::TouchList {
         match &self.scope {
             Scope::Shape { page, shape } => {
-                match crate::scope::top_level_ancestor(doc, *page, *shape) {
+                let mut list = match crate::scope::top_level_ancestor(doc, *page, *shape) {
                     Some(root) => crate::TouchList {
                         pages: vec![],
                         shapes: vec![crate::Touched {
@@ -662,7 +760,27 @@ impl crate::Command for SetRowCell {
                         }],
                     },
                     None => crate::TouchList::page(*page),
+                };
+                // #267 live re-evaluation: a User/Prop row edit feeds
+                // field formulas — every field-bearing shape on the
+                // page whose (own or master) Field rows reference the
+                // edited row re-renders. A substring walk over the
+                // page's shapes; the corpus's `Sheet.5!Prop.*` refs
+                // make a full dependency graph unnecessary (issue
+                // ruling).
+                if matches!(self.section.as_str(), "User" | "Prop") {
+                    let row_name = match &self.row {
+                        RowSel::Named(n) => Some(n.clone()),
+                        RowSel::Ix(_) => None,
+                    };
+                    if let Some(name) = row_name {
+                        let refs = format!("{}.{}", self.section, name);
+                        for t in field_dependents(doc, *page, *shape, &refs) {
+                            list.merge(t);
+                        }
+                    }
                 }
+                list
             }
             Scope::PageSheet { page } => crate::TouchList::page(*page),
             _ => crate::TouchList::all_pages(doc),
@@ -887,6 +1005,269 @@ impl crate::Command for SetText {
         s.text_raw = raw;
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Fields (#267)
+// ---------------------------------------------------------------------------
+
+/// Where an inserted field's `<fld/>` marker lands in the raw text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FieldInsert {
+    /// Append after the existing raw content (the no-editor flow:
+    /// existing markers and formatting survive verbatim).
+    End,
+    /// Insert at this byte offset of the raw text.
+    RawOffset(usize),
+    /// Replace the plain-text span `[offset, offset+len)` — the
+    /// field's display value the editor previewed at the caret —
+    /// with the marker (the text-editor caret flow; the plain
+    /// projection is unchanged, so a second insertion's offsets
+    /// stay valid). Offsets are plain CHARACTERS, mapped onto the
+    /// raw through [`vsdx::text::plain_to_raw_offset`].
+    ReplacePlain { offset: usize, len: usize },
+}
+
+/// Insert a Field row and its `<fld IX='n'/>` marker in ONE undo step
+/// (GitHub #267): the row carries the corpus's verbatim cell shape —
+/// `Value` (V=""/U=STR/F=formula), `Format` (picture V/U=STR +
+/// FIELDPICTURE F), `Type`, and the five default cells
+/// UICat/UICod/UIFmt/Calendar/ObjectKind (`V='0' F='No Formula'`) —
+/// so the write is the shape a Visio-authored row arrives in. The
+/// marker is self-closing (no cached display: our renderer
+/// substitutes live, and Visio re-evaluates on open).
+pub struct InsertField {
+    pub scope: Scope,
+    /// The Value formula (`User.Label`, `PAGENUMBER()`, …).
+    pub value_f: String,
+    /// The Format formula; `None` defaults to `FIELDPICTURE(0)`.
+    pub format_f: Option<String>,
+    /// Where the marker goes.
+    pub insert: FieldInsert,
+    /// The display string to cache as the marker's content (the
+    /// corpus's value-carrying form: the plain projection and the
+    /// measurement bridge keep seeing the value; our renderer
+    /// substitutes live anyway). `None` writes the self-closing form.
+    pub display: Option<String>,
+    /// Pre-state: the whole old Field section (when one existed), and
+    /// the old (text, text_raw) pair.
+    old: Option<(Option<vsdx::model::Section>, Option<String>, Option<String>)>,
+}
+
+impl InsertField {
+    pub fn new(scope: Scope, value_f: impl Into<String>, insert: FieldInsert) -> InsertField {
+        InsertField {
+            scope,
+            value_f: value_f.into(),
+            format_f: None,
+            insert,
+            display: None,
+            old: None,
+        }
+    }
+
+    /// Override the Format formula (picture beyond the general one).
+    pub fn with_format(mut self, f: impl Into<String>) -> InsertField {
+        self.format_f = Some(f.into());
+        self
+    }
+
+    /// Cache a display string as the marker's content.
+    pub fn with_display(mut self, display: impl Into<String>) -> InsertField {
+        self.display = Some(display.into());
+        self
+    }
+}
+
+impl crate::Command for InsertField {
+    fn touched(&self, doc: &Document) -> crate::TouchList {
+        match &self.scope {
+            Scope::Shape { page, shape } => {
+                match crate::scope::top_level_ancestor(doc, *page, *shape) {
+                    Some(root) => crate::TouchList {
+                        pages: vec![],
+                        shapes: vec![crate::Touched {
+                            page: *page,
+                            shape: root,
+                            touch: crate::Touch::Ink,
+                            sub: sub_shape(root, *shape),
+                        }],
+                    },
+                    None => crate::TouchList::page(*page),
+                }
+            }
+            _ => crate::TouchList::all_pages(doc),
+        }
+    }
+
+    fn label(&self) -> String {
+        format!("insert field {} into {}", self.value_f, self.scope)
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<()> {
+        let (value_f, format_f) = (self.value_f.clone(), self.format_f.clone());
+        let self_display = self.display.clone();
+        let insert = self.insert;
+        let scope = self.scope.clone();
+        let old_section = {
+            let s = sheet_mut(doc, &scope)?;
+            s.section("Field", 0).cloned()
+        };
+        let s = sheet_mut(doc, &scope)?;
+        self.old = Some((old_section, s.text.clone(), s.text_raw.clone()));
+
+        // The Field section: reuse Field:0, else create it after the
+        // last existing section (the corpus keeps Field among the
+        // trailing format sections).
+        let has_field = s.children.iter().any(|c| {
+            matches!(c, vsdx::model::SheetChild::Section(sec) if sec.name == "Field" && sec.ix == 0)
+        });
+        if !has_field {
+            let at = s
+                .children
+                .iter()
+                .rposition(|c| matches!(c, vsdx::model::SheetChild::Section(_)))
+                .map_or_else(
+                    || {
+                        s.children
+                            .iter()
+                            .rposition(|c| matches!(c, vsdx::model::SheetChild::Cell(_, _)))
+                            .map_or(0, |i| i + 1)
+                    },
+                    |i| i + 1,
+                );
+            s.children.insert(
+                at,
+                vsdx::model::SheetChild::Section(vsdx::model::Section {
+                    name: "Field".into(),
+                    ..vsdx::model::Section::default()
+                }),
+            );
+        }
+        let sec = s
+            .children
+            .iter_mut()
+            .find_map(|c| match c {
+                vsdx::model::SheetChild::Section(sec) if sec.name == "Field" && sec.ix == 0 => {
+                    Some(sec)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let ix = sec.rows.iter().map(|r| r.ix).max().unwrap_or(-1) + 1;
+        let str_cell = |v: &str, f: &str| Cell {
+            v: Some(v.to_string()),
+            u: Some("STR".into()),
+            f: Some(f.to_string()),
+            ..Cell::default()
+        };
+        let format_f = format_f.unwrap_or_else(|| "FIELDPICTURE(0)".to_string());
+        let format_v = evaluate_picture(&format_f);
+        sec.rows.push(Row {
+            ix,
+            cells: vec![
+                ("Value".to_string(), str_cell("", &value_f)),
+                ("Format".to_string(), str_cell(&format_v, &format_f)),
+                ("Type".to_string(), Cell::value("0")),
+                ("UICat".to_string(), no_formula_cell()),
+                ("UICod".to_string(), no_formula_cell()),
+                ("UIFmt".to_string(), no_formula_cell()),
+                ("Calendar".to_string(), no_formula_cell()),
+                ("ObjectKind".to_string(), no_formula_cell()),
+            ],
+            ..Row::default()
+        });
+
+        // The marker into the raw text; the plain text recomputes from
+        // the pieces (a self-closing marker contributes nothing, a
+        // cached display its own text).
+        let marker = match &self_display {
+            Some(d) => format!(
+                "<fld IX='{ix}'>{}</fld>",
+                d.replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+            ),
+            None => format!("<fld IX='{ix}'/>"),
+        };
+        let raw = s.text_raw.clone().unwrap_or_default();
+        let (head, tail) = match insert {
+            FieldInsert::End => (raw.len(), raw.len()),
+            FieldInsert::RawOffset(at) => (at.min(raw.len()), at.min(raw.len())),
+            FieldInsert::ReplacePlain { offset, len } => (
+                vsdx::text::plain_to_raw_offset(&raw, offset),
+                vsdx::text::plain_to_raw_offset(&raw, offset + len),
+            ),
+        };
+        let mut new_raw = String::with_capacity(raw.len() + marker.len());
+        new_raw.push_str(&raw[..head]);
+        new_raw.push_str(&marker);
+        new_raw.push_str(&raw[tail..]);
+        s.text_raw = Some(new_raw.clone());
+        s.text = Some(
+            vsdx::text::text_pieces(&new_raw)
+                .iter()
+                .map(|p| p.plain())
+                .collect::<String>(),
+        );
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<()> {
+        let Some((old_section, text, raw)) = self.old.take() else {
+            return Ok(());
+        };
+        let s = sheet_mut(doc, &self.scope)?;
+        // Restore the Field section: the pre-state clone when one
+        // existed, else remove the section this command created.
+        match old_section {
+            Some(sec) => {
+                let pos = s.children.iter().position(|c| {
+                    matches!(c, vsdx::model::SheetChild::Section(x) if x.name == "Field" && x.ix == 0)
+                });
+                if let Some(i) = pos {
+                    if let vsdx::model::SheetChild::Section(slot) = &mut s.children[i] {
+                        *slot = sec;
+                    }
+                } else {
+                    s.children.push(vsdx::model::SheetChild::Section(sec));
+                }
+            }
+            None => {
+                s.children.retain(|c| {
+                    !matches!(c, vsdx::model::SheetChild::Section(x) if x.name == "Field" && x.ix == 0)
+                });
+            }
+        }
+        s.text = text;
+        s.text_raw = raw;
+        Ok(())
+    }
+}
+
+/// A `V='0' F='No Formula'` default cell.
+fn no_formula_cell() -> Cell {
+    Cell {
+        v: Some("0".into()),
+        f: Some("No Formula".into()),
+        ..Cell::default()
+    }
+}
+
+/// The cached picture string for a Format formula: a literal
+/// `FIELDPICTURE(n)` maps through the corpus table; anything else
+/// (an IF over unit systems, say) caches the general picture.
+fn evaluate_picture(f: &str) -> String {
+    let t = f.trim();
+    if let Some(rest) = t.strip_prefix("FIELDPICTURE(") {
+        if let Some(n) = rest
+            .strip_suffix(')')
+            .and_then(|n| n.trim().parse::<i64>().ok())
+        {
+            return vsdx::fieldfmt::field_picture(n);
+        }
+    }
+    "esc(0)".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -1290,7 +1671,11 @@ impl crate::Command for AddMasterInstance {
             // Width always spans the drop (Begin/End own it); the
             // tracks() test only decides Height's value.
             let width_v = w;
-            let height_v = if tracks(&hf) { h } else { master_v("Height").unwrap_or(h) };
+            let height_v = if tracks(&hf) {
+                h
+            } else {
+                master_v("Height").unwrap_or(h)
+            };
             // LocPinX derives from the width the instance will RESOLVE
             // to after this pose (#218 review): a master that owns
             // Width as a literal INHERITS it (the Box callout's zero

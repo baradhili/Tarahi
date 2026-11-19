@@ -375,7 +375,10 @@ fn section_rank(name: &str) -> i32 {
         "Hyperlinks" => 300,
         "Actions" => 310,
         "Control" => 320,
-        "Fields" => 330,
+        // The corpus section name is `Field` SINGULAR (`N='Field'`) —
+        // the grep gotcha #267 calls out; the plural spelling never
+        // occurs in real packages.
+        "Field" => 330,
         "Scratch" => 340,
         name if name.starts_with("Geometry") => 400,
         _ => 1000,
@@ -397,7 +400,7 @@ fn section_display_name(n: &str, ix: i64) -> String {
         "LineGradient" => strs.msg_ss_section_line_gradient_stops(),
         "Prop" => strs.msg_ss_section_shape_data(),
         "SmartTags" => strs.msg_ss_section_smart_tags(),
-        "Fields" => strs.msg_ss_section_text_fields(),
+        "Field" => strs.msg_ss_section_text_fields(),
         "Control" => strs.msg_ss_section_control_points(),
         "Geometry" => strs.msg_ss_section_geometry_n(ix + 1),
         "RulerGrid" => strs.msg_ss_section_ruler_grid(),
@@ -1801,14 +1804,15 @@ mod tests {
         // The localized title carries fluent's zero-width bidi
         // isolation around the interpolated number (item 3e) — strip
         // the invisible marks for the comparison.
-        let strip_isolates =
-            |s: &str| s.chars().filter(|c| !matches!(c, '\u{2066}'..='\u{2069}')).collect::<String>();
+        let strip_isolates = |s: &str| {
+            s.chars()
+                .filter(|c| !matches!(c, '\u{2066}'..='\u{2069}'))
+                .collect::<String>()
+        };
         let g2 = views
             .iter()
             .find_map(|v| match v {
-                SectionView::Rows { title, rows, .. }
-                    if strip_isolates(title) == "Geometry 2" =>
-                {
+                SectionView::Rows { title, rows, .. } if strip_isolates(title) == "Geometry 2" => {
                     Some(rows.clone())
                 }
                 _ => None,

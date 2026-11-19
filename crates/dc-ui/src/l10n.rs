@@ -1829,6 +1829,307 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "enter-a-field-formula-first",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-cat-custom-formula",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-cat-date-time",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-cat-document-info",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-cat-geometry",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-cat-object-info",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-cat-page-info",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-cat-shape-data",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-category",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-creation-date",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-creator",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-description",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-fmt-feet-inches",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-fmt-full-date",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-fmt-general",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-fmt-long-date",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-fmt-month-year",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-fmt-number-0",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-fmt-number-0-00",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-fmt-number-0-00-unit",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-fmt-number-0-unit",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-fmt-percent",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-fmt-short-date",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-fmt-text",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-fmt-uppercase-text",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-format",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-formula",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-height",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-inserted-no-preview",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-keywords",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-last-edit-date",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-last-save-date",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-master-name",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-no-entries",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-page-name",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-page-number",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-preview",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-subject",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-title",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "field-width",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "insert-a-text-field",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "insert-field",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "select-a-shape-to-insert-a-field",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "even-horizontal-spacing-3-shapes",
         attribute: None,
         vars: &[],
@@ -1958,13 +2259,6 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         message: "extracting-built-in-stencils-to",
         attribute: None,
         vars: &["done", "total"],
-        bool_vars: &[],
-        elements: &[],
-    },
-    MessageContract {
-        message: "fields-planned",
-        attribute: None,
-        vars: &[],
         bool_vars: &[],
         elements: &[],
     },
@@ -6369,11 +6663,11 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..44998,
-            Self::En => 44998..88635,
-            Self::Es => 88635..136686,
-            Self::Fa => 136686..193977,
-            Self::ZhHans => 193977..237331,
+            Self::De => 0..46612,
+            Self::En => 46612..91722,
+            Self::Es => 91722..141431,
+            Self::Fa => 141431..200532,
+            Self::ZhHans => 200532..245364,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -7448,6 +7742,137 @@ impl L10nLanguage {
             .msg("endpoint-moved-but-name-is-formu", Some(_args))
             .unwrap()
     }
+    pub fn msg_enter_a_field_formula_first(&self) -> String {
+        self.0.msg("enter-a-field-formula-first", None).unwrap()
+    }
+    pub fn msg_field_cat_custom_formula(&self) -> String {
+        self.0.msg("field-cat-custom-formula", None).unwrap()
+    }
+    pub fn msg_field_cat_date_time(&self) -> String {
+        self.0.msg("field-cat-date-time", None).unwrap()
+    }
+    pub fn msg_field_cat_document_info(&self) -> String {
+        self.0.msg("field-cat-document-info", None).unwrap()
+    }
+    pub fn msg_field_cat_geometry(&self) -> String {
+        self.0.msg("field-cat-geometry", None).unwrap()
+    }
+    pub fn msg_field_cat_object_info(&self) -> String {
+        self.0.msg("field-cat-object-info", None).unwrap()
+    }
+    pub fn msg_field_cat_page_info(&self) -> String {
+        self.0.msg("field-cat-page-info", None).unwrap()
+    }
+    pub fn msg_field_cat_shape_data(&self) -> String {
+        self.0.msg("field-cat-shape-data", None).unwrap()
+    }
+    pub fn msg_field_category(&self) -> String {
+        self.0.msg("field-category", None).unwrap()
+    }
+    pub fn msg_field_creation_date(&self) -> String {
+        self.0.msg("field-creation-date", None).unwrap()
+    }
+    pub fn msg_field_creator(&self) -> String {
+        self.0.msg("field-creator", None).unwrap()
+    }
+    pub fn msg_field_description(&self) -> String {
+        self.0.msg("field-description", None).unwrap()
+    }
+    pub fn msg_field_fmt_feet_inches(&self) -> String {
+        self.0.msg("field-fmt-feet-inches", None).unwrap()
+    }
+    pub fn msg_field_fmt_full_date(&self) -> String {
+        self.0.msg("field-fmt-full-date", None).unwrap()
+    }
+    pub fn msg_field_fmt_general(&self) -> String {
+        self.0.msg("field-fmt-general", None).unwrap()
+    }
+    pub fn msg_field_fmt_long_date(&self) -> String {
+        self.0.msg("field-fmt-long-date", None).unwrap()
+    }
+    pub fn msg_field_fmt_month_year(&self) -> String {
+        self.0.msg("field-fmt-month-year", None).unwrap()
+    }
+    pub fn msg_field_fmt_number_0(&self) -> String {
+        self.0.msg("field-fmt-number-0", None).unwrap()
+    }
+    pub fn msg_field_fmt_number_0_00(&self) -> String {
+        self.0.msg("field-fmt-number-0-00", None).unwrap()
+    }
+    pub fn msg_field_fmt_number_0_00_unit(&self) -> String {
+        self.0.msg("field-fmt-number-0-00-unit", None).unwrap()
+    }
+    pub fn msg_field_fmt_number_0_unit(&self) -> String {
+        self.0.msg("field-fmt-number-0-unit", None).unwrap()
+    }
+    pub fn msg_field_fmt_percent(&self) -> String {
+        self.0.msg("field-fmt-percent", None).unwrap()
+    }
+    pub fn msg_field_fmt_short_date(&self) -> String {
+        self.0.msg("field-fmt-short-date", None).unwrap()
+    }
+    pub fn msg_field_fmt_text(&self) -> String {
+        self.0.msg("field-fmt-text", None).unwrap()
+    }
+    pub fn msg_field_fmt_uppercase_text(&self) -> String {
+        self.0.msg("field-fmt-uppercase-text", None).unwrap()
+    }
+    pub fn msg_field_format(&self) -> String {
+        self.0.msg("field-format", None).unwrap()
+    }
+    pub fn msg_field_formula(&self) -> String {
+        self.0.msg("field-formula", None).unwrap()
+    }
+    pub fn msg_field_height(&self) -> String {
+        self.0.msg("field-height", None).unwrap()
+    }
+    pub fn msg_field_inserted_no_preview(&self) -> String {
+        self.0.msg("field-inserted-no-preview", None).unwrap()
+    }
+    pub fn msg_field_keywords(&self) -> String {
+        self.0.msg("field-keywords", None).unwrap()
+    }
+    pub fn msg_field_last_edit_date(&self) -> String {
+        self.0.msg("field-last-edit-date", None).unwrap()
+    }
+    pub fn msg_field_last_save_date(&self) -> String {
+        self.0.msg("field-last-save-date", None).unwrap()
+    }
+    pub fn msg_field_master_name(&self) -> String {
+        self.0.msg("field-master-name", None).unwrap()
+    }
+    pub fn msg_field_no_entries(&self) -> String {
+        self.0.msg("field-no-entries", None).unwrap()
+    }
+    pub fn msg_field_page_name(&self) -> String {
+        self.0.msg("field-page-name", None).unwrap()
+    }
+    pub fn msg_field_page_number(&self) -> String {
+        self.0.msg("field-page-number", None).unwrap()
+    }
+    pub fn msg_field_preview(&self) -> String {
+        self.0.msg("field-preview", None).unwrap()
+    }
+    pub fn msg_field_subject(&self) -> String {
+        self.0.msg("field-subject", None).unwrap()
+    }
+    pub fn msg_field_title(&self) -> String {
+        self.0.msg("field-title", None).unwrap()
+    }
+    pub fn msg_field_width(&self) -> String {
+        self.0.msg("field-width", None).unwrap()
+    }
+    pub fn msg_insert_a_text_field(&self) -> String {
+        self.0.msg("insert-a-text-field", None).unwrap()
+    }
+    pub fn msg_insert_field(&self) -> String {
+        self.0.msg("insert-field", None).unwrap()
+    }
+    pub fn msg_select_a_shape_to_insert_a_field(&self) -> String {
+        self.0
+            .msg("select-a-shape-to-insert-a-field", None)
+            .unwrap()
+    }
     pub fn msg_even_horizontal_spacing_3_shapes(&self) -> String {
         self.0
             .msg("even-horizontal-spacing-3-shapes", None)
@@ -7529,9 +7954,6 @@ impl L10nLanguage {
         self.0
             .msg("extracting-built-in-stencils-to", Some(_args))
             .unwrap()
-    }
-    pub fn msg_fields_planned(&self) -> String {
-        self.0.msg("fields-planned", None).unwrap()
     }
     pub fn msg_file(&self) -> String {
         self.0.msg("file", None).unwrap()

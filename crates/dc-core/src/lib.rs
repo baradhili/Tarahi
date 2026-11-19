@@ -22,9 +22,9 @@ pub mod scope;
 pub use commands::{
     container_membership_cleanup, effective_formula, find_imported, next_master_id,
     place_master_from_stencil, scale_group_members, AddConnect, AddLayer, AddMasterInstance,
-    AddPage, AddShape, DuplicateShape, ImportMaster, Macro, MovePage, RemoveConnect, RemoveLayer,
-    RemovePage, RemoveShape, RenameLayer, RenamePage, ReorderShape, SetCell, SetCellCache,
-    SetGluedCell, SetRowCell, SetText,
+    AddPage, AddShape, DuplicateShape, FieldInsert, ImportMaster, InsertField, Macro, MovePage,
+    RemoveConnect, RemoveLayer, RemovePage, RemoveShape, RenameLayer, RenamePage, ReorderShape,
+    SetCell, SetCellCache, SetGluedCell, SetRowCell, SetText,
 };
 pub use connects::{Connect, Connects, ConnectsOwner};
 pub use scope::{find_shape_mut, shape_chain, Scope};
@@ -283,7 +283,6 @@ impl Editor {
     pub fn redo(&mut self) -> Result<Option<(String, TouchList)>> {
         self.history.redo(&mut self.doc)
     }
-
 
     /// Save the document to `path` (lossless write path). The write is
     /// crash-safe: craft-atomic stages the package in the destination

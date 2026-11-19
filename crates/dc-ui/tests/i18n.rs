@@ -50,7 +50,9 @@ fn catalog_ids(lang: &str) -> BTreeSet<String> {
         if let Some(eq) = line.find('=') {
             let id = line[..eq].trim();
             if !id.is_empty()
-                && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
                 && id.chars().next().is_some_and(|c| c.is_ascii_lowercase())
             {
                 ids.insert(id.to_string());
@@ -138,9 +140,7 @@ fn brace_depths(text: &str) -> Vec<usize> {
                         // Char literal ('x', '\n', '{') vs lifetime
                         // ('a) — a lifetime never starts a literal.
                         let is_char = matches!(next, Some('\\'))
-                            || next.is_some_and(|n2| {
-                                chars.get(i + 2) == Some(&'\'') && n2 != '\''
-                            });
+                            || next.is_some_and(|n2| chars.get(i + 2) == Some(&'\'') && n2 != '\'');
                         if is_char {
                             mode = Mode::Char;
                         }
@@ -171,9 +171,7 @@ fn brace_depths(text: &str) -> Vec<usize> {
             Mode::Str | Mode::Char => {
                 if c == '\\' {
                     i += 1; // escaped char (incl. \n line continues)
-                } else if (c == '"' && mode == Mode::Str)
-                    || (c == '\'' && mode == Mode::Char)
-                {
+                } else if (c == '"' && mode == Mode::Str) || (c == '\'' && mode == Mode::Char) {
                     mode = Mode::Code;
                 }
             }
@@ -258,7 +256,9 @@ fn litscan_test_module_depth_closes_behind_the_module() {
     }
     assert!(scanned.contains(&"let a = \"kept\";"), "before is scanned");
     assert!(
-        !scanned.iter().any(|l| l.contains("fixture") || l.contains("helper")),
+        !scanned
+            .iter()
+            .any(|l| l.contains("fixture") || l.contains("helper")),
         "the module body is skipped"
     );
     assert!(
@@ -356,7 +356,10 @@ fn no_orphan_messages() {
     // dialog's native names).
     let generator_conventions: BTreeSet<String> =
         ["language-name".to_string()].into_iter().collect();
-    let orphans: Vec<_> = en.difference(&routed).filter(|id| !generator_conventions.contains(*id)).collect();
+    let orphans: Vec<_> = en
+        .difference(&routed)
+        .filter(|id| !generator_conventions.contains(*id))
+        .collect();
     assert!(
         orphans.is_empty(),
         "catalog messages nothing references — delete them or route them: {orphans:?}"
@@ -406,6 +409,9 @@ fn litscan_flags_unrouted_chrome_literals() {
         "My Shapes".to_string(),
         "Width".to_string(),
         "Height".to_string(),
+        // Geometry-section name (#267 added the field-category label
+        // of the same English word).
+        "Geometry".to_string(),
         // Hyperlink-section cell names (#257 added the dialog labels).
         "Address".to_string(),
         "Description".to_string(),
@@ -689,11 +695,10 @@ fn rtl_context_menu_mirrors_and_opens_leftward() {
     // the tab/empty context surface? The shape menu needs a shape:
     // the blank page yields none, so assert on the page-tab menu
     // instead (the mirrored `ctx_item` rows render there too).
-    let tab = harness
-        .get_all_by_label_contains("Page-1")
-        .next()
-        .expect("the page tab (its NAME is document vocabulary, never
-        translated — only the surrounding chrome localizes)");
+    let tab = harness.get_all_by_label_contains("Page-1").next().expect(
+        "the page tab (its NAME is document vocabulary, never
+        translated — only the surrounding chrome localizes)",
+    );
     // The mirrored rows render with the accelerator column at the
     // row's LEFT edge (the golden shows the arrangement).
     tab.click_secondary();
