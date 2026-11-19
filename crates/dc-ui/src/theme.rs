@@ -343,6 +343,19 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
         "vazirmatn-bold".into(),
         egui::FontData::from_static(dc::VAZIRMATN_BOLD).into(),
     );
+    // #282 zh-Hans: Noto Sans SC (OFL) covers the CJK glyphs the
+    // Latin and Arabic faces lack — the Chinese UI falls through to it
+    // last. Same one-drop contract (provenance in
+    // dc/assets/fonts/noto-sc/README.md); egui has no weight axis, so
+    // the bold entry only serves glyphs Regular lacks.
+    fonts.font_data.insert(
+        "noto-sc".into(),
+        egui::FontData::from_static(dc::NOTO_SANS_SC_REGULAR).into(),
+    );
+    fonts.font_data.insert(
+        "noto-sc-bold".into(),
+        egui::FontData::from_static(dc::NOTO_SANS_SC_BOLD).into(),
+    );
     let prop = fonts
         .families
         .get_mut(&egui::FontFamily::Proportional)
@@ -351,8 +364,11 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
     prop.insert(1, "opensans-semibold".into());
     prop.push("vazirmatn".into());
     prop.push("vazirmatn-bold".into());
+    prop.push("noto-sc".into());
+    prop.push("noto-sc-bold".into());
     if let Some(mono) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
         mono.push("vazirmatn".into());
+        mono.push("noto-sc".into());
     }
     ctx.set_fonts(fonts);
     // #257 text-direction coordination: the SAME Vazirmatn drop feeds

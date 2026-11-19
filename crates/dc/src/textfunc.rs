@@ -155,8 +155,19 @@ impl SheetTextMeasure {
         // chain's — the same faces and sizes `emit_text` paints with
         // (shared with `text_width` via `paint_metrics`).
         let (face, cs_face, size_l, size_r) = self.paint_metrics();
-        let cs_fallback =
-            crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic);
+        // The per-cluster fallback CHAIN `emit_text` measures the
+        // runs a paragraph's own face cannot cover (#282 zh-Hans grew
+        // the #257 single Vazirmatn fallback to a chain): Vazirmatn
+        // for the Arabic script, then Noto Sans SC for the Han
+        // glyphs — in the order the raster fontdb registers them,
+        // which is the order usvg's per-cluster fallback picks a
+        // face. Unregistered (the dc unit-test binaries), both
+        // resolve like the Latin default and the runs never split.
+        let fallbacks = [
+            crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic),
+            crate::textmetrics::resolve(Some("Noto Sans SC"), self.tb.bold, self.tb.italic),
+        ];
+        let fb_chain: Vec<&crate::textmetrics::ResolvedFace> = fallbacks.iter().collect();
         let usable = (width - self.tb.insets.0 - self.tb.insets.1).max(0.02);
         // The first-line offset the RENDERER lays out (inches): the
         // bullet's tab stop for a bulleted block, max(IndFirst, 0)
@@ -174,7 +185,7 @@ impl SheetTextMeasure {
             usable,
             &cs_face,
             size_r,
-            &cs_fallback,
+            &fb_chain,
             first_off,
             self.tb.ind_left,
         )
@@ -202,31 +213,40 @@ impl TextMeasure for SheetTextMeasure {
         // Each paragraph measures on the face and size it PAINTS
         // with (Greptile PR #284 round 6): LTR on the Latin family,
         // RTL on the complex-script chain — the same per-direction
-        // pair `lines_at` wraps with below. An RTL paragraph also
-        // RUN-SPLITS like the paint (local CodeRabbit round 3): the
-        // renderer measures and rasterizes runs the CS chain can't
-        // cover through the per-cluster fallback (the vendored
-        // Vazirmatn), so TEXTWIDTH composes the same runs and takes
-        // its terminal-run space from the final run's face instead of
-        // missing-glyph estimates.
+        // pair `lines_at` wraps with below. BOTH directions
+        // RUN-SPLIT like the paint (RTL since local CodeRabbit round
+        // 3; LTR too since #282's CJK wave): the renderer measures
+        // and rasterizes runs the paragraph's own chain can't cover
+        // through the per-cluster fallback (the vendored Vazirmatn /
+        // Noto Sans SC), so TEXTWIDTH composes the same runs and
+        // takes its terminal-run space from the final run's face
+        // instead of missing-glyph estimates.
         let text = text.trim_end_matches(TRAILING_TRIM);
         if text.is_empty() {
             return Some(0.0);
         }
         let (face, cs_face, size_l, size_r) = self.paint_metrics();
-        let cs_fallback =
-            crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic);
+        // The same fallback chain `lines_at`/`emit_text` measure with
+        // (see there) — BOTH directions run-split since #282: an LTR
+        // paragraph carrying Han glyphs composes those runs on Noto
+        // Sans SC, the face the raster paints them with.
+        let fallbacks = [
+            crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic),
+            crate::textmetrics::resolve(Some("Noto Sans SC"), self.tb.bold, self.tb.italic),
+        ];
+        let fb_chain: Vec<&crate::textmetrics::ResolvedFace> = fallbacks.iter().collect();
         let mut best = 0.0;
         for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
             let w = if crate::svg::paragraph_base_rtl(para) {
                 let q = crate::textmetrics::quantize18(size_r);
-                cs_face.composed_width_in_runs(&cs_fallback, para, size_r)
+                cs_face.composed_width_in_runs(&fb_chain, para, size_r)
                     + cs_face
-                        .final_run_face(&cs_fallback, para)
+                        .final_run_face(&fb_chain, para)
                         .space_advance_in(q)
             } else {
                 let q = crate::textmetrics::quantize18(size_l);
-                face.composed_width_in(para, size_l) + face.space_advance_in(q)
+                face.composed_width_in_runs(&fb_chain, para, size_l)
+                    + face.final_run_face(&fb_chain, para).space_advance_in(q)
             };
             if w > best {
                 best = w;

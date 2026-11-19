@@ -195,10 +195,32 @@ fn detect_from_envs(lookup: impl Fn(&str) -> Option<String>) -> L10n {
 }
 
 /// `de_DE.UTF-8` → German; unknown or `C` locales → `None`.
+/// `zh_CN`/`zh_SG`/bare `zh` → the `zh-Hans` catalog (#282): CLDR
+/// reads bare `zh` as Simplified, and the POSIX territory carries the
+/// script split until the territory string itself does (`zh_Hans_*`
+/// also lands here). `zh_TW`/`zh_HK`/`zh_Hant*` stay `None` — no
+/// Traditional catalog ships, and guessing Simplified for them would
+/// be wrong, not fallback-worthy.
 fn parse_locale(value: &str) -> Option<L10n> {
     let code = value.split('.').next().unwrap_or("");
-    let code = code.split('_').next().unwrap_or("");
-    L10n::from_str(code).ok()
+    let code = code.split('@').next().unwrap_or("");
+    let code = code.to_ascii_lowercase();
+    // Bare `zh` reads as Simplified (CLDR default).
+    if code == "zh" {
+        return L10n::from_str("zh-Hans").ok();
+    }
+    if let Some(rest) = code.strip_prefix("zh_").or_else(|| code.strip_prefix("zh-")) {
+        // The script subtag decides when present; the POSIX
+        // territories map by convention (CN/SG simplified,
+        // TW/HK/MO traditional).
+        let script_or_terr = rest.split(['_', '-']).next().unwrap_or("");
+        return match script_or_terr {
+            "hans" | "cn" | "sg" | "" => L10n::from_str("zh-Hans").ok(),
+            _ => None, // hant / tw / hk / mo / unknown variants
+        };
+    }
+    let bare = code.split(['_', '-']).next().unwrap_or("");
+    L10n::from_str(bare).ok()
 }
 
 #[cfg(test)]
@@ -293,9 +315,9 @@ mod tests {
         // The boundary strips them and keeps every other character.
         assert_eq!(to_native_surface(&drawing1), "Drawing1");
         // A full title composes clean in EVERY shipped catalog (fa's
-        // whole-chrome isolation is the sharpest case; es joins the
-        // set with #282).
-        for lang in [L10n::En, L10n::De, L10n::Fa, L10n::Es] {
+        // whole-chrome isolation is the sharpest case; es and zh-Hans
+        // join the set with #282).
+        for lang in [L10n::En, L10n::De, L10n::Fa, L10n::Es, L10n::ZhHans] {
             let name = strs_for(lang).msg_drawing_n(1);
             let title = to_native_surface(&format!("{name} - Tarahi"));
             assert!(
@@ -317,6 +339,18 @@ mod tests {
         assert_eq!(parse_locale("en"), Some(L10n::En));
         assert_eq!(parse_locale("C"), None);
         assert_eq!(parse_locale("fr_FR.UTF-8"), None);
+        // #282: Chinese resolves to the Simplified catalog — bare zh
+        // (CLDR default), the simplified territories, and the script
+        // subtag itself; the traditional variants carry no catalog
+        // and must NOT fall back to Simplified.
+        assert_eq!(parse_locale("zh"), Some(L10n::ZhHans));
+        assert_eq!(parse_locale("zh_CN.UTF-8"), Some(L10n::ZhHans));
+        assert_eq!(parse_locale("zh_SG.UTF-8"), Some(L10n::ZhHans));
+        assert_eq!(parse_locale("zh_Hans_CN.UTF-8"), Some(L10n::ZhHans));
+        assert_eq!(parse_locale("zh_CN@pinyin"), Some(L10n::ZhHans));
+        assert_eq!(parse_locale("zh_TW.UTF-8"), None);
+        assert_eq!(parse_locale("zh_HK.UTF-8"), None);
+        assert_eq!(parse_locale("zh_Hant_TW.UTF-8"), None);
     }
 
     // Test seam: persistence against an explicit path (the real

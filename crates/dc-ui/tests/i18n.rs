@@ -19,7 +19,7 @@ static LANG_LOCK: Mutex<()> = Mutex::new(());
 
 /// The shipped catalogs — every one must satisfy every structural
 /// check. A new language is a folder here plus its `language-name`.
-const LOCALES: &[&str] = &["en", "de", "fa", "es"];
+const LOCALES: &[&str] = &["en", "de", "fa", "es", "zh-Hans"];
 
 /// Panic-safe: restores English even when an assertion fails mid-test,
 /// so a leaked German setting can't flip parallel tests in this binary.
@@ -595,6 +595,35 @@ fn language_switch_renders_spanish_shell() {
     // catalog, not hardcoded English.
     harness.get_by_label_contains("Archivo");
     harness.snapshot("i18n_spanish_shell");
+}
+
+/// Same harness, Simplified Chinese catalog (#282's CJK wave): the
+/// Han glyphs render through the vendored Noto Sans SC fallback (the
+/// one drop feeds the egui shell, wrap measurement, and the raster)
+/// while the chrome stays LTR. The golden pins the translated chrome
+/// — tofu boxes or clipped labels fail it.
+#[test]
+fn language_switch_renders_zh_hans_shell() {
+    let _guard = LANG_LOCK.lock().unwrap();
+    let _english = EnglishOnDrop;
+    dc_ui::i18n::pin_english();
+    let mut app = App::with_blank();
+    dc_ui::i18n::set_language_ephemeral(dc_ui::i18n::L10n::ZhHans);
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_ui(move |ui| {
+            dc_ui::theme::install_for(ui.ctx(), egui::ThemePreference::Light);
+            app.draw(ui);
+        });
+    for _ in 0..6 {
+        harness.run(); // let the canvas layer textures settle
+    }
+    // The Chinese catalog's File tab — the chrome must come from the
+    // catalog, not hardcoded English, and the CJK glyphs must come
+    // from the Noto Sans SC shell fallback (not tofu).
+    harness.get_by_label_contains("文件");
+    harness.snapshot("i18n_zh_hans_shell");
 }
 
 /// Same harness, Persian catalog: the Arabic-script glyphs render

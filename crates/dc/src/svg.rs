@@ -2564,13 +2564,25 @@ pub fn paragraph_base_rtl(para: &str) -> bool {
 /// line. `started` distinguishes "no words consumed yet" from "an
 /// empty word consumed" (a pending leading space): a bare
 /// `cur.is_empty()` test cannot tell them apart, which is how the
-/// leading run used to vanish.
-///
-/// #257: `width_in` measures ONE paragraph with the face/size that
+/// leading run used to vanish. Since #282 the "words" are
+/// `textmetrics::wrap_tokens` tokens — the same space-separated
+/// words plus CJK break opportunities (see `wrap_block_text`).
+/// One wrapped line plus its paragraph's base direction (#257
 /// paragraph paints with — an RTL-base paragraph resolves the
 /// complex-script cells (`cs_face`/`cs_size`, the Latin pair when
 /// absent), so the wrap decision and the raster agree by construction
 /// per paragraph, not just per block.
+///
+/// #282 zh-Hans: BOTH directions measure run-by-run through
+/// `fb_chain` — usvg's per-cluster fallback paints a run the primary
+/// face lacks with the first chain face covering it (Vazirmatn for
+/// the Arabic script, Noto Sans SC for Han), so an LTR paragraph
+/// carrying CJK must measure those runs with the same advances or
+/// the wrap and the raster disagree. Latin the primary face covers
+/// never splits (the chain fast path keeps those widths
+/// byte-identical). The wrap itself tokenizes through
+/// `textmetrics::wrap_tokens` — spaces as before, plus break
+/// opportunities between ideographs under the kinsoku rules.
 ///
 /// #231 paragraph indents: a paragraph's FIRST line wraps at
 /// `usable_w − first_off` (the after-bullet tab offset for bulleted
@@ -2579,7 +2591,7 @@ pub fn paragraph_base_rtl(para: &str) -> bool {
 /// trailing no-break space never wraps its word — the overflow checks
 /// measure the line without the terminal NBSP's advance while the
 /// NBSP stays in the line's character-exact content.
-#[allow(clippy::too_many_arguments)] // the pair faces/sizes + the two indent offsets
+#[allow(clippy::too_many_arguments)] // the pair faces/sizes + the chain + the two indent offsets
 pub(crate) fn wrap_block_text(
     face: &crate::textmetrics::ResolvedFace,
     text: &str,
@@ -2587,26 +2599,24 @@ pub(crate) fn wrap_block_text(
     usable_w: f64,
     cs_face: &crate::textmetrics::ResolvedFace,
     cs_size: f64,
-    cs_fallback: &crate::textmetrics::ResolvedFace,
+    fb_chain: &[&crate::textmetrics::ResolvedFace],
     first_off: f64,
     left_off: f64,
 ) -> Vec<WrapLine> {
     let mut lines: Vec<WrapLine> = Vec::new();
     for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
         let rtl = paragraph_base_rtl(para);
-        // An RTL paragraph measures RUN BY RUN with the faces the
-        // raster paints it with (PR #269 review): the resolved CS
-        // face, and the vendored Vazirmatn for runs it lacks — usvg's
-        // per-cluster fallback draws those clusters with the fallback
-        // face, so the wrap's advances must agree or line breaks and
-        // start-aligned edges drift. A pure-script paragraph (Latin
-        // text merely MARKED rtl, or straight Arabic) measures as one
-        // run through the same single-face path as before.
+        // Run-by-run measurement with the faces the raster paints
+        // with (PR #269 review for RTL; #282 extended it to LTR for
+        // the CJK runs): the paragraph's own face/size pair over the
+        // shared fallback chain. A pure-script paragraph the primary
+        // face covers measures as one run through the same single-
+        // face path as before.
         let width_in = |s: &str| {
             if rtl {
-                cs_face.width_in_runs(cs_fallback, s, cs_size)
+                cs_face.width_in_runs(fb_chain, s, cs_size)
             } else {
-                face.width_in(s, size)
+                face.width_in_runs(fb_chain, s, size)
             }
         };
         // #235: the hang measure — a terminal no-break space's
@@ -2622,11 +2632,17 @@ pub(crate) fn wrap_block_text(
         let line_usable = |wrapped: bool| usable_w - if wrapped { left_off } else { first_off };
         let mut cur = String::new();
         let mut started = false;
-        for word in para.split(' ') {
+        // #282 kinsoku: the emergency splitter can emit a whole
+        // token as its own (overflowing) line, leaving `cur` empty —
+        // the paragraph's closing push must not then add a phantom
+        // EMPTY line (it would inflate TEXTHEIGHT by a slot). An
+        // empty paragraph still emits its one empty line (below).
+        let mut para_has_lines = false;
+        for token in crate::textmetrics::wrap_tokens(para) {
             let candidate = if started {
-                format!("{cur} {word}")
+                format!("{cur}{}{}", token.sep, token.tok)
             } else {
-                word.to_string()
+                token.tok.to_string()
             };
             let usable = line_usable(wrapped);
             if started && width_in(hang_trim(&candidate)) > usable {
@@ -2635,28 +2651,38 @@ pub(crate) fn wrap_block_text(
                     // authored space run or a leading indent too wide
                     // to share a line with the word): the space is
                     // content (#144 review) — it becomes a line of its
-                    // own, never an empty line, never dropped.
+                    // own, never an empty line, never dropped. (A
+                    // CJK-boundary token never reaches this branch —
+                    // its separator is empty and it always follows a
+                    // sibling token, so `cur` is non-empty.)
                     lines.push(WrapLine {
-                        text: " ".to_string(),
+                        text: token.sep.to_string(),
                         rtl,
                         first_of_para: !wrapped,
                     });
+                    para_has_lines = true;
                 } else {
                     lines.push(WrapLine {
                         text: std::mem::take(&mut cur),
                         rtl,
                         first_of_para: !wrapped,
                     });
+                    para_has_lines = true;
                 }
-                cur = word.to_string();
+                cur = token.tok.to_string();
                 wrapped = true;
             } else {
                 cur = candidate;
             }
             started = true;
-            // A single word wider than the line: hard-split at the
+            // A single token wider than the line: hard-split at the
             // longest character prefix that fits (always ≥1 char, so
-            // the loop makes progress).
+            // the loop makes progress). #282 kinsoku: the split never
+            // leaves a line-head-forbidden char to OPEN the rest —
+            // the kept prefix extends over consecutive forbidden
+            // chars (oikomi-style; the token may then overflow its
+            // band rather than break before 。，）… and a token that
+            // is all forbidden-headed tail emits whole).
             let mut usable = line_usable(wrapped);
             while width_in(hang_trim(&cur)) > usable && cur.chars().count() > 1 {
                 let mut split_at = cur
@@ -2671,21 +2697,32 @@ pub(crate) fn wrap_block_text(
                         break;
                     }
                 }
+                while split_at < cur.len() {
+                    match cur[split_at..].chars().next() {
+                        Some(c) if crate::textmetrics::line_head_forbidden(c) => {
+                            split_at += c.len_utf8();
+                        }
+                        _ => break,
+                    }
+                }
                 let rest = cur.split_off(split_at);
                 lines.push(WrapLine {
                     text: std::mem::replace(&mut cur, rest),
                     rtl,
                     first_of_para: !wrapped,
                 });
+                para_has_lines = true;
                 wrapped = true;
                 usable = line_usable(wrapped);
             }
         }
-        lines.push(WrapLine {
-            text: cur,
-            rtl,
-            first_of_para: !wrapped,
-        });
+        if !cur.is_empty() || !para_has_lines {
+            lines.push(WrapLine {
+                text: cur,
+                rtl,
+                first_of_para: !wrapped,
+            });
+        }
     }
     lines
 }
@@ -2791,10 +2828,19 @@ fn emit_text(
     // document names no CS face.
     let cs_chain = tb.cs_font.as_deref().or(tb.font.as_deref());
     let cs_face = crate::textmetrics::resolve(cs_chain, tb.bold, tb.italic);
-    // The per-cluster fallback face (the vendored Vazirmatn — see the
-    // wrap's probe note); unregistered, it resolves like the Latin
-    // default and the probe never fires.
-    let cs_fallback = crate::textmetrics::resolve(Some("Vazirmatn"), tb.bold, tb.italic);
+    // The per-cluster fallback CHAIN (#282 zh-Hans grew the #257 pair
+    // face to a chain): the vendored Vazirmatn for the Arabic script,
+    // then the vendored Noto Sans SC for the Han glyphs the Latin and
+    // Arabic faces lack — the order `dc::register_complex_script_faces`
+    // loads them into the raster fontdb, which is the order usvg's
+    // per-cluster fallback picks a face (see the wrap's probe note).
+    // Unregistered (the dc unit-test binaries), both resolve like the
+    // Latin default and the probe never fires.
+    let fallback_faces = [
+        crate::textmetrics::resolve(Some("Vazirmatn"), tb.bold, tb.italic),
+        crate::textmetrics::resolve(Some("Noto Sans SC"), tb.bold, tb.italic),
+    ];
+    let fb_chain: Vec<&crate::textmetrics::ResolvedFace> = fallback_faces.iter().collect();
     let cs_size = tb.cs_size.unwrap_or(size);
     let script_cs = script_metrics(cs_chain, tb.pos);
     let script_r = script_cs;
@@ -2859,7 +2905,7 @@ fn emit_text(
     let (lines, bar_widths) = if greeked {
         let mut bars = Vec::new();
         for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
-            let w = face.width_in(para, size);
+            let w = face.width_in_runs(&fb_chain, para, size);
             if w <= usable_w {
                 bars.push(w.max(usable_w * 0.2));
             } else {
@@ -2883,7 +2929,7 @@ fn emit_text(
                 usable_w,
                 &cs_face,
                 cs_paint_size,
-                &cs_fallback,
+                &fb_chain,
                 first_off,
                 left_off,
             ),
@@ -2994,7 +3040,7 @@ fn emit_text(
             // indents stay unwitnessed on RTL lines — #231 open
             // questions — so RTL keeps the plain band placement.)
             let lw = cs_face
-                .width_in_runs(&cs_fallback, &line.text, cs_paint_size);
+                .width_in_runs(&fb_chain, &line.text, cs_paint_size);
             let content = format!("\u{2067}{}\u{2069}", line.text);
             let vx = match halign {
                 0 | 3 => right_x - lw, // start (reading order) = visual right edge
@@ -5853,13 +5899,19 @@ fn is_stock_visio_font(name: &str) -> bool {
 
 /// The measurement/paint infrastructure faces (#232): families THIS
 /// app names itself (the vendored deterministic floor, the #257 RTL
-/// fallback) resolve as themselves — they never appear in Visio files,
-/// so exempting them has no parity cost, and the RTL fallback would
-/// regress to Carlito if the stock rule swallowed them.
+/// fallback, the #282 CJK fallback) resolve as themselves — they never
+/// appear in Visio files, so exempting them has no parity cost, and
+/// the RTL fallback would regress to Carlito if the stock rule
+/// swallowed them.
 fn is_app_font(name: &str) -> bool {
     matches!(
         name.trim().to_ascii_lowercase().as_str(),
-        "carlito" | "liberation sans" | "liberation serif" | "liberation mono" | "vazirmatn"
+        "carlito"
+            | "liberation sans"
+            | "liberation serif"
+            | "liberation mono"
+            | "vazirmatn"
+            | "noto sans sc"
     )
 }
 
@@ -8801,16 +8853,20 @@ mod tests {
 
     /// PR #269 review: RTL paragraphs measure with the RUN-PAIRED
     /// faces (see textmetrics::split_runs) — in this test binary the
-    /// vendored fallback is deliberately unregistered (deterministic
+    /// vendored fallbacks are deliberately unregistered (deterministic
     /// pins), so every paragraph measures as ONE run through the same
     /// single-face path as before: the wrap's output for pure-Latin
-    /// and pure-Persian paragraphs is unchanged.
+    /// and pure-Persian paragraphs is unchanged. (#282 grew the
+    /// fallback to the Vazirmatn→Noto chain; the assertion covers the
+    /// whole chain at once.)
     #[test]
     fn rtl_wrap_stays_single_face_without_a_registered_fallback() {
         let latin = crate::textmetrics::resolve(None, false, false);
         let fallback = crate::textmetrics::resolve(Some("Vazirmatn"), false, false);
+        let noto = crate::textmetrics::resolve(Some("Noto Sans SC"), false, false);
         let alef = '\u{0627}';
         assert!(!fallback.covers(alef), "unregistered vazirmatn covers nothing");
+        let chain: Vec<&crate::textmetrics::ResolvedFace> = vec![&fallback, &noto];
         let fa = "\u{0633}\u{0644}\u{0627}\u{0645}";
         for para in [format!("\u{202B}{fa}"), format!("\u{202B}abc {fa}")] {
             let lines = wrap_block_text(
@@ -8820,7 +8876,7 @@ mod tests {
                 2.0,
                 &latin,
                 0.13889,
-                &fallback,
+                &chain,
                 0.0,
                 0.0,
             );
@@ -8830,7 +8886,7 @@ mod tests {
             // single-face measurement the wrap always used.
             let w = lines[0].text.clone();
             let expect = latin.width_in(&w, 0.13889);
-            let got = latin.width_in_runs(&fallback, &w, 0.13889);
+            let got = latin.width_in_runs(&chain, &w, 0.13889);
             assert!(
                 (expect - got).abs() < 1e-9,
                 "single-run text keeps byte-identical widths: {expect} vs {got}"
@@ -9978,6 +10034,7 @@ mod tests {
             latin.width_in(&word, 0.13889) <= 0.5,
             "fixture: the word alone fits the margin"
         );
+        let chain: Vec<&crate::textmetrics::ResolvedFace> = vec![&fallback];
         let solo = wrap_block_text(
             &latin,
             &format!("{word}\u{a0}"),
@@ -9985,7 +10042,7 @@ mod tests {
             0.5,
             &latin,
             0.13889,
-            &fallback,
+            &chain,
             0.0,
             0.0,
         );
@@ -10003,7 +10060,7 @@ mod tests {
             0.5,
             &latin,
             0.13889,
-            &fallback,
+            &chain,
             0.0,
             0.0,
         );
@@ -10020,13 +10077,86 @@ mod tests {
             0.5,
             &latin,
             0.13889,
-            &fallback,
+            &chain,
             0.0,
             0.0,
         );
         assert_eq!(
             lines_plain[0].text, word,
             "the control: a plain trailing space wraps"
+        );
+    }
+
+    /// #282 zh-Hans: CJK paragraphs wrap between ideographs under the
+    /// kinsoku rules — no spaces needed — and a closing punct never
+    /// STARTS a line. The measurement face is irrelevant to the break
+    /// STRUCTURE (Carlito's missing-glyph advances are uniform here);
+    /// the tokenizer owns the opportunities, so the unregistered test
+    /// world pins them fine.
+    #[test]
+    fn cjk_paragraph_wraps_between_ideographs_with_kinsoku() {
+        let latin = crate::textmetrics::resolve(None, false, false);
+        let fallback = crate::textmetrics::resolve(Some("Vazirmatn"), false, false);
+        let chain: Vec<&crate::textmetrics::ResolvedFace> = vec![&fallback];
+        let size = 0.13889;
+        let w1 = latin.width_in("图", size);
+        assert!(w1 > 0.0);
+        // A width fitting two ideographs: the paragraph breaks every
+        // two glyphs — between ideographs, never inside one.
+        let lines = wrap_block_text(
+            &latin,
+            "图表形状",
+            size,
+            w1 * 2.5,
+            &latin,
+            size,
+            &chain,
+            0.0,
+            0.0,
+        );
+        assert_eq!(
+            lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
+            vec!["图表", "形状"],
+            "ideograph boundaries are the break opportunities"
+        );
+        // Kinsoku across widths: the sentence enders stay glued to
+        // the token they close and never open a line.
+        for usable in [w1 * 1.2, w1 * 1.8, w1 * 2.5] {
+            let lines = wrap_block_text(
+                &latin,
+                "画图，上色。",
+                size,
+                usable,
+                &latin,
+                size,
+                &chain,
+                0.0,
+                0.0,
+            );
+            for l in &lines {
+                assert!(
+                    !l.text.starts_with(['，', '。']),
+                    "a closing punct never starts a line: {:?}",
+                    l.text
+                );
+            }
+        }
+        // The Latin path is untouched: the same engine, pure spaces.
+        let lines = wrap_block_text(
+            &latin,
+            "ab cd",
+            size,
+            latin.width_in("ab", size) * 1.2,
+            &latin,
+            size,
+            &chain,
+            0.0,
+            0.0,
+        );
+        assert_eq!(
+            lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
+            vec!["ab", "cd"],
+            "Latin keeps the space-driven breaks"
         );
     }
 

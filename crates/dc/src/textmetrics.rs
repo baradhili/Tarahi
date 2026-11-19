@@ -254,27 +254,164 @@ impl ResolvedFace {
     }
 }
 
-/// Split `text` into contiguous runs by which face covers each
-/// character: `(uses_other, text)` pairs where a character the first
-/// face lacks — and the second covers — joins an `other` run (PR
-/// #269 review). Shaping then happens per run with the face that
-/// paints it, exactly like the raster's per-cluster fallback; only
-/// cross-script run boundaries forgo cross-run kerning, which does
-/// not exist across scripts anyway.
+/// Split `text` into contiguous runs by which face of the measurement
+/// chain covers each character: `(face_ix, text)` pairs where
+/// `face_ix` indexes `[self, others…]` — a character an earlier face
+/// lacks and a later one covers joins that later face's run, and a
+/// character NOTHING covers stays on face 0 (the measuring face's
+/// per-character fallback estimates it, exactly like the single-face
+/// path). Shaping then happens per run with the face that paints it,
+/// mirroring the raster's per-cluster fallback (usvg walks its
+/// fontdb in load order — the registration order of
+/// `dc::register_complex_script_faces`, which this chain must copy);
+/// only cross-script run boundaries forgo cross-run kerning, which
+/// does not exist across scripts anyway. The two-face form (PR #269
+/// review) grew to the N-face chain with the CJK wave (#282):
+/// Vazirmatn covers the Arabic script, Noto Sans SC the Han glyphs
+/// the Latin faces lack.
 pub(crate) fn split_runs(
     text: &str,
-    self_covers: impl Fn(char) -> bool,
-    other_covers: impl Fn(char) -> bool,
-) -> Vec<(bool, String)> {
-    let mut runs: Vec<(bool, String)> = Vec::new();
+    covers: &[&dyn Fn(char) -> bool],
+) -> Vec<(usize, String)> {
+    let mut runs: Vec<(usize, String)> = Vec::new();
     for c in text.chars() {
-        let uses_other = !self_covers(c) && other_covers(c);
+        let face_ix = covers.iter().position(|covers| covers(c)).unwrap_or(0);
         match runs.last_mut() {
-            Some((last_other, buf)) if *last_other == uses_other => buf.push(c),
-            _ => runs.push((uses_other, c.to_string())),
+            Some((last_ix, buf)) if *last_ix == face_ix => buf.push(c),
+            _ => runs.push((face_ix, c.to_string())),
         }
     }
     runs
+}
+
+// ------------- CJK line-break classes (#282 zh-Hans) -------------
+//
+// The greedy wrap is space-based (0.2.9), and Chinese paragraphs
+// carry no spaces: without these classes a whole paragraph measures
+// as ONE unbreakable word that only the over-long hard-split can cut
+// — at any character, ignoring the kinsoku rules. The classes below
+// give the wrap break opportunities BETWEEN ideographs (UAX #14
+// lite), with the two prohibition families Chinese typography
+// requires.
+
+/// The "break between any two" class: CJK ideographs and kana.
+/// Hangul is deliberately absent — Korean text is space-separated
+/// and needs no intra-word breaks (a future `ko` rides this wave's
+/// fonts but not these classes).
+fn is_cjk_ideographic(c: char) -> bool {
+    matches!(
+        c,
+        '\u{3400}'..='\u{4DBF}'     // CJK Extension A
+            | '\u{4E00}'..='\u{9FFF}' // CJK Unified Ideographs (the zh workhorse)
+            | '\u{F900}'..='\u{FAFF}' // CJK Compatibility Ideographs
+            | '\u{3040}'..='\u{30FF}' // Hiragana + Katakana (ja rides the same classes)
+            | '\u{31F0}'..='\u{31FF}' // Katakana Phonetic Extensions
+    )
+}
+
+/// Closing punctuation and friends (kinsoku 禁則): a line may END
+/// after one but must never START with one. ASCII closers ride the
+/// set so a Han char before an ASCII `.`, `)`, … stays glued the
+/// same way. Opening punct needs no set of its own — it grants no
+/// break (see below), so a line never ends right after （ 「 『.
+/// Public to the wrap's emergency splitter, which must never leave a
+/// forbidden char to OPEN a line either.
+pub(crate) fn line_head_forbidden(c: char) -> bool {
+    const CLOSING: &str = "。，、；：！？）］｝〉》」』】〕”’…—～·％￥";
+    CLOSING.contains(c)
+        || matches!(
+            c,
+            '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '%'
+        )
+}
+
+/// A wrap opportunity between `a` and `b`: the LEFT char must grant
+/// one — an ideograph, kana, or a closing punct (Latin never grants;
+/// Latin-internal breaks stay space-driven, so pure-Latin wrap output
+/// is untouched) — and the RIGHT char must accept it (not a closing
+/// punct or ASCII closer). Sentence enders like 。 therefore both
+/// grant the following break and refuse to open a line.
+pub(crate) fn cjk_break_between(a: char, b: char) -> bool {
+    (is_cjk_ideographic(a) || line_head_forbidden(a)) && !line_head_forbidden(b)
+}
+
+/// One greedy-wrap token of a paragraph: `sep` is the separator
+/// content that precedes the token when it JOINS the current line
+/// (the one space of a word boundary, the ideographic space U+3000,
+/// or nothing at a CJK break); a line break consumes its separator,
+/// exactly like the space-based wrap consumed the joining space.
+pub(crate) struct WrapToken<'a> {
+    pub sep: &'a str,
+    pub tok: &'a str,
+}
+
+/// Tokenize one paragraph for the greedy wrap: words separated by
+/// ASCII spaces (each space reproducing the `split(' ')` /
+/// rejoin-with-one-space semantics verbatim — including the empty
+/// words consecutive spaces yield, so space runs and leading/trailing
+/// spaces survive byte-for-byte), the ideographic space U+3000
+/// breaking like a space, and every [`cjk_break_between`] opportunity
+/// inside a word splitting it — so Chinese paragraphs wrap between
+/// ideographs under the kinsoku rules instead of measuring as one
+/// unbreakable word. A paragraph without CJK grant-chars tokenizes
+/// to its unsplit words: wrap output is byte-identical to the
+/// space-only engine.
+pub(crate) fn wrap_tokens(para: &str) -> Vec<WrapToken<'_>> {
+    // Parts between separators — `split(' ')` semantics, generalized
+    // to U+3000: every separator char ends a part (possibly empty),
+    // so a trailing separator yields a final empty part and
+    // consecutive separators yield empty parts between, exactly like
+    // `para.split(' ')`.
+    let mut parts: Vec<(char, &str)> = Vec::new();
+    {
+        let bytes = para.as_bytes();
+        let mut start = 0usize;
+        let mut sep = ' ';
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let c = para[i..].chars().next().unwrap();
+            if c == ' ' || c == '\u{3000}' {
+                parts.push((sep, &para[start..i]));
+                sep = c;
+                start = i + c.len_utf8();
+            }
+            i += c.len_utf8();
+        }
+        parts.push((sep, &para[start..]));
+    }
+    // Each part splits at the CJK opportunities; the FIRST sub-token
+    // carries the part's separator (empty for the paragraph's opening
+    // part — the wrap loop starts unstarted), the rest join with
+    // nothing.
+    let mut out: Vec<WrapToken> = Vec::new();
+    for (ix, (sep, part)) in parts.into_iter().enumerate() {
+        let mut pending_sep: &str = if ix == 0 {
+            ""
+        } else {
+            match sep {
+                '\u{3000}' => "\u{3000}",
+                _ => " ",
+            }
+        };
+        let mut sub_start = 0usize;
+        let mut prev: Option<char> = None;
+        for (i, c) in part.char_indices() {
+            if prev.is_some_and(|p| cjk_break_between(p, c)) {
+                out.push(WrapToken {
+                    sep: pending_sep,
+                    tok: &part[sub_start..i],
+                });
+                pending_sep = "";
+                sub_start = i;
+            }
+            prev = Some(c);
+        }
+        out.push(WrapToken {
+            sep: pending_sep,
+            tok: &part[sub_start..],
+        });
+    }
+    out
 }
 
 /// Resolve the face a shape's text measures (and rasterizes) in: the
@@ -424,49 +561,75 @@ impl ResolvedFace {
             .sum()
     }
 
+    /// The run-split core over the measurement chain `[self,
+    /// others…]` (see [`split_runs`]) — shared by the three runs
+    /// variants below.
+    fn chain_runs<'a>(
+        &'a self,
+        others: &'a [&'a ResolvedFace],
+        text: &'a str,
+    ) -> Vec<(usize, String)> {
+        let self_cov = |c: char| self.covers(c);
+        let other_covs: Vec<_> = others.iter().map(|f| |c: char| f.covers(c)).collect();
+        let mut covers: Vec<&dyn Fn(char) -> bool> = Vec::with_capacity(1 + others.len());
+        covers.push(&self_cov);
+        covers.extend(other_covs.iter().map(|c| c as &dyn Fn(char) -> bool));
+        split_runs(text, &covers)
+    }
+
+    /// The chain as a face slice — `[self, others…]`, indexed by the
+    /// run's face index.
+    fn chain_faces<'a>(&'a self, others: &'a [&'a ResolvedFace]) -> Vec<&'a ResolvedFace> {
+        std::iter::once(self).chain(others.iter().copied()).collect()
+    }
+
+    /// True when `self` alone covers every character — the common
+    /// pure-Latin case takes the allocation-free single-face path
+    /// (byte-identical widths, the pre-CJK hot loop).
+    fn self_covers_all(&self, text: &str) -> bool {
+        text.chars().all(|c| self.covers(c))
+    }
+
     /// The composed-width twin of [`Self::width_in_runs`] (local
     /// CodeRabbit round 3): #234's per-glyph grid rounding, with each
     /// run measured on the face that covers it — the renderer's
     /// fallback runs. A paragraph the primary face cannot cover must
     /// not compose its width from missing-glyph estimates the paint
-    /// never draws. Single-coverage text (or a fallback that covers
+    /// never draws. Single-coverage text (or fallbacks that cover
     /// nothing, as in the unregistered test world) is byte-identical
     /// to [`Self::composed_width_in`]: every run lands on `self`.
     pub fn composed_width_in_runs(
         &self,
-        other: &ResolvedFace,
+        others: &[&ResolvedFace],
         text: &str,
         size_in: f64,
     ) -> f64 {
-        if text.is_empty() {
-            return 0.0;
+        if text.is_empty() || self.self_covers_all(text) {
+            return self.composed_width_in(text, size_in);
         }
         let q = quantize18(size_in);
-        split_runs(text, |c| self.covers(c), |c| other.covers(c))
+        let faces = self.chain_faces(others);
+        self.chain_runs(others, text)
             .into_iter()
-            .map(|(uses_other, run)| {
-                if uses_other {
-                    other.composed_run_in(&run, q)
-                } else {
-                    self.composed_run_in(&run, q)
-                }
-            })
+            .map(|(ix, run)| faces[ix].composed_run_in(&run, q))
             .sum()
     }
 
     /// The face covering `text`'s FINAL run — where the terminal-run
     /// space of a composed width comes from (the runs variant of
     /// taking the measuring face's space advance).
-    pub fn final_run_face<'a>(&'a self, other: &'a ResolvedFace, text: &str) -> &'a ResolvedFace {
-        split_runs(text, |c| self.covers(c), |c| other.covers(c))
+    pub fn final_run_face<'a>(
+        &'a self,
+        others: &'a [&'a ResolvedFace],
+        text: &str,
+    ) -> &'a ResolvedFace {
+        if self.self_covers_all(text) {
+            return self;
+        }
+        let faces = self.chain_faces(others);
+        self.chain_runs(others, text)
             .last()
-            .map_or(self, |(uses_other, _)| {
-                if *uses_other {
-                    other
-                } else {
-                    self
-                }
-            })
+            .map_or(self, |(ix, _)| faces[*ix])
     }
 
     /// The grid-rounded advance of ONE space at `size_in` — the
@@ -511,25 +674,26 @@ impl ResolvedFace {
         width
     }
 
-    /// Shaped width where `other` covers the runs this face lacks
+    /// Shaped width where the chain covers the runs this face lacks
     /// (see [`split_runs`]) — a mixed paragraph's script tail measures
     /// with the face the raster actually paints it with, instead of
-    /// missing-glyph estimates. Single-run text takes the same
-    /// single-face shaped path as [`Self::width_in`]: unmixed text
-    /// keeps byte-identical widths.
-    pub fn width_in_runs(&self, other: &ResolvedFace, text: &str, size_in: f64) -> f64 {
-        if text.is_empty() {
-            return 0.0;
+    /// missing-glyph estimates. Text the measuring face covers alone
+    /// takes the same single-face shaped path as [`Self::width_in`]:
+    /// unmixed text keeps byte-identical widths.
+    pub fn width_in_runs(
+        &self,
+        others: &[&ResolvedFace],
+        text: &str,
+        size_in: f64,
+    ) -> f64 {
+        if text.is_empty() || self.self_covers_all(text) {
+            return self.width_in(text, size_in);
         }
-        let total: f64 = split_runs(text, |c| self.covers(c), |c| other.covers(c))
+        let faces = self.chain_faces(others);
+        let total: f64 = self
+            .chain_runs(others, text)
             .into_iter()
-            .map(|(uses_other, run)| {
-                if uses_other {
-                    other.shaped_width_em(&run)
-                } else {
-                    self.shaped_width_em(&run)
-                }
-            })
+            .map(|(ix, run)| faces[ix].shaped_width_em(&run))
             .sum();
         total * size_in
     }
@@ -746,35 +910,155 @@ pub fn face_data(font: Option<&str>, bold: bool, italic: bool) -> Option<FaceDat
 mod tests {
 
     /// PR #269 review: runs split by which face covers each char —
-    /// only chars the FIRST face lacks AND the second covers switch
-    /// runs; chars both lack stay on the first face (their advance
-    /// falls through the missing-glyph chain either way).
+    /// only chars an EARLIER face lacks AND a later one covers switch
+    /// runs; chars nothing covers stay on face 0 (their advance falls
+    /// through the missing-glyph chain either way).
     #[test]
     fn split_runs_follows_per_char_coverage() {
         let lower = |c: char| c.is_ascii_lowercase();
         let upper = |c: char| c.is_ascii_uppercase();
-        let runs = split_runs("ab CD EF gh", lower, upper);
-        let flat: Vec<(bool, String)> = runs
+        let digit = |c: char| c.is_ascii_digit();
+        let runs = split_runs("ab CD EF gh", &[&lower, &upper]);
+        let flat: Vec<(usize, String)> = runs
             .into_iter()
-            .map(|(o, t): (bool, String)| (o, t.chars().filter(|c| !c.is_whitespace()).collect::<String>()))
+            .map(|(o, t): (usize, String)| {
+                (
+                    o,
+                    t.chars().filter(|c| !c.is_whitespace()).collect::<String>(),
+                )
+            })
             .filter(|(_, t)| !t.is_empty())
             .collect();
         assert_eq!(
             flat,
             vec![
-                (false, "ab".into()),
-                (true, "CD".into()),
-                (true, "EF".into()),
-                (false, "gh".into()),
+                (0, "ab".into()),
+                (1, "CD".into()),
+                (1, "EF".into()),
+                (0, "gh".into()),
             ],
             "contiguous covered spans join; the split follows coverage, not script"
         );
         // Chars NEITHER face covers stay on the primary run.
-        let runs = split_runs("a中b", lower, upper);
+        let runs = split_runs("a中b", &[&lower, &upper]);
         assert_eq!(
             runs,
-            vec![(false, "a中b".to_string())],
+            vec![(0, "a中b".to_string())],
             "uncovered chars never switch runs"
+        );
+        // The N-face chain picks the FIRST covering face in order.
+        let runs = split_runs("a1Ab2", &[&lower, &digit, &upper]);
+        assert_eq!(
+            runs,
+            vec![
+                (0, "a".into()),
+                (1, "1".into()),
+                (2, "A".into()),
+                (0, "b".into()),
+                (1, "2".into()),
+            ],
+            "chain order decides which fallback owns a run"
+        );
+    }
+
+    /// #282 zh-Hans: the CJK break classes — opportunities between
+    /// ideographs, kinsoku suppression before closing punctuation,
+    /// never inside Latin (the space-only engine keeps its output).
+    #[test]
+    fn cjk_break_classes_follow_kinsoku() {
+        use super::cjk_break_between as brk;
+        // Between two ideographs: the workhorse opportunity.
+        assert!(brk('图', '表'));
+        assert!(brk('フ', 'ォ'));
+        // Closing punctuation never STARTS a line, and grants the
+        // break that FOLLOWS it (sentence enders).
+        assert!(!brk('图', '。'));
+        assert!(brk('。', '下'));
+        assert!(!brk('表', '，'));
+        assert!(!brk('形', ')'));
+        assert!(!brk('状', '%'));
+        // Opening punctuation never ENDS a line (it grants nothing)…
+        assert!(!brk('（', '中'));
+        // …but a line may START with one (only closers are
+        // line-head-forbidden — the strict rule set).
+        assert!(brk('起', '（'));
+        // Latin-internal: no new opportunities.
+        assert!(!brk('a', 'b'));
+        assert!(!brk('1', '2'));
+        // …but a Han-to-Latin boundary is a real break.
+        assert!(brk('图', 'a'));
+    }
+
+    /// #282 zh-Hans: the wrap tokenizer reproduces the space-only
+    /// engine's parts verbatim for Latin (goldens pin the wrap), and
+    /// splits CJK words at the kinsoku opportunities — with the
+    /// U+3000 ideographic space acting as a word separator.
+    #[test]
+    fn wrap_tokens_split_cjk_and_preserve_latin() {
+        let toks = |s: &str| {
+            wrap_tokens(s)
+                .into_iter()
+                .map(|t| (t.sep.to_string(), t.tok.to_string()))
+                .collect::<Vec<_>>()
+        };
+        // Pure Latin == split(' ') parts with single-space seps.
+        assert_eq!(
+            toks("ab cd"),
+            vec![("".into(), "ab".into()), (" ".into(), "cd".into())]
+        );
+        // Space runs, leading and trailing spaces survive verbatim.
+        assert_eq!(
+            toks("a  b"),
+            vec![
+                ("".into(), "a".into()),
+                (" ".into(), "".into()),
+                (" ".into(), "b".into()),
+            ]
+        );
+        assert_eq!(
+            toks(" x"),
+            vec![("".into(), "".into()), (" ".into(), "x".into())]
+        );
+        assert_eq!(
+            toks("x "),
+            vec![("".into(), "x".into()), (" ".into(), "".into())]
+        );
+        assert_eq!(toks(""), vec![("".into(), "".into())]);
+        // CJK: every ideograph is its own token, kinsoku-glued
+        // punctuation rides its neighbor.
+        assert_eq!(
+            toks("图表形状"),
+            vec![
+                ("".into(), "图".into()),
+                ("".into(), "表".into()),
+                ("".into(), "形".into()),
+                ("".into(), "状".into()),
+            ]
+        );
+        assert_eq!(
+            toks("画图，上色。"),
+            vec![
+                ("".into(), "画".into()),
+                ("".into(), "图，".into()),
+                ("".into(), "上".into()),
+                ("".into(), "色。".into()),
+            ]
+        );
+        // Mixed: the Latin word stays one token, the Han run splits,
+        // and the word's separator lands on its FIRST sub-token.
+        assert_eq!(
+            toks("ab 图表 cd"),
+            vec![
+                ("".into(), "ab".into()),
+                (" ".into(), "图".into()),
+                ("".into(), "表".into()),
+                (" ".into(), "cd".into()),
+            ]
+        );
+        // The ideographic space separates words like an ASCII space.
+        assert_eq!(
+            toks("图\u{3000}表"),
+            vec![("".into(), "图".into()), ("\u{3000}".into(), "表".into())]
         );
     }
 
@@ -802,7 +1086,7 @@ mod tests {
         let want = carlito.composed_width_in("a", size)
             + libsans.composed_width_in("\u{476}", size)
             + carlito.composed_width_in("b", size);
-        let got = carlito.composed_width_in_runs(&libsans, text, size);
+        let got = carlito.composed_width_in_runs(&[&libsans], text, size);
         assert!(
             (got - want).abs() < 1e-12,
             "the runs compose per covering face: {got} vs {want}"
@@ -820,9 +1104,16 @@ mod tests {
         // stays on the primary face).
         let none = resolve(Some("NoSuchFamily At All"), false, false);
         assert_eq!(
-            carlito.composed_width_in_runs(&none, text, size),
+            carlito.composed_width_in_runs(&[&none], text, size),
             whole,
             "an uncovered fallback keeps plain composition"
+        );
+        // The N-face form: the first fallback in the chain wins the
+        // run even when a later one would also cover it.
+        let got2 = carlito.composed_width_in_runs(&[&none, &libsans], text, size);
+        assert!(
+            (got2 - want).abs() < 1e-12,
+            "chain order, not coverage breadth, picks the run's face"
         );
     }
 
@@ -832,10 +1123,11 @@ mod tests {
         let carlito = resolve(Some("Carlito"), false, false);
         let libsans = resolve(Some("Liberation Sans"), false, false);
         // Trailing covered run → the fallback owns the line's end.
-        let ptr = carlito.final_run_face(&libsans, "a\u{476}");
+        let chain = [&libsans];
+        let ptr = carlito.final_run_face(&chain, "a\u{476}");
         assert!(std::ptr::eq(ptr, &libsans), "the final run's face wins");
         // Trailing primary run → the primary face.
-        let ptr = carlito.final_run_face(&libsans, "\u{476}b");
+        let ptr = carlito.final_run_face(&chain, "\u{476}b");
         assert!(std::ptr::eq(ptr, &carlito), "a primary-run ending stays");
     }
 

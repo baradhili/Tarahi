@@ -6282,12 +6282,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
 ];
 #[allow(dead_code)]
-static ALL_LANGS: [L10n; 4] = [
+static ALL_LANGS: [L10n; 5] = [
     // languages as an array
     L10n::De,
     L10n::En,
     L10n::Es,
     L10n::Fa,
+    L10n::ZhHans,
 ];
 
 /// The languages that have translations available.
@@ -6297,6 +6298,7 @@ pub enum L10n {
     En,
     Es,
     Fa,
+    ZhHans,
 }
 
 impl Default for L10n {
@@ -6314,6 +6316,7 @@ impl FromStr for L10n {
             "en" => Ok(Self::En),
             "es" => Ok(Self::Es),
             "fa" => Ok(Self::Fa),
+            "zh-Hans" => Ok(Self::ZhHans),
             _ => Err(format!("Unknown language: {}", s)),
         }
     }
@@ -6327,6 +6330,7 @@ impl Deref for L10n {
             Self::En => "en",
             Self::Es => "es",
             Self::Fa => "fa",
+            Self::ZhHans => "zh-Hans",
         }
     }
 }
@@ -6359,6 +6363,7 @@ impl L10n {
             Self::En => "English",
             Self::Es => "Español",
             Self::Fa => "فارسی",
+            Self::ZhHans => "简体中文",
         }
     }
 
@@ -6368,6 +6373,7 @@ impl L10n {
             Self::En => 44998..88635,
             Self::Es => 88635..136686,
             Self::Fa => 136686..193977,
+            Self::ZhHans => 193977..237331,
         }
     }
     /// Load a L10nLanguage from the embedded data.
