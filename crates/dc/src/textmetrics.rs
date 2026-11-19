@@ -309,30 +309,65 @@ fn is_cjk_ideographic(c: char) -> bool {
     )
 }
 
-/// Closing punctuation and friends (kinsoku 禁則): a line may END
-/// after one but must never START with one. ASCII closers ride the
-/// set so a Han char before an ASCII `.`, `)`, … stays glued the
-/// same way. Opening punct needs no set of its own — it grants no
-/// break (see below), so a line never ends right after （ 「 『.
-/// Public to the wrap's emergency splitter, which must never leave a
-/// forbidden char to OPEN a line either.
-pub(crate) fn line_head_forbidden(c: char) -> bool {
+/// Full-width CJK closing punctuation (kinsoku 禁則): grants the
+/// break AFTER it (sentence enders) and never starts a line.
+fn is_cjk_closing(c: char) -> bool {
     const CLOSING: &str = "。，、；：！？）］｝〉》」』】〕”’…—～·％￥";
     CLOSING.contains(c)
+}
+
+/// Chars a line may never START with: the CJK closers plus the ASCII
+/// closers riding along, so a Han char before an ASCII `.`, `)`, …
+/// stays glued the same way. ASCII closers SUPPRESS only — they never
+/// GRANT a boundary (CodeRabbit on #282: letting them grant split
+/// `x.y` into `x.`|`y`), so Latin-internal tokenization stays
+/// space-driven. Opening punct needs no set of its own — it grants no
+/// break (see [`cjk_break_between`]), so a line never ends right
+/// after （ 「 『. Public to the wrap's emergency splitter, which must
+/// never leave a forbidden char to OPEN a line either.
+pub(crate) fn line_head_forbidden(c: char) -> bool {
+    is_cjk_closing(c)
         || matches!(
             c,
             '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '%'
         )
 }
 
+/// Explicit non-breaking controls (UAX #14 class GL and friends): no
+/// boundary sits before OR after one — `图⍽表` with a no-break space
+/// is the author saying "keep these together".
+fn is_glue(c: char) -> bool {
+    matches!(c, '\u{00A0}' | '\u{202F}' | '\u{2060}' | '\u{FEFF}')
+}
+
+/// Combining marks and joiners: a boundary adjacent to one is not a
+/// grapheme-cluster boundary (UAX #29) — breaking there splits a
+/// decomposed character (カ + dakuten, CodeRabbit on #282).
+fn is_combining(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0300}'..='\u{036F}'       // combining diacritical marks
+            | '\u{3099}'..='\u{309A}' // combining kana voicing
+            | '\u{FE00}'..='\u{FE0F}' // variation selectors
+            | '\u{200D}'              // zero-width joiner
+            | '\u{20D0}'..='\u{20FF}' // combining marks for symbols
+    )
+}
+
 /// A wrap opportunity between `a` and `b`: the LEFT char must grant
-/// one — an ideograph, kana, or a closing punct (Latin never grants;
-/// Latin-internal breaks stay space-driven, so pure-Latin wrap output
-/// is untouched) — and the RIGHT char must accept it (not a closing
-/// punct or ASCII closer). Sentence enders like 。 therefore both
-/// grant the following break and refuse to open a line.
+/// one — an ideograph, kana, or a full-width CJK closing punct (Latin
+/// and ASCII punctuation never grant; Latin-internal breaks stay
+/// space-driven, so pure-Latin wrap output is untouched) — and the
+/// RIGHT char must accept it (not a line-head-forbidden closer). A
+/// boundary adjacent to glue or a combining mark never opens
+/// (explicit no-break controls and grapheme interiors). Sentence
+/// enders like 。 therefore both grant the following break and refuse
+/// to open a line.
 pub(crate) fn cjk_break_between(a: char, b: char) -> bool {
-    (is_cjk_ideographic(a) || line_head_forbidden(a)) && !line_head_forbidden(b)
+    if is_glue(a) || is_glue(b) || is_combining(a) || is_combining(b) {
+        return false;
+    }
+    (is_cjk_ideographic(a) || is_cjk_closing(a)) && !line_head_forbidden(b)
 }
 
 /// One greedy-wrap token of a paragraph: `sep` is the separator
@@ -985,8 +1020,20 @@ mod tests {
         // Latin-internal: no new opportunities.
         assert!(!brk('a', 'b'));
         assert!(!brk('1', '2'));
+        // ASCII closers suppress but never GRANT — `x.y` and `3.14`
+        // stay whole (CodeRabbit on #282).
+        assert!(!brk('.', 'y'));
+        assert!(!brk('.', '1'));
+        assert!(!brk(')', 'x'));
         // …but a Han-to-Latin boundary is a real break.
         assert!(brk('图', 'a'));
+        // Explicit non-breaking controls bind both sides.
+        assert!(!brk('图', '\u{00A0}'));
+        assert!(!brk('\u{00A0}', '表'));
+        assert!(!brk('图', '\u{2060}'));
+        // Combining sequences never split (decomposed ガ = カ + U+3099).
+        assert!(!brk('カ', '\u{3099}'));
+        assert!(!brk('\u{3099}', 'ク'));
     }
 
     /// #282 zh-Hans: the wrap tokenizer reproduces the space-only
@@ -1059,6 +1106,25 @@ mod tests {
         assert_eq!(
             toks("图\u{3000}表"),
             vec![("".into(), "图".into()), ("\u{3000}".into(), "表".into())]
+        );
+        // A no-break space binds ideographs (CodeRabbit on #282).
+        assert_eq!(
+            toks("图\u{00A0}表"),
+            vec![("".into(), "图\u{00A0}表".into())]
+        );
+        // Dotted ASCII words stay one token (no grant from '.').
+        assert_eq!(
+            toks("a x.y"),
+            vec![("".into(), "a".into()), (" ".into(), "x.y".into())]
+        );
+        assert_eq!(
+            toks("3.14 15"),
+            vec![("".into(), "3.14".into()), (" ".into(), "15".into())]
+        );
+        // Decomposed kana stays one grapheme (カ + U+3099 = ガ).
+        assert_eq!(
+            toks("カ\u{3099}ク"),
+            vec![("".into(), "カ\u{3099}ク".into())]
         );
     }
 
