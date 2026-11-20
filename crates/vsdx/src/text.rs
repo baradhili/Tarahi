@@ -267,11 +267,15 @@ pub fn plain_to_raw_offset(raw: &str, plain_chars: usize) -> usize {
                 let content_chars = raw[content_start..end].chars().count();
                 if count >= plain_chars {
                     // The target sits at/before the section: insert
-                    // ahead of it.
-                    return i;
+                    // ahead of it — unless the section lives INSIDE
+                    // a field's cached content, where a marker would
+                    // disappear into the outer display (snap to its
+                    // opening tag, the `_` arm's rule — Greptile
+                    // round 7).
+                    return open_fld_at.unwrap_or(i);
                 }
                 if count + content_chars > plain_chars {
-                    return after;
+                    return open_fld_at.unwrap_or(after);
                 }
                 count += content_chars;
                 while let Some(&(j, _)) = chars.peek() {
@@ -295,11 +299,15 @@ pub fn plain_to_raw_offset(raw: &str, plain_chars: usize) -> usize {
                     // A caret at the END of a field's cached display
                     // maps to the tag ahead — inserting there would
                     // nest inside the marker; land AFTER the closing
-                    // tag instead.
+                    // tag instead. Any OTHER tag reached with the
+                    // caret inside a display snaps to the marker's
+                    // opening (the `_` arm's rule — a marker written
+                    // inside the display disappears into it,
+                    // Greptile round 7).
                     if closing_fld {
                         return close;
                     }
-                    return i;
+                    return open_fld_at.unwrap_or(i);
                 }
                 if opening_fld {
                     open_fld_at = Some(i);
@@ -547,6 +555,27 @@ mod tests {
             plain_to_raw_offset(with_fld, 2),
             with_fld.find("<fld").unwrap()
         );
+    }
+
+    /// A CDATA section INSIDE a field's cached display snaps to the
+    /// marker's opening tag — a marker written inside the display
+    /// (where the CDATA branch's after-`]]>` offset lands) merges
+    /// into the outer field and the insertion disappears (Greptile
+    /// round 7: `<fld IX='0'><![CDATA[ABC]]></fld>D`).
+    #[test]
+    fn cdata_inside_a_field_display_snaps_to_the_marker() {
+        let raw = "<fld IX='0'><![CDATA[ABC]]></fld>D";
+        // Plain projection: "ABCD"; offsets 1 and 2 sit inside the
+        // CDATA content, i.e. inside the display.
+        let fld_at = raw.find("<fld").unwrap();
+        assert_eq!(plain_to_raw_offset(raw, 1), fld_at);
+        assert_eq!(plain_to_raw_offset(raw, 2), fld_at);
+        // Offset 3 == content end (still inside the display): the
+        // `<` of `</fld>` with count >= plain lands PAST the marker,
+        // at the "D".
+        assert_eq!(&raw[plain_to_raw_offset(raw, 3)..], "D");
+        // Offset 4 (past the end) clamps.
+        assert_eq!(plain_to_raw_offset(raw, 4), raw.len());
     }
 
     #[test]
