@@ -135,6 +135,13 @@ pub fn text_pieces(raw: &str) -> Vec<Piece> {
             Ok(Event::End(e)) => {
                 if tag_name(e.name()) == "fld" && inside_fld > 0 {
                     inside_fld -= 1;
+                    if inside_fld == 0 {
+                        // Close the marker's content slot: subsequent
+                        // characters are plain text again, not cached
+                        // display (an empty Text piece is the merge
+                        // target `push_chars` appends to).
+                        pieces.push(Piece::Text(String::new()));
+                    }
                 }
             }
             Ok(Event::Eof) | Err(_) => break,
@@ -215,6 +222,13 @@ pub fn plain_to_raw_offset(raw: &str, plain_chars: usize) -> usize {
                 // characters. An unterminated tag ends the scan.
                 let close = raw[i..].find('>').map(|k| i + k + 1).unwrap_or(raw.len());
                 if count >= plain_chars {
+                    // A caret at the END of a field's cached display
+                    // maps to the tag ahead — inserting there would
+                    // nest inside the marker; land AFTER the closing
+                    // tag instead.
+                    if raw[i..].starts_with("</fld") {
+                        return close;
+                    }
                     return i;
                 }
                 // Consume through the tag.
@@ -306,6 +320,7 @@ mod tests {
                     ix: 3,
                     content: Some("4/17".into())
                 },
+                Piece::Text(String::new()),
             ]
         );
         assert_eq!(plain_of_pieces(raw), "due 4/17");
@@ -318,6 +333,28 @@ mod tests {
         let raw = "<fld IX='0'>2015</fld>";
         assert_eq!(plain_of_pieces(raw), "2015");
         assert_eq!(flds(raw), vec![(0, Some("2015".into()))]);
+    }
+
+    #[test]
+    fn text_after_the_closing_tag_is_plain_not_cached_display() {
+        let raw = "Due <fld IX='0'>4/17</fld> today";
+        assert_eq!(
+            flds(raw),
+            vec![(0, Some("4/17".into()))],
+            "the cached display stops at the closing tag"
+        );
+        assert_eq!(plain_of_pieces(raw), "Due 4/17 today");
+    }
+
+    #[test]
+    fn caret_at_display_end_lands_after_the_closing_tag() {
+        let raw = "<fld IX='0'>4/17</fld> today";
+        // Plain offset 4 (after "4/17") must map past `</fld>`.
+        let at = plain_to_raw_offset(raw, 4);
+        assert!(
+            raw[..at].ends_with("</fld>"),
+            "insertion after the closing tag, got byte {at} of {raw:?}"
+        );
     }
 
     #[test]

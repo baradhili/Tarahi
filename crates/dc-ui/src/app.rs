@@ -1372,6 +1372,13 @@ impl App {
         if self.text_edit.is_some() {
             self.end_text_edit(true);
         }
+        // The Insert Field dialog closes too (#267, CodeRabbit round
+        // 1): it is bound to a SHAPE ID, and ids collide across pages
+        // — an open dialog must never resolve against a different
+        // page's same-id shape.
+        self.fields_open = None;
+        self.fields_caret = None;
+        self.fields_draft = None;
         {
             self.page_states.insert(
                 cur_id,

@@ -408,6 +408,20 @@ fn leading_number(value: &str) -> Option<f64> {
     {
         end += 1;
     }
+    // A scientific exponent belongs to the number (`1.2E-3`).
+    if end < bytes.len() && (bytes[end] == b'e' || bytes[end] == b'E') {
+        let mut exp_end = end + 1;
+        if exp_end < bytes.len() && (bytes[exp_end] == b'-' || bytes[exp_end] == b'+') {
+            exp_end += 1;
+        }
+        let digits_start = exp_end;
+        while exp_end < bytes.len() && bytes[exp_end].is_ascii_digit() {
+            exp_end += 1;
+        }
+        if exp_end > digits_start {
+            end = exp_end;
+        }
+    }
     let tok = &value[start..end];
     if tok.is_empty()
         || !tok.chars().any(|c| c.is_ascii_digit())
@@ -436,7 +450,9 @@ fn parse_date(value: &str) -> Option<DateParts> {
     if bytes.len() >= 10
         && bytes[0..4].iter().all(u8::is_ascii_digit)
         && bytes[4] == b'-'
+        && bytes[5..7].iter().all(u8::is_ascii_digit)
         && bytes[7] == b'-'
+        && bytes[8..10].iter().all(u8::is_ascii_digit)
     {
         let y: i32 = value[0..4].parse().ok()?;
         let mo: u32 = value[5..7].parse().ok()?;
@@ -547,20 +563,65 @@ fn weekday_name(d: &DateParts) -> &'static str {
 /// An Office `{{…}}` date picture: the standard token set
 /// (`aaaa`-class locale tokens outside it stay literal).
 fn date_picture(d: &DateParts, pic: &str) -> String {
-    let mut out = String::new();
+    // Tokenize once so an `m`-run can see its neighbors: minutes
+    // beside a time token (`HH:mm`, `mm:ss`), months otherwise
+    // (`m/d/yy`) — the [MS] format-picture rule.
+    let mut toks: Vec<(String, usize)> = Vec::new();
     let mut rest = pic;
     while !rest.is_empty() {
         let (tok, len) = next_date_token(rest);
-        match tok {
+        // The advance MUST come from the branch taken — `len` is 0
+        // for a literal char, and advancing by it would loop forever
+        // (the review round's OOM: the kernel SIGKILLed the test
+        // binary).
+        let adv = match tok {
             Some(t) => {
-                out.push_str(&expand_date_token(d, t));
-                rest = &rest[len..];
+                toks.push((t.to_string(), len));
+                len
             }
             None => {
                 let ch = rest.chars().next().unwrap();
-                out.push(ch);
-                rest = &rest[ch.len_utf8()..];
+                toks.push((ch.to_string(), ch.len_utf8()));
+                ch.len_utf8()
             }
+        };
+        rest = &rest[adv.min(rest.len())..];
+    }
+    let mut out = String::new();
+    for (i, (t, _)) in toks.iter().enumerate() {
+        if t.chars().all(|c| c == 'm') {
+            // Minutes beside a time token — across one separator
+            // (`HH:mm`, `mm:ss`); months otherwise (`m/d/yy`).
+            let is_sep = |nt: &str| !nt.is_empty() && nt.chars().all(|c| ":.-/ ".contains(c));
+            let mut time_neighbor = false;
+            for dir in [-1isize, 1] {
+                let mut k = i as isize + dir;
+                let mut crossed_sep = false;
+                while k >= 0 && (k as usize) < toks.len() {
+                    let (nt, _) = &toks[k as usize];
+                    let first = nt.chars().next().unwrap_or(' ');
+                    if "hHs".contains(first) {
+                        time_neighbor = true;
+                        break;
+                    }
+                    if !crossed_sep && is_sep(nt) {
+                        crossed_sep = true;
+                        k += dir;
+                        continue;
+                    }
+                    break;
+                }
+            }
+            let expanded = match (t.len(), time_neighbor) {
+                (1, true) => format!("{}", d.mi),
+                (2, true) => format!("{:02}", d.mi),
+                (1, false) => format!("{}", d.mo),
+                (2, false) => format!("{:02}", d.mo),
+                _ => month_name(d)[..t.len().min(3)].to_string(),
+            };
+            out.push_str(&expanded);
+        } else {
+            out.push_str(&expand_date_token(d, t));
         }
     }
     out
@@ -573,7 +634,10 @@ fn next_date_token(rest: &str) -> (Option<&str>, usize) {
     let Some(c0) = rest.chars().next() else {
         return (None, 0);
     };
-    if !"MdDyyhHst".contains(c0) {
+    // Lowercase `m` IS a date letter (month/minute per context) —
+    // omitting it tokenized `mm` as two literal `m`s (the review
+    // round's `{{HH:mm}}` → `13:55` bug).
+    if !"MdDymhHst".contains(c0) {
         return (None, 0);
     }
     let len = rest
@@ -782,6 +846,30 @@ mod tests {
         assert_eq!(field_picture(39), "@+");
         assert_eq!(field_picture(200), "{<200>}");
         assert_eq!(field_picture(202), "{<202>}");
+    }
+
+    #[test]
+    fn month_vs_minute_m_runs() {
+        // `{{m/d/yy}}` renders the MONTH (CodeRabbit round 1).
+        assert_eq!(
+            format_value("2014-05-15T00:00:00", None, "{{m/d/yy}}", U),
+            "5/15/14"
+        );
+        // `mm` beside a time token is minutes.
+        assert_eq!(
+            format_value("2014-05-15T13:07:00", None, "{{HH:mm}}", U),
+            "13:07"
+        );
+    }
+
+    #[test]
+    fn malformed_date_prefix_does_not_panic() {
+        assert_eq!(format_value("2024-01-1é", None, "c", U), "2024-01-1é");
+    }
+
+    #[test]
+    fn scientific_notation_parses() {
+        assert_eq!(format_value("1.2E-3", Some("IN"), "esc(8)", U), "0.001");
     }
 
     #[test]

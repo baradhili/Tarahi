@@ -1073,7 +1073,8 @@ impl<'a> Parser<'a> {
             // ---- #267 field set ----
             // INDEX(index, list [, delimiter]): 0-based token pick —
             // the corpus's `INDEX(0,INDEX(0,MASTERNAME(),":"),".")`
-            // master-name split. Delimiter defaults to ",".
+            // master-name split. The omitted/empty delimiter is ";"
+            // ([MS-Learn] INDEX function).
             "INDEX" => {
                 if args.len() < 2 || args.len() > 3 {
                     return Err("INDEX takes two or three arguments".into());
@@ -1083,9 +1084,9 @@ impl<'a> Parser<'a> {
                 let delim = args
                     .get(2)
                     .map(|v| v.clone().coerce_str())
-                    .unwrap_or_else(|| ",".to_string());
+                    .unwrap_or_else(|| ";".to_string());
                 let delim = if delim.is_empty() {
-                    ",".to_string()
+                    ";".to_string()
                 } else {
                     delim
                 };
@@ -1228,7 +1229,12 @@ impl<'a> Parser<'a> {
                     .fctx
                     .map_or(crate::fieldfmt::UnitSystem::Us, |c| c.units);
                 let converted = match (&unit_in, &unit_out) {
-                    (Some(i), Some(o)) => convert_units(&v, i, o),
+                    // Only the input side converts here — to INTERNAL
+                    // INCHES. The output-unit hint below performs the
+                    // single remaining conversion; pre-converting to
+                    // the output unit made format_value convert twice
+                    // (FORMATEX(1,"0.00u","in","cm") → 6.45cm).
+                    (Some(i), Some(_)) => convert_units(&v, i),
                     _ => v,
                 };
                 let hint: Option<String> = unit_out.as_deref().map(str::to_ascii_uppercase);
@@ -1461,23 +1467,23 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// FORMATEX's explicit unit conversion: a numeric value expressed in
-/// `unit_in`, re-expressed in `unit_out` (both length-unit codes).
-/// Non-numeric values and unknown units pass through unchanged.
-fn convert_units(value: &str, unit_in: &str, unit_out: &str) -> String {
+/// FORMATEX's input-unit conversion: a numeric value expressed in
+/// `unit_in`, re-expressed as INTERNAL INCHES (the formatter's hub
+/// unit — its output-unit hint performs the one remaining
+/// conversion). Non-numeric values and unknown units pass through
+/// unchanged.
+fn convert_units(value: &str, unit_in: &str) -> String {
     let Some(v) = value.trim().parse::<f64>().ok() else {
         return value.to_string();
     };
-    let (Some(i), Some(o)) = (
-        crate::fieldfmt::Unit::from_u(&unit_in.to_ascii_uppercase()),
-        crate::fieldfmt::Unit::from_u(&unit_out.to_ascii_uppercase()),
-    ) else {
-        return value.to_string();
-    };
-    // Internal (inches) is the hub: each unit's label factor is its
-    // inches multiplier, so invert the input by dividing.
-    let inches = v / i.inches_to(1.0);
-    format!("{}", o.inches_to(inches))
+    match crate::fieldfmt::Unit::from_u(&unit_in.to_ascii_uppercase()) {
+        Some(i) => {
+            // Each unit's factor is its inches multiplier, so invert
+            // the input by dividing.
+            format!("{}", v / i.inches_to(1.0))
+        }
+        None => value.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -2055,6 +2061,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v, Value::Str(String::new()));
+
+        // The omitted delimiter is ";" ([MS-Learn] INDEX function;
+        // CodeRabbit round 1).
+        assert_eq!(
+            eval_field("INDEX(1,\"red;blue\")", &env, &strs, None).unwrap(),
+            Value::Str("blue".to_string())
+        );
     }
 
     #[test]
@@ -2161,6 +2174,12 @@ mod tests {
         assert_eq!(
             eval_field("FORMATEX(1,\"{{DD}}\",,,1033)", &env, &strs, None).unwrap(),
             Value::Str("Su".to_string())
+        );
+        // Explicit unit conversion converts ONCE (CodeRabbit round 1:
+        // 1 in → 2.54 cm, not the double-converted 6.45).
+        assert_eq!(
+            eval_field("FORMATEX(1,\"0.00u\",\"in\",\"cm\")", &env, &strs, None).unwrap(),
+            Value::Str("2.54cm.".to_string())
         );
     }
 

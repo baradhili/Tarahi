@@ -305,7 +305,10 @@ fn render_field(
                     .filter(|f| !f.is_empty() && *f != "No Formula" && *f != "Inh")
                     .and_then(|f| formula::eval_field(f, env, strs, fctx).ok())
                     .and_then(|v| value_string(&v))
-                    .or_else(|| c.v.clone());
+                    // An empty cached V (the corpus's common `V=''`)
+                    // is NO value — the marker's own display
+                    // outranks it.
+                    .or_else(|| c.v.clone().filter(|v| !v.is_empty()));
             (v, c.u.as_deref())
         }
         None => (None, None),

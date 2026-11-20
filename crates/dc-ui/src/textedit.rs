@@ -66,6 +66,10 @@ pub struct TextEditSession {
     pub caret: usize,
     /// #267: field insertions parked for the commit.
     pub field_marks: Vec<FieldMark>,
+    /// A caret the next frame must push into the WIDGET (a parked
+    /// field advances the caret programmatically; egui's own cursor
+    /// stays at the old position until something syncs it).
+    pub pending_caret: Option<usize>,
     /// The draft as of the last frame (mark-anchor bookkeeping).
     last_draft: String,
     /// View state (zoom, pan, fit flags) captured on entry — restored
@@ -89,6 +93,7 @@ impl TextEditSession {
             draft,
             caret: 0,
             field_marks: Vec::new(),
+            pending_caret: None,
             prev_view: view.clone(),
             zoomed_in: false,
             focus_requested: false,
@@ -107,11 +112,23 @@ impl TextEditSession {
         let suffix = self.draft.chars().skip(at).collect::<String>();
         self.draft = format!("{prefix}{}{suffix}", mark.display);
         at = prefix.chars().count();
+        let inserted = mark.display.chars().count();
+        // Existing marks at/after the insertion point shift by the
+        // inserted characters — `last_draft` resets below, so
+        // `sync_frame` will never see this change to do it (CodeRabbit
+        // round 1).
+        for m in &mut self.field_marks {
+            if m.offset >= at {
+                m.offset += inserted;
+            }
+        }
         self.field_marks.push(FieldMark { offset: at, ..mark });
         self.last_draft = self.draft.clone();
         // Park at the end of what was inserted — typing continues
-        // after the field.
-        self.caret = at + self.field_marks.last().unwrap().display.chars().count();
+        // after the field, and the WIDGET cursor must follow (the
+        // next frame pushes `pending_caret` into the editor state).
+        self.caret = at + inserted;
+        self.pending_caret = Some(self.caret);
     }
 
     /// Record the frame's caret and shift mark anchors through the
@@ -139,15 +156,22 @@ impl TextEditSession {
         }
         let replaced_old = old.len() - p - s;
         let delta = new.len() as isize - old.len() as isize;
-        for m in &mut self.field_marks {
+        // An edit that OVERLAPS a mark's span DISSOLVES the field (its
+        // display becomes plain text — Visio's atomicity: editing
+        // inside a field breaks it). Keeping the mark with its full
+        // display length would eat ADJACENT text at commit (CodeRabbit
+        // round 1: delete the display of "aXYZb" → "ab", the retained
+        // mark still replaced 3 chars).
+        let edit_lo = p;
+        let edit_hi = p + replaced_old;
+        self.field_marks.retain(|m| {
             let end = m.offset + m.display.chars().count();
+            m.offset >= edit_hi || end <= edit_lo
+        });
+        for m in &mut self.field_marks {
             if m.offset >= p + replaced_old {
                 // Edit landed after the mark: it shifts by the delta.
                 m.offset = (m.offset as isize + delta) as usize;
-            } else if end > p {
-                // Edit landed inside the chunk: the mark pins to the
-                // chunk start (the field is atomic).
-                m.offset = p;
             }
             // Before the edit: unchanged.
         }
@@ -416,7 +440,21 @@ pub fn show_overlay(
     let resp = ui.put(place, edit);
 
     // #267: capture the caret (plain-char offset) and shift any
-    // parked field marks through this frame's draft diff.
+    // parked field marks through this frame's draft diff. A parked
+    // field's programmatic caret lands FIRST — the widget's own
+    // cursor would otherwise still sit at the old position and typing
+    // would go in ahead of the inserted display.
+    if let Some(c) = session.pending_caret.take() {
+        if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), id) {
+            let cursor = egui::text::CCursor::new(c);
+            state.cursor.set_char_range(Some(egui::text::CCursorRange {
+                primary: cursor,
+                secondary: cursor,
+                h_pos: None,
+            }));
+            state.store(ui.ctx(), id);
+        }
+    }
     let caret = egui::text_edit::TextEditState::load(ui.ctx(), id)
         .and_then(|st| st.cursor.char_range())
         .map(|r| r.primary.index.0);

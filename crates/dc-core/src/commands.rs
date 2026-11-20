@@ -356,31 +356,42 @@ fn field_dependents(
     ) {
         for s in shapes {
             let root = root.or(Some(s.id));
+            // The shape carries markers locally, or renders them via
+            // master mirroring — an instance with no local text still
+            // paints its master's subtree, whose children keep their
+            // own `<fld>` text (CodeRabbit round 1).
+            let carries_flds = |sh: &vsdx::model::Shape| {
+                fn any_fld(sh: &vsdx::model::Shape) -> bool {
+                    sh.sheet
+                        .text_raw
+                        .as_deref()
+                        .is_some_and(|r| r.contains("<fld"))
+                        || sh.sub_shapes.iter().any(any_fld)
+                }
+                any_fld(sh)
+            };
             if s.sheet
                 .text_raw
                 .as_deref()
                 .is_some_and(|r| r.contains("<fld"))
+                || doc.instance_source(s, &[]).is_some_and(carries_flds)
             {
                 let mut formulas = String::new();
+                let mut push_row = |row: &vsdx::model::Row| {
+                    if let Some(f) = row.cell("Value").and_then(|c| c.f.as_deref()) {
+                        formulas.push_str(f);
+                        formulas.push('\n');
+                    }
+                };
                 for sec in s.sheet.sections_named("Field") {
                     for row in &sec.rows {
-                        if let Some(c) = row.cell("Value") {
-                            if let Some(f) = &c.f {
-                                formulas.push_str(f);
-                                formulas.push('\n');
-                            }
-                        }
+                        push_row(row);
                     }
                 }
                 if let Some(src) = doc.instance_source(s, &[]) {
                     for sec in src.sheet.sections_named("Field") {
                         for row in &sec.rows {
-                            if let Some(c) = row.cell("Value") {
-                                if let Some(f) = &c.f {
-                                    formulas.push_str(f);
-                                    formulas.push('\n');
-                                }
-                            }
+                            push_row(row);
                         }
                     }
                 }
@@ -1113,6 +1124,33 @@ impl crate::Command for InsertField {
             let s = sheet_mut(doc, &scope)?;
             s.section("Field", 0).cloned()
         };
+        // The master root's Field-row IXs (resolved before the mutable
+        // borrow): a fresh LOCAL row must not shadow them — markers
+        // already in the text resolve inherited rows by IX, and a
+        // colliding local row would silently re-point them (CodeRabbit
+        // round 1).
+        let inherited_max = (|| -> Option<i64> {
+            let Scope::Shape {
+                page: pid,
+                shape: sid,
+            } = &scope
+            else {
+                return None;
+            };
+            let sh = doc
+                .pages
+                .iter()
+                .find(|p| p.id == *pid)
+                .and_then(|p| crate::scope::find_shape(&p.shapes, *sid))?;
+            let src = doc.instance_source(sh, &[])?;
+            Some(
+                src.sheet
+                    .section("Field", 0)
+                    .map(|sec| sec.rows.iter().map(|r| r.ix).max().unwrap_or(-1))
+                    .unwrap_or(-1),
+            )
+        })()
+        .unwrap_or(-1);
         let s = sheet_mut(doc, &scope)?;
         self.old = Some((old_section, s.text.clone(), s.text_raw.clone()));
 
@@ -1154,7 +1192,14 @@ impl crate::Command for InsertField {
                 _ => None,
             })
             .unwrap();
-        let ix = sec.rows.iter().map(|r| r.ix).max().unwrap_or(-1) + 1;
+        let ix = sec
+            .rows
+            .iter()
+            .map(|r| r.ix)
+            .max()
+            .unwrap_or(-1)
+            .max(inherited_max)
+            + 1;
         let str_cell = |v: &str, f: &str| Cell {
             v: Some(v.to_string()),
             u: Some("STR".into()),
@@ -1190,7 +1235,21 @@ impl crate::Command for InsertField {
             ),
             None => format!("<fld IX='{ix}'/>"),
         };
-        let raw = s.text_raw.clone().unwrap_or_default();
+        // A shape with plain text but no raw (built in code) seeds the
+        // raw from its escaped text — an empty raw would DELETE the
+        // plain text at the recomputation below (CodeRabbit round 1).
+        let raw = match s.text_raw.clone() {
+            Some(raw) => raw,
+            None => s
+                .text
+                .clone()
+                .map(|t| {
+                    t.replace('&', "&amp;")
+                        .replace('<', "&lt;")
+                        .replace('>', "&gt;")
+                })
+                .unwrap_or_default(),
+        };
         let (head, tail) = match insert {
             FieldInsert::End => (raw.len(), raw.len()),
             FieldInsert::RawOffset(at) => (at.min(raw.len()), at.min(raw.len())),

@@ -1544,7 +1544,7 @@ fn render_shape<'a>(
         }
         render_shape_local(doc, sub, &chain, part, skip_text, greek, cull, fields, out);
     }
-    mirror_master(doc, s, &chain, width, height, greek, out);
+    mirror_master(doc, s, &chain, width, height, greek, fields, out);
 
     emit_text(
         doc,
@@ -1616,7 +1616,7 @@ fn render_shape_local<'a>(
         }
         render_shape_local(doc, sub, &chain, part, skip_text, greek, cull, fields, out);
     }
-    mirror_master(doc, s, &chain, width, height, greek, out);
+    mirror_master(doc, s, &chain, width, height, greek, fields, out);
     // Group-local rendering applies no flip scale of its own, so the text
     // needs no flip compensation here.
     emit_text(
@@ -1658,6 +1658,7 @@ fn multi_root_master(doc: &Document, s: &Shape) -> bool {
 ///   emitting a corrective transform per child. Cells we cannot
 ///   evaluate fall back to the uniform instance/master scale, so masters
 ///   without authored formulas keep their historical rendering.
+#[allow(clippy::too_many_arguments)] // the render walk's context rides one flat set
 fn mirror_master(
     doc: &Document,
     s: &Shape,
@@ -1665,6 +1666,7 @@ fn mirror_master(
     width: f64,
     height: f64,
     greek: Option<&GreekCtx>,
+    fields: Option<&crate::fields::FieldsCtx<'_>>,
     out: &mut String,
 ) {
     if !s.sub_shapes.is_empty() {
@@ -1715,7 +1717,7 @@ fn mirror_master(
             // Master-canvas roots of a multi-root master: the union
             // bbox maps into the instance rect, which the node's own
             // ink box bounds — no cull of their own (#236).
-            render_shape_local(doc, r, &[], mpart, None, greek, None, None, out);
+            render_shape_local(doc, r, &[], mpart, None, greek, None, fields, out);
         }
         let _ = writeln!(out, "</g>");
     } else if let Some(root) = m.shapes.first() {
@@ -1742,7 +1744,7 @@ fn mirror_master(
             // Mirrored master children map into the instance's local
             // frame, bounded by the node's own ink box — no cull of
             // their own (#236).
-            render_shape_local(doc, sub, chain, mpart, None, greek, None, None, out);
+            render_shape_local(doc, sub, chain, mpart, None, greek, None, fields, out);
             if wrapper.is_some() {
                 let _ = writeln!(out, "</g>");
             }
