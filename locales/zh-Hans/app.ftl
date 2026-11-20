@@ -7,23 +7,17 @@ a-ruler-subdivision = 标尺的一个刻度
 a-shape-intersection = 形状的一个交点
 about-name = Tarahi
 about-tarahi = 关于 Tarahi
-# $what (String) - 操作名称
-# $why (String) - 推迟原因
 action-deferred = { $what }已推迟：{ $why }
-# $what (String) - 操作名称
 action-display-only = { $what }仅用于显示
 active = 活动窗口
 activex-era-likely-cut-scope-cal = ActiveX 时代功能——很可能裁剪（#252 的范围裁定）
 add = 添加
 add-a-comment = 添加批注
-# $next_ix (Number) - 参数
-# $hit (Number) - 参数
 add-connection-point-next-ix-on = 已在形状 { $hit } 上添加连接点 { $next_ix }
 add-in-hosting-arrives-with-m8 = 加载项托管将在 M8 提供
 add-in-manager = 加载项管理器
 add-in-manager-m8 = 加载项管理器 — M8
 add-ins = 加载项
-# $name (String) - 参数
 add-name-prop-row-test = 添加 { $name } 属性行（测试）
 add-to-new-container = 添加到新容器
 add-to-quick-shapes = 添加到快速形状
@@ -57,7 +51,6 @@ aligning-to-the-page = 正在相对页面对齐
 alignment-and-spacing-hints-whil = 拖动时显示对齐和间距提示
 alignment-boxes = 对齐框
 all-changes-saved = 所有更改已保存
-# $page_count (Number) - 参数
 all-pages-page-count = 所有页面（{ $page_count }）
 already-aligned = 已对齐
 applies-to-the-ribbon-menus-and = 适用于功能区、菜单和对话框。绘图文本不受影响。
@@ -93,12 +86,8 @@ bring-forward-planned = 上移一层 — 计划中
 bring-to-front = 置于顶层
 browse = 浏览…
 browse-for-an-existing-visio-pac = 浏览现有的 Visio 包。
-# $ok (Number) - 提取成功数
-# $failed (Number) - 失败数
 builtin-extracted-summary = 内置模具：已提取 { $ok } 个，失败 { $failed } 个——正在使用嵌入式副本
-# $n (Number) - 提取的文件数
 builtin-extracted-to = 已将 { $n } 个内置模具文件提取到“My Shapes/Built-ins”
-# $title (String) - 模具标题
 builtin-stencil-failed = 内置模具加载失败：{ $title }
 bullets = 项目符号
 bullets-planned = 项目符号 — 计划中
@@ -108,8 +97,6 @@ calibri = Calibri
 callout = 标注
 callouts-planned = 标注 — 计划中
 cancel = 取消
-# $name (String) - 单元格名称
-# $f (String) - 保护公式
 cell-is-formula-driven = { $name }由公式驱动（{ $f }）
 center = 居中
 chart = 图表
@@ -127,9 +114,7 @@ clipboard-probe-failed = 剪贴板探测失败
 close = 关闭
 close-group = × 关闭组合
 close-stencil = 关闭模具...
-# $name (String) - 参数
 closed-switched-to-name = 已关闭；已切换到 { $name }
-# $title (String) - 参数
 closed-title = 已关闭 { $title }
 code = 代码
 color = 颜色
@@ -143,18 +128,13 @@ comment-add = 添加批注
 comment-add-inline = 添加批注
 comment-new = 新建批注
 comments = 批注
-# $target (Number) - 参数
-# $count (Number) - 参数
 comments-on-shape-target-count = 形状 { $target } 上的批注（{ $count }）
 comments-planned = 批注 — 计划中
 configure-snap-and-glue-targets = 配置对齐和粘附目标
 conn-point = 连接点
 conn-points = 连接点
-# $ix (Number) - 参数
 connection-point-ix-is-inherited = 连接点 { $ix } 继承自主形状——请在该主形状中编辑
-# $ix (Number) - 参数
 connection-point-ix-removed = 连接点 { $ix } 已移除
-# $ix (Number) - 参数
 connection-point-ix-selected-del = 连接点 { $ix } 已选定（按 Delete 可将其移除）
 connection-point-next-ix-added-t = 连接点 { $next_ix } 已添加到形状 { $hit }
 connection-point-tool-off = 连接点工具已关闭
@@ -163,16 +143,11 @@ connector-drawn-free-ends = 已绘制连接符（两端自由）
 connector-end-released = 连接符端点已释放
 connector-glued-at-both-ends = 连接符两端已粘附
 connector-glued-at-one-end = 连接符一端已粘附
-# $id (Number) - 形状 ID
 connector-glued-shape = 连接符已粘附到形状 { $id }
-# $id (Number) - 形状 ID
 connector-glued-shape-point = 连接符已粘附到形状 { $id } 的连接点
 connector-is-glued-at-both-ends = 连接符两端均已粘附——拖出对齐半径可释放，或拖动端点及其形状
-# $reason (String) - 参数
 connector-move-refused-reason = 连接符移动被拒绝：{ $reason }
-# $release_ends (Number) - 参数
 connector-moved-release-ends-glu = 连接符已移动——{ $release_ends } 个粘附端已拖出对齐半径并释放
-# $id (Number) - 形状 ID
 connector-stays-glued = 连接符保持粘附到形状 { $id }
 connector-tool-drag-from-one-sha = 连接符工具：从一个形状拖到另一个形状（按 Esc 结束）
 connector-tool-status = 连接符工具——在形状或点之间绘制连接符（按 Esc 结束）
@@ -182,9 +157,7 @@ connpoint-tool-status = 连接点工具：单击形状以添加连接点
 container = 容器
 container-flyout =   容器  ›
 container-margins-planned = 容器边距 — 计划中
-# $style (String) - 参数
 container-style-style-applied = 已应用容器样式 { $style }
-# $style (String) - 参数
 container-style-style-not-found = 未找到容器样式 { $style }
 container-styles = 容器样式
 container-tools = 容器工具
@@ -195,16 +168,11 @@ contgal-prompt = 用容器样式包裹选定内容：
 controls = 控件
 copy = 复制
 copy-as-picture = 复制为图片
-# $e (String) - 参数
 copy-as-picture-failed-e = 复制为图片失败：{ $e }
 copy-as-picture-menu = 复制为图片…
 copy-picture = 复制图片
 copy-planned = 复制 — 计划中
-# $address (String) - 参数
-# $e (String) - 参数
 could-not-open-address-e = 无法打开 { $address }：{ $e }
-# $path (String) - 文件路径
-# $e (String) - 错误文本
 could-not-read-path = 无法读取 { $path }：{ $e }
 create-a-background-page-planned = 新建背景页 — 计划中（“设计 ▸ 背景”现已可指定）
 create-a-stencil-planned = 新建模具 — 计划中
@@ -214,7 +182,6 @@ crow-s-foot = 鸦爪
 crow-s-foot-tick = 鸦爪 + 刻度
 current = 当前：
 current-page = 当前页面
-# $row_ix (Number) - 参数
 curve-control-customized-row-row = 曲线控件已自定义——第 { $row_ix } 行的布线公式已替换为拖动值
 curved-connector = 曲线连接符
 custom = 自定义
@@ -232,8 +199,6 @@ date-time = 日期和时间
 date-time-field-planned = 日期和时间域 — 计划中
 decrease-indent = 减少缩进
 decrease-indent-planned = 减少缩进 — 计划中
-# $entry (String) - 默认模具条目
-# $e (String) - 错误文本
 default-stencil-failed = 默认模具 { $entry } 加载失败：{ $e }
 define-shape-data = 定义形状数据
 define-shape-data-m6 = 定义形状数据（M6）
@@ -275,7 +240,6 @@ double-tick-ring = 双刻度 + 圆环
 drawing-aids = 绘图辅助
 drawing-explorer = 绘图资源管理器
 drawing-explorer-planned = 绘图资源管理器 — 计划中
-# $n (Number) - 未命名文档编号
 drawing-n = 绘图{ $n }
 drawing-scale-planned = 绘图比例 — 计划中
 drawings-you-open-will-appear-he = 在此处显示打开的绘图。
@@ -290,18 +254,14 @@ edit-stencil = 编辑模具
 edit-text = 编辑文本…
 edit-the-selected-shape-s-hyperl = 编辑选定形状的超链接 (Ctrl+K)
 editing = 编辑中
-# $shape_id (Number) - 参数
 editing-text-of-shape-shape-id = 正在编辑形状 { $shape_id } 的文本
 effects = 效果
 ellipse-tool = 椭圆工具
 ellipse-tool-planned = 椭圆工具 — 计划中
 endpoint-begin = 起点
-# $reason (String) - 参数
 endpoint-drag-refused-reason = 端点拖动被拒绝：{ $reason }
 endpoint-end = 终点
-# $hit (String) - 本地化的对齐目标文本
 endpoint-glued-to = 端点已粘附到{ $hit }
-# $name (String) - 参数
 endpoint-moved-but-name-is-formu = 端点已移动，但 { $name } 由公式驱动并保持不变
 enter-a-field-formula-first = 请先输入域公式。
 field-cat-custom-formula = 自定义公式
@@ -349,7 +309,6 @@ select-a-shape-to-insert-a-field = 选择一个形状以插入域。
 
 even-horizontal-spacing-3-shapes = 水平等距分布（3 个或更多形状）
 even-vertical-spacing-3-shapes = 垂直等距分布（3 个或更多形状）
-# $f (String) - 参数
 eventdblclick-f-macro-and-naviga = EventDblClick “{ $f }”——宏和导航操作将在后期里程碑提供
 export-entry-desc = 以其他格式保存绘图
 export-failed-e = 导出失败：{ $e }
@@ -361,7 +320,6 @@ export-png-hint = 按所选密度导出的位图图像
 export-save-as-label = 另存为
 export-start = 导出…
 export-svg-hint = 矢量图形——渲染器自身的格式
-# $n (Number) - 写入的文件数
 exported-files =
     { $n ->
        *[other] 已导出 { $n } 个文件。
@@ -405,9 +363,7 @@ foreground = 前景
 fork-ring = 分叉 + 圆环
 format-painter = 格式刷
 format-painter-cancelled = 格式刷已取消
-# $sid (Number) - 参数
 format-painter-click-a-shape-to = 格式刷：单击形状以应用形状 { $sid } 的格式
-# $sid (Number) - 参数
 format-painter-click-shapes-to-a = 格式刷：单击形状以应用形状 { $sid } 的格式（按 Esc 结束）
 format-shape = 设置形状格式
 format-shape-fill = 设置形状填充格式…
@@ -417,9 +373,7 @@ format-shape-text = 设置形状文本格式…
 freeform = 任意多边形
 freeform-drag-on-the-page-to-dra = 任意多边形：在页面上拖动以绘制手绘几何（按 Esc 结束）
 freeform-off = 任意多边形工具已关闭
-# $id (Number) - 参数
 freeform-shape-id = 任意多边形形状 { $id }
-# $segs (Number) - 参数
 freeform-shape-created-segs-segm =
     { $segs ->
        *[other] 已创建任意多边形形状（{ $segs } 段——拖动顶点手柄可编辑）
@@ -433,26 +387,20 @@ gradient-radial = 径向渐变
 gradient-vert = 垂直渐变
 grid = 网格
 group = 组合
-# $names (String) - 拼接的页面/组合名称
 group-breadcrumb = 页面 › { $names }
 group-flyout =   组合  ›
 group-needs-2-shapes-on-the-page = 组合需要页面上有两个或更多形状
 group-the-selection-one-undo-ste = 组合选定内容（一步撤消；可嵌套进现有组合）
 grow-with-the-members-planned = 随成员增大 — 计划中
-# $v (String) - 参考线坐标
 guide-added-horizontal = 已添加位于 { $v } 的水平参考线
-# $v (String) - 参考点坐标对
 guide-added-point = 已添加位于 { $v } 的参考点
-# $v (String) - 参考线坐标
 guide-added-vertical = 已添加位于 { $v } 的垂直参考线
-# $id (Number) - 参数
 guide-id = 参考线 { $id }
 guides = 参考线
 guides-planned-113-s-objects-exi = 参考线 — 计划中（#113 的对象已存在；开关为计划项）
 heading-style = 标题样式
 heading-style-gallery-planned = 标题样式库 — 计划中
 height = 高度
-# $g (String) - 保护公式
 height-not-resized-guard = 高度未调整：{ $g }（仅调整宽度）
 help-about = 帮助 / 关于
 high-192-dpi = 高（192 dpi）
@@ -484,13 +432,9 @@ italic-planned = 倾斜 — 计划中
 jump-size = 跳跃大小
 justify = 两端对齐
 justify-planned = 两端对齐 — 计划中
-# $key (String) - 键提示按键
 keytip-unavailable = { $key } 不可用
-# $label (String) - 参数
 label-a-choice-cannot-contain = { $label }：选项不能包含“;”
-# $label (String) - 参数
 label-dialog-planned-for-a-later = { $label }对话框 — 计划中（后期里程碑）
-# $label (String) - 参数
 label-not-a-number = { $label }：不是数字
 landscape = 横向
 language = 语言
@@ -500,17 +444,13 @@ language-settings-planned = 语言设置 — 计划中
 lasso-select = 套索选择
 lasso-select-drag-a-freehand-tra = 套索选择：在形状周围拖出徒手轨迹（按 Esc 结束）
 lasso-select-off = 套索选择已关闭
-# $n (Number) - 参数
 lasso-selected-n-shape-s =
     { $n ->
        *[other] 套索选择了 { $n } 个形状
     }
 last-page = 最后一页
 layer = 图层
-# $id (Number) - 图层 ID
-# $e (String) - 错误文本
 layer-composite-failed = 图层 { $id }：{ $e }
-# $ix (Number) - 图层行索引
 layer-ix-fallback = 图层 { $ix }
 layout = 布局
 layout-options = 布局选项
@@ -522,14 +462,11 @@ legend = 图例
 legends-m6-visio-paints-legend-o = 图例（M6；Visio 将“图例”放在“插入”而非“数据”下）
 line = 线条
 line-color-label = 线条颜色
-# $factor (Number) - 跳跃系数
 line-jump-factor-set = 线条跳跃大小 ×{ $factor }
 line-jumps = 线条跳跃
 line-jumps-hidden = 线条跳跃已隐藏
 line-jumps-shown = 线条跳跃已显示
-# $reason (String) - 参数
 line-move-refused-reason = 线条移动被拒绝：{ $reason }
-# $name (String) - 参数
 line-moved-but-name-is-formula-d = 线条已移动，但 { $name } 由公式驱动并保持不变
 line-tool = 线条工具
 line-tool-planned = 线条工具 — 计划中
@@ -538,7 +475,6 @@ link-data-to-shapes = 将数据链接到形状
 links = 链接
 location = 位置
 lock-container = 锁定容器
-# $lock (String) - 参数
 lock-is-set-protection-section = 已设置 { $lock }（“保护”节）
 lock-the-container-against-membe = 锁定容器以禁止成员编辑 — 计划中
 long-arrow = 长箭头
@@ -552,9 +488,7 @@ margins = 边距
 markup = 修订
 markup-tracking-planned-no-marku = 修订跟踪 — 计划中（尚无修订模型）
 master = 主形状
-# $id (Number) - 主形状 ID
 master-armed-click-place = 主形状 { $id } 已就绪——单击画布以放置
-# $mid (Number) - 参数
 master-mid = 主形状 { $mid }
 member-highlight-off = 成员突出显示已关闭
 member-highlight-on = 成员突出显示已开启
@@ -565,7 +499,6 @@ mm-in = 毫米/英寸
 more-shapes = 更多形状
 move-container-and-members = 移动容器及其成员
 move-down = 下移
-# $shape_id (Number) - 参数
 move-line-endpoint-shape-shape-i = 移动线条端点（形状 { $shape_id }）
 move-shapes = 移动形状
 move-up = 上移
@@ -592,12 +525,10 @@ no-comments-on-this-shape-yet = 此形状上尚无批注。
 no-document-open = 未打开文档
 no-formula = 无公式
 no-hyperlinks-on-this-shape = 此形状上没有超链接。
-# $key (String) - 参数
 no-keytip-key = 无键提示 { $key }
 no-matching-shapes = 没有匹配的形状。
 no-picture-on-the-clipboard = 剪贴板上没有图片
 no-shapes = 无形状。
-# $q (String) - 搜索文本
 no-templates-match = 没有与“{ $q }”匹配的模板。
 none = 无
 not-saved-yet = 尚未保存
@@ -620,18 +551,14 @@ open-circle = 空心圆
 open-diamond = 空心菱形
 open-double-chevron-large = 空心双 V 形（大）
 open-existing-stencil = 打开现有模具...
-# $e (String) - 参数
 open-failed-e = 打开失败：{ $e }
-# $path (String) - 参数
 open-failed-no-pages = 打开失败：{ $path } 没有页面
 open-failed-the-load-worker-died = 打开失败：加载工作线程已终止
 open-file-cta = 打开文件…
 open-file-title = 打开文件
 open-fork = 空心分叉
-# $group_label (String) - 参数
 open-group-label = 打开{ $group_label }
 open-square = 空心方框
-# $e (String) - 错误文本
 open-stencil-failed-e = 打开模具失败：{ $e }
 open-triangle-convex-base = 空心三角形（凸底）
 open-triangle-large = 空心三角形（大）
@@ -641,19 +568,12 @@ open-triangle-small = 空心三角形（小）
 open-v-tall = 空心 V（高）
 open-vsdx-vstx-vssx-ctrl-o = 打开 .vsdx / .vstx / .vssx (Ctrl+O)
 open-wide = 空心宽 V
-# $address (String) - 超链接地址
 opened-address = 已打开 { $address }
-# $title (String) - 模具标题
 opened-builtin-metric = 已打开 { $title }（公制）
-# $title (String) - 模具标题
 opened-builtin-myshapes = 已打开 { $title }（我的形状）
-# $name (String) - 组合名称
 opened-group = 已打开组合 { $name }——按 Esc 或“关闭组合”返回
-# $path (String) - 文件路径
 opened-path = 已打开 { $path }
-# $stem (String) - 参数
 opened-stencil-stem = 已打开模具 { $stem }
-# $name (String) - 文件名
 opening-file = 正在打开 { $name }…
 operations = 运算
 options = 选项
@@ -664,11 +584,8 @@ output-file = 输出文件
 page-breaks = 分页符
 page-breaks-planned = 分页符 — 计划中
 page-name = 页面名称
-# $name (String) - 参数
 page-name-is-a-foreground-page-a = 页面 { $name } 现在重新成为前景页
-# $name (String) - 参数
 page-name-marked-as-a-background = 页面 { $name } 已标记为背景
-# $sub (String) - 子地址页面名称
 page-not-found = 未找到页面 { $sub }
 page-number = 页码
 page-number-field-planned = 页码域 — 计划中
@@ -676,20 +593,11 @@ page-setup = 页面设置
 page-setup-menu = 页面设置…
 page-size = 页面大小
 page-size-iso-ansi-presets-or-cu = 页面大小——ISO/ANSI 预设或自定义
-# $w (String) - 宽度值
-# $h (String) - 高度值
 page-size-set = 页面大小 { $w } × { $h }
-# $n (Number) - 页码，从 1 开始
-# $id (Number) - 页面 ID
 page-tab-tooltip = 第 { $n } 页（id { $id }）
 page-width = 页宽
-# $to (Number) - 参数
 paint-formatting-onto-shape-to = 将格式应用到形状 { $to }
-# $n (Number) - 参数
-# $to (Number) - 参数
 painter-cells = { $n } 个格式单元格已复制到形状 { $to }
-# $n (Number) - 参数
-# $to (Number) - 参数
 painter-cells-sticky = { $n } 个格式单元格已复制到形状 { $to }（可继续单击形状，按 Esc 结束）
 pan = 平移
 pan-off = 平移工具已关闭
@@ -697,14 +605,7 @@ pan-tip = 平移工具——拖动页面以移动视图（按 Esc 返回指针�
 paragraph = 段落
 paste = 粘贴
 pick-an-output-file-first = 请先选择输出文件
-# $w (Number) - 像素宽度
-# $h (Number) - 像素高度
-# $factor (Number) - 缩放系数
 picture-copied = 图片已复制（{ $w }×{ $h } 像素，{ $factor }×）
-# $w (Number) - 像素宽度
-# $h (Number) - 像素高度
-# $w_in (Number) - 英寸宽度
-# $h_in (Number) - 英寸高度
 picture-inserted = 图片已插入（{ $w }×{ $h } 像素，{ $w_in }×{ $h_in } 英寸）
 pictures = 图片
 pointer-tool = 指针工具
@@ -734,13 +635,11 @@ recent = 最近
 rectangle-tool = 矩形工具
 rectangle-tool-planned = 矩形工具 — 计划中
 redo-ctrl-y = 恢复 (Ctrl+Y)
-# $l (String) - 参数
 redo-l = 恢复：{ $l }
 refresh-all = 全部刷新
 release-the-members-and-delete-t = 释放成员并删除容器（一步撤消）
 remove = 移除
 remove-background-mark = 移除背景标记
-# $ix (Number) - 参数
 remove-connection-point-ix = 移除连接点 { $ix }
 remove-from-quick-shapes = 从快速形状中移除
 removed-from-quick-shapes = 已从快速形状中移除
@@ -779,15 +678,12 @@ rulers = 标尺
 save = 保存
 save-as = 另存为
 save-changes = 保存更改？
-# $name (String) - 参数
 save-changes-to-name = 是否保存对 { $name } 的更改？
 save-ctrl-s = 保存 (Ctrl+S)
-# $e (String) - 错误文本
 save-failed-e = 保存失败：{ $e }
 save-new = 保存并新建
 save-stencil = 保存模具
 save-the-stencil-planned = 保存模具 — 计划中
-# $path (String) - 文件路径
 saved-path = 已保存 { $path }
 scale = 比例
 screen-96-dpi = 屏幕（96 dpi）
@@ -811,19 +707,14 @@ select-shapes-by-type-master-or = 按类型、主形状或图层选择形状
 select-the-container-s-members-p = 选择容器的成员 — 计划中
 select-the-shapes-to-contain-fir = 请先选择要容纳的形状
 select-two-or-more-shapes-to-ali = 选择两个或更多形状以对齐
-# $label (String) - 值标签
-# $n (Number) - 匹配的形状数
 select-value-n-shapes = { $label }（{ $n ->
    *[other] { $n } 个形状
     }）
 selected-all-shapes = 已选择所有形状
-# $n (Number) - 选定的形状数
-# $crit (String) - 条件标签
 selected-n-by-criterion =
     { $n ->
        *[other] 已按{ $crit }选择 { $n } 个形状
     }
-# $shape_id (Number) - 参数
 selected-shape-shape-id = 已选择形状 { $shape_id }
 selection = 选定内容
 selection-pane = 选择窗格
@@ -843,28 +734,20 @@ shape-data-menu = 形状数据…
 shape-data-window = 形状数据窗口
 shape-data-window-m6 = 形状数据窗口（M6）
 shape-design = 形状设计
-# $dup_id (Number) - 参数
-# $sid (Number) - 参数
 shape-dup-id-connected-to-sid-au = 形状 { $dup_id } 已连接到 { $sid }（自动连接）
 shape-effects-planned = 形状效果 — 计划中
 shape-extensions = 形状延伸
 shape-fill-color = 形状填充颜色
 shape-handles = 形状手柄
-# $id (Number) - 参数
 shape-id-s-alignment-box = 形状 { $id } 的对齐框
-# $id (Number) - 参数
 shape-id-s-connection-point = 形状 { $id } 的连接点
-# $id ( Number) - 参数
 shape-id-s-extension = 形状 { $id } 的延伸线
-# $id (Number) - 参数
 shape-id-s-handle = 形状 { $id } 的手柄
-# $id (Number) - 参数
 shape-id-s-vertex = 形状 { $id } 的顶点
 shape-intersections = 形状交点
 shape-protection-planned = 形状保护 — 计划中
 shape-report = 形状报表
 shape-reports-planned = 形状报表 — 计划中
-# $sid (Number) - 参数
 shape-sid = 形状 { $sid }
 shape-styles = 形状样式
 shape-text = 形状文本
@@ -872,7 +755,6 @@ shape-type = 形状类型
 shape-vertices = 形状顶点
 shapes = 形状
 shapesheet = ShapeSheet
-# $name (String) - 参数
 shapesheet-name = ShapeSheet — { $name }
 share = 共享
 share-a-copy = 共享副本…
@@ -914,7 +796,6 @@ ss-section-1d-endpoints = 一维端点
 ss-section-connection-points = 连接点
 ss-section-control-points = 控制点
 ss-section-fill-gradient-stops = 填充渐变停止点
-# $ix (Number) - 几何节索引
 ss-section-geometry-n = 几何 { $ix }
 ss-section-layer-membership = 图层成员资格
 ss-section-line-gradient-stops = 线条渐变停止点
@@ -940,7 +821,6 @@ stencil-editing-planned-scope-ca = 模具编辑 — 计划中（#252 的范围�
 stencil-fallback = 模具
 stencil-settings = 模具设置
 stencil-settings-planned = 模具设置 — 计划中
-# $stem (String) - 参数
 stencil-stem-is-already-open-exp = 模具 { $stem } 已打开——已展开
 straight-connector = 直线连接符
 strikethrough = 删除线
@@ -950,16 +830,13 @@ style-gallery-planned = 样式库 — 计划中
 styles = 样式
 sub-address-page = 子地址页面
 suggested-flowchart-network-floo = 建议：流程图 · 网络图 · 平面布置图
-# $n (Number) - 参数
 svg-copied-n-bytes-vector-paste = SVG 已复制（{ $n } 字节，矢量——可粘贴到接受 SVG 文本的编辑器）
 swap-portrait-landscape-swaps-wi = 纵向/横向互换（宽度和高度互换）
 switch-documents-the-tab-strip-s = 切换文档——目前由标签条的“窗口”菜单承担（#192）
 switch-windows = 切换窗口
-# $name (String) - 参数
 switched-to-name = 已切换到 { $name }
 symbol = 符号
 symbol-planned = 符号 — 计划中
-# $version (String) - 参数
 tarahi-v-cargo-pkg-version-clean = Tarahi v{ $version }——净室开发的 Visio 兼容绘图工具
 task-panes = 任务窗格
 task-panes-shapes-pan-zoom-plann = 任务窗格（形状、平移和缩放…）— 计划中
@@ -1015,66 +892,40 @@ triple-tick-dot = 三刻度 + 点
 triple-tick-ring = 三刻度 + 圆环
 underline = 下划线
 underline-planned = 下划线 — 计划中
-# $name (String) - 属性名称
-# $v (String) - 添加的选项
 undo-add-choice = 添加 { $name } 选项 { $v }
-# $id (Number) - 形状 ID
 undo-add-connector = 添加连接符 { $id }
-# $n (Number) - 形状数
-# $c (String) - 容器名称
 undo-add-n-to-container =
     { $n ->
        *[other] 将 { $n } 个形状添加到容器 { $c }
     }
-# $what (String) - 对齐边缘词
 undo-align-what = 对齐{ $what }
-# $style (String) - 容器样式主形状 NameU
 undo-apply-container-style = 应用容器样式 { $style }
-# $id (Number) - 形状 ID
 undo-autoconnect = 自动连接形状 { $id }
 undo-ctrl-z = 撤消 (Ctrl+Z)
-# $n (Number) - 形状数
 undo-delete-n-shapes =
     { $n ->
        *[other] 删除 { $n } 个形状
     }
-# $id (Number) - 形状 ID
 undo-delete-shape = 删除形状 { $id }
-# $n (Number) - 释放的成员数
 undo-disband-container =
     { $n ->
        *[other] 解散容器（释放 { $n } 个成员）
     }
-# $sid (Number) - 连接符形状 ID
-# $end (String) - 本地化的端点词
 undo-glue-connector = 粘附连接符 { $sid } { $end }
-# $l (String) - 参数
 undo-l = 撤消：{ $l }
-# $id (Number) - 连接符 ID
 undo-move-connector = 移动连接符 { $id }
-# $end (String) - 本地化的端点词
 undo-move-endpoint = 移动{ $end }端点
-# $id (Number) - 参考线 ID
 undo-move-guide = 移动参考线 { $id }
-# $id (Number) - 形状 ID
 undo-move-line-shape = 移动线条形状 { $id }
-# $id (Number) - 形状 ID
 undo-move-shape = 移动形状 { $id }
-# $n (Number) - 顶点行索引
 undo-move-vertex = 移动顶点 { $n }
-# $id (Number) - 形状 ID
 undo-resize-shape = 调整形状 { $id } 的大小
-# $name (String) - 单元格名称
 undo-set-cell = 设置 { $name }
-# $section (String) - 节名称
-# $cell (String) - 单元格名称
 undo-set-section-cell = 设置 { $section }.{ $cell }
-# $n (Number) - 组合数
 undo-ungroup-n =
     { $n ->
        *[other] 取消组合 { $n } 个组合
     }
-# $n (Number) - 取消粘附的连接符数
 unglue-connectors =
     { $n ->
        *[other] 已取消粘附 { $n } 个连接符
@@ -1091,7 +942,6 @@ variant-effects-planned = 变体效果 — 计划中
 variants = 变体
 vba-arrives-with-m7-vsdm = VBA 将随 M7 提供（.vsdm）
 vector-svg = 矢量 (SVG)
-# $cell (String) - 公式驱动的单元格描述
 vertex-drag-refused = 顶点拖动被拒绝：{ $cell }由公式驱动——请编辑公式以更改它
 view = 视图
 views = 视图
@@ -1101,15 +951,12 @@ visio-vsdx-family = Visio（VSDX 系列）
 visual-aids = 视觉帮助
 visual-basic = Visual Basic
 weight = 粗细
-# $sub (String) - 子地址页面名称
 went-to-page = 已转到页面 { $sub }
 whole-page = 整页
 wide-arrow = 宽箭头
 width = 宽度
-# $g (String) - 保护公式
 width-not-resized-guard = 宽度未调整：{ $g }（仅调整高度）
 window = 窗口
-# $n (Number) - 窗口编号
 window-n = 窗口 { $n }
 word-count = 字数统计
 word-count-planned = 字数统计 — 计划中
