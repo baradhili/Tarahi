@@ -204,7 +204,12 @@ impl TextEditSession {
         // deleted char at the WRONG index among repeats. Reinterpret
         // as a PURE DELETION when the tails align and anchor the
         // deleted span at the caret: Backspace removes the char
-        // BEFORE the caret, Delete the one AFTER.
+        // BEFORE the caret, Delete the one AFTER. Among repeats BOTH
+        // anchors fit the text, so the POST-EDIT caret disambiguates
+        // the direction — Backspace pulls it back by the deleted
+        // count, Delete leaves it in place (Greptile round 5: the
+        // fixed Backspace preference dropped the FIELD where a
+        // Delete had eaten the literal).
         if delta < 0 {
             let deleted = (-delta) as usize;
             // A deletion at q == p exists when the tails align:
@@ -221,12 +226,19 @@ impl TextEditSession {
                 };
                 let backspace = pre_caret.saturating_sub(deleted);
                 let delete_key = pre_caret;
-                let q = if valid(backspace) {
-                    backspace
-                } else if valid(delete_key) {
-                    delete_key
-                } else {
-                    p
+                let q = match caret {
+                    // The caret did not move: Delete removed the
+                    // char AFTER it.
+                    Some(c) if c == pre_caret && valid(delete_key) => delete_key,
+                    // The caret moved back by the deleted count:
+                    // Backspace removed the char BEFORE it.
+                    Some(c) if c + deleted == pre_caret && valid(backspace) => backspace,
+                    // No direction signal (a cut, or the frame
+                    // carried no caret): keep the Backspace
+                    // preference.
+                    _ if valid(backspace) => backspace,
+                    _ if valid(delete_key) => delete_key,
+                    _ => p,
                 };
                 p = q;
                 replaced_old = deleted;
@@ -1035,5 +1047,38 @@ mod field_mark_tests {
         s.draft = "x".into(); // Delete removed the display
         s.sync_frame(Some(0));
         assert!(s.field_marks.is_empty(), "Delete removed the field");
+    }
+
+    /// Delete vs Backspace among REPEATED text (Greptile round 5):
+    /// a field display `1` followed by a literal `1`, caret between
+    /// them — the POST-EDIT caret disambiguates the direction, so
+    /// Delete eats the LITERAL (caret stays) and Backspace the FIELD
+    /// (caret falls back).
+    #[test]
+    fn delete_between_repeated_text_eats_the_literal() {
+        // Delete: caret parks at 1 between the pair, stays at 1.
+        let mut s = session("", 0);
+        s.park_field(mark(0, "1")); // "1", mark @0, caret @1
+        s.draft = "11".into(); // typed the literal at 1
+        s.sync_frame(Some(2));
+        s.caret = 1; // parked between the pair
+        s.draft = "1".into(); // one of them deleted
+        s.sync_frame(Some(1));
+        assert_eq!(
+            s.field_marks,
+            vec![mark(0, "1")],
+            "Delete ate the literal, the field survived"
+        );
+
+        // Backspace from the same spot: caret falls to 0, the FIELD
+        // display is the deleted span and its mark dissolves.
+        let mut s = session("", 0);
+        s.park_field(mark(0, "1"));
+        s.draft = "11".into();
+        s.sync_frame(Some(2));
+        s.caret = 1;
+        s.draft = "1".into();
+        s.sync_frame(Some(0));
+        assert!(s.field_marks.is_empty(), "Backspace ate the field");
     }
 }

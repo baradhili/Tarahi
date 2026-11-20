@@ -2697,33 +2697,60 @@ pub(crate) fn wrap_block_text(
                         break;
                     }
                 }
-                while split_at < cur.len() {
-                    match cur[split_at..].chars().next() {
-                        Some(c) if crate::textmetrics::line_head_forbidden(c) => {
-                            split_at += c.len_utf8();
+                // The boundary rules run to a FIXPOINT, not in a
+                // fixed order: glue (U+00A0 and friends — a boundary
+                // adjacent to glue is never a grapheme edge, keeping
+                // `图⍽表` intact even when the joined token then
+                // overflows its line, CodeRabbit PR review) can move
+                // the split PAST the position the forbidden-head
+                // pass already cleared, stranding a closer at the
+                // head of the rest (`表⍽，！` must not open with `！`,
+                // CodeRabbit/Greptile round 5). A combining mark at
+                // the boundary attaches to the kept prefix — the
+                // emergency splitter never splits `カ` from its
+                // dakuten (CodeRabbit round 5) — WITHOUT consuming
+                // the following base, so a normal break before `ク`
+                // stays available.
+                loop {
+                    let mut moved = false;
+                    while split_at < cur.len() {
+                        match cur[split_at..].chars().next() {
+                            Some(c) if crate::textmetrics::line_head_forbidden(c) => {
+                                split_at += c.len_utf8();
+                                moved = true;
+                            }
+                            _ => break,
                         }
-                        _ => break,
                     }
-                }
-                // The emergency splitter honors the in-word break
-                // predicate: a boundary ADJACENT to glue (U+00A0 and
-                // friends) is never a grapheme edge — advancing past
-                // the glue keeps `图⍽表` intact even when the joined
-                // token then overflows its line (CodeRabbit PR
-                // review).
-                while split_at < cur.len() {
-                    let prev_is_glue = cur[..split_at]
-                        .chars()
-                        .next_back()
-                        .is_some_and(crate::textmetrics::is_glue_pub);
-                    let next_is_glue = cur[split_at..]
-                        .chars()
-                        .next()
-                        .is_some_and(crate::textmetrics::is_glue_pub);
-                    if prev_is_glue || next_is_glue {
-                        let adv = cur[split_at..].chars().next().map_or(1, char::len_utf8);
-                        split_at += adv;
-                    } else {
+                    if split_at < cur.len() {
+                        let prev_is_glue = cur[..split_at]
+                            .chars()
+                            .next_back()
+                            .is_some_and(crate::textmetrics::is_glue_pub);
+                        let next_is_glue = cur[split_at..]
+                            .chars()
+                            .next()
+                            .is_some_and(crate::textmetrics::is_glue_pub);
+                        if prev_is_glue || next_is_glue {
+                            split_at += cur[split_at..]
+                                .chars()
+                                .next()
+                                .map_or(1, char::len_utf8);
+                            moved = true;
+                        }
+                        if cur[split_at..]
+                            .chars()
+                            .next()
+                            .is_some_and(crate::textmetrics::is_combining_pub)
+                        {
+                            split_at += cur[split_at..]
+                                .chars()
+                                .next()
+                                .map_or(1, char::len_utf8);
+                            moved = true;
+                        }
+                    }
+                    if !moved {
                         break;
                     }
                 }
@@ -6146,8 +6173,21 @@ pub fn shape_env(doc: &Document, s: &Shape, chain: &[&Shape]) -> vsdx::formula::
     for sheet in user_sheets {
         for user in sheet.sections_named("User") {
             for row in user.rows.iter().filter(|r| r.n.is_some()) {
-                if let Some(v) = row.cell("Value").and_then(|c| c.numeric()) {
-                    env.insert(format!("User.{}", row.n.as_deref().unwrap_or("")), v);
+                let key = format!("User.{}", row.n.as_deref().unwrap_or(""));
+                match row.cell("Value").and_then(|c| c.numeric()) {
+                    Some(v) => {
+                        env.insert(key, v);
+                    }
+                    // A row whose Value cache is EXPLICITLY emptied
+                    // (V='') clears the inherited number: the string
+                    // env seeds the empty binding, but the numeric
+                    // layer kept the master's 42 for the evaluator to
+                    // read FIRST (CodeRabbit PR review). No cache at
+                    // all (a sparse F-only row) still inherits.
+                    None if row.cell("Value").is_some_and(|c| c.v.is_some()) => {
+                        env.remove(&key);
+                    }
+                    None => {}
                 }
             }
         }
@@ -6446,6 +6486,84 @@ mod tests {
         let env = mirror_env(&root, &inst, 2.657480296178819, 5.528301723437821);
         let v = env.get("User.IconY").copied().unwrap();
         assert!((v - (5.528301723437821 - 0.2362204724409449 / 2.0)).abs() < 1e-9);
+    }
+
+    /// A locally CLEARED User row (`V=''`) shadows the master's
+    /// numeric binding — the string env seeds the empty value, and
+    /// the numeric env must not keep the master's 42 for the
+    /// evaluator to read first (CodeRabbit round 5). A restated
+    /// local value still overrides, and no local row still inherits.
+    #[test]
+    fn cleared_user_row_shadows_the_master_number() {
+        let user_sheet = |v: Option<&str>| {
+            let mut sheet = Sheet::default();
+            sheet.children.push(vsdx::model::SheetChild::Section(
+                vsdx::model::Section {
+                    name: "User".into(),
+                    rows: vec![vsdx::model::Row {
+                        n: Some("Label".into()),
+                        cells: vec![(
+                            "Value".to_string(),
+                            Cell {
+                                v: v.map(str::to_string),
+                                ..Cell::default()
+                            },
+                        )],
+                        ..vsdx::model::Row::default()
+                    }],
+                    ..vsdx::model::Section::default()
+                },
+            ));
+            sheet
+        };
+        let mut doc = Document::default();
+        doc.masters.push(vsdx::model::Master {
+            id: 7,
+            shapes: vec![Shape {
+                id: 1,
+                sheet: user_sheet(Some("42")),
+                ..Shape::default()
+            }],
+            ..vsdx::model::Master::default()
+        });
+        // No local row: the master's 42 inherits.
+        let inherit = Shape {
+            id: 1,
+            master: Some(7),
+            ..Shape::default()
+        };
+        let chain = [&inherit];
+        assert_eq!(
+            shape_env(&doc, &inherit, &chain).get("User.Label").copied(),
+            Some(42.0),
+            "no local row inherits the master's number"
+        );
+        // A cleared local row removes the binding.
+        let cleared = Shape {
+            id: 1,
+            master: Some(7),
+            sheet: user_sheet(Some("")),
+            ..Shape::default()
+        };
+        let chain = [&cleared];
+        assert_eq!(
+            shape_env(&doc, &cleared, &chain).get("User.Label"),
+            None,
+            "a cleared row shadows the master's number"
+        );
+        // A restated local value overrides.
+        let local = Shape {
+            id: 1,
+            master: Some(7),
+            sheet: user_sheet(Some("7")),
+            ..Shape::default()
+        };
+        let chain = [&local];
+        assert_eq!(
+            shape_env(&doc, &local, &chain).get("User.Label").copied(),
+            Some(7.0),
+            "a local value overrides the master's"
+        );
     }
 
     #[test]
@@ -9397,6 +9515,65 @@ mod tests {
         );
         let joined: String = lines.concat();
         assert_eq!(joined, "aaaaaaaaaaaaaaaaaaaaaaaaaa", "no characters lost");
+    }
+
+    /// The emergency hard-split's boundary rules run to a FIXPOINT:
+    /// glue (U+00A0) may move the split past the position the
+    /// forbidden-head pass already cleared, which used to strand a
+    /// closer at the head of the rest — `图⍽，！色` must never open a
+    /// line with `，` or `！` (CodeRabbit/Greptile round 5).
+    #[test]
+    fn emergency_split_never_opens_a_line_with_a_closer() {
+        let face = crate::textmetrics::resolve(None, false, false);
+        // Narrower than any glyph: every token takes the emergency
+        // path.
+        let lines = wrap_block_text(
+            &face,
+            "图\u{00A0}，！色",
+            0.13889,
+            0.05,
+            &face,
+            0.13889,
+            &[],
+            0.0,
+            0.0,
+        );
+        let joined: String = lines.iter().map(|l| l.text.clone()).collect();
+        assert_eq!(joined, "图\u{00A0}，！色", "no characters lost");
+        assert!(lines.len() >= 2, "the emergency splitter fired");
+        for l in &lines {
+            let first = l.text.chars().next().expect("lines are non-empty");
+            assert!(
+                !crate::textmetrics::line_head_forbidden(first),
+                "no line opens with a forbidden closer: {:?}",
+                lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// The emergency splitter keeps a combining mark with its base:
+    /// `カ` + U+3099 never splits between them, without consuming
+    /// the following `ク` (CodeRabbit round 5).
+    #[test]
+    fn emergency_split_keeps_combining_marks_with_their_base() {
+        let face = crate::textmetrics::resolve(None, false, false);
+        let lines = wrap_block_text(
+            &face,
+            "カ\u{3099}ク",
+            0.13889,
+            0.05,
+            &face,
+            0.13889,
+            &[],
+            0.0,
+            0.0,
+        );
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["カ\u{3099}", "ク"],
+            "the dakuten stays on its base; the break before ク survives"
+        );
     }
 
     /// CRLF and lone CR each break exactly one line (carried over

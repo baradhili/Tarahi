@@ -36,6 +36,13 @@ pub struct FieldsCtx<'a> {
     /// The sibling shapes `Sheet.N!` cross-refs resolve against —
     /// the page's tree, or the master's for a contact sheet.
     pub siblings: &'a [Shape],
+    /// The page-wide `Sheet.N!`-qualified string layer, seeded once
+    /// on first use and shared read-only by every shape's fork —
+    /// the per-shape sibling-tree rebuild was quadratic in
+    /// field-bearing shapes (CodeRabbit PR review). Marker-free
+    /// packages take the `substituted_text` fast path and never
+    /// seed it at all.
+    qualified: std::cell::OnceCell<std::sync::Arc<formula::StrEnv>>,
 }
 
 impl<'a> FieldsCtx<'a> {
@@ -54,6 +61,7 @@ impl<'a> FieldsCtx<'a> {
             facts: doc_facts(doc),
             units: paper_units(page),
             siblings: &page.shapes,
+            qualified: std::cell::OnceCell::new(),
         }
     }
 
@@ -67,7 +75,27 @@ impl<'a> FieldsCtx<'a> {
             facts: doc_facts(doc),
             units: UnitSystem::Us,
             siblings,
+            qualified: std::cell::OnceCell::new(),
         }
+    }
+
+    /// The shared qualified layer — every sibling's User/Prop rows
+    /// under `Sheet.N!`, walking INTO groups (a grouped shape's rows
+    /// are reachable by its own Sheet.N id — Greptile round 1).
+    fn shared_qualified(&self) -> &std::sync::Arc<formula::StrEnv> {
+        self.qualified.get_or_init(|| {
+            let mut strs = formula::StrEnv::new();
+            fn seed_tree(s: &Shape, strs: &mut formula::StrEnv) {
+                seed_shape_strings_prefixed(s, strs);
+                for sub in &s.sub_shapes {
+                    seed_tree(sub, strs);
+                }
+            }
+            for sib in self.siblings {
+                seed_tree(sib, &mut strs);
+            }
+            std::sync::Arc::new(strs)
+        })
     }
 
     /// The per-shape formula context (the master name varies per
@@ -140,18 +168,60 @@ fn doc_element(doc: &Document, tag: &str) -> Option<String> {
     }
 }
 
-/// Decode the five predefined XML entities in element text — the
-/// raw source carries `&amp;` and the label must show `&`
-/// (Greptile round 1).
+/// Decode XML character references in element text, in ONE pass:
+/// the five predefined entities plus decimal (`&#38;`) and
+/// hexadecimal (`&#x26;`) references — a document property may carry
+/// any of them, and the label must show the decoded character
+/// (Greptile round 1; CodeRabbit round 5 for the numeric forms).
+/// One-pass means an escaped literal never decodes twice:
+/// `&amp;#38;` yields `&#38;`, not `&`.
 fn decode_xml_entities(s: &str) -> String {
     if !s.contains('&') {
         return s.to_string();
     }
-    s.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        rest = &rest[amp..];
+        // A reference ends at the first ';' in a bounded window;
+        // anything else (no ';', an over-long name, an unknown
+        // entity) is a literal '&'.
+        let window = &rest[..rest.len().min(32)];
+        let decoded = window.find(';').and_then(|end| {
+            let name = &rest[1..end];
+            match name {
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                "amp" => Some('&'),
+                _ if name.starts_with("#x") || name.starts_with("#X") => u32::from_str_radix(
+                    &name[2..],
+                    16,
+                )
+                .ok()
+                .and_then(char::from_u32),
+                _ if name.starts_with('#') => name[1..]
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(char::from_u32),
+                _ => None,
+            }
+        });
+        match decoded {
+            Some(c) => {
+                out.push(c);
+                rest = &rest[rest.find(';').unwrap() + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// ISO-A paper → metric display units (the `_M`/`_U` stencil twins
@@ -244,23 +314,22 @@ fn field_envs(
     fields: Option<&FieldsCtx<'_>>,
 ) -> (formula::Env, formula::StrEnv, Option<FieldCtx>) {
     let env = crate::svg::shape_env(doc, s, chain);
-    let mut strs = vsdx::formula::StrEnv::new();
-    seed_sheet_strings(doc, s, chain, &mut strs);
-    if let Some(f) = fields {
-        // Cross-sheet refs: every sibling's User/Prop rows under
-        // `Sheet.N!` (the corpus's `Sheet.5!User.ValueText` refs) —
-        // walking INTO groups: a grouped shape's rows are reachable
-        // by its own Sheet.N id (Greptile round 1).
-        fn seed_tree(s: &Shape, strs: &mut formula::StrEnv) {
-            seed_shape_strings_prefixed(s, strs);
-            for sub in &s.sub_shapes {
-                seed_tree(sub, strs);
-            }
+    // Cross-sheet refs (`Sheet.5!User.ValueText`) resolve through the
+    // pass-shared qualified layer with this shape's own bare rows
+    // forked on top — the sibling tree seeds once per render, not
+    // once per shape (CodeRabbit PR review).
+    let strs = match fields {
+        Some(f) => {
+            let mut layered = formula::StrEnv::fork(f.shared_qualified());
+            seed_sheet_strings(doc, s, chain, &mut layered);
+            layered
         }
-        for sib in f.siblings {
-            seed_tree(sib, &mut strs);
+        None => {
+            let mut own = formula::StrEnv::new();
+            seed_sheet_strings(doc, s, chain, &mut own);
+            own
         }
-    }
+    };
     let master_name = s
         .master
         .and_then(|mid| doc.master(mid).and_then(|m| m.name_u.clone()));
@@ -334,11 +403,15 @@ fn render_field(
         return cached.unwrap_or("").to_string();
     };
     // A SPARSE local row inherits missing cells from the master's row
-    // of the same IX (the shapesheet's cell-by-cell resolution; a
-    // local row that omits Value or Format used to lose the master's
-    // cell entirely — CodeRabbit PR review).
+    // of the same IX, and a local cell marked `F="Inh"` resolves from
+    // the master like a missing one — its cached `V` is only the
+    // stale snapshot of the inherited formula (the shapesheet's
+    // cell-by-cell resolution; CodeRabbit PR review).
     let inherited_row = (|| -> Option<&vsdx::model::Row> {
-        if row.cell("Value").is_some() && row.cell("Format").is_some() {
+        let sparse = ["Value", "Format"].into_iter().any(|n| {
+            row.cell(n).is_none_or(|c| c.f.as_deref() == Some("Inh"))
+        });
+        if !sparse {
             return None;
         }
         let src = doc.instance_source(s, chain)?;
@@ -347,8 +420,14 @@ fn render_field(
             .and_then(|sec| sec.row_by_ix(ix))
     })();
     let cell_of = |name: &str| -> Option<&vsdx::model::Cell> {
-        row.cell(name)
-            .or_else(|| inherited_row.and_then(|r| r.cell(name)))
+        match row.cell(name) {
+            // Authored locally — it wins.
+            Some(c) if c.f.as_deref() != Some("Inh") => Some(c),
+            // `Inh` or missing: the master's live cell outranks the
+            // stale local cache, with the cache as fallback when the
+            // master's row omits the cell.
+            inh => inherited_row.and_then(|r| r.cell(name)).or(inh),
+        }
     };
     let value_cell = cell_of("Value");
     // Evaluate the Value formula; fall back to the cached V.
@@ -382,12 +461,16 @@ fn render_field(
     let units = fctx.map_or(UnitSystem::Us, |c| c.units);
     match picture {
         Some(p) if !p.is_empty() => {
-            // The percent picture implies a percent fraction even
-            // when the Value cell's U says something else — the
-            // corpus's esc(3) rows carry U='PER', but a
-            // dialog-inserted or hand-authored row may not
-            // (Greptile round 1: `0.25` rendered `6 mm.` on A4).
-            let unit = if p.trim() == "esc(3)" {
+            // The percent picture implies a percent fraction when the
+            // Value cell DECLARES no recognized unit — the corpus's
+            // esc(3) rows carry U='PER', but a dialog-inserted or
+            // hand-authored row may not (Greptile round 1: `0.25`
+            // rendered `6 mm.` on A4). A declared length unit stays:
+            // `288` + U='FT' must render `24 ft.`, not `28800%`
+            // (CodeRabbit/Greptile round 5).
+            let unit = if p.trim() == "esc(3)"
+                && !unit.is_some_and(|u| fieldfmt::Unit::from_u(u).is_some())
+            {
                 Some("PER")
             } else {
                 unit
@@ -557,14 +640,16 @@ mod tests {
 
     /// Element text arrives entity-DECODED — a title of
     /// `Research &amp; Development` must read `Research & Development`
-    /// (Greptile round 1).
+    /// (Greptile round 1) — including DECIMAL and HEXADECIMAL
+    /// character references, without decoding an escaped literal
+    /// twice (CodeRabbit round 5).
     #[test]
     fn core_properties_decode_entities() {
         let core = concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>",
             "<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\"",
             " xmlns:dc=\"http://purl.org/dc/elements/1.1/\">",
-            "<dc:title>Research &amp; Development &lt;v2&gt;</dc:title>",
+            "<dc:title>R&amp;D &#38; D&#x3A; &amp;#38; &lt;v2&gt;</dc:title>",
             "</cp:coreProperties>"
         );
         let buf = std::io::Cursor::new(Vec::new());
@@ -601,7 +686,9 @@ mod tests {
         let f = FieldsCtx::for_page(&doc, &page);
         assert_eq!(
             f.facts.title.as_deref(),
-            Some("Research & Development <v2>")
+            // `&#38;` → &, `&#x3A;` → :, `&amp;#38;` → `&#38;`
+            // (the escaped literal never decodes twice).
+            Some("R&D & D: &#38; <v2>")
         );
     }
 
@@ -642,6 +729,138 @@ mod tests {
         assert_eq!(
             preview_field(&doc, &s, &chain, Some(&fctx), "2", Some("0")),
             "2"
+        );
+    }
+
+    /// A Field section row `IX=0` with the given cells on a sheet.
+    fn field_row_sheet(cells: &[(&str, vsdx::model::Cell)]) -> vsdx::model::Sheet {
+        let mut sheet = vsdx::model::Sheet::default();
+        sheet.children.push(vsdx::model::SheetChild::Section(
+            vsdx::model::Section {
+                name: "Field".into(),
+                rows: vec![vsdx::model::Row {
+                    ix: 0,
+                    cells: cells
+                        .iter()
+                        .map(|(n, c)| (n.to_string(), c.clone()))
+                        .collect(),
+                    ..vsdx::model::Row::default()
+                }],
+                ..vsdx::model::Section::default()
+            },
+        ));
+        sheet
+    }
+
+    /// A declared length unit survives the percent picture: `288` +
+    /// `U='FT'` + esc(3) renders `24 ft.`, not `28800%`
+    /// (CodeRabbit/Greptile round 5). An ABSENT unit still infers the
+    /// percent fraction (Greptile round 1).
+    #[test]
+    fn field_units_survive_the_percent_picture() {
+        let doc = Document::default();
+        let page = Page::default();
+        let fctx = FieldsCtx::for_page(&doc, &page);
+        let mk = |u: Option<&str>, raw: &str| -> Shape {
+            let mut s = Shape {
+                id: 1,
+                sheet: field_row_sheet(&[
+                    (
+                        "Value",
+                        vsdx::model::Cell {
+                            v: Some(raw.to_string()),
+                            u: u.map(str::to_string),
+                            ..vsdx::model::Cell::default()
+                        },
+                    ),
+                    (
+                        "Format",
+                        vsdx::model::Cell {
+                            v: Some("esc(3)".into()),
+                            ..vsdx::model::Cell::default()
+                        },
+                    ),
+                ]),
+                ..Shape::default()
+            };
+            s.sheet.text_raw = Some(format!("<fld IX='0'>{raw}</fld>"));
+            s
+        };
+        // Declared feet: 288 internal inches = 24 ft.
+        let s = mk(Some("FT"), "288");
+        let chain = [&s];
+        assert_eq!(
+            substituted_text(&doc, &s, &chain, Some(&fctx)).as_deref(),
+            Some("24 ft.")
+        );
+        // Declared percent stays percent.
+        let s = mk(Some("PER"), "0.25");
+        let chain = [&s];
+        assert_eq!(
+            substituted_text(&doc, &s, &chain, Some(&fctx)).as_deref(),
+            Some("25%")
+        );
+        // No declaration: the percent picture infers the fraction.
+        let s = mk(None, "0.25");
+        let chain = [&s];
+        assert_eq!(
+            substituted_text(&doc, &s, &chain, Some(&fctx)).as_deref(),
+            Some("25%")
+        );
+    }
+
+    /// A local Value cell marked `F="Inh"` resolves through the
+    /// master's live formula — its cached `V` is the stale snapshot
+    /// (CodeRabbit round 5).
+    #[test]
+    fn field_inh_resolves_through_the_master() {
+        let mut doc = Document::default();
+        doc.masters.push(vsdx::model::Master {
+            id: 7,
+            shapes: vec![Shape {
+                id: 1,
+                sheet: field_row_sheet(&[
+                    (
+                        "Value",
+                        vsdx::model::Cell {
+                            v: Some("9".into()),
+                            f: Some("2+3".into()),
+                            ..vsdx::model::Cell::default()
+                        },
+                    ),
+                    (
+                        "Format",
+                        vsdx::model::Cell {
+                            v: Some("esc(0)".into()),
+                            ..vsdx::model::Cell::default()
+                        },
+                    ),
+                ]),
+                ..Shape::default()
+            }],
+            ..vsdx::model::Master::default()
+        });
+        let mut s = Shape {
+            id: 1,
+            master: Some(7),
+            sheet: field_row_sheet(&[(
+                "Value",
+                vsdx::model::Cell {
+                    v: Some("Old".into()),
+                    f: Some("Inh".into()),
+                    ..vsdx::model::Cell::default()
+                },
+            )]),
+            ..Shape::default()
+        };
+        s.sheet.text_raw = Some("<fld IX='0'>Old</fld>".into());
+        let chain = [&s];
+        let page = Page::default();
+        let fctx = FieldsCtx::for_page(&doc, &page);
+        assert_eq!(
+            substituted_text(&doc, &s, &chain, Some(&fctx)).as_deref(),
+            Some("5"),
+            "the master's live formula outranks the stale Inh cache"
         );
     }
 }

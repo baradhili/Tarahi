@@ -1116,10 +1116,14 @@ impl App {
                 self.stash_active_doc();
                 // The Insert Field dialog never carries across the
                 // document swap (#267, CodeRabbit round 4): page and
-                // shape IDs both collide across documents.
+                // shape IDs both collide across documents — and the
+                // retained last-edit caret is page/shape-ID-scoped
+                // too, so it must not outlive its document
+                // (CodeRabbit/Greptile round 5).
                 self.fields_open = None;
                 self.fields_caret = None;
                 self.fields_draft = None;
+                self.last_edit_caret = None;
                 self.ed = Some(Editor::new(ed));
                 self.reload_snap_settings();
                 self.path = path;
@@ -12180,8 +12184,10 @@ impl App {
             }
             return;
         }
+        let mut caret_used: Option<usize> = None;
         let insert = match self.fields_caret.take() {
             Some((p, s, caret)) if p == page_id && s == shape_id => {
+                caret_used = Some(caret);
                 dc_core::FieldInsert::ReplacePlain {
                     offset: caret,
                     len: 0,
@@ -12259,6 +12265,17 @@ impl App {
             crate::i18n::strs().msg_insert_field(),
             cmds,
         ));
+        // A caret-based insertion ADVANCES the retained caret past
+        // the inserted display (plain characters): the next dialog
+        // on this shape inserts AFTER the field, not before it —
+        // two insertions at one caret used to read `AYXB` instead
+        // of `AXYB` (CodeRabbit/Greptile round 5). Applies only to
+        // the page/shape that received the field; an append (`End`)
+        // keeps whatever caret the shape last had.
+        if let Some(caret) = caret_used {
+            self.last_edit_caret =
+                Some((page_id, shape_id, caret + preview.chars().count()));
+        }
         if preview.is_empty() {
             self.status = crate::i18n::strs().msg_field_inserted_no_preview();
         }
@@ -16410,10 +16427,13 @@ impl App {
         self.group_edit = incoming.group_edit;
         // The Insert Field dialog does not carry across documents
         // (#267, CodeRabbit round 2): it is bound to a shape ID, and
-        // IDs collide across documents as well as pages.
+        // IDs collide across documents as well as pages. The
+        // retained last-edit caret is ID-scoped the same way
+        // (CodeRabbit/Greptile round 5).
         self.fields_open = None;
         self.fields_caret = None;
         self.fields_draft = None;
+        self.last_edit_caret = None;
         self.tex.clear();
         self.layers.clear();
         self.page_states.clear();
@@ -16451,10 +16471,13 @@ impl App {
         self.comment_target = None;
         self.comment_edit = None;
         // The Insert Field dialog does not survive a close/promote
-        // (#267, CodeRabbit round 4).
+        // (#267, CodeRabbit round 4) — and neither does the retained
+        // last-edit caret: the promoting document's same-ID shape
+        // must not inherit it (CodeRabbit/Greptile round 5).
         self.fields_open = None;
         self.fields_caret = None;
         self.fields_draft = None;
+        self.last_edit_caret = None;
         // #192 4a: another open document promotes to active.
         if !self.docs.is_empty() {
             let next = self.docs.remove(0);

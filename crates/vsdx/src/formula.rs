@@ -22,7 +22,44 @@ pub type Env = HashMap<String, f64>;
 /// `Sheet.5!User.ValueText`) the numeric [`Env`] cannot carry. The
 /// field evaluator seeds both; bare idents resolve numeric-first,
 /// string-second.
-pub type StrEnv = HashMap<String, String>;
+///
+/// The environment is LAYERED: a child forked over a shared parent
+/// ([`StrEnv::fork`]) shadows it entry-by-entry, so one render pass
+/// seeds the page-wide `Sheet.N!`-qualified rows once and every
+/// shape forks its own bare-name layer on top (the per-shape rebuild
+/// was quadratic in field-bearing shapes — CodeRabbit PR review).
+#[derive(Debug, Default)]
+pub struct StrEnv {
+    entries: HashMap<String, String>,
+    parent: Option<std::sync::Arc<StrEnv>>,
+}
+
+impl StrEnv {
+    pub fn new() -> StrEnv {
+        StrEnv::default()
+    }
+
+    /// An empty child layer over a shared read-only parent: own
+    /// inserts shadow the parent's entries, lookups fall through.
+    pub fn fork(parent: &std::sync::Arc<StrEnv>) -> StrEnv {
+        StrEnv {
+            entries: HashMap::new(),
+            parent: Some(std::sync::Arc::clone(parent)),
+        }
+    }
+
+    pub fn insert(&mut self, key: String, value: String) {
+        self.entries.insert(key, value);
+    }
+
+    /// Own layer first, then the parent chain.
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.entries
+            .get(key)
+            .map(String::as_str)
+            .or_else(|| self.parent.as_ref().and_then(|p| p.get(key)))
+    }
+}
 
 /// Page/document facts the field functions need (`PAGENAME()`,
 /// `DOCLASTSAVE()`, …) — built per page by the renderer (the master
@@ -584,7 +621,7 @@ impl<'a> Parser<'a> {
                     return Ok(Value::Num(*v));
                 }
                 if let Some(s) = self.strs.get(&name) {
-                    return Ok(Value::Str(s.clone()));
+                    return Ok(Value::Str(s.to_string()));
                 }
                 Err(format!("unknown cell '{name}'"))
             }
@@ -2251,6 +2288,18 @@ mod tests {
         assert_eq!(
             eval_field("FORMATEX(1,\"0.00u\",\"in\",\"cm\")", &env, &strs, None).unwrap(),
             Value::Str("2.54cm.".to_string())
+        );
+        // The conversion applies with or without the `u` label — a
+        // bare number picture used to skip it and print the raw
+        // internal-inch count (Greptile round 2: `FORMATEX(1,"0.00",
+        // "ft")` returned `12.00`, not `1.00`).
+        assert_eq!(
+            eval_field("FORMATEX(1,\"0.00\",\"ft\")", &env, &strs, None).unwrap(),
+            Value::Str("1.00".to_string())
+        );
+        assert_eq!(
+            eval_field("FORMATEX(1,\"0.00\",\"in\",\"cm\")", &env, &strs, None).unwrap(),
+            Value::Str("2.54".to_string())
         );
     }
 

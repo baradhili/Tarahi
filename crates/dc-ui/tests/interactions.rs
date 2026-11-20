@@ -3531,6 +3531,95 @@ fn insert_field_dialog_writes_row_and_marker_caret_precise() {
     );
 }
 
+/// Two caret-based insertions keep their ORDER: the retained caret
+/// advances past the first field's display, so the second dialog on
+/// the same shape inserts AFTER the first field — `AXYB`, not `AYXB`
+/// (CodeRabbit/Greptile round 5).
+#[test]
+fn second_field_insertion_lands_after_the_first() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = dblclick_harness_with_blank();
+    h.run();
+    let from = h.state().debug_master_cells()[0].1.center();
+    let to = h.state().debug_canvas_rect().center();
+    click_at(&mut h, from, egui::PointerButton::Primary);
+    click_at(&mut h, to, egui::PointerButton::Primary);
+    h.run();
+    let (_, sid) = h.state().debug_sel().expect("placed shape selected");
+
+    // Editor open, "AB" typed, caret parked between the glyphs (the
+    // same setup as the caret-precise test — where the caret sits is
+    // not what this test varies).
+    dbl_click_at(&mut h, to);
+    h.run();
+    h.get_by_role(egui::Role::MultilineTextInput)
+        .set_text_value_accesskit("AB");
+    h.run();
+    let er = h.get_by_role(egui::Role::MultilineTextInput).rect();
+    click_at(
+        &mut h,
+        egui::pos2(er.center().x, er.center().y),
+        egui::PointerButton::Primary,
+    );
+    h.run();
+    h.key_press(egui::Key::ArrowLeft);
+    h.run();
+
+    // First insertion (the tab click commits the edit; the captured
+    // caret is between A and B).
+    h.get_by_label("Insert").click();
+    h.run();
+    h.get_all_by_label_contains("Text Field")
+        .min_by_key(|n| n.rect().height() as i64)
+        .expect("Text Field ribbon button")
+        .click();
+    h.run();
+    use egui_kittest::kittest::By;
+    h.get(By::default().role(egui::Role::ComboBox).label("Category:"))
+        .click();
+    h.run();
+    h.get_by_label("Page Info").click();
+    h.run();
+    h.get_all_by_label("Page Number")
+        .min_by_key(|n| n.rect().min.x as i64)
+        .expect("Page Number entry in the dialog")
+        .click();
+    h.run();
+    h.get_by_label("OK").click();
+    h.run();
+
+    // Second insertion on the same shape, NO live editor: the
+    // retained caret (advanced past the first display) decides.
+    h.get_all_by_label_contains("Text Field")
+        .min_by_key(|n| n.rect().height() as i64)
+        .expect("Text Field ribbon button")
+        .click();
+    h.run();
+    h.get(By::default().role(egui::Role::ComboBox).label("Category:"))
+        .click();
+    h.run();
+    h.get_by_label("Page Info").click();
+    h.run();
+    h.get_all_by_label("Page Number")
+        .min_by_key(|n| n.rect().min.x as i64)
+        .expect("Page Number entry in the dialog")
+        .click();
+    h.run();
+    h.get_by_label("OK").click();
+    h.run();
+
+    let (_, raw) = h
+        .state()
+        .debug_field_state(sid)
+        .expect("field state resolves");
+    let raw = raw.expect("raw text exists");
+    assert_eq!(
+        raw, "A<fld IX='0'>1</fld><fld IX='1'>1</fld>B",
+        "the second field landed AFTER the first display (the retained \
+         caret advanced), not before it"
+    );
+}
+
 /// GitHub #28: Hyperlink… dialog adds a row through the command layer,
 /// and Ctrl+Click follows a SubAddress to its page.
 #[test]

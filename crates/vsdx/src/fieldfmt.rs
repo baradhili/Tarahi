@@ -173,7 +173,13 @@ pub fn format_value(
         "@-" => original.to_lowercase(),
         // `c` is the SHORT general date (corpus-pinned); `C` is the
         // LONG form ([MS] format pictures; CodeRabbit PR review).
-        "c" => short_date(value),
+        // Both fall back to the ORIGINAL (untrimmed) value — the
+        // parse works on the trimmed view, but a non-date's
+        // whitespace is content (CodeRabbit PR review).
+        "c" => match parse_date(value) {
+            Some(d) => short_date_parts(&d),
+            None => original.to_string(),
+        },
         "C" => match parse_date(value) {
             Some(d) => format!("{} {}, {}", month_name(&d), d.d, d.y),
             None => original.to_string(),
@@ -213,7 +219,20 @@ pub fn format_value(
         // Digit pictures: `0`, `0.00`, `1`, with or without the `u`
         // unit suffix (no space before the label — the corpus's
         // `0u`/`0.00u` markers: `3m.`, `50.00mm.`).
-        p if is_digit_picture(p) => digit_picture(value, p, unit, original),
+        p if is_digit_picture(p) => digit_picture(
+            value,
+            p,
+            unit,
+            original,
+            // An EXPLICIT unit declaration (a recognized `U` code,
+            // not the `DL`/absent paper default) converts even
+            // without the `u` label — the caller already expressed
+            // the value in internal inches for that display unit
+            // (FORMATEX's explicit in/out units; CodeRabbit PR
+            // review: `FORMATEX(1,"0.00","ft")` must render `1.00`,
+            // not the raw inch count `12.00`).
+            unit_hint.is_some_and(|u| Unit::from_u(u).is_some()),
+        ),
         // A bare date picture (`FORMAT(User.Date,"d")`, the Gantt
         // set): every character is a date token or separator.
         p if is_bare_date_picture(p) => match parse_date(value) {
@@ -250,7 +269,12 @@ fn is_digit_picture(p: &str) -> bool {
 /// A digit picture: decimals from the `0`s after the `.`, unit label
 /// appended (no space for `0.00u`, Visio's own space preserved for
 /// `0.00 u`).
-fn digit_picture(value: &str, p: &str, unit: Unit, original: &str) -> String {
+///
+/// `explicit_unit` marks a unit the CALLER declared (a recognized
+/// Value-cell `U` / FORMATEX in-out code — the value already sits in
+/// internal inches for that display unit); without it, a bare digit
+/// picture (`0`, `0.00`) renders the number as-is.
+fn digit_picture(value: &str, p: &str, unit: Unit, original: &str, explicit_unit: bool) -> String {
     let has_unit = p.contains('u') || p.contains('U');
     let decimals = p
         .split_once('.')
@@ -262,12 +286,17 @@ fn digit_picture(value: &str, p: &str, unit: Unit, original: &str) -> String {
         Unit::InF => Unit::In,
         u => u,
     };
-    // A BARE digit picture (`0`, `0.00`) renders the number as-is —
-    // no length conversion: the corpus's `0` rows carry counts and
-    // page numbers (V='0' → `0`), and converting would turn Page
-    // Number 2 into `51` on metric paper. Only the `u`-suffixed
-    // pictures are length displays (Greptile round 1).
-    let shown = if has_unit { dec_unit.inches_to(n) } else { n };
+    // A BARE digit picture (`0`, `0.00`) over the paper-family
+    // DEFAULT renders the number as-is — no length conversion: the
+    // corpus's `0` rows carry counts and page numbers (V='0' → `0`),
+    // and converting would turn Page Number 2 into `51` on metric
+    // paper (Greptile round 1). The `u` suffix and an EXPLICIT unit
+    // declaration are both length displays (CodeRabbit PR review).
+    let shown = if has_unit || explicit_unit {
+        dec_unit.inches_to(n)
+    } else {
+        n
+    };
     // An overflowing conversion (1E308 × 25.4 = inf) must not blank
     // the field — the formatter's contract is a nonempty fallback
     // (CodeRabbit PR review).
@@ -591,13 +620,6 @@ fn civil_from_days(z: i64) -> (i32, u32, u32) {
 }
 
 /// Short date `M/d/yyyy` — the corpus's `c` and `{<200>}` rendering.
-fn short_date(value: &str) -> String {
-    match parse_date(value) {
-        Some(d) => short_date_parts(&d),
-        None => value.to_string(),
-    }
-}
-
 fn short_date_parts(d: &DateParts) -> String {
     format!("{}/{}/{}", d.mo, d.d, d.y)
 }
@@ -1003,5 +1025,31 @@ mod tests {
     fn unparseable_value_falls_back_to_itself() {
         assert_eq!(format_value("hello", Some("STR"), "esc(5)", U), "hello");
         assert_eq!(format_value("not a date", None, "c", U), "not a date");
+    }
+
+    /// The `c` picture's failure fallback keeps the ORIGINAL
+    /// whitespace — `short_date` used to return its trimmed input
+    /// (CodeRabbit PR review).
+    #[test]
+    fn short_date_failure_fallback_keeps_whitespace() {
+        assert_eq!(format_value("  not a date  ", None, "c", U), "  not a date  ");
+        // A valid date still formats through the trimmed view.
+        assert_eq!(format_value(" 42005 ", None, "c", U), "1/1/2015");
+    }
+
+    /// An EXPLICIT unit declaration converts a bare digit picture —
+    /// the caller already expressed the value in internal inches for
+    /// that display unit (FORMATEX's in/out units; CodeRabbit PR
+    /// review). The paper-family DEFAULT still renders as-is.
+    #[test]
+    fn explicit_unit_converts_bare_digit_pictures() {
+        // 12 internal inches displayed in feet.
+        assert_eq!(format_value("12", Some("FT"), "0.00", U), "1.00");
+        assert_eq!(format_value("1", Some("CM"), "0.00", U), "2.54");
+        // `DL`/absent (the paper default) keeps the bare-count rule.
+        assert_eq!(format_value("2", Some("DL"), "0", M), "2");
+        assert_eq!(format_value("2", None, "0", M), "2");
+        // The `u`-suffixed behavior is unchanged.
+        assert_eq!(format_value("12", Some("FT"), "0.00u", U), "1.00ft.");
     }
 }

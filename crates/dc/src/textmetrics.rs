@@ -351,6 +351,11 @@ fn is_combining(c: char) -> bool {
     )
 }
 
+/// The emergency hard-splitter's combining predicate (svg.rs).
+pub(crate) fn is_combining_pub(c: char) -> bool {
+    is_combining(c)
+}
+
 /// A wrap opportunity between `a` and `b`: the LEFT char must grant
 /// one — an ideograph, kana, or a full-width CJK closing punct (Latin
 /// and ASCII punctuation never grant; Latin-internal breaks stay
@@ -366,12 +371,14 @@ pub(crate) fn cjk_break_between(a: char, b: char) -> bool {
         return false;
     }
     if is_combining(a) {
-        // `a` ends a combining sequence (the mark stays attached to
-        // its base inside one token): a following CJK char accepts
-        // the boundary the BASE would grant — `カ\u{3099}ク` breaks
-        // like the precomposed `ガク`. A non-CJK `b` keeps the old
-        // glue behavior (Latin wrap stays space-driven).
-        return is_cjk_ideographic(b);
+        // `a` ends a combining sequence, and the pair alone only
+        // knows the base for KANA VOICING (its base is definitionally
+        // kana): `カ\u{3099}ク` breaks like the precomposed `ガク`.
+        // Every other mark's base is unknowable from the pair — the
+        // tokenizer classifies those through the tracked BASE
+        // instead, so `A\u{0301}中` wraps exactly like `Á中` (no
+        // break; CodeRabbit PR review).
+        return matches!(a, '\u{3099}'..='\u{309A}') && is_cjk_ideographic(b);
     }
     (is_cjk_ideographic(a) || is_cjk_closing(a)) && !line_head_forbidden(b)
 }
@@ -436,8 +443,19 @@ pub(crate) fn wrap_tokens(para: &str) -> Vec<WrapToken<'_>> {
         };
         let mut sub_start = 0usize;
         let mut prev: Option<char> = None;
+        // The running cluster BASE: when `prev` is a combining mark,
+        // the boundary classifies through the base — a decomposed
+        // sequence wraps like its precomposed twin (`A\u{0301}中`
+        // matches `Á中`; `カ\u{3099}ク` matches `ガク` — CodeRabbit
+        // PR review).
+        let mut base: Option<char> = None;
         for (i, c) in part.char_indices() {
-            if prev.is_some_and(|p| cjk_break_between(p, c)) {
+            let left = if prev.is_some_and(is_combining) {
+                base
+            } else {
+                prev
+            };
+            if left.is_some_and(|p| cjk_break_between(p, c)) {
                 out.push(WrapToken {
                     sep: pending_sep,
                     tok: &part[sub_start..i],
@@ -446,6 +464,9 @@ pub(crate) fn wrap_tokens(para: &str) -> Vec<WrapToken<'_>> {
                 sub_start = i;
             }
             prev = Some(c);
+            if !is_combining(c) {
+                base = Some(c);
+            }
         }
         out.push(WrapToken {
             sep: pending_sep,
@@ -1129,6 +1150,12 @@ mod tests {
             toks("カ\u{3099}ク"),
             vec![("".into(), "カ\u{3099}".into()), ("".into(), "ク".into())]
         );
+        // A LATIN-based combining sequence classifies through its
+        // BASE: `A\u{0301}中` wraps exactly like precomposed `Á中`
+        // (one token — the base grants no boundary), while the mark
+        // itself never splits from the base (CodeRabbit round 5).
+        assert_eq!(toks("A\u{0301}中"), vec![("".into(), "A\u{0301}中".into())]);
+        assert_eq!(toks("Á中"), vec![("".into(), "Á中".into())]);
     }
 
     use super::*;
