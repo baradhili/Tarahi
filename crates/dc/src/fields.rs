@@ -186,9 +186,15 @@ fn decode_xml_entities(s: &str) -> String {
         rest = &rest[amp..];
         // A reference ends at the first ';' in a bounded window;
         // anything else (no ';', an over-long name, an unknown
-        // entity) is a literal '&'.
-        let window = &rest[..rest.len().min(32)];
-        let decoded = window.find(';').and_then(|end| {
+        // entity) is a literal '&'. The window walks CHAR
+        // boundaries — a byte slice at the limit could split a
+        // multibyte character and panic (CodeRabbit agent review).
+        let end = rest
+            .char_indices()
+            .take_while(|(i, _)| *i < 32)
+            .find(|(_, c)| *c == ';')
+            .map(|(i, _)| i);
+        let decoded = end.and_then(|end| {
             let name = &rest[1..end];
             match name {
                 "lt" => Some('<'),
@@ -212,7 +218,7 @@ fn decode_xml_entities(s: &str) -> String {
         match decoded {
             Some(c) => {
                 out.push(c);
-                rest = &rest[rest.find(';').unwrap() + 1..];
+                rest = &rest[end.map_or(0, |e| e + 1)..];
             }
             None => {
                 out.push('&');
@@ -690,6 +696,21 @@ mod tests {
             // (the escaped literal never decodes twice).
             Some("R&D & D: &#38; <v2>")
         );
+    }
+
+    /// The entity search window ends on a CHAR boundary — a title
+    /// whose byte-32 position falls inside a multibyte character
+    /// must not panic the decoder (CodeRabbit agent review).
+    #[test]
+    fn entity_window_never_splits_a_multibyte_character() {
+        // `&amp;` then 10 Han characters (3 bytes each) pushes well
+        // past byte 32 with no ';' in the window: a byte-sliced
+        // window would cut mid-character and panic.
+        let s = format!("&amp;{}", "汉".repeat(10));
+        assert_eq!(decode_xml_entities(&s), format!("&{}", "汉".repeat(10)));
+        // The same shape WITH a late reference still decodes.
+        let s = format!("{}&#38;", "汉".repeat(16));
+        assert_eq!(decode_xml_entities(&s), format!("{}&", "汉".repeat(16)));
     }
 
     /// The percent picture renders a percent fraction WITHOUT a

@@ -820,10 +820,17 @@ impl crate::Command for SetRowCell {
                         RowSel::Ix(ix) => (|| {
                             let page_ref = doc.pages.iter().find(|p| p.id == *page)?;
                             let sh = crate::scope::find_shape(&page_ref.shapes, *shape)?;
+                            // The local lookup must not short-circuit:
+                            // an edit that MATERIALIZED the local
+                            // section leaves nothing behind on undo,
+                            // and the inherited row the edit came
+                            // from still needs resolving for the
+                            // dependent walk (CodeRabbit agent
+                            // review).
                             if let Some(r) = sh
                                 .sheet
-                                .section(&self.section, self.section_ix)?
-                                .row_by_ix(*ix)
+                                .section(&self.section, self.section_ix)
+                                .and_then(|sec| sec.row_by_ix(*ix))
                             {
                                 return r.n.clone();
                             }

@@ -1113,6 +1113,11 @@ fn render_page_full(
             .and_then(|c| c.numeric())
             .is_some_and(|m| hidden.contains(&(m as i64)))
     };
+    // ONE field context for the whole walk (CodeRabbit agent
+    // review): the shared `Sheet.N!` layer caches per CONTEXT, so a
+    // per-shape context rebuilt it for every root — the quadratic
+    // cost the shared layer exists to remove.
+    let fields = crate::fields::FieldsCtx::for_page(doc, page);
     for shape in &page.shapes {
         if hidden_member(shape) {
             continue;
@@ -1128,7 +1133,6 @@ fn render_page_full(
                 continue;
             }
         }
-        let fields = crate::fields::FieldsCtx::for_page(doc, page);
         render_shape(
             doc,
             shape,
