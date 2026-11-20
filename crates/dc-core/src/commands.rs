@@ -399,11 +399,23 @@ fn field_dependents(
                     }
                 }
                 if let Some(src) = doc.instance_source(s, &ancestors_only) {
-                    for sec in src.sheet.sections_named("Field") {
-                        for row in &sec.rows {
-                            push_row(row);
+                    // The whole RENDERED master subtree: mirrored
+                    // children carry their own Field rows, not just
+                    // the root (CodeRabbit round 4).
+                    fn push_tree(
+                        sh: &vsdx::model::Shape,
+                        push_row: &mut dyn FnMut(&vsdx::model::Row),
+                    ) {
+                        for sec in sh.sheet.sections_named("Field") {
+                            for row in &sec.rows {
+                                push_row(row);
+                            }
+                        }
+                        for sub in &sh.sub_shapes {
+                            push_tree(sub, push_row);
                         }
                     }
+                    push_tree(src, &mut push_row);
                 }
                 let hit =
                     formulas.contains(qualified) || (s.id == edited && formulas.contains(refs));
@@ -1230,11 +1242,27 @@ impl crate::Command for InsertField {
         };
         let format_f = format_f.unwrap_or_else(|| "FIELDPICTURE(0)".to_string());
         let format_v = evaluate_picture(&format_f);
+        // Three corpus shapes for the Format cell (CodeRabbit round
+        // 4): FIELDPICTURE(...) keeps F+V (V = the table picture); a
+        // LITERAL picture ("0.00u") is not a valid formula and rides
+        // V alone (no F); a non-FIELDPICTURE FORMULA (the unit-switch
+        // IF) keeps F with an EMPTY cached V — it evaluates live at
+        // render and dc-core cannot pre-compute its result.
+        let is_literal_picture = !format_f.trim().contains('(');
+        let format_cell = if is_literal_picture {
+            Cell {
+                v: Some(format_v.clone()),
+                u: Some("STR".into()),
+                ..Cell::default()
+            }
+        } else {
+            str_cell(&format_v, &format_f)
+        };
         sec.rows.push(Row {
             ix,
             cells: vec![
                 ("Value".to_string(), str_cell("", &value_f)),
-                ("Format".to_string(), str_cell(&format_v, &format_f)),
+                ("Format".to_string(), format_cell),
                 ("Type".to_string(), Cell::value("0")),
                 ("UICat".to_string(), no_formula_cell()),
                 ("UICod".to_string(), no_formula_cell()),
@@ -1352,7 +1380,18 @@ fn evaluate_picture(f: &str) -> String {
             return vsdx::fieldfmt::field_picture(n);
         }
     }
-    "esc(0)".to_string()
+    // A LITERAL picture ("0.00u", "{{MMM yyyy}}") caches itself —
+    // the corpus's bare-F rows carry the picture verbatim; falling
+    // back to esc(0) here made the renderer read the wrong cached V
+    // (CodeRabbit round 4). A non-FIELDPICTURE FORMULA (the corpus's
+    // `IF(User.LUnitsInd=1,"@","0u")` unit switch) evaluates live at
+    // render; its cached V stays empty rather than caching the
+    // formula TEXT as if it were a picture.
+    if t.contains('(') {
+        String::new()
+    } else {
+        t.to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------

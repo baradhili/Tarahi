@@ -142,7 +142,10 @@ fn format_override_carries_the_picture() {
         Some("FIELDPICTURE(8)")
     );
     assert_eq!(row.cell("Format").unwrap().v.as_deref(), Some("esc(8)"));
-    // An unknown Format formula caches the general picture.
+    // A non-FIELDPICTURE FORMULA keeps F and caches NO picture (the
+    // corpus's unit-switch rows evaluate live at render; the cached V
+    // is their evaluated result, which dc-core cannot compute). A
+    // LITERAL picture caches itself (CodeRabbit round 4).
     let cmd = InsertField::new(
         Scope::Shape { page: 0, shape: 2 },
         "Width",
@@ -150,9 +153,25 @@ fn format_override_carries_the_picture() {
     )
     .with_format("IF(User.LUnitsInd=1,\"@\",\"0u\")");
     ed.apply(cmd).unwrap();
+    let literal = InsertField::new(
+        Scope::Shape { page: 0, shape: 2 },
+        "Width",
+        FieldInsert::End,
+    )
+    .with_format("0.00u");
+    ed.apply(literal).unwrap();
     let s = shape(&ed, 2);
     let row = &s.sheet.section("Field", 0).unwrap().rows[1];
-    assert_eq!(row.cell("Format").unwrap().v.as_deref(), Some("esc(0)"));
+    assert_eq!(row.cell("Format").unwrap().v.as_deref(), Some(""));
+    assert_eq!(
+        row.cell("Format").unwrap().f.as_deref(),
+        Some("IF(User.LUnitsInd=1,\"@\",\"0u\")")
+    );
+    let row = &s.sheet.section("Field", 0).unwrap().rows[2];
+    // A literal picture writes NO F (the corpus's bare-V shape) and
+    // caches itself as V.
+    assert_eq!(row.cell("Format").unwrap().v.as_deref(), Some("0.00u"));
+    assert_eq!(row.cell("Format").unwrap().f, None);
 }
 
 #[test]

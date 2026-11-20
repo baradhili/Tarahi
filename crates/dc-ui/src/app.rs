@@ -1099,6 +1099,12 @@ impl App {
                 // #192 spec: opening ADDS a document — the active one
                 // (if any) becomes an inactive session first.
                 self.stash_active_doc();
+                // The Insert Field dialog never carries across the
+                // document swap (#267, CodeRabbit round 4): page and
+                // shape IDs both collide across documents.
+                self.fields_open = None;
+                self.fields_caret = None;
+                self.fields_draft = None;
                 self.ed = Some(Editor::new(ed));
                 self.reload_snap_settings();
                 self.path = path;
@@ -14081,7 +14087,16 @@ impl App {
                         &sess.draft,
                     )));
                 }
-                for m in &sess.field_marks {
+                // ASCENDING offset order: mark offsets live in DRAFT
+                // space (displays included), and each insertion grows
+                // the raw's plain projection toward the draft —
+                // applying in insertion order would land a later-
+                // parked EARLIER field against a plain projection
+                // that hasn't caught up (CodeRabbit round 4: X at 2,
+                // then Y at 0, must commit "YABXCD" from "ABCD").
+                let mut marks = sess.field_marks.clone();
+                marks.sort_by_key(|m| m.offset);
+                for m in &marks {
                     let len = if typed {
                         m.display.chars().count()
                     } else {
@@ -16368,6 +16383,11 @@ impl App {
         self.reorder_open = false;
         self.comment_target = None;
         self.comment_edit = None;
+        // The Insert Field dialog does not survive a close/promote
+        // (#267, CodeRabbit round 4).
+        self.fields_open = None;
+        self.fields_caret = None;
+        self.fields_draft = None;
         // #192 4a: another open document promotes to active.
         if !self.docs.is_empty() {
             let next = self.docs.remove(0);
