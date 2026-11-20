@@ -81,18 +81,33 @@ impl<'a> FieldsCtx<'a> {
 
     /// The shared qualified layer — every sibling's User/Prop rows
     /// under `Sheet.N!`, walking INTO groups (a grouped shape's rows
-    /// are reachable by its own Sheet.N id — Greptile round 1).
-    fn shared_qualified(&self) -> &std::sync::Arc<formula::StrEnv> {
+    /// are reachable by its own Sheet.N id — Greptile round 1). A
+    /// shape's INHERITED rows (its master's, the normal state of a
+    /// freshly placed instance) seed under the INSTANCE's page ID
+    /// first, then the local rows override (Greptile round 6:
+    /// `Sheet.2!Prop.Label` must resolve even when shape 2 keeps its
+    /// Shape Data on the master).
+    fn shared_qualified(&self, doc: &Document) -> &std::sync::Arc<formula::StrEnv> {
         self.qualified.get_or_init(|| {
             let mut strs = formula::StrEnv::new();
-            fn seed_tree(s: &Shape, strs: &mut formula::StrEnv) {
+            fn seed_tree(
+                doc: &Document,
+                ancestors: &[&Shape],
+                s: &Shape,
+                strs: &mut formula::StrEnv,
+            ) {
+                if let Some(src) = doc.instance_source(s, ancestors) {
+                    seed_sheet_rows_under(&src.sheet, s.id, strs);
+                }
                 seed_shape_strings_prefixed(s, strs);
+                let mut below: Vec<&Shape> = ancestors.to_vec();
+                below.push(s);
                 for sub in &s.sub_shapes {
-                    seed_tree(sub, strs);
+                    seed_tree(doc, &below, sub, strs);
                 }
             }
             for sib in self.siblings {
-                seed_tree(sib, &mut strs);
+                seed_tree(doc, &[], sib, &mut strs);
             }
             std::sync::Arc::new(strs)
         })
@@ -326,7 +341,7 @@ fn field_envs(
     // once per shape (CodeRabbit PR review).
     let strs = match fields {
         Some(f) => {
-            let mut layered = formula::StrEnv::fork(f.shared_qualified());
+            let mut layered = formula::StrEnv::fork(f.shared_qualified(doc));
             seed_sheet_strings(doc, s, chain, &mut layered);
             layered
         }
@@ -519,12 +534,17 @@ fn field_row<'a>(
 /// Seed the string/numeric environments from the shape's own sheet
 /// and its master chain (the `resolve_cell` layering for rows).
 fn seed_sheet_strings(doc: &Document, s: &Shape, chain: &[&Shape], strs: &mut formula::StrEnv) {
-    // The master root's rows inherit under the BARE name (the
+    // The master root's rows inherit under the BARE name ONLY (the
     // `effective_user_row` layering — the corpus's instanced
     // `User.Label` fields read the master's row), then the
-    // instance's own rows override.
+    // instance's own rows override. Seeding the master's rows under
+    // its INTERNAL `Sheet.N!` id here would shadow the page's
+    // same-ID shape in the shared layer — a master root with ID 1
+    // must never capture a `Sheet.1!` ref that names page shape 1
+    // (Greptile round 6).
     if let Some(src) = doc.instance_source(s, chain) {
-        seed_shape_strings(src, strs);
+        seed_rows(&src.sheet, "User", "User", strs);
+        seed_rows(&src.sheet, "Prop", "Prop", strs);
     }
     seed_shape_strings(s, strs);
 }
@@ -533,16 +553,19 @@ fn seed_sheet_strings(doc: &Document, s: &Shape, chain: &[&Shape], strs: &mut fo
 fn seed_shape_strings(s: &Shape, strs: &mut formula::StrEnv) {
     seed_rows(&s.sheet, "User", "User", strs);
     seed_rows(&s.sheet, "Prop", "Prop", strs);
-    let q = format!("Sheet.{}!", s.id);
-    seed_rows(&s.sheet, "User", &format!("{q}User"), strs);
-    seed_rows(&s.sheet, "Prop", &format!("{q}Prop"), strs);
+    seed_sheet_rows_under(&s.sheet, s.id, strs);
+}
+
+/// A sheet's User/Prop rows under one shape's `Sheet.ID!` prefix.
+fn seed_sheet_rows_under(sheet: &Sheet, id: i64, strs: &mut formula::StrEnv) {
+    let q = format!("Sheet.{id}!");
+    seed_rows(sheet, "User", &format!("{q}User"), strs);
+    seed_rows(sheet, "Prop", &format!("{q}Prop"), strs);
 }
 
 /// Qualified-only variant (a sibling's or master's rows).
 fn seed_shape_strings_prefixed(s: &Shape, strs: &mut formula::StrEnv) {
-    let q = format!("Sheet.{}!", s.id);
-    seed_rows(&s.sheet, "User", &format!("{q}User"), strs);
-    seed_rows(&s.sheet, "Prop", &format!("{q}Prop"), strs);
+    seed_sheet_rows_under(&s.sheet, s.id, strs);
 }
 
 /// Seed `Prefix.Name` from a section's named rows' Value cells —
@@ -827,6 +850,139 @@ mod tests {
         assert_eq!(
             substituted_text(&doc, &s, &chain, Some(&fctx)).as_deref(),
             Some("25%")
+        );
+    }
+
+    /// A Prop row `N='Label'` with a string Value on a sheet.
+    fn prop_label_sheet(v: &str) -> vsdx::model::Sheet {
+        let mut sheet = vsdx::model::Sheet::default();
+        sheet.children.push(vsdx::model::SheetChild::Section(
+            vsdx::model::Section {
+                name: "Prop".into(),
+                rows: vec![vsdx::model::Row {
+                    n: Some("Label".into()),
+                    cells: vec![(
+                        "Value".to_string(),
+                        vsdx::model::Cell {
+                            v: Some(v.to_string()),
+                            ..vsdx::model::Cell::default()
+                        },
+                    )],
+                    ..vsdx::model::Row::default()
+                }],
+                ..vsdx::model::Section::default()
+            },
+        ));
+        sheet
+    }
+
+    /// A shape whose field row reads the given formula.
+    fn field_reading(f: &str) -> Shape {
+        let mut s = Shape {
+            id: 99,
+            sheet: field_row_sheet(&[(
+                "Value",
+                vsdx::model::Cell {
+                    f: Some(f.to_string()),
+                    ..vsdx::model::Cell::default()
+                },
+            )]),
+            ..Shape::default()
+        };
+        s.sheet.text_raw = Some("<fld IX='0'>?</fld>".into());
+        s
+    }
+
+    /// `Sheet.N!` refs stay PAGE-scoped: a master's internal shape
+    /// ID never captures a page shape's ref, a freshly placed
+    /// instance's INHERITED rows resolve under its page ID, and a
+    /// local override still wins (Greptile round 6).
+    #[test]
+    fn qualified_refs_stay_page_scoped() {
+        let mut doc = Document::default();
+        // Master 7's root shape carries ID 1 — colliding with page
+        // shape 1.
+        doc.masters.push(vsdx::model::Master {
+            id: 7,
+            shapes: vec![Shape {
+                id: 1,
+                sheet: prop_label_sheet("master-root"),
+                ..Shape::default()
+            }],
+            ..vsdx::model::Master::default()
+        });
+        let mut page = Page {
+            id: 1,
+            name: "P".to_string(),
+            ..Page::default()
+        };
+        // Page shape 1: local row.
+        page.shapes.push(Shape {
+            id: 1,
+            sheet: prop_label_sheet("page-one"),
+            ..Shape::default()
+        });
+        // Page shape 2: instance with NO local rows (the freshly
+        // placed state — its Shape Data lives on the master).
+        page.shapes.push(Shape {
+            id: 2,
+            master: Some(7),
+            ..Shape::default()
+        });
+        // Page shape 3: instance WITH a local override.
+        let mut local3 = vsdx::model::Sheet::default();
+        local3.children.push(vsdx::model::SheetChild::Section(
+            vsdx::model::Section {
+                name: "Prop".into(),
+                rows: vec![vsdx::model::Row {
+                    n: Some("Label".into()),
+                    cells: vec![(
+                        "Value".to_string(),
+                        vsdx::model::Cell {
+                            v: Some("local-three".to_string()),
+                            ..vsdx::model::Cell::default()
+                        },
+                    )],
+                    ..vsdx::model::Row::default()
+                }],
+                ..vsdx::model::Section::default()
+            },
+        ));
+        page.shapes.push(Shape {
+            id: 3,
+            master: Some(7),
+            sheet: local3,
+            ..Shape::default()
+        });
+        let fctx = FieldsCtx::for_page(&doc, &page);
+
+        // `Sheet.1!` names PAGE shape 1 — not master 7's root that
+        // happens to carry ID 1 (the master-source seeding used to
+        // shadow the page's entry).
+        let s2 = &page.shapes[1];
+        let chain = [s2];
+        let reader = field_reading("Sheet.1!Prop.Label");
+        assert_eq!(
+            substituted_text(&doc, &reader, &chain, Some(&fctx)).as_deref(),
+            Some("page-one"),
+            "a master's internal ID must not capture a page Sheet.N! ref"
+        );
+
+        // `Sheet.2!` resolves the INSTANCE's inherited row (kept on
+        // the master), and `Sheet.3!` prefers the local override.
+        let s1 = &page.shapes[0];
+        let chain = [s1];
+        let reader = field_reading("Sheet.2!Prop.Label");
+        assert_eq!(
+            substituted_text(&doc, &reader, &chain, Some(&fctx)).as_deref(),
+            Some("master-root"),
+            "an inherited row resolves under the instance's page ID"
+        );
+        let reader = field_reading("Sheet.3!Prop.Label");
+        assert_eq!(
+            substituted_text(&doc, &reader, &chain, Some(&fctx)).as_deref(),
+            Some("local-three"),
+            "a local override outranks the inherited row"
         );
     }
 

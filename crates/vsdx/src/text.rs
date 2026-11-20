@@ -251,6 +251,36 @@ pub fn plain_to_raw_offset(raw: &str, plain_chars: usize) -> usize {
     let mut open_fld_at: Option<usize> = None;
     while let Some((i, c)) = chars.next() {
         match c {
+            // A CDATA section is not a tag: its CONTENT is plain
+            // text (`text_pieces` counts it — quick_xml's CData
+            // event), the wrappers are not. A target that lands
+            // strictly INSIDE the content snaps past the `]]>` — a
+            // `<fld>` marker inserted inside CDATA is literal
+            // markup, never a field (Greptile round 6).
+            '<' if raw[i..].starts_with("<![CDATA[") => {
+                const OPEN: usize = 9; // "<![CDATA[".len()
+                let content_start = i + OPEN;
+                let (end, after) = match raw[content_start..].find("]]>") {
+                    Some(k) => (content_start + k, content_start + k + 3),
+                    None => (raw.len(), raw.len()),
+                };
+                let content_chars = raw[content_start..end].chars().count();
+                if count >= plain_chars {
+                    // The target sits at/before the section: insert
+                    // ahead of it.
+                    return i;
+                }
+                if count + content_chars > plain_chars {
+                    return after;
+                }
+                count += content_chars;
+                while let Some(&(j, _)) = chars.peek() {
+                    if j >= after {
+                        break;
+                    }
+                    chars.next();
+                }
+            }
             '<' => {
                 // Skip the tag wholesale: tags contribute no plain
                 // characters. An unterminated tag ends the scan. A
@@ -486,6 +516,37 @@ mod tests {
         // offset 4 is the 'b').
         let ent = "a &amp; b";
         assert_eq!(&ent[plain_to_raw_offset(ent, 4)..], "b");
+    }
+
+    /// CDATA content counts as plain text (the piece model does —
+    /// `adjacent_text_runs_merge`), the wrappers do not, and a caret
+    /// landing strictly INSIDE a section maps past the `]]>` — a
+    /// marker inserted inside CDATA would be literal markup
+    /// (Greptile round 6: `<![CDATA[A>B]]>C` used to end its "tag"
+    /// at the inner `>`).
+    #[test]
+    fn plain_to_raw_offset_counts_cdata_content_as_text() {
+        // Plain projection: "abc".
+        let raw = "a<![CDATA[b]]>c";
+        assert_eq!(plain_to_raw_offset(raw, 0), 0);
+        assert_eq!(plain_to_raw_offset(raw, 1), 1);
+        // Caret 2 (the b|c boundary — inside AND content-end for a
+        // one-character section) maps past the `]]>`.
+        assert_eq!(&raw[plain_to_raw_offset(raw, 2)..], "c");
+        // Beyond the end clamps.
+        assert_eq!(plain_to_raw_offset(raw, 3), raw.len());
+        // Greptile's repro: a `>` inside CDATA must not end a "tag".
+        let gt = "<![CDATA[A>B]]>C";
+        // Plain projection: "A>BC"; caret 1 (inside) and caret 3
+        // (content end) both map past the section, at "C".
+        assert_eq!(&gt[plain_to_raw_offset(gt, 1)..], "C");
+        assert_eq!(&gt[plain_to_raw_offset(gt, 3)..], "C");
+        // A marker still lands safely around a CDATA section.
+        let with_fld = "a<![CDATA[b]]><fld IX='0'>x</fld>d";
+        assert_eq!(
+            plain_to_raw_offset(with_fld, 2),
+            with_fld.find("<fld").unwrap()
+        );
     }
 
     #[test]
