@@ -156,59 +156,71 @@ pub fn format_value(
     default_units: UnitSystem,
 ) -> String {
     let picture = picture.trim();
+    // Numeric/date parsing works on the TRIMMED view; text
+    // substitution and every FALLBACK return the ORIGINAL value —
+    // whitespace is content (`"  A  "` stays `"  A  "`, a
+    // whitespace-only value never becomes empty) (CodeRabbit PR
+    // review).
+    let original = value;
     let value = value.trim();
     let unit = unit_hint
         .and_then(Unit::from_u)
         .unwrap_or_else(|| Unit::default_for(default_units));
     match picture {
-        "" => value.to_string(),
-        "@" => value.to_string(),
-        "@+" => value.to_uppercase(),
-        "@-" => value.to_lowercase(),
-        "c" | "C" => short_date(value),
+        "" => original.to_string(),
+        "@" => original.to_string(),
+        "@+" => original.to_uppercase(),
+        "@-" => original.to_lowercase(),
+        // `c` is the SHORT general date (corpus-pinned); `C` is the
+        // LONG form ([MS] format pictures; CodeRabbit PR review).
+        "c" => short_date(value),
+        "C" => match parse_date(value) {
+            Some(d) => format!("{} {}, {}", month_name(&d), d.d, d.y),
+            None => original.to_string(),
+        },
         p if p.starts_with("esc(") && p.ends_with(')') => {
             let code: i64 = match p[4..p.len() - 1].trim().parse() {
                 Ok(c) => c,
-                Err(_) => return value.to_string(),
+                Err(_) => return original.to_string(),
             };
-            esc_format(value, code, unit)
+            esc_format(value, code, unit, original)
         }
         p if p.starts_with("{{") && p.ends_with("}}") => match parse_date(value) {
             Some(d) => date_picture(&d, &p[2..p.len() - 2]),
-            None => value.to_string(),
+            None => original.to_string(),
         },
         p if p.starts_with("{<") && p.ends_with(">}") => {
             let code: i64 = match p[2..p.len() - 2].trim().parse() {
                 Ok(c) => c,
-                Err(_) => return value.to_string(),
+                Err(_) => return original.to_string(),
             };
             match code {
                 // 200: predefined SHORT date (corpus: DOCCREATION
                 // 2012-07-26T10:23:29 → `7/26/2012`).
                 200 => match parse_date(value) {
                     Some(d) => short_date_parts(&d),
-                    None => value.to_string(),
+                    None => original.to_string(),
                 },
                 // 202: predefined LONG date (corpus: DOCLASTSAVE
                 // 2012-07-18T23:57:59 → `July 18, 2012`).
                 202 => match parse_date(value) {
                     Some(d) => format!("{} {}, {}", month_name(&d), d.d, d.y),
-                    None => value.to_string(),
+                    None => original.to_string(),
                 },
-                _ => value.to_string(),
+                _ => original.to_string(),
             }
         }
         // Digit pictures: `0`, `0.00`, `1`, with or without the `u`
         // unit suffix (no space before the label — the corpus's
         // `0u`/`0.00u` markers: `3m.`, `50.00mm.`).
-        p if is_digit_picture(p) => digit_picture(value, p, unit),
+        p if is_digit_picture(p) => digit_picture(value, p, unit, original),
         // A bare date picture (`FORMAT(User.Date,"d")`, the Gantt
         // set): every character is a date token or separator.
         p if is_bare_date_picture(p) => match parse_date(value) {
             Some(d) => date_picture(&d, p),
-            None => value.to_string(),
+            None => original.to_string(),
         },
-        _ => value.to_string(),
+        _ => original.to_string(),
     }
 }
 
@@ -224,21 +236,27 @@ fn is_bare_date_picture(p: &str) -> bool {
 }
 
 fn is_digit_picture(p: &str) -> bool {
+    // Interior spaces are Visio's `0.00 u` spacing before the unit
+    // label ([MS] FORMATEX; CodeRabbit PR review) — allowed between
+    // the digits and a trailing `u`/`U`.
+    let squeezed: String = p.chars().filter(|&c| c != ' ').collect();
     !p.is_empty()
-        && p.chars()
+        && squeezed
+            .chars()
             .all(|c| c == '0' || c == '.' || c == 'u' || c == 'U' || c == '1')
-        && p.chars().any(|c| c == '0' || c == '1')
+        && squeezed.chars().any(|c| c == '0' || c == '1')
 }
 
 /// A digit picture: decimals from the `0`s after the `.`, unit label
-/// appended with no space when `u`/`U` is present.
-fn digit_picture(value: &str, p: &str, unit: Unit) -> String {
+/// appended (no space for `0.00u`, Visio's own space preserved for
+/// `0.00 u`).
+fn digit_picture(value: &str, p: &str, unit: Unit, original: &str) -> String {
     let has_unit = p.contains('u') || p.contains('U');
     let decimals = p
         .split_once('.')
         .map_or(0, |(_, frac)| frac.chars().filter(|&c| c == '0').count());
     let Some(n) = leading_number(value) else {
-        return value.to_string();
+        return original.to_string();
     };
     let dec_unit = match unit {
         Unit::InF => Unit::In,
@@ -250,9 +268,20 @@ fn digit_picture(value: &str, p: &str, unit: Unit) -> String {
     // Number 2 into `51` on metric paper. Only the `u`-suffixed
     // pictures are length displays (Greptile round 1).
     let shown = if has_unit { dec_unit.inches_to(n) } else { n };
+    // An overflowing conversion (1E308 × 25.4 = inf) must not blank
+    // the field — the formatter's contract is a nonempty fallback
+    // (CodeRabbit PR review).
+    if !shown.is_finite() {
+        return original.to_string();
+    }
     let mut out = format_decimals(shown, decimals);
     if has_unit {
         if let Some(label) = dec_unit.label() {
+            // Visio's `0.00 u` spelling keeps its space before the
+            // label; `0.00u` stays compact.
+            if p.contains(" u") || p.contains(" U") {
+                out.push(' ');
+            }
             out.push_str(label);
         }
     }
@@ -261,7 +290,7 @@ fn digit_picture(value: &str, p: &str, unit: Unit) -> String {
 
 /// The `esc(n)` table — the per-code rendering rules pinned from the
 /// corpus quadruples (see the module docs).
-fn esc_format(value: &str, code: i64, unit: Unit) -> String {
+fn esc_format(value: &str, code: i64, unit: Unit, original: &str) -> String {
     // String values that carry their own percent sign render as the
     // number + `%` (corpus: `10 %` STR → `10%` under esc(1)).
     if value.ends_with('%') {
@@ -297,7 +326,7 @@ fn esc_format(value: &str, code: i64, unit: Unit) -> String {
     }
     let Some(n) = leading_number(value) else {
         // Not a number at all — the general pass-through.
-        return value.to_string();
+        return original.to_string();
     };
     let (decimals, with_label) = match code {
         1 => (0, true),
@@ -314,7 +343,7 @@ fn esc_format(value: &str, code: i64, unit: Unit) -> String {
         _ => {
             return match value.trim().parse::<f64>() {
                 Ok(v) if value.trim().chars().any(|c| c.is_ascii_digit()) => general_number(v),
-                _ => value.to_string(),
+                _ => original.to_string(),
             };
         }
     };
@@ -323,6 +352,11 @@ fn esc_format(value: &str, code: i64, unit: Unit) -> String {
         u => u,
     };
     let shown = dec_unit.inches_to(n);
+    // Overflowing conversions keep the original visible (the
+    // nonempty-fallback contract).
+    if !shown.is_finite() {
+        return original.to_string();
+    }
     let mut out = format_decimals(shown, decimals);
     if with_label {
         if let Some(label) = dec_unit.label() {
@@ -354,7 +388,10 @@ fn split_trailing_unit_text(value: &str) -> Option<String> {
 
 /// `120` (inches) → `10' 0"` — the feet-inch picture (esc(10)).
 fn feet_inches(v: f64) -> String {
-    if !v.is_finite() || v < 0.0 {
+    // Feet beyond i64 range (1E21 inches) fall back to the general
+    // number instead of a saturating cast whose carry overflows
+    // (CodeRabbit PR review).
+    if !v.is_finite() || v < 0.0 || !(0.0..8.29e18).contains(&(v / 12.0)) {
         return general_number(v);
     }
     let mut ft = (v / 12.0).floor() as i64;
@@ -428,12 +465,14 @@ fn leading_number(value: &str) -> Option<f64> {
         }
     }
     let tok = &value[start..end];
-    if tok.is_empty()
-        || !tok.chars().any(|c| c.is_ascii_digit())
-        || tok.matches(['.', '-', '+']).count() > 2
-    {
+    if tok.is_empty() || !tok.chars().any(|c| c.is_ascii_digit()) {
         return None;
     }
+    // Shape validation stays with the float parser: a manual
+    // punctuation count rejected `-1.2E-3` (sign in BOTH the mantissa
+    // and the exponent exceeds two), while `parse()` accepts it and
+    // still rejects malformed tokens like `1.2.3` (CodeRabbit PR
+    // review).
     tok.parse().ok()
 }
 
@@ -462,6 +501,13 @@ fn parse_date(value: &str) -> Option<DateParts> {
         let y: i32 = value[0..4].parse().ok()?;
         let mo: u32 = value[5..7].parse().ok()?;
         let d: u32 = value[8..10].parse().ok()?;
+        // Calendar validity: `2024-02-30` is NOT a date — the
+        // formatter's contract leaves unparseable input unchanged
+        // (February 29 stays valid in leap years; CodeRabbit PR
+        // review).
+        if !(1..=12).contains(&mo) || d < 1 || d > days_in_month(y, mo) {
+            return None;
+        }
         let (h, mi, s) = match value.get(10..) {
             Some(t) if t.starts_with('T') || t.starts_with(' ') => {
                 let t = &t[1..];
@@ -477,6 +523,9 @@ fn parse_date(value: &str) -> Option<DateParts> {
                     .and_then(|x| x.get(0..2))
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(0);
+                if h > 23 || mi > 59 || s > 59 {
+                    return None;
+                }
                 (h, mi, s)
             }
             _ => (0, 0, 0),
@@ -488,8 +537,18 @@ fn parse_date(value: &str) -> Option<DateParts> {
     if !(0.0..2_958_466.0).contains(&serial) {
         return None;
     }
-    let days = (serial - 25569.0).floor() as i64; // 25569 = 1970-01-01
-    let secs_of_day = ((serial - 25569.0).fract() * 86400.0).round() as u32;
+    // Split the NONNEGATIVE serial into day + fraction BEFORE the
+    // epoch offset: `25568.5` (1969-12-31 noon) made `(serial -
+    // 25569).fract()` negative and the u32 cast zeroed it
+    // (CodeRabbit PR review). Rounding can carry a full day
+    // (42005.999999 → 86400 s): advance the date and use midnight.
+    let day_count = serial.floor();
+    let mut days = (day_count - 25569.0) as i64; // 25569 = 1970-01-01
+    let mut secs_of_day = ((serial - day_count) * 86400.0).round() as u32;
+    if secs_of_day >= 86_400 {
+        days += 1;
+        secs_of_day -= 86_400;
+    }
     let (y, mo, d) = civil_from_days(days);
     Some(DateParts {
         y,
@@ -499,6 +558,22 @@ fn parse_date(value: &str) -> Option<DateParts> {
         mi: (secs_of_day / 60) % 60,
         s: secs_of_day % 60,
     })
+}
+
+/// Days in a month, leap years included.
+fn days_in_month(y: i32, mo: u32) -> u32 {
+    match mo {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
 }
 
 /// Days-since-epoch → civil date (Howard Hinnant's algorithm).
@@ -879,6 +954,49 @@ mod tests {
     #[test]
     fn scientific_notation_parses() {
         assert_eq!(format_value("1.2E-3", Some("IN"), "esc(8)", U), "0.001");
+    }
+
+    #[test]
+    fn pr_review_fieldfmt_pins() {
+        // `C` is the LONG general date; `c` stays short.
+        assert_eq!(
+            format_value("2014-05-15T00:00:00", None, "C", U),
+            "May 15, 2014"
+        );
+        assert_eq!(
+            format_value("2014-05-15T00:00:00", None, "c", U),
+            "5/15/2014"
+        );
+        // Whitespace is content for text pictures and the empty picture.
+        assert_eq!(format_value("  A  ", Some("STR"), "@", U), "  A  ");
+        assert_eq!(format_value("  A  ", Some("STR"), "", U), "  A  ");
+        // Interior space before the unit label (Visio's `0.00 u`).
+        assert_eq!(format_value("1", Some("CM"), "0.00 u", U), "2.54 cm.");
+        assert_eq!(format_value("1", Some("CM"), "0.00u", U), "2.54cm.");
+        // Sign in both mantissa and exponent parses.
+        assert_eq!(format_value("-1.2E-3", Some("IN"), "esc(8)", U), "-0.001");
+        // Overflowing conversion keeps the value visible (1E308 ×
+        // 25.4 overflows f64; the BARE `0.00` never converts).
+        assert_eq!(format_value("1E308", Some("MM"), "0.00u", M), "1E308");
+        // Invalid calendar dates fall back verbatim.
+        assert_eq!(format_value("2024-02-30", None, "c", U), "2024-02-30");
+        assert_eq!(format_value("2024-02-29", None, "c", U), "2/29/2024");
+        // Pre-1970 serials keep their time fraction (25568.5 =
+        // 1969-12-31 noon).
+        assert_eq!(
+            format_value("25568.5", None, "{{yyyy-MM-dd HH:mm:ss}}", U),
+            "1969-12-31 12:00:00"
+        );
+        // A rounding carry advances the day (42005.999999).
+        assert_eq!(
+            format_value("42005.999999", None, "{{yyyy-MM-dd HH:mm:ss}}", U),
+            "2015-01-02 00:00:00"
+        );
+        // Feet beyond i64 degrade to the general number, no panic.
+        assert_eq!(
+            format_value("1E21", Some("IN_F"), "esc(10)", U),
+            general_number(1e21)
+        );
     }
 
     #[test]

@@ -65,22 +65,24 @@ pub fn text_pieces(raw: &str) -> Vec<Piece> {
     let mut buf = Vec::new();
     // Depth INSIDE an open value-carrying `<fld>`: 0 = not inside
     // one, 1 = directly in the marker, >1 = inside a nested element
-    // (not corpus-attested; handled so words survive anyway).
+    // (not corpus-attested; handled so words survive anyway — its
+    // TEXT joins the cached display like `plain_text_of`, and each
+    // nested start balances its own end so `</fld>` closes the
+    // MARKER, never a nested tag) (CodeRabbit PR review).
     let mut inside_fld = 0usize;
+    // The open element stack while inside a marker (its names), so an
+    // End only pops the depth when it matches the innermost open tag.
+    let mut open_stack: Vec<String> = Vec::new();
     loop {
         buf.clear();
         match r.read_event_into(&mut buf) {
             Ok(Event::Text(t)) => {
                 let s = t.as_ref().to_string();
-                if inside_fld <= 1 {
-                    push_chars(&mut pieces, &s);
-                }
+                push_chars(&mut pieces, &s);
             }
             Ok(Event::CData(t)) => {
                 let s = t.as_ref().to_string();
-                if inside_fld <= 1 {
-                    push_chars(&mut pieces, &s);
-                }
+                push_chars(&mut pieces, &s);
             }
             Ok(Event::GeneralRef(g)) => {
                 // Re-form the entity and resolve it exactly the way
@@ -89,9 +91,7 @@ pub fn text_pieces(raw: &str) -> Vec<Piece> {
                 ent.push_str(g.as_ref());
                 ent.push(';');
                 let s = crate::opc::unescape(ent.as_bytes());
-                if inside_fld <= 1 {
-                    push_chars(&mut pieces, &s);
-                }
+                push_chars(&mut pieces, &s);
             }
             Ok(Event::Start(e)) => {
                 let name = tag_name(e.name());
@@ -103,6 +103,7 @@ pub fn text_pieces(raw: &str) -> Vec<Piece> {
                                     ix,
                                     content: Some(String::new()),
                                 });
+                                open_stack.push(name.clone());
                             }
                             inside_fld += 1;
                         }
@@ -112,17 +113,18 @@ pub fn text_pieces(raw: &str) -> Vec<Piece> {
                         _ => {}
                     }
                 } else if inside_fld > 0 {
-                    // Nested element inside a value-carrying marker —
-                    // not corpus-attested; track depth so its End does
-                    // not close the marker early.
+                    // Nested element inside a value-carrying marker:
+                    // its payload is part of the cached display.
                     inside_fld += 1;
+                    open_stack.push(name.clone());
                 }
             }
             Ok(Event::Empty(e)) => {
-                let name = tag_name(e.name());
+                // Self-closing elements contribute no characters and
+                // no depth; markers only count at depth 0.
                 if inside_fld == 0 {
-                    if let Some(ix) = marker_ix_opt(&name, &e) {
-                        match name.as_str() {
+                    if let Some(ix) = marker_ix_opt(&tag_name(e.name()), &e) {
+                        match tag_name(e.name()).as_str() {
                             "fld" => pieces.push(Piece::Fld { ix, content: None }),
                             "cp" => pieces.push(Piece::Cp { ix }),
                             "pp" => pieces.push(Piece::Pp { ix }),
@@ -133,7 +135,9 @@ pub fn text_pieces(raw: &str) -> Vec<Piece> {
                 }
             }
             Ok(Event::End(e)) => {
-                if tag_name(e.name()) == "fld" && inside_fld > 0 {
+                let name = tag_name(e.name());
+                if inside_fld > 0 && open_stack.last().is_some_and(|n| n == &name) {
+                    open_stack.pop();
                     inside_fld -= 1;
                     if inside_fld == 0 {
                         // Close the marker's content slot: subsequent
@@ -212,6 +216,31 @@ pub fn flds(raw: &str) -> Vec<(i64, Option<String>)> {
 /// resolves entities — exactly [`text_pieces`] concatenation — so
 /// `plain_chars` is an offset into that projection. Offsets beyond
 /// the end clamp to the raw length.
+/// The byte offset just past the tag starting at `i`, honoring `>`
+/// inside quoted attribute values.
+fn tag_end(raw: &str, i: usize) -> usize {
+    let bytes = raw.as_bytes();
+    let mut j = i + 1;
+    let mut quote: Option<u8> = None;
+    while j < bytes.len() {
+        let b = bytes[j];
+        match quote {
+            Some(q) => {
+                if b == q {
+                    quote = None;
+                }
+            }
+            None => match b {
+                b'"' | b'\'' => quote = Some(b),
+                b'>' => return j + 1,
+                _ => {}
+            },
+        }
+        j += 1;
+    }
+    raw.len()
+}
+
 pub fn plain_to_raw_offset(raw: &str, plain_chars: usize) -> usize {
     let mut count = 0usize;
     let mut chars = raw.char_indices().peekable();
@@ -224,8 +253,10 @@ pub fn plain_to_raw_offset(raw: &str, plain_chars: usize) -> usize {
         match c {
             '<' => {
                 // Skip the tag wholesale: tags contribute no plain
-                // characters. An unterminated tag ends the scan.
-                let close = raw[i..].find('>').map(|k| i + k + 1).unwrap_or(raw.len());
+                // characters. An unterminated tag ends the scan. A
+                // `>` inside a QUOTED attribute does not close the
+                // tag (`<x title=">">`; CodeRabbit PR review).
+                let close = tag_end(raw, i);
                 let self_closing = raw[..close].ends_with("/>");
                 let closing_fld = raw[i..].starts_with("</fld");
                 let opening_fld =
@@ -410,6 +441,29 @@ mod tests {
         let raw = "x<fld IX='0'>partial";
         // Never lose words: the content stays visible.
         assert_eq!(plain_of_pieces(raw), "xpartial");
+    }
+
+    #[test]
+    fn nested_elements_inside_a_field_join_its_display() {
+        // The nested <b>'s payload is cached content (CodeRabbit PR
+        // review) and the field closes at </fld>, not at </b>.
+        let raw = "x<fld IX='2'>a<b>b</b>c</fld>y";
+        assert_eq!(flds(raw), vec![(2, Some("abc".into()))]);
+        assert_eq!(plain_of_pieces(raw), "xabcy");
+        // Trailing text is NOT part of the display.
+        let raw2 = "x<fld IX='2'>a<b></b>c</fld>y";
+        assert_eq!(flds(raw2), vec![(2, Some("ac".into()))]);
+    }
+
+    #[test]
+    fn quoted_attribute_gt_does_not_close_the_tag() {
+        let raw = "a<x title=\">\">b</x>c";
+        // Plain offset 2 (after `ab`) lands at the CLOSING tag — a
+        // naive `find('>')` stops at the quoted `>`, counts the
+        // attribute tail as plain text, and shifts every later
+        // mapping into the markup.
+        let at2 = plain_to_raw_offset(raw, 2);
+        assert!(raw[at2..].starts_with("</x>"), "got {at2}");
     }
 
     #[test]

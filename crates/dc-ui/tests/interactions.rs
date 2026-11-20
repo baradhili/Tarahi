@@ -3434,6 +3434,22 @@ fn insert_field_dialog_writes_row_and_marker_caret_precise() {
     h.get_by_role(egui::Role::MultilineTextInput)
         .set_text_value_accesskit("AB");
     h.run();
+    // Park the caret BETWEEN the A and the B (an end-caret insertion
+    // would pass an append-only implementation — CodeRabbit PR
+    // review): the block centers its text, so the editor's center x
+    // falls between the two glyphs — clicking there puts the cursor
+    // at A|B.
+    let er = h.get_by_role(egui::Role::MultilineTextInput).rect();
+    click_at(
+        &mut h,
+        egui::pos2(er.center().x, er.center().y),
+        egui::PointerButton::Primary,
+    );
+    h.run();
+    // Establish the cursor (the accesskit text set leaves none) and
+    // step it left of the B.
+    h.key_press(egui::Key::ArrowLeft);
+    h.run();
 
     // Insert ▸ Text ▸ Text Field: switch to the Insert tab, then the
     // ribbon's icon button (alt label "Text Field"). The click that
@@ -3488,8 +3504,8 @@ fn insert_field_dialog_writes_row_and_marker_caret_precise() {
     // (where the caret was), caching its display like the corpus's
     // value-carrying markers.
     assert_eq!(
-        raw, "AB<fld IX='0'>1</fld>",
-        "the marker landed at the captured caret with its display"
+        raw, "A<fld IX='0'>1</fld>B",
+        "the marker landed at the captured caret (between A and B) with its display"
     );
 
     // The field is its own undo step (the typed text committed

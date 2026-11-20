@@ -117,6 +117,12 @@ pub struct App {
     /// edit — the opening click commits the edit (#22), the field
     /// still lands at the caret (#267): (page, shape, plain offset).
     fields_caret: Option<(i64, i64, usize)>,
+    /// The caret of the LAST text edit this shape had, kept across the
+    /// edit's commit — the ribbon journey to Insert ▸ Text Field
+    /// crosses frames (the tab click commits the edit before the
+    /// field button opens the dialog), and the field still lands
+    /// where the caret sat (#267, CodeRabbit PR review).
+    last_edit_caret: Option<(i64, i64, usize)>,
     /// The Insert Field dialog's edit state (#267).
     fields_draft: Option<crate::fields_dlg::FieldsDraft>,
     /// The Comments popup is open for this shape (#29 rework: the
@@ -685,6 +691,7 @@ impl App {
             hyperlink_draft: None,
             fields_open: None,
             fields_caret: None,
+            last_edit_caret: None,
             fields_draft: None,
             comment_target: None,
             comment_body: String::new(),
@@ -8336,7 +8343,17 @@ impl App {
                 // dialog also commits the edit (#22's click-away), so
                 // the caret is captured NOW — the insertion lands
                 // where the caret sat, in the committed raw.
-                self.fields_caret = self.text_edit.as_ref().map(|s| (s.page, s.shape, s.caret));
+                self.fields_caret = self
+                    .text_edit
+                    .as_ref()
+                    .map(|s| (s.page, s.shape, s.caret))
+                    .or_else(|| {
+                        // The edit already committed (tab click): the
+                        // last caret of THIS shape carries.
+                        let sel = self.sel?;
+                        let (p, s, caret) = self.last_edit_caret?;
+                        (p == sel.0 && s == sel.1).then_some((p, s, caret))
+                    });
                 match self.sel {
                     Some((page_id, sid)) => {
                         self.fields_open = Some((page_id, sid));
@@ -14060,7 +14077,10 @@ impl App {
         // edit through this path — and dispatch may run after the
         // overlay in some frame orderings, so the caret is captured
         // HERE too (Greptile round 1: dispatch's own capture can see
-        // an already-empty session).
+        // an already-empty session). The LAST-edit caret is kept
+        // unconditionally: the tab click commits before the field
+        // button even opens the dialog (CodeRabbit PR review).
+        self.last_edit_caret = Some((sess.page, sess.shape, sess.caret));
         if self.fields_open.is_some() && self.fields_caret.is_none() {
             self.fields_caret = Some((sess.page, sess.shape, sess.caret));
         }
@@ -14227,6 +14247,12 @@ impl App {
     /// kittest: the open in-place editor session as (page, shape)
     /// (#22).
     #[doc(hidden)]
+    /// #267: the open editor's caret (kittest debugging).
+    #[doc(hidden)]
+    pub fn debug_text_edit_caret(&self) -> Option<usize> {
+        self.text_edit.as_ref().map(|s| s.caret)
+    }
+
     pub fn debug_text_edit(&self) -> Option<(i64, i64)> {
         self.text_edit.as_ref().map(|s| (s.page, s.shape))
     }

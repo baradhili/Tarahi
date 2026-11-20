@@ -810,9 +810,36 @@ impl crate::Command for SetRowCell {
                 // make a full dependency graph unnecessary (issue
                 // ruling).
                 if matches!(self.section.as_str(), "User" | "Prop") {
+                    // An IX-selected edit changes the same row a named
+                    // edit would — resolve the row's name (including
+                    // the inherited row a first edit materializes
+                    // from) so the dependency walk still fires
+                    // (CodeRabbit PR review).
                     let row_name = match &self.row {
                         RowSel::Named(n) => Some(n.clone()),
-                        RowSel::Ix(_) => None,
+                        RowSel::Ix(ix) => (|| {
+                            let page_ref = doc.pages.iter().find(|p| p.id == *page)?;
+                            let sh = crate::scope::find_shape(&page_ref.shapes, *shape)?;
+                            if let Some(r) = sh
+                                .sheet
+                                .section(&self.section, self.section_ix)?
+                                .row_by_ix(*ix)
+                            {
+                                return r.n.clone();
+                            }
+                            // Not local: the inherited row the edit
+                            // materializes from.
+                            let Ok(chain) = crate::scope::shape_chain(doc, *page, *shape) else {
+                                return None;
+                            };
+                            let ancestors: Vec<_> =
+                                chain.into_iter().filter(|c| c.id != *shape).collect();
+                            let src = doc.instance_source(sh, &ancestors)?;
+                            src.sheet
+                                .section(&self.section, self.section_ix)?
+                                .row_by_ix(*ix)
+                                .and_then(|r| r.n.clone())
+                        })(),
                     };
                     if let Some(name) = row_name {
                         let refs = format!("{}.{}", self.section, name);
@@ -1323,9 +1350,20 @@ impl crate::Command for InsertField {
                 .or_else(|| inherited_raw.clone())
                 .unwrap_or_default(),
         };
+        // Normalize a raw byte offset onto a UTF-8 character
+        // boundary BEFORE splicing: `RawOffset(1)` into `中文` splits
+        // a scalar and the slice below panics after the row was
+        // already appended (CodeRabbit PR review).
+        let boundary = |at: usize| -> usize {
+            let mut at = at.min(raw.len());
+            while at > 0 && !raw.is_char_boundary(at) {
+                at -= 1;
+            }
+            at
+        };
         let (head, tail) = match insert {
             FieldInsert::End => (raw.len(), raw.len()),
-            FieldInsert::RawOffset(at) => (at.min(raw.len()), at.min(raw.len())),
+            FieldInsert::RawOffset(at) => (boundary(at), boundary(at)),
             FieldInsert::ReplacePlain { offset, len } => (
                 vsdx::text::plain_to_raw_offset(&raw, offset),
                 vsdx::text::plain_to_raw_offset(&raw, offset + len),

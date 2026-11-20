@@ -333,7 +333,24 @@ fn render_field(
     let Some(row) = row else {
         return cached.unwrap_or("").to_string();
     };
-    let value_cell = row.cell("Value");
+    // A SPARSE local row inherits missing cells from the master's row
+    // of the same IX (the shapesheet's cell-by-cell resolution; a
+    // local row that omits Value or Format used to lose the master's
+    // cell entirely — CodeRabbit PR review).
+    let inherited_row = (|| -> Option<&vsdx::model::Row> {
+        if row.cell("Value").is_some() && row.cell("Format").is_some() {
+            return None;
+        }
+        let src = doc.instance_source(s, chain)?;
+        src.sheet
+            .section("Field", 0)
+            .and_then(|sec| sec.row_by_ix(ix))
+    })();
+    let cell_of = |name: &str| -> Option<&vsdx::model::Cell> {
+        row.cell(name)
+            .or_else(|| inherited_row.and_then(|r| r.cell(name)))
+    };
+    let value_cell = cell_of("Value");
     // Evaluate the Value formula; fall back to the cached V.
     let (value, unit) = match value_cell {
         Some(c) => {
@@ -355,7 +372,7 @@ fn render_field(
     };
     // The format picture: the Format cell's F (FIELDPICTURE(n) — or
     // a formula producing a picture) evaluated live, else its V.
-    let picture = row.cell("Format").and_then(|c| {
+    let picture = cell_of("Format").and_then(|c| {
         c.f.as_deref()
             .filter(|f| !f.is_empty() && *f != "No Formula" && *f != "Inh")
             .and_then(|f| formula::eval_field(f, env, strs, fctx).ok())

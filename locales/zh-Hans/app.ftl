@@ -97,7 +97,7 @@ browse-for-an-existing-visio-pac = 浏览现有的 Visio 包。
 # $failed (Number) - 失败数
 builtin-extracted-summary = 内置模具：已提取 { $ok } 个，失败 { $failed } 个——正在使用嵌入式副本
 # $n (Number) - 提取的文件数
-builtin-extracted-to = 已将 { $n } 个内置模具文件提取到“我的形状/内置”
+builtin-extracted-to = 已将 { $n } 个内置模具文件提取到“My Shapes/Built-ins”
 # $title (String) - 模具标题
 builtin-stencil-failed = 内置模具加载失败：{ $title }
 bullets = 项目符号
@@ -331,7 +331,7 @@ field-fmt-uppercase-text = 大写文本
 field-format = 格式：
 field-formula = 公式：
 field-height = 高度
-field-inserted-no-preview = 已插入域 — 公式可解析后即会显示。
+field-inserted-no-preview = 已插入域 — 公式可解析时即会显示。NOW() 等公式需要 Visio 保存的缓存值。
 field-keywords = 关键字
 field-last-edit-date = 上次编辑日期
 field-last-save-date = 上次保存日期
@@ -370,7 +370,7 @@ exporting = 正在导出…
 external-data = 外部数据
 external-data-window = 外部数据窗口
 external-data-window-m6 = 外部数据窗口（M6）
-extracting-built-in-stencils-to = 正在将内置模具提取到“我的形状”（{ $done }/{ $total }）…
+extracting-built-in-stencils-to = 正在将内置模具提取到“My Shapes”（{ $done }/{ $total }）…
 file = 文件
 files-you-open-will-appear-here = 在此处显示打开的文件。
 fill = 填充
@@ -570,7 +570,7 @@ move-line-endpoint-shape-shape-i = 移动线条端点（形状 { $shape_id }）
 move-shapes = 移动形状
 move-up = 上移
 my-shapes = 我的形状
-my-shapes-tip = 从“我的形状”文件夹打开模具
+my-shapes-tip = 从“My Shapes”文件夹打开模具
 name = 名称
 name-page-id = { $name }（第 { $id } 页）
 name-u-master-id = { $name_u }（主形状 { $id }）

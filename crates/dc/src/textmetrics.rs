@@ -269,10 +269,7 @@ impl ResolvedFace {
 /// review) grew to the N-face chain with the CJK wave (#282):
 /// Vazirmatn covers the Arabic script, Noto Sans SC the Han glyphs
 /// the Latin faces lack.
-pub(crate) fn split_runs(
-    text: &str,
-    covers: &[&dyn Fn(char) -> bool],
-) -> Vec<(usize, String)> {
+pub(crate) fn split_runs(text: &str, covers: &[&dyn Fn(char) -> bool]) -> Vec<(usize, String)> {
     let mut runs: Vec<(usize, String)> = Vec::new();
     for c in text.chars() {
         let face_ix = covers.iter().position(|covers| covers(c)).unwrap_or(0);
@@ -326,16 +323,16 @@ fn is_cjk_closing(c: char) -> bool {
 /// after （ 「 『. Public to the wrap's emergency splitter, which must
 /// never leave a forbidden char to OPEN a line either.
 pub(crate) fn line_head_forbidden(c: char) -> bool {
-    is_cjk_closing(c)
-        || matches!(
-            c,
-            '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '%'
-        )
+    is_cjk_closing(c) || matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '%')
 }
 
 /// Explicit non-breaking controls (UAX #14 class GL and friends): no
 /// boundary sits before OR after one — `图⍽表` with a no-break space
 /// is the author saying "keep these together".
+pub(crate) fn is_glue_pub(c: char) -> bool {
+    is_glue(c)
+}
+
 fn is_glue(c: char) -> bool {
     matches!(c, '\u{00A0}' | '\u{202F}' | '\u{2060}' | '\u{FEFF}')
 }
@@ -360,12 +357,21 @@ fn is_combining(c: char) -> bool {
 /// space-driven, so pure-Latin wrap output is untouched) — and the
 /// RIGHT char must accept it (not a line-head-forbidden closer). A
 /// boundary adjacent to glue or a combining mark never opens
-/// (explicit no-break controls and grapheme interiors). Sentence
-/// enders like 。 therefore both grant the following break and refuse
-/// to open a line.
+/// (explicit no-break controls and grapheme interiors); after a
+/// COMPLETE combining sequence the cluster's BASE decides —
+/// `カ\u{3099}ク` breaks before `ク` exactly like the precomposed
+/// `ガク` does (CodeRabbit PR review).
 pub(crate) fn cjk_break_between(a: char, b: char) -> bool {
-    if is_glue(a) || is_glue(b) || is_combining(a) || is_combining(b) {
+    if is_glue(a) || is_glue(b) || is_combining(b) {
         return false;
+    }
+    if is_combining(a) {
+        // `a` ends a combining sequence (the mark stays attached to
+        // its base inside one token): a following CJK char accepts
+        // the boundary the BASE would grant — `カ\u{3099}ク` breaks
+        // like the precomposed `ガク`. A non-CJK `b` keeps the old
+        // glue behavior (Latin wrap stays space-driven).
+        return is_cjk_ideographic(b);
     }
     (is_cjk_ideographic(a) || is_cjk_closing(a)) && !line_head_forbidden(b)
 }
@@ -582,18 +588,14 @@ impl ResolvedFace {
         let fallback = |c: char| self.char_em(c);
         let m = metrics();
         let db_key = m as *const MetricsDb as usize;
-        let advances = m
-            .db
-            .with_face_data(self.id, |data, index| {
+        let advances =
+            m.db.with_face_data(self.id, |data, index| {
                 shaped_face(db_key, self.id, data, index)
                     .and_then(|shaped| shape_glyph_advances_em(&shaped, text, &fallback))
             })
             .flatten()
             .unwrap_or_else(|| text.chars().map(fallback).collect::<Vec<_>>());
-        advances
-            .into_iter()
-            .map(|em| round18(q * em))
-            .sum()
+        advances.into_iter().map(|em| round18(q * em)).sum()
     }
 
     /// The run-split core over the measurement chain `[self,
@@ -615,7 +617,9 @@ impl ResolvedFace {
     /// The chain as a face slice — `[self, others…]`, indexed by the
     /// run's face index.
     fn chain_faces<'a>(&'a self, others: &'a [&'a ResolvedFace]) -> Vec<&'a ResolvedFace> {
-        std::iter::once(self).chain(others.iter().copied()).collect()
+        std::iter::once(self)
+            .chain(others.iter().copied())
+            .collect()
     }
 
     /// True when `self` alone covers every character — the common
@@ -715,12 +719,7 @@ impl ResolvedFace {
     /// missing-glyph estimates. Text the measuring face covers alone
     /// takes the same single-face shaped path as [`Self::width_in`]:
     /// unmixed text keeps byte-identical widths.
-    pub fn width_in_runs(
-        &self,
-        others: &[&ResolvedFace],
-        text: &str,
-        size_in: f64,
-    ) -> f64 {
+    pub fn width_in_runs(&self, others: &[&ResolvedFace], text: &str, size_in: f64) -> f64 {
         if text.is_empty() || self.self_covers_all(text) {
             return self.width_in(text, size_in);
         }
@@ -1031,9 +1030,12 @@ mod tests {
         assert!(!brk('图', '\u{00A0}'));
         assert!(!brk('\u{00A0}', '表'));
         assert!(!brk('图', '\u{2060}'));
-        // Combining sequences never split (decomposed ガ = カ + U+3099).
+        // Combining sequences never split INTERNALLY (decomposed ガ
+        // = カ + U+3099), but a COMPLETE sequence breaks before a
+        // following kana exactly like the precomposed form
+        // (CodeRabbit PR review).
         assert!(!brk('カ', '\u{3099}'));
-        assert!(!brk('\u{3099}', 'ク'));
+        assert!(brk('\u{3099}', 'ク'));
     }
 
     /// #282 zh-Hans: the wrap tokenizer reproduces the space-only
@@ -1121,13 +1123,13 @@ mod tests {
             toks("3.14 15"),
             vec![("".into(), "3.14".into()), (" ".into(), "15".into())]
         );
-        // Decomposed kana stays one grapheme (カ + U+3099 = ガ).
+        // Decomposed kana stays one grapheme (カ + U+3099 = ガ), and
+        // the COMPLETE sequence breaks before ク like precomposed ガク.
         assert_eq!(
             toks("カ\u{3099}ク"),
-            vec![("".into(), "カ\u{3099}ク".into())]
+            vec![("".into(), "カ\u{3099}".into()), ("".into(), "ク".into())]
         );
     }
-
 
     use super::*;
 
@@ -1196,7 +1198,6 @@ mod tests {
         let ptr = carlito.final_run_face(&chain, "\u{476}b");
         assert!(std::ptr::eq(ptr, &carlito), "a primary-run ending stays");
     }
-
 
     /// Measurement uses the embedded Carlito everywhere (hermetic on
     /// any machine); these tests only assert relationships that hold

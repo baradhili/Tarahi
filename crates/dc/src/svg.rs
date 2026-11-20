@@ -754,12 +754,20 @@ fn node_ink_box(
     }
     // Text can overflow the shape box (TxtWidth/TxtHeight are
     // independent cells); bound it with emit_text's placement math.
+    // The decision uses the RENDERED text: a self-closing `<fld/>`
+    // marker substitutes a nonempty value the plain `text` cell does
+    // not carry — omitting the frame clipped the substituted label
+    // (CodeRabbit PR review).
     let has_text = s
         .sheet
         .text
         .as_deref()
         .map(str::trim)
-        .is_some_and(|t| !t.is_empty());
+        .is_some_and(|t| !t.is_empty())
+        || s.sheet
+            .text_raw
+            .as_deref()
+            .is_some_and(|r| r.contains("<fld"));
     if has_text {
         let tw = get("TxtWidth", &text_env).unwrap_or(width).max(0.02);
         let th = get("TxtHeight", &text_env).unwrap_or(height).max(0.02);
@@ -2639,16 +2647,20 @@ pub(crate) fn wrap_block_text(
                     // authored space run or a leading indent too wide
                     // to share a line with the word): the space is
                     // content (#144 review) — it becomes a line of its
-                    // own, never an empty line, never dropped. (A
-                    // CJK-boundary token never reaches this branch —
-                    // its separator is empty and it always follows a
-                    // sibling token, so `cur` is non-empty.)
-                    lines.push(WrapLine {
-                        text: token.sep.to_string(),
-                        rtl,
-                        first_of_para: !wrapped,
-                    });
-                    para_has_lines = true;
+                    // own, never an empty line, never dropped. An
+                    // EMPTY separator (a CJK boundary) follows a token
+                    // the hard split below already emitted whole —
+                    // pushing it would add a phantom empty line
+                    // (`图，`, ``, `上`, `色。`) (CodeRabbit PR
+                    // review).
+                    if !token.sep.is_empty() {
+                        lines.push(WrapLine {
+                            text: token.sep.to_string(),
+                            rtl,
+                            first_of_para: !wrapped,
+                        });
+                        para_has_lines = true;
+                    }
                 } else {
                     lines.push(WrapLine {
                         text: std::mem::take(&mut cur),
@@ -2691,6 +2703,28 @@ pub(crate) fn wrap_block_text(
                             split_at += c.len_utf8();
                         }
                         _ => break,
+                    }
+                }
+                // The emergency splitter honors the in-word break
+                // predicate: a boundary ADJACENT to glue (U+00A0 and
+                // friends) is never a grapheme edge — advancing past
+                // the glue keeps `图⍽表` intact even when the joined
+                // token then overflows its line (CodeRabbit PR
+                // review).
+                while split_at < cur.len() {
+                    let prev_is_glue = cur[..split_at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(crate::textmetrics::is_glue_pub);
+                    let next_is_glue = cur[split_at..]
+                        .chars()
+                        .next()
+                        .is_some_and(crate::textmetrics::is_glue_pub);
+                    if prev_is_glue || next_is_glue {
+                        let adv = cur[split_at..].chars().next().map_or(1, char::len_utf8);
+                        split_at += adv;
+                    } else {
+                        break;
                     }
                 }
                 let rest = cur.split_off(split_at);
@@ -3103,7 +3137,14 @@ fn emit_text(
             // Under the inherited `end` anchor a tspan's x is where
             // the glyphs END — halign 2 keeps the anchor and derives
             // the left edge from the line width.
-            let line_w = face.width_in(&line.text, paint_size);
+            // Measure through the same fallback chain the LTR wrap
+            // used: the primary face gives a missing-glyph estimate
+            // for CJK spans it lacks, mis-placing centered/right
+            // lines, bullet units, and TextBkgnd spans (CodeRabbit
+            // PR review). Latin-only lines keep their width — the
+            // chain falls back to `width_in` when the face covers
+            // the whole line.
+            let line_w = face.width_in_runs(&fb_chain, &line.text, paint_size);
             let bulleted = line.first_of_para && bullet_layout.is_some();
             let band_off = if bulleted {
                 // The unit math below places the line outright.

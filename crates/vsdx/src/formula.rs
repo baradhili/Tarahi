@@ -232,6 +232,18 @@ fn unit_factor(suffix: &str) -> f64 {
     }
 }
 
+/// A leading UTF-8 byte's scalar length (1 for continuation bytes —
+/// callers treat those as invalid-continuation input).
+fn utf8_len(b: u8) -> usize {
+    match b {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF7 => 4,
+        _ => 1,
+    }
+}
+
 fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
     let mut toks = Vec::new();
     let b = s.as_bytes();
@@ -322,8 +334,22 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
                             continue;
                         }
                     }
-                    out.push(b[i] as char);
-                    i += 1;
+                    // Copy UTF-8 spans at scalar boundaries: pushing
+                    // `b[i] as char` garbles multibyte text — a quoted
+                    // Han string became one Latin-1 mojibake char per
+                    // BYTE (CodeRabbit PR review).
+                    let ch_len = utf8_len(b[i]);
+                    let end = (i + ch_len).min(b.len());
+                    // The closing-quote check above guarantees b[i]
+                    // is not `"`; a partial sequence at the string's
+                    // end falls through byte-wise (invalid input).
+                    if s.is_char_boundary(end) {
+                        out.push_str(&s[i..end]);
+                        i = end;
+                    } else {
+                        out.push(b[i] as char);
+                        i += 1;
+                    }
                 }
                 i += 1; // closing quote
                 toks.push(Tok::Str(out));
@@ -1071,13 +1097,16 @@ impl<'a> Parser<'a> {
                 Ok(Value::Num(if upper_name == "INTERSECTX" { ix } else { iy }))
             }
             // ---- #267 field set ----
-            // INDEX(index, list [, delimiter]): 0-based token pick —
-            // the corpus's `INDEX(0,INDEX(0,MASTERNAME(),":"),".")`
-            // master-name split. The omitted/empty delimiter is ";"
-            // ([MS-Learn] INDEX function).
+            // INDEX(index, list [, delimiter] [, fallback]): 0-based
+            // token pick — the corpus's
+            // `INDEX(0,INDEX(0,MASTERNAME(),":"),".")` master-name
+            // split. The omitted/empty delimiter is ";" and an
+            // out-of-range index serves the optional fourth-argument
+            // fallback (empty when omitted) instead of erroring
+            // ([MS-Learn] INDEX function; CodeRabbit PR review).
             "INDEX" => {
-                if args.len() < 2 || args.len() > 3 {
-                    return Err("INDEX takes two or three arguments".into());
+                if args.len() < 2 || args.len() > 4 {
+                    return Err("INDEX takes two to four arguments".into());
                 }
                 let idx = arg(&args, 0)? as i64;
                 let list = args[1].clone().coerce_str();
@@ -1090,11 +1119,15 @@ impl<'a> Parser<'a> {
                 } else {
                     delim
                 };
-                let tok = list
-                    .split(delim.as_str())
-                    .nth(idx.max(0) as usize)
-                    .ok_or_else(|| format!("INDEX: no token {idx}"))?;
-                Ok(Value::Str(tok.trim().to_string()))
+                let fallback = args
+                    .get(3)
+                    .map(|v| v.clone().coerce_str())
+                    .unwrap_or_default();
+                let tok = match list.split(delim.as_str()).nth(idx.max(0) as usize) {
+                    Some(t) => t.trim().to_string(),
+                    None => fallback,
+                };
+                Ok(Value::Str(tok))
             }
             // STRSAME(a, b): case-insensitive equality.
             "STRSAME" => {
@@ -1250,9 +1283,18 @@ impl<'a> Parser<'a> {
                     // the output unit made format_value convert twice
                     // (FORMATEX(1,"0.00u","in","cm") → 6.45cm).
                     (Some(i), Some(_)) => convert_units(&v, i),
+                    // An OMITTED destination displays in the source
+                    // unit ([MS] FORMATEX; CodeRabbit PR review):
+                    // convert to inches here and hint the source unit
+                    // below — FORMATEX(1,"0.00u","ft") → `1.00ft.`.
+                    (Some(i), None) => convert_units(&v, i),
                     _ => v,
                 };
-                let hint: Option<String> = unit_out.as_deref().map(str::to_ascii_uppercase);
+                let hint: Option<String> = match (&unit_out, &unit_in) {
+                    (Some(o), _) => Some(o.to_ascii_uppercase()),
+                    (None, Some(i)) => Some(i.to_ascii_uppercase()),
+                    (None, None) => None,
+                };
                 let hint = hint.as_deref();
                 Ok(Value::Str(crate::fieldfmt::format_value(
                     &converted, hint, &pic, units,
