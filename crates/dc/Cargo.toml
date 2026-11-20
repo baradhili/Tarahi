@@ -35,3 +35,4 @@ flate2 = "1"
 
 [dev-dependencies]
 tempfile = "3"
+zip.workspace = true

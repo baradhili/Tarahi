@@ -130,7 +130,7 @@ fn doc_element(doc: &Document, tag: &str) -> Option<String> {
         return None;
     }
     let rest = &s[gt + 1..];
-    let close = format!("</{}", &tag[1..]);
+    let close = format!("</{tag}>");
     let end = rest.find(&close)?;
     let v = rest[..end].trim().to_string();
     if v.is_empty() {
@@ -407,5 +407,83 @@ fn seed_rows(sheet: &Sheet, sec_name: &str, prefix: &str, strs: &mut formula::St
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A package carrying a normal core.xml (the blank fixture's own
+    /// shape: dc:/cp: elements, attributes on the date tags) — one
+    /// real zip member, `docProps/core.xml`.
+    fn doc_with_core_properties() -> Document {
+        let core = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>",
+            "<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\"",
+            " xmlns:dc=\"http://purl.org/dc/elements/1.1/\">",
+            "<dc:title>Blank Drawing</dc:title>",
+            "<dc:creator>Tarahi</dc:creator>",
+            "<dc:description>synthetic fixture</dc:description>",
+            "<dcterms:created xsi:type=\"dcterms:W3CDTF\">2012-07-26T10:23:29</dcterms:created>",
+            "<dcterms:modified xsi:type=\"dcterms:W3CDTF\">2012-07-18T23:57:59</dcterms:modified>",
+            "</cp:coreProperties>"
+        );
+        let buf = std::io::Cursor::new(Vec::new());
+        let mut w = zip::ZipWriter::new(buf);
+        w.start_file(
+            "[Content_Types].xml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        std::io::Write::write_all(
+            &mut w,
+            br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+</Types>"#,
+        )
+        .unwrap();
+        w.start_file(
+            "docProps/core.xml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        std::io::Write::write_all(&mut w, core.as_bytes()).unwrap();
+        let bytes = w.finish().unwrap().into_inner();
+        Document {
+            package: Some(
+                vsdx::opc::Package::from_reader(std::io::Cursor::new(bytes))
+                    .expect("core fixture parses"),
+            ),
+            ..Document::default()
+        }
+    }
+
+    /// The owner-prefixed tags must round the WHOLE name into the
+    /// closing-tag search — the round-1 fix regressed to
+    /// `</c:title` and every property read returned None
+    /// (CodeRabbit round 2).
+    #[test]
+    fn core_properties_read_through_the_owner_prefix() {
+        let doc = doc_with_core_properties();
+        let page = Page::default();
+        let f = FieldsCtx::for_page(&doc, &page);
+        assert_eq!(f.facts.title.as_deref(), Some("Blank Drawing"));
+        assert_eq!(f.facts.creator.as_deref(), Some("Tarahi"));
+        assert_eq!(f.facts.description.as_deref(), Some("synthetic fixture"));
+        assert_eq!(f.doc_creation.as_deref(), Some("2012-07-26T10:23:29"));
+        assert_eq!(f.doc_last_save.as_deref(), Some("2012-07-18T23:57:59"));
+    }
+
+    #[test]
+    fn missing_or_empty_properties_read_none() {
+        // No package at all.
+        let doc = Document::default();
+        let page = Page::default();
+        let f = FieldsCtx::for_page(&doc, &page);
+        assert_eq!(f.facts.title, None);
+        assert_eq!(f.doc_last_save, None);
     }
 }

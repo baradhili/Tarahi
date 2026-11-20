@@ -1129,7 +1129,7 @@ impl crate::Command for InsertField {
         // already in the text resolve inherited rows by IX, and a
         // colliding local row would silently re-point them (CodeRabbit
         // round 1).
-        let inherited_max = (|| -> Option<i64> {
+        let (inherited_max, inherited_raw) = (|| -> Option<(i64, Option<String>)> {
             let Scope::Shape {
                 page: pid,
                 shape: sid,
@@ -1143,14 +1143,18 @@ impl crate::Command for InsertField {
                 .find(|p| p.id == *pid)
                 .and_then(|p| crate::scope::find_shape(&p.shapes, *sid))?;
             let src = doc.instance_source(sh, &[])?;
-            Some(
-                src.sheet
-                    .section("Field", 0)
-                    .map(|sec| sec.rows.iter().map(|r| r.ix).max().unwrap_or(-1))
-                    .unwrap_or(-1),
-            )
+            let max_ix = src
+                .sheet
+                .section("Field", 0)
+                .map(|sec| sec.rows.iter().map(|r| r.ix).max().unwrap_or(-1))
+                .unwrap_or(-1);
+            // The inherited raw text (verbatim — markers included): a
+            // shape with no local text materializes its master's text
+            // when a field lands in it, instead of replacing it with
+            // just the new marker (CodeRabbit round 2).
+            Some((max_ix, src.sheet.text_raw.clone()))
         })()
-        .unwrap_or(-1);
+        .unwrap_or((-1, None));
         let s = sheet_mut(doc, &scope)?;
         self.old = Some((old_section, s.text.clone(), s.text_raw.clone()));
 
@@ -1235,9 +1239,12 @@ impl crate::Command for InsertField {
             ),
             None => format!("<fld IX='{ix}'/>"),
         };
-        // A shape with plain text but no raw (built in code) seeds the
-        // raw from its escaped text — an empty raw would DELETE the
-        // plain text at the recomputation below (CodeRabbit round 1).
+        // The raw-seed chain: local raw → escaped local plain text →
+        // the master's inherited raw (an instance with no local text
+        // materializes its master's text — markers and all — rather
+        // than replacing it with just the new marker) → empty. An
+        // empty raw would DELETE the text at the recomputation below
+        // (CodeRabbit rounds 1–2).
         let raw = match s.text_raw.clone() {
             Some(raw) => raw,
             None => s
@@ -1248,6 +1255,7 @@ impl crate::Command for InsertField {
                         .replace('<', "&lt;")
                         .replace('>', "&gt;")
                 })
+                .or_else(|| inherited_raw.clone())
                 .unwrap_or_default(),
         };
         let (head, tail) = match insert {

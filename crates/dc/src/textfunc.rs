@@ -87,7 +87,8 @@ impl SheetTextMeasure {
         f64,
         f64,
     ) {
-        let face = crate::textmetrics::resolve(self.tb.font.as_deref(), self.tb.bold, self.tb.italic);
+        let face =
+            crate::textmetrics::resolve(self.tb.font.as_deref(), self.tb.bold, self.tb.italic);
         let cs_chain = self.tb.cs_font.as_deref().or(self.tb.font.as_deref());
         let cs_face = crate::textmetrics::resolve(cs_chain, self.tb.bold, self.tb.italic);
         let red_l = crate::svg::script_metrics(self.tb.font.as_deref(), self.tb.pos)
@@ -174,7 +175,9 @@ impl SheetTextMeasure {
         // otherwise — the shared rule in `svg::bullet_stop_offset_in`
         // keeps the measure and the paint on one layout.
         let first_off = if self.tb.bullet.is_some() {
-            crate::svg::bullet_stop_offset_in(&self.tb).unwrap_or(0.0).max(0.0)
+            crate::svg::bullet_stop_offset_in(&self.tb)
+                .unwrap_or(0.0)
+                .max(0.0)
         } else {
             crate::svg::unbulleted_first_offset_in(&self.tb)
         };
@@ -240,9 +243,7 @@ impl TextMeasure for SheetTextMeasure {
             let w = if crate::svg::paragraph_base_rtl(para) {
                 let q = crate::textmetrics::quantize18(size_r);
                 cs_face.composed_width_in_runs(&fb_chain, para, size_r)
-                    + cs_face
-                        .final_run_face(&fb_chain, para)
-                        .space_advance_in(q)
+                    + cs_face.final_run_face(&fb_chain, para).space_advance_in(q)
             } else {
                 let q = crate::textmetrics::quantize18(size_l);
                 face.composed_width_in_runs(&fb_chain, para, size_l)
@@ -304,7 +305,18 @@ const TEXT_DERIVED_CELLS: [&str; 2] = ["TxtWidth", "TxtHeight"];
 /// re-evaluate (rendering stays byte-identical without an edit).
 pub fn text_edit_macro(doc: &Document, scope: &Scope, text: &str) -> Macro {
     let mut cmds: Vec<Box<dyn Command>> = vec![Box::new(SetText::new(scope.clone(), text))];
+    cmds.extend(text_cache_refreshes(doc, scope, text));
+    Macro::new(format!("set text of {scope}"), cmds)
+}
 
+/// The `SetCellCache` refreshes for text-derived block cells
+/// (`TEXTWIDTH`/`TEXTHEIGHT` formulas), measured against `text` —
+/// what the shape will render. Shared by the text-edit macro and the
+/// field-insert path (#267: an inserted field changes the SUBSTITUTED
+/// text, and the measurement must see the same display the renderer
+/// paints — CodeRabbit round 2).
+pub fn text_cache_refreshes(doc: &Document, scope: &Scope, text: &str) -> Vec<Box<dyn Command>> {
+    let mut cmds: Vec<Box<dyn Command>> = Vec::new();
     if let Scope::Shape { page, shape } = scope {
         if let (Some(p), Ok(chain)) = (
             doc.pages.iter().find(|p| p.id == *page),
@@ -359,8 +371,7 @@ pub fn text_edit_macro(doc: &Document, scope: &Scope, text: &str) -> Macro {
             }
         }
     }
-
-    Macro::new(format!("set text of {scope}"), cmds)
+    cmds
 }
 
 #[cfg(test)]
@@ -519,14 +530,17 @@ mod tests {
         // One line of the same block WITHOUT the bullet, for the
         // single-line height reference.
         let mut plain = text_aware_shape();
-        plain.sheet.children.push(SheetChild::Section(vsdx::Section {
-            name: "Paragraph".into(),
-            rows: vec![vsdx::Row {
-                cells: vec![("HorzAlign".to_string(), Cell::value("0"))],
-                ..vsdx::Row::default()
-            }],
-            ..vsdx::Section::default()
-        }));
+        plain
+            .sheet
+            .children
+            .push(SheetChild::Section(vsdx::Section {
+                name: "Paragraph".into(),
+                rows: vec![vsdx::Row {
+                    cells: vec![("HorzAlign".to_string(), Cell::value("0"))],
+                    ..vsdx::Row::default()
+                }],
+                ..vsdx::Section::default()
+            }));
         let mp = SheetTextMeasure::new(&doc, &plain, &[&plain], "");
         let h_plain = mp.text_height(text, 4.0).unwrap();
         assert!(

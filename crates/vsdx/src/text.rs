@@ -215,21 +215,35 @@ pub fn flds(raw: &str) -> Vec<(i64, Option<String>)> {
 pub fn plain_to_raw_offset(raw: &str, plain_chars: usize) -> usize {
     let mut count = 0usize;
     let mut chars = raw.char_indices().peekable();
+    // The innermost open value-carrying `<fld>`: a target that lands
+    // strictly INSIDE its cached content snaps to the marker's
+    // opening tag (inserting there would nest markers — CodeRabbit
+    // round 2).
+    let mut open_fld_at: Option<usize> = None;
     while let Some((i, c)) = chars.next() {
         match c {
             '<' => {
                 // Skip the tag wholesale: tags contribute no plain
                 // characters. An unterminated tag ends the scan.
                 let close = raw[i..].find('>').map(|k| i + k + 1).unwrap_or(raw.len());
+                let self_closing = raw[..close].ends_with("/>");
+                let closing_fld = raw[i..].starts_with("</fld");
+                let opening_fld =
+                    !closing_fld && !self_closing && raw[i..close].starts_with("<fld");
                 if count >= plain_chars {
                     // A caret at the END of a field's cached display
                     // maps to the tag ahead — inserting there would
                     // nest inside the marker; land AFTER the closing
                     // tag instead.
-                    if raw[i..].starts_with("</fld") {
+                    if closing_fld {
                         return close;
                     }
                     return i;
+                }
+                if opening_fld {
+                    open_fld_at = Some(i);
+                } else if closing_fld {
+                    open_fld_at = None;
                 }
                 // Consume through the tag.
                 while let Some(&(j, _)) = chars.peek() {
@@ -241,7 +255,7 @@ pub fn plain_to_raw_offset(raw: &str, plain_chars: usize) -> usize {
             }
             '&' => {
                 if count >= plain_chars {
-                    return i;
+                    return open_fld_at.unwrap_or(i);
                 }
                 // The entity resolves to its unescaped characters.
                 let semi = raw[i..].find(';').map_or(raw.len(), |k| i + k + 1);
@@ -257,7 +271,9 @@ pub fn plain_to_raw_offset(raw: &str, plain_chars: usize) -> usize {
             }
             _ => {
                 if count >= plain_chars {
-                    return i;
+                    // Inside a field's cached content: snap to the
+                    // marker's opening tag.
+                    return open_fld_at.unwrap_or(i);
                 }
                 count += 1;
             }
@@ -358,6 +374,17 @@ mod tests {
     }
 
     #[test]
+    fn caret_inside_a_cached_display_snaps_to_the_marker() {
+        // Between '/' and '1' (plain offset 2): inserting there would
+        // nest markers — the snap goes to the opening tag (CodeRabbit
+        // round 2).
+        let raw = "x<fld IX='0'>4/17</fld>y";
+        assert_eq!(plain_to_raw_offset(raw, 3), 1);
+        // At the display's very start (offset 1): already at the tag.
+        assert_eq!(plain_to_raw_offset(raw, 1), 1);
+    }
+
+    #[test]
     fn formatting_markers_are_typed() {
         let raw = "<pp IX='0'/>line<cp IX='1'/>x<tp IX='0'/>\ttab";
         let pieces = text_pieces(raw);
@@ -395,9 +422,10 @@ mod tests {
         let at3 = plain_to_raw_offset(raw, 3);
         assert_eq!(&raw[at3..at3 + 1], "d");
         // Inside the marker's cached content (plain "abcd4/17ef":
-        // offset 5 is the '/', 6 the '1').
-        assert_eq!(&raw[plain_to_raw_offset(raw, 5)..][..1], "/");
-        assert_eq!(&raw[plain_to_raw_offset(raw, 6)..][..1], "1");
+        // offsets 5 and 6 fall between the display's characters)
+        // snaps to the marker's opening tag — never into the content.
+        assert_eq!(plain_to_raw_offset(raw, 5), raw.find("<fld").unwrap());
+        assert_eq!(plain_to_raw_offset(raw, 6), raw.find("<fld").unwrap());
         // Beyond the end clamps.
         assert_eq!(plain_to_raw_offset(raw, 999), raw.len());
         // Entities count as their resolved characters ("a & b":

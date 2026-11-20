@@ -12134,17 +12134,76 @@ impl App {
             }
             _ => dc_core::FieldInsert::End,
         };
-        let cmd = dc_core::InsertField::new(
-            Scope::Shape {
-                page: page_id,
-                shape: shape_id,
-            },
-            value_f.clone(),
-            insert,
-        )
-        .with_format(format_f.clone())
-        .with_display(preview.clone());
-        self.apply(cmd);
+        // One undo step: the field AND the `TEXTWIDTH`/`TEXTHEIGHT`
+        // cache refreshes for the text the shape will now render —
+        // the SUBSTITUTED text with the new display spliced in
+        // (measurement sees what emit_text paints; #267, CodeRabbit
+        // round 2).
+        let scope = Scope::Shape {
+            page: page_id,
+            shape: shape_id,
+        };
+        let (cmd, refreshes) = self
+            .ed()
+            .map(|ed| {
+                let page =
+                    ed.doc.pages.iter().find(|p| p.id == page_id).and_then(|p| {
+                        vsdx::model::find_shape_by_id(&p.shapes, shape_id).map(|_| p)
+                    });
+                let post_text = match page {
+                    Some(page) => {
+                        let sub = (|| -> Option<String> {
+                            let s = vsdx::model::find_shape_by_id(&page.shapes, shape_id)?;
+                            let chain =
+                                dc_core::scope::shape_chain(&ed.doc, page_id, shape_id).ok()?;
+                            let fctx = dc::fields::FieldsCtx::for_page(&ed.doc, page);
+                            // What renders now (substituted), with the
+                            // new display at the insertion point.
+                            let cur = dc::fields::substituted_text(&ed.doc, s, &chain, Some(&fctx))
+                                .or_else(|| s.sheet.text.clone())
+                                .unwrap_or_default();
+                            let chars: Vec<char> = cur.chars().collect();
+                            Some(match insert {
+                                dc_core::FieldInsert::End => format!("{cur}{}", preview),
+                                dc_core::FieldInsert::ReplacePlain { offset, len } => {
+                                    let off = offset.min(chars.len());
+                                    let end = (offset + len).min(chars.len());
+                                    let head: String = chars[..off].iter().collect();
+                                    let tail: String = chars[end..].iter().collect();
+                                    format!("{head}{}{tail}", preview)
+                                }
+                                dc_core::FieldInsert::RawOffset(_) => cur,
+                            })
+                        })();
+                        sub
+                    }
+                    None => None,
+                };
+                let cmd = dc_core::InsertField::new(scope.clone(), value_f.clone(), insert)
+                    .with_format(format_f.clone())
+                    .with_display(preview.clone());
+                let refreshes = dc::textfunc::text_cache_refreshes(
+                    &ed.doc,
+                    &scope,
+                    &post_text.unwrap_or_default(),
+                );
+                (cmd, refreshes)
+            })
+            .unwrap_or_else(|| {
+                (
+                    dc_core::InsertField::new(scope.clone(), value_f.clone(), insert)
+                        .with_format(format_f.clone())
+                        .with_display(preview.clone()),
+                    Vec::new(),
+                )
+            });
+        let mut cmds: Vec<Box<dyn dc_core::Command>> = Vec::with_capacity(1 + refreshes.len());
+        cmds.push(Box::new(cmd));
+        cmds.extend(refreshes);
+        self.apply(dc_core::Macro::new(
+            crate::i18n::strs().msg_insert_field(),
+            cmds,
+        ));
         if preview.is_empty() {
             self.status = crate::i18n::strs().msg_field_inserted_no_preview();
         }
@@ -16255,6 +16314,12 @@ impl App {
         self.sel = incoming.sel;
         self.sel_set = incoming.sel_set;
         self.group_edit = incoming.group_edit;
+        // The Insert Field dialog does not carry across documents
+        // (#267, CodeRabbit round 2): it is bound to a shape ID, and
+        // IDs collide across documents as well as pages.
+        self.fields_open = None;
+        self.fields_caret = None;
+        self.fields_draft = None;
         self.tex.clear();
         self.layers.clear();
         self.page_states.clear();

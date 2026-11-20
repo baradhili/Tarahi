@@ -1472,6 +1472,14 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 /// unit — its output-unit hint performs the one remaining
 /// conversion). Non-numeric values and unknown units pass through
 /// unchanged.
+///
+/// Known limitation (CodeRabbit round 2): the value arrives through
+/// the tokenizer, which has ALREADY normalized unit-suffixed
+/// literals (`1FT` → `12`, internal inches) — `unit_in` would then
+/// re-interpret those 12 inches as 12 feet. The corpus's FORMATEX
+/// values are all bare numbers or dates, so the codepath is
+/// unaffected in practice; unit-suffixed FORMATEX sources stay
+/// unsupported rather than half-converted.
 fn convert_units(value: &str, unit_in: &str) -> String {
     let Some(v) = value.trim().parse::<f64>().ok() else {
         return value.to_string();

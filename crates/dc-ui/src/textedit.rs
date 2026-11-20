@@ -113,6 +113,13 @@ impl TextEditSession {
         self.draft = format!("{prefix}{}{suffix}", mark.display);
         at = prefix.chars().count();
         let inserted = mark.display.chars().count();
+        // Parking STRICTLY INSIDE an existing mark's span dissolves
+        // that field (Visio's atomicity) — a nested mark would overlap
+        // it at commit (CodeRabbit round 2).
+        self.field_marks.retain(|m| {
+            let end = m.offset + m.display.chars().count();
+            at <= m.offset || at >= end
+        });
         // Existing marks at/after the insertion point shift by the
         // inserted characters — `last_draft` resets below, so
         // `sync_frame` will never see this change to do it (CodeRabbit
@@ -134,6 +141,12 @@ impl TextEditSession {
     /// Record the frame's caret and shift mark anchors through the
     /// draft diff (called after the widget ran).
     pub fn sync_frame(&mut self, caret: Option<usize>) {
+        // The PRE-EDIT caret disambiguates pure insertions: typing the
+        // field's own character right before it yields the same text
+        // as typing after it, and the common-prefix scan cannot tell
+        // them apart — but typing always happens AT the caret
+        // (CodeRabbit round 2).
+        let pre_caret = self.caret;
         if let Some(c) = caret {
             self.caret = c;
         }
@@ -156,6 +169,13 @@ impl TextEditSession {
         }
         let replaced_old = old.len() - p - s;
         let delta = new.len() as isize - old.len() as isize;
+        // A pure insertion lands at the pre-edit caret, clamped to
+        // the diff's possible span [p, p + inserted] — not at the
+        // common-prefix boundary.
+        if replaced_old == 0 && delta > 0 {
+            let inserted_len = delta as usize;
+            p = pre_caret.clamp(p, p + inserted_len);
+        }
         // An edit that OVERLAPS a mark's span DISSOLVES the field (its
         // display becomes plain text — Visio's atomicity: editing
         // inside a field breaks it). Keeping the mark with its full
@@ -420,6 +440,21 @@ pub fn show_overlay(
         Pos2::new(screen.left(), editor_top),
         Vec2::new(screen.width(), content_h),
     );
+    // #267: a parked field's programmatic caret lands BEFORE the
+    // widget runs — applying it after `ui.put` let this frame's text
+    // input land at the OLD cursor, ahead of the inserted display
+    // (CodeRabbit round 2).
+    if let Some(c) = session.pending_caret.take() {
+        if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), id) {
+            let cursor = egui::text::CCursor::new(c);
+            state.cursor.set_char_range(Some(egui::text::CCursorRange {
+                primary: cursor,
+                secondary: cursor,
+                h_pos: None,
+            }));
+            state.store(ui.ctx(), id);
+        }
+    }
     let edit = egui::TextEdit::multiline(&mut session.draft)
         .id(id)
         .hint_text(crate::i18n::strs().msg_shape_text())
@@ -440,21 +475,7 @@ pub fn show_overlay(
     let resp = ui.put(place, edit);
 
     // #267: capture the caret (plain-char offset) and shift any
-    // parked field marks through this frame's draft diff. A parked
-    // field's programmatic caret lands FIRST — the widget's own
-    // cursor would otherwise still sit at the old position and typing
-    // would go in ahead of the inserted display.
-    if let Some(c) = session.pending_caret.take() {
-        if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), id) {
-            let cursor = egui::text::CCursor::new(c);
-            state.cursor.set_char_range(Some(egui::text::CCursorRange {
-                primary: cursor,
-                secondary: cursor,
-                h_pos: None,
-            }));
-            state.store(ui.ctx(), id);
-        }
-    }
+    // parked field marks through this frame's draft diff.
     let caret = egui::text_edit::TextEditState::load(ui.ctx(), id)
         .and_then(|st| st.cursor.char_range())
         .map(|r| r.primary.index.0);
