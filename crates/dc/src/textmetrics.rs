@@ -1139,7 +1139,13 @@ mod tests {
     /// face. Carlito lacks U+0476 (Ѷ) while Liberation Sans carries
     /// it at a real advance, a hermetic coverage split between two
     /// vendored faces (the soft hyphen also splits them but its
-    /// notdef-estimated advance collides on the grid).
+    /// notdef-estimated advance collides on the grid). One fixture
+    /// subtlety pinned by the 2026-11-20 Windows-CI failure: Ѷ
+    /// canonically decomposes (Ѵ + U+030F), so the SHAPER normalizes
+    /// and finds Ѵ in Carlito at a real advance while `covers` (the
+    /// direct cmap) sees nothing — and a machine's real Calibri may
+    /// carry Ѷ outright, so the unknown-family probe below must
+    /// expect whichever face its font set actually covers.
     #[test]
     fn composed_width_in_runs_splits_coverage() {
         let carlito = resolve(Some("Carlito"), false, false);
@@ -1168,20 +1174,42 @@ mod tests {
             "the split run composes on the covering face: {got} vs {whole}"
         );
         // A fallback that covers nothing degenerates to the plain
-        // composed width (the unregistered test world — every run
-        // stays on the primary face).
+        // composed width — but the #232 rule resolves an unknown
+        // family through the machine's Calibri FIRST, and a newer
+        // Calibri covers Ѷ outright (the Windows runners do; the
+        // Windows-CI failure of 2026-11-20 was exactly that — `none`
+        // was the runner's Calibri, and chain order rightly gave it
+        // the Ѷ run ahead of Liberation Sans). Assert the split's own
+        // contract instead of the machine's font set: every run
+        // composes on the FIRST chain face that covers it, whichever
+        // face that is here.
         let none = resolve(Some("NoSuchFamily At All"), false, false);
+        let none_covers = none.covers('\u{476}');
+        let single = if none_covers {
+            carlito.composed_width_in("a", size)
+                + none.composed_width_in("\u{476}", size)
+                + carlito.composed_width_in("b", size)
+        } else {
+            whole
+        };
         assert_eq!(
             carlito.composed_width_in_runs(&[&none], text, size),
-            whole,
-            "an uncovered fallback keeps plain composition"
+            single,
+            "the single-fallback chain composes per covering face"
         );
         // The N-face form: the first fallback in the chain wins the
-        // run even when a later one would also cover it.
+        // run even when a later one would also cover it — `none` on
+        // machines whose Calibri carries Ѷ, Liberation Sans
+        // elsewhere. (Watch the pairing stay exact: each expected
+        // term is the same composed_run_in call the split makes.)
+        let winner = if none_covers { &none } else { &libsans };
+        let n_face = carlito.composed_width_in("a", size)
+            + winner.composed_width_in("\u{476}", size)
+            + carlito.composed_width_in("b", size);
         let got2 = carlito.composed_width_in_runs(&[&none, &libsans], text, size);
         assert!(
-            (got2 - want).abs() < 1e-12,
-            "chain order, not coverage breadth, picks the run's face"
+            (got2 - n_face).abs() < 1e-12,
+            "chain order, not coverage breadth, picks the run's face: {got2} vs {n_face}"
         );
     }
 
