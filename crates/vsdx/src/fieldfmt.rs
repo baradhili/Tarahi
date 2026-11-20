@@ -244,7 +244,12 @@ fn digit_picture(value: &str, p: &str, unit: Unit) -> String {
         Unit::InF => Unit::In,
         u => u,
     };
-    let shown = dec_unit.inches_to(n);
+    // A BARE digit picture (`0`, `0.00`) renders the number as-is —
+    // no length conversion: the corpus's `0` rows carry counts and
+    // page numbers (V='0' → `0`), and converting would turn Page
+    // Number 2 into `51` on metric paper. Only the `u`-suffixed
+    // pictures are length displays (Greptile round 1).
+    let shown = if has_unit { dec_unit.inches_to(n) } else { n };
     let mut out = format_decimals(shown, decimals);
     if has_unit {
         if let Some(label) = dec_unit.label() {
@@ -778,6 +783,10 @@ mod tests {
         );
         assert_eq!(format_value("2", Some("IN"), "0.00u", U), "2.00in.");
         assert_eq!(format_value("0", None, "0", M), "0");
+        // A BARE digit picture never unit-converts: Page Number 2 on
+        // metric paper stays `2` (Greptile round 1).
+        assert_eq!(format_value("2", None, "0", M), "2");
+        assert_eq!(format_value("2.5", None, "0.00", M), "2.50");
     }
 
     #[test]

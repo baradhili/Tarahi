@@ -132,12 +132,26 @@ fn doc_element(doc: &Document, tag: &str) -> Option<String> {
     let rest = &s[gt + 1..];
     let close = format!("</{tag}>");
     let end = rest.find(&close)?;
-    let v = rest[..end].trim().to_string();
+    let v = decode_xml_entities(rest[..end].trim());
     if v.is_empty() {
         None
     } else {
         Some(v)
     }
+}
+
+/// Decode the five predefined XML entities in element text — the
+/// raw source carries `&amp;` and the label must show `&`
+/// (Greptile round 1).
+fn decode_xml_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 /// ISO-A paper → metric display units (the `_M`/`_U` stencil twins
@@ -234,9 +248,17 @@ fn field_envs(
     seed_sheet_strings(doc, s, chain, &mut strs);
     if let Some(f) = fields {
         // Cross-sheet refs: every sibling's User/Prop rows under
-        // `Sheet.N!` (the corpus's `Sheet.5!User.ValueText` refs).
+        // `Sheet.N!` (the corpus's `Sheet.5!User.ValueText` refs) —
+        // walking INTO groups: a grouped shape's rows are reachable
+        // by its own Sheet.N id (Greptile round 1).
+        fn seed_tree(s: &Shape, strs: &mut formula::StrEnv) {
+            seed_shape_strings_prefixed(s, strs);
+            for sub in &s.sub_shapes {
+                seed_tree(sub, strs);
+            }
+        }
         for sib in f.siblings {
-            seed_shape_strings_prefixed(sib, &mut strs);
+            seed_tree(sib, &mut strs);
         }
     }
     let master_name = s
@@ -269,12 +291,27 @@ pub fn preview_field(
     };
     match format_f {
         Some(f) if !f.is_empty() => {
-            let pic = formula::eval_field(f, &env, &strs, fctx_ref)
-                .ok()
-                .and_then(|p| value_string(&p))
-                .unwrap_or_else(|| f.to_string());
+            // A LITERAL picture ("0.00", "{{MMM yyyy}}") is not a
+            // formula — evaluating it turns `0.00` into numeric zero
+            // and drops the decimals; treat it exactly like
+            // `InsertField` does (Greptile round 1).
+            let pic = if f.trim().contains('(') {
+                formula::eval_field(f, &env, &strs, fctx_ref)
+                    .ok()
+                    .and_then(|p| value_string(&p))
+                    .unwrap_or_default()
+            } else {
+                f.trim().to_string()
+            };
             let units = fctx_ref.map_or(UnitSystem::Us, |c| c.units);
-            fieldfmt::format_value(&v, None, &pic, units)
+            // The percent picture implies a percent fraction
+            // (Greptile round 1: `0.25` + FIELDPICTURE(3) → `25%`).
+            let hint = if pic.trim() == "esc(3)" {
+                Some("PER")
+            } else {
+                None
+            };
+            fieldfmt::format_value(&v, hint, &pic, units)
         }
         _ => v,
     }
@@ -327,7 +364,19 @@ fn render_field(
     });
     let units = fctx.map_or(UnitSystem::Us, |c| c.units);
     match picture {
-        Some(p) if !p.is_empty() => fieldfmt::format_value(&value, unit, &p, units),
+        Some(p) if !p.is_empty() => {
+            // The percent picture implies a percent fraction even
+            // when the Value cell's U says something else — the
+            // corpus's esc(3) rows carry U='PER', but a
+            // dialog-inserted or hand-authored row may not
+            // (Greptile round 1: `0.25` rendered `6 mm.` on A4).
+            let unit = if p.trim() == "esc(3)" {
+                Some("PER")
+            } else {
+                unit
+            };
+            fieldfmt::format_value(&value, unit, &p, units)
+        }
         _ => value,
     }
 }
@@ -401,10 +450,12 @@ fn seed_rows(sheet: &Sheet, sec_name: &str, prefix: &str, strs: &mut formula::St
             let Some(name) = row.n.as_deref() else {
                 continue;
             };
+            // EMPTY values seed too: a cleared local row must shadow
+            // the master's value (an empty string resolves and blanks
+            // the field) instead of falling back to the master's
+            // non-empty cache (Greptile round 1).
             if let Some(v) = cell.v.as_deref() {
-                if !v.is_empty() {
-                    strs.insert(format!("{prefix}.{name}"), v.to_string());
-                }
+                strs.insert(format!("{prefix}.{name}"), v.to_string());
             }
         }
     }
@@ -485,5 +536,95 @@ mod tests {
         let f = FieldsCtx::for_page(&doc, &page);
         assert_eq!(f.facts.title, None);
         assert_eq!(f.doc_last_save, None);
+    }
+
+    /// Element text arrives entity-DECODED — a title of
+    /// `Research &amp; Development` must read `Research & Development`
+    /// (Greptile round 1).
+    #[test]
+    fn core_properties_decode_entities() {
+        let core = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>",
+            "<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\"",
+            " xmlns:dc=\"http://purl.org/dc/elements/1.1/\">",
+            "<dc:title>Research &amp; Development &lt;v2&gt;</dc:title>",
+            "</cp:coreProperties>"
+        );
+        let buf = std::io::Cursor::new(Vec::new());
+        let mut w = zip::ZipWriter::new(buf);
+        w.start_file(
+            "[Content_Types].xml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        std::io::Write::write_all(
+            &mut w,
+            br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+</Types>"#,
+        )
+        .unwrap();
+        w.start_file(
+            "docProps/core.xml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        std::io::Write::write_all(&mut w, core.as_bytes()).unwrap();
+        let bytes = w.finish().unwrap().into_inner();
+        let doc = Document {
+            package: Some(
+                vsdx::opc::Package::from_reader(std::io::Cursor::new(bytes))
+                    .expect("core fixture parses"),
+            ),
+            ..Document::default()
+        };
+        let page = Page::default();
+        let f = FieldsCtx::for_page(&doc, &page);
+        assert_eq!(
+            f.facts.title.as_deref(),
+            Some("Research & Development <v2>")
+        );
+    }
+
+    /// The percent picture renders a percent fraction WITHOUT a
+    /// declared U (Greptile round 1: `0.25` + esc(3) → `25%`, not
+    /// `6 mm.`), and a LITERAL decimal picture keeps its decimals in
+    /// the preview instead of evaluating to numeric zero.
+    #[test]
+    fn preview_percent_and_literal_pictures() {
+        let doc = Document::default();
+        let mut s = Shape {
+            id: 1,
+            ..Shape::default()
+        };
+        s.sheet.set_cell("Width", vsdx::model::Cell::value("2"));
+        s.sheet.set_cell("Height", vsdx::model::Cell::value("1"));
+        let chain = [&s];
+        let page = Page::default();
+        let fctx = FieldsCtx::for_page(&doc, &page);
+        // Percent through FIELDPICTURE(3).
+        assert_eq!(
+            preview_field(
+                &doc,
+                &s,
+                &chain,
+                Some(&fctx),
+                "0.25",
+                Some("FIELDPICTURE(3)")
+            ),
+            "25%"
+        );
+        // A literal decimal picture stays literal (not numeric 0.00).
+        assert_eq!(
+            preview_field(&doc, &s, &chain, Some(&fctx), "2.5", Some("0.00")),
+            "2.50"
+        );
+        // A bare digit picture never unit-converts (page number).
+        assert_eq!(
+            preview_field(&doc, &s, &chain, Some(&fctx), "2", Some("0")),
+            "2"
+        );
     }
 }

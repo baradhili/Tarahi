@@ -387,10 +387,16 @@ fn field_dependents(
                     .is_some_and(carries_flds)
             {
                 let mut formulas = String::new();
+                // BOTH the Value and the Format formulas reference
+                // data: a Format like `IF(Sheet.1!Prop.Units=1,"0u",`
+                // `"0.00u")` re-renders when that Prop row changes
+                // (Greptile round 1).
                 let mut push_row = |row: &vsdx::model::Row| {
-                    if let Some(f) = row.cell("Value").and_then(|c| c.f.as_deref()) {
-                        formulas.push_str(f);
-                        formulas.push('\n');
+                    for cell_name in ["Value", "Format"] {
+                        if let Some(f) = row.cell(cell_name).and_then(|c| c.f.as_deref()) {
+                            formulas.push_str(f);
+                            formulas.push('\n');
+                        }
                     }
                 };
                 for sec in s.sheet.sections_named("Field") {
@@ -1258,10 +1264,23 @@ impl crate::Command for InsertField {
         } else {
             str_cell(&format_v, &format_f)
         };
+        // The percent picture's Value carries U='PER' (the corpus's
+        // esc(3) rows) — without it a `0.25` value renders as a
+        // length (Greptile round 1).
+        let value_cell = if format_f.trim() == "FIELDPICTURE(3)" {
+            Cell {
+                v: Some(String::new()),
+                u: Some("PER".into()),
+                f: Some(value_f.clone()),
+                ..Cell::default()
+            }
+        } else {
+            str_cell("", &value_f)
+        };
         sec.rows.push(Row {
             ix,
             cells: vec![
-                ("Value".to_string(), str_cell("", &value_f)),
+                ("Value".to_string(), value_cell),
                 ("Format".to_string(), format_cell),
                 ("Type".to_string(), Cell::value("0")),
                 ("UICat".to_string(), no_formula_cell()),

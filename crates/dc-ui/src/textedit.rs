@@ -41,8 +41,18 @@ use egui::{Color32, FontId, Pos2, Rect, Ui, Vec2};
 /// editor shows at `offset` (plain characters from the draft's
 /// start), committed as the `<fld/>` marker when the edit ends.
 /// Anchors shift through per-frame draft diffs (typing before a mark
-/// moves it; typing inside a mark's chunk pins it at the chunk
-/// start — the field is atomic, like Visio's).
+/// moves it; typing inside a mark's chunk dissolves it — the field
+/// is atomic, like Visio's).
+///
+/// **Known limitation (CodeRabbit PR review):** egui's BUILT-IN
+/// text-edit undo (Ctrl+Z inside the widget) restores only the text
+/// and cursor — a mark dissolved by a deletion comes back as plain
+/// text without its formula when egui's undo restores the display.
+/// The app-level undo (after commit) is unaffected: it reverts the
+/// whole committed macro. Fixing the in-editor case needs the marks
+/// folded into egui's undo state (`TextEditState`'s undoer is not
+/// extensible from outside in 0.37), so it stands documented rather
+/// than half-wired.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldMark {
     pub offset: usize,
@@ -187,6 +197,39 @@ impl TextEditSession {
                         && new[q + inserted..] == old[q..]
                 };
                 p = if valid(pre_caret) { pre_caret } else { p };
+            }
+        }
+        // The deletion twin (CodeRabbit PR review): Backspace on
+        // `"11"` (field display `1` + literal `1`) reports the
+        // deleted char at the WRONG index among repeats. Reinterpret
+        // as a PURE DELETION when the tails align and anchor the
+        // deleted span at the caret: Backspace removes the char
+        // BEFORE the caret, Delete the one AFTER.
+        if delta < 0 {
+            let deleted = (-delta) as usize;
+            // A deletion at q == p exists when the tails align:
+            // new[p..] == old[p + deleted..].
+            let tails_align =
+                new.len() >= p && old.len() >= p + deleted && new[p..] == old[p + deleted..];
+            if tails_align {
+                let valid = |q: usize| {
+                    q <= old.len()
+                        && q + deleted <= old.len()
+                        && q <= new.len() + deleted
+                        && new[..q.min(new.len())] == old[..q.min(old.len())]
+                        && new[q.min(new.len())..] == old[(q + deleted).min(old.len())..]
+                };
+                let backspace = pre_caret.saturating_sub(deleted);
+                let delete_key = pre_caret;
+                let q = if valid(backspace) {
+                    backspace
+                } else if valid(delete_key) {
+                    delete_key
+                } else {
+                    p
+                };
+                p = q;
+                replaced_old = deleted;
             }
         }
         // An edit that OVERLAPS a mark's span DISSOLVES the field (its
@@ -961,5 +1004,36 @@ mod field_mark_tests {
         s.park_field(mark(0, "9")); // "9ab1c", mark @0 shifts the first to 3
         assert_eq!(s.field_marks, vec![mark(3, "1"), mark(0, "9")]);
         assert_eq!(s.draft, "9ab1c");
+    }
+
+    /// Backspace on repeated text deletes the char BEFORE the caret
+    /// — a field display `1` followed by a literal `1`, backspaced
+    /// from the end, must remove the LITERAL and keep the field
+    /// (CodeRabbit PR review).
+    #[test]
+    fn backspace_on_repeated_text_deletes_before_the_caret() {
+        // Field first: park display "1" at 0, then type a literal "1"
+        // after it (caret lands at 2).
+        let mut s = session("", 0);
+        s.park_field(mark(0, "1")); // "1", mark @0, caret @1
+        s.draft = "11".into(); // typed the literal at 1
+        s.sync_frame(Some(2));
+        assert_eq!(s.field_marks, vec![mark(0, "1")], "typing kept the field");
+        // Backspace from the end removes the LITERAL at [1,2).
+        s.draft = "1".into();
+        s.sync_frame(Some(1));
+        assert_eq!(s.field_marks, vec![mark(0, "1")], "the field survived");
+
+        // The Delete key at offset 0 removes the FIELD display — the
+        // mark dissolves and the trailing literal survives. Distinct
+        // characters so the deletion target is unambiguous.
+        let mut s = session("x", 1);
+        s.caret = 0;
+        s.park_field(mark(0, "1")); // "1x", mark @0
+        assert_eq!(s.draft, "1x");
+        s.caret = 0;
+        s.draft = "x".into(); // Delete removed the display
+        s.sync_frame(Some(0));
+        assert!(s.field_marks.is_empty(), "Delete removed the field");
     }
 }

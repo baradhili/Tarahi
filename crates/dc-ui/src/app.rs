@@ -1097,7 +1097,15 @@ impl App {
                 self.status = crate::i18n::strs().msg_opened_path(path.display().to_string());
                 self.recent.record(&path);
                 // #192 spec: opening ADDS a document — the active one
-                // (if any) becomes an inactive session first.
+                // (if any) becomes an inactive session first. The
+                // live text edit commits against the OLD document
+                // BEFORE the swap: a surviving session would resolve
+                // its page/shape IDs against the NEW document and
+                // write the old draft's text and field formulas there
+                // (CodeRabbit PR review).
+                if self.text_edit.is_some() {
+                    self.end_text_edit(true);
+                }
                 self.stash_active_doc();
                 // The Insert Field dialog never carries across the
                 // document swap (#267, CodeRabbit round 4): page and
@@ -12056,7 +12064,11 @@ impl App {
             return;
         };
         // The shape's Prop row names — Shape Data entries (model
-        // vocabulary, never translated).
+        // vocabulary, never translated), INCLUDING the rows a
+        // master-backed shape only inherits: a fresh instance keeps
+        // all its Shape Data on the master, and the picker must not
+        // come up empty (Greptile round 1). Local rows take
+        // precedence (the evaluator layers them the same way).
         let shape_data: Vec<String> = self
             .ed()
             .and_then(|ed| {
@@ -12068,6 +12080,15 @@ impl App {
                     .iter()
                     .flat_map(|sec| sec.rows.iter().filter_map(|r| r.n.clone()))
                     .collect();
+                if let Ok(chain) = dc_core::scope::shape_chain(&ed.doc, page_id, shape_id) {
+                    let ancestors: Vec<_> =
+                        chain.into_iter().filter(|c| c.id != shape_id).collect();
+                    if let Some(src) = ed.doc.instance_source(s, &ancestors) {
+                        for sec in src.sheet.sections_named("Prop") {
+                            names.extend(sec.rows.iter().filter_map(|r| r.n.clone()));
+                        }
+                    }
+                }
                 names.sort();
                 names.dedup();
                 Some(names)
@@ -14034,6 +14055,14 @@ impl App {
         sess.restore_view(&mut self.view);
         if !commit {
             return;
+        }
+        // The click that OPENED the Insert Field dialog commits the
+        // edit through this path — and dispatch may run after the
+        // overlay in some frame orderings, so the caret is captured
+        // HERE too (Greptile round 1: dispatch's own capture can see
+        // an already-empty session).
+        if self.fields_open.is_some() && self.fields_caret.is_none() {
+            self.fields_caret = Some((sess.page, sess.shape, sess.caret));
         }
         // The shape must still exist to receive the commit — the edit
         // can outlive it (Ctrl+Z of its placement is not keyboard-
@@ -16332,6 +16361,12 @@ impl App {
             return;
         }
         let mut incoming = self.docs.swap_remove(ix);
+        // Commit the live text edit against the OUTGOING document —
+        // a surviving session would write its draft into the incoming
+        // one (CodeRabbit PR review).
+        if self.text_edit.is_some() {
+            self.end_text_edit(true);
+        }
         self.stash_active_doc();
         self.ed = Some(incoming.ed);
         self.path = incoming.path;
@@ -16365,6 +16400,12 @@ impl App {
     }
 
     fn close_doc(&mut self) {
+        // Commit the live text edit against the document being closed
+        // (or the one promoting to active below) — same ownership
+        // rule as activate_doc (CodeRabbit PR review).
+        if self.text_edit.is_some() {
+            self.end_text_edit(true);
+        }
         self.ed = None;
         self.path = PathBuf::new();
         self.dirty = false;
