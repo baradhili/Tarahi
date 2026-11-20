@@ -108,8 +108,11 @@ pub struct App {
     hyperlink_open: Option<i64>,
     /// Draft row being added/edited in the Hyperlinks dialog (#28).
     hyperlink_draft: Option<HyperlinkDraft>,
-    /// The Insert Field dialog is open for this shape (#267).
-    fields_open: Option<i64>,
+    /// The Insert Field dialog is open for this (page, shape) (#267)
+    /// — the PAGE rides along because shape IDs collide across pages
+    /// and documents, and the alive check pins the dialog to the page
+    /// it opened on (CodeRabbit round 3).
+    fields_open: Option<(i64, i64)>,
     /// The caret captured when the dialog opened from a live text
     /// edit — the opening click commits the edit (#22), the field
     /// still lands at the caret (#267): (page, shape, plain offset).
@@ -8321,8 +8324,8 @@ impl App {
                 // where the caret sat, in the committed raw.
                 self.fields_caret = self.text_edit.as_ref().map(|s| (s.page, s.shape, s.caret));
                 match self.sel {
-                    Some((_, sid)) => {
-                        self.fields_open = Some(sid);
+                    Some((page_id, sid)) => {
+                        self.fields_open = Some((page_id, sid));
                         self.fields_draft = None;
                     }
                     None => {
@@ -12022,16 +12025,24 @@ impl App {
     /// otherwise.
     fn fields_insert_window(&mut self, ctx: &egui::Context) {
         use crate::fields_dlg::{self, FieldsOutcome};
-        let Some(shape_id) = self.fields_open else {
+        let Some((dialog_page, shape_id)) = self.fields_open else {
             return;
         };
-        // Close automatically when the shape or page goes away.
-        let alive = self
-            .ed()
-            .and_then(|ed| ed.doc.pages.get(self.page_idx))
-            .is_some_and(|p| vsdx::model::find_shape_by_id(&p.shapes, shape_id).is_some());
+        // Close automatically when the shape goes away — pinned to
+        // the PAGE the dialog opened on: shape IDs collide across
+        // pages and documents, so an open dialog never resolves
+        // against a different page's same-id shape (CodeRabbit
+        // rounds 2–3).
+        let alive = self.ed().is_some_and(|ed| {
+            ed.doc
+                .pages
+                .iter()
+                .find(|p| p.id == dialog_page)
+                .is_some_and(|p| vsdx::model::find_shape_by_id(&p.shapes, shape_id).is_some())
+        }) && Some(dialog_page) == self.page_id();
         if !alive {
             self.fields_open = None;
+            self.fields_caret = None;
             self.fields_draft = None;
             return;
         }
@@ -14091,6 +14102,13 @@ impl App {
                         cmd = cmd.with_format(f.clone());
                     }
                     cmds.push(Box::new(cmd));
+                }
+                if !typed {
+                    // No SetText ran, so nothing refreshed the
+                    // text-derived caches — the parked displays
+                    // changed what renders. The draft IS the post
+                    // text (original plain + displays, no typing).
+                    cmds.extend(dc::textfunc::text_cache_refreshes(doc, &scope, &sess.draft));
                 }
                 if cmds.len() == 1 && !typed {
                     // A single field, no typing: the InsertField alone

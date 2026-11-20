@@ -43,7 +43,7 @@ use egui::{Color32, FontId, Pos2, Rect, Ui, Vec2};
 /// Anchors shift through per-frame draft diffs (typing before a mark
 /// moves it; typing inside a mark's chunk pins it at the chunk
 /// start — the field is atomic, like Visio's).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FieldMark {
     pub offset: usize,
     pub display: String,
@@ -167,14 +167,27 @@ impl TextEditSession {
         {
             s += 1;
         }
-        let replaced_old = old.len() - p - s;
+        let mut replaced_old = old.len() - p - s;
         let delta = new.len() as isize - old.len() as isize;
-        // A pure insertion lands at the pre-edit caret, clamped to
-        // the diff's possible span [p, p + inserted] — not at the
-        // common-prefix boundary.
-        if replaced_old == 0 && delta > 0 {
-            let inserted_len = delta as usize;
-            p = pre_caret.clamp(p, p + inserted_len);
+        // A minimal diff misreads single-character edits among
+        // REPEATED text as replaces ("ab1c" + X at 2 → "abX1c" reads
+        // as `1`→`X1`), which dissolves a field mark sitting at the
+        // caret. Reinterpret as a PURE INSERTION when the tails
+        // align, anchored at the pre-edit caret — the caret is where
+        // typing happens (CodeRabbit round 3).
+        if delta > 0 {
+            let inserted = delta as usize;
+            let tails_align = new.len() >= p + inserted && new[p + inserted..] == old[p..];
+            if tails_align {
+                replaced_old = 0;
+                let valid = |q: usize| {
+                    q <= old.len()
+                        && q + inserted <= new.len()
+                        && new[..q] == old[..q]
+                        && new[q + inserted..] == old[q..]
+                };
+                p = if valid(pre_caret) { pre_caret } else { p };
+            }
         }
         // An edit that OVERLAPS a mark's span DISSOLVES the field (its
         // display becomes plain text — Visio's atomicity: editing
@@ -860,5 +873,93 @@ mod tests {
         // Headless: the pass's texture delta is intentionally dropped
         // (nothing rasterizes it) — clear it so its Drop doesn't panic.
         out.textures_delta.clear();
+    }
+}
+
+#[cfg(test)]
+mod field_mark_tests {
+    use super::{FieldMark, TextEditSession};
+    use crate::canvas::View;
+
+    fn session(draft: &str, caret: usize) -> TextEditSession {
+        let mut s = TextEditSession::new(0, 1, draft.to_string(), &View::default());
+        s.caret = caret;
+        s
+    }
+
+    fn mark(offset: usize, display: &str) -> FieldMark {
+        FieldMark {
+            offset,
+            display: display.to_string(),
+            value_f: "PAGENAME()".to_string(),
+            format_f: None,
+        }
+    }
+
+    /// Typing the field's own first character right BEFORE it shifts
+    /// the mark, not dissolves it (CodeRabbit round 3: "XYZ" + X at
+    /// offset 0 → "XXYZ").
+    #[test]
+    fn typing_a_repeated_char_before_a_field_shifts_it() {
+        let mut s = session("", 0);
+        s.park_field(mark(0, "XYZ")); // parks AT the caret (0)
+        assert_eq!(s.draft, "XYZ");
+        // Caret back to the very start, then type X.
+        s.caret = 0;
+        s.draft = "XXYZ".into();
+        s.sync_frame(Some(1));
+        assert_eq!(
+            s.field_marks,
+            vec![mark(1, "XYZ")],
+            "the mark shifts past the typed char"
+        );
+    }
+
+    /// A normal insertion between mark and text still shifts it.
+    #[test]
+    fn typing_before_a_field_shifts_it() {
+        let mut s = session("abc", 2);
+        s.park_field(mark(0, "1")); // parks at caret 2 → "ab1c"
+        assert_eq!(s.draft, "ab1c");
+        s.caret = 2;
+        s.draft = "abX1c".into();
+        s.sync_frame(Some(3));
+        assert_eq!(s.field_marks, vec![mark(3, "1")]);
+    }
+
+    /// An edit overlapping the display dissolves the field (round 1).
+    #[test]
+    fn editing_inside_the_display_dissolves_it() {
+        let mut s = session("ab", 1);
+        s.park_field(mark(0, "XYZ")); // "aXYZb"
+        assert_eq!(s.draft, "aXYZb");
+        // Delete "YZ" (inside the display).
+        s.draft = "aXb".into();
+        s.sync_frame(Some(2));
+        assert!(s.field_marks.is_empty(), "the field dissolved");
+    }
+
+    /// Parking a second field strictly inside an existing one
+    /// dissolves the container (CodeRabbit round 2).
+    #[test]
+    fn parking_inside_a_field_dissolves_it() {
+        let mut s = session("ab", 1);
+        s.park_field(mark(0, "XYZ")); // "aXYZb", mark @1
+        s.caret = 2; // strictly inside the display
+        s.park_field(mark(0, "Q"));
+        assert_eq!(s.field_marks, vec![mark(2, "Q")]);
+        assert_eq!(s.draft, "aXQYZb");
+    }
+
+    /// Parking an EARLIER field shifts later marks (CodeRabbit
+    /// round 1).
+    #[test]
+    fn parking_before_another_mark_shifts_it() {
+        let mut s = session("abc", 2);
+        s.park_field(mark(0, "1")); // "ab1c", mark @2
+        s.caret = 0;
+        s.park_field(mark(0, "9")); // "9ab1c", mark @0 shifts the first to 3
+        assert_eq!(s.field_marks, vec![mark(3, "1"), mark(0, "9")]);
+        assert_eq!(s.draft, "9ab1c");
     }
 }

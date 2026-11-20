@@ -1186,6 +1186,21 @@ impl<'a> Parser<'a> {
                 let h = args.get(3).and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let mi = args.get(4).and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let s = args.get(5).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                // Range-validate BEFORE the cast: `DATE(1E30,1,1)`
+                // saturates at i64::MAX and overflows the civil-date
+                // arithmetic instead of erroring back to the cached V
+                // (CodeRabbit round 3). The supported calendar span
+                // (years 0–9999) bounds every intermediate.
+                if !(-1.0..10_000.0).contains(&y)
+                    || !(1.0..=12.0).contains(&mo)
+                    || !(1.0..=31.0).contains(&d)
+                    || !(0.0..24.0).contains(&h)
+                    || !(0.0..60.0).contains(&mi)
+                    || !(0.0..60.0).contains(&s)
+                    || !y.is_finite()
+                {
+                    return Err("DATE: argument out of the supported calendar range".into());
+                }
                 let days = days_from_civil(y as i64, mo as i64, d as i64);
                 Ok(Value::Num(
                     days as f64 + 25569.0 + (h * 3600.0 + mi * 60.0 + s) / 86400.0,
@@ -2161,6 +2176,12 @@ mod tests {
             eval_field("DATE(2013,1,1)", &env, &strs, None).unwrap(),
             Value::Num(41275.0)
         );
+        // Out-of-range arguments ERROR (the cached-V path serves)
+        // instead of overflowing the civil-date arithmetic
+        // (CodeRabbit round 3).
+        assert!(eval_field("DATE(1E30,1,1)", &env, &strs, None).is_err());
+        assert!(eval_field("DATE(2015,13,1)", &env, &strs, None).is_err());
+        assert!(eval_field("DATE(2015,1,32)", &env, &strs, None).is_err());
     }
 
     /// The corpus's date-field composition: FORMAT(User.Date,"d")

@@ -344,9 +344,10 @@ fn field_dependents(
     // ancestor — the TouchList contract's rendering unit.
     let qualified = format!("Sheet.{edited}!{refs}");
     #[allow(clippy::too_many_arguments)] // the walk's context, one flat set
-    fn walk(
-        doc: &Document,
+    fn walk<'a>(
+        doc: &'a Document,
         shapes: &[vsdx::model::Shape],
+        ancestors: &[&'a vsdx::model::Shape],
         page_id: i64,
         refs: &str,
         qualified: &str,
@@ -356,6 +357,13 @@ fn field_dependents(
     ) {
         for s in shapes {
             let root = root.or(Some(s.id));
+            // The REAL ancestor chain: a nested member's master
+            // identity lives on its parent group, and the empty chain
+            // misses it (CodeRabbit round 3).
+            let mut chain: Vec<&vsdx::model::Shape> = ancestors.to_vec();
+            chain.push(s);
+            let ancestors_only: Vec<&vsdx::model::Shape> =
+                chain.iter().copied().filter(|c| c.id != s.id).collect();
             // The shape carries markers locally, or renders them via
             // master mirroring — an instance with no local text still
             // paints its master's subtree, whose children keep their
@@ -374,7 +382,9 @@ fn field_dependents(
                 .text_raw
                 .as_deref()
                 .is_some_and(|r| r.contains("<fld"))
-                || doc.instance_source(s, &[]).is_some_and(carries_flds)
+                || doc
+                    .instance_source(s, &ancestors_only)
+                    .is_some_and(carries_flds)
             {
                 let mut formulas = String::new();
                 let mut push_row = |row: &vsdx::model::Row| {
@@ -388,7 +398,7 @@ fn field_dependents(
                         push_row(row);
                     }
                 }
-                if let Some(src) = doc.instance_source(s, &[]) {
+                if let Some(src) = doc.instance_source(s, &ancestors_only) {
                     for sec in src.sheet.sections_named("Field") {
                         for row in &sec.rows {
                             push_row(row);
@@ -412,6 +422,7 @@ fn field_dependents(
             walk(
                 doc,
                 &s.sub_shapes,
+                &chain,
                 page_id,
                 refs,
                 qualified,
@@ -424,6 +435,7 @@ fn field_dependents(
     walk(
         doc,
         &page.shapes,
+        &[],
         page_id,
         refs,
         &qualified,
@@ -1137,12 +1149,18 @@ impl crate::Command for InsertField {
             else {
                 return None;
             };
-            let sh = doc
-                .pages
-                .iter()
-                .find(|p| p.id == *pid)
-                .and_then(|p| crate::scope::find_shape(&p.shapes, *sid))?;
-            let src = doc.instance_source(sh, &[])?;
+            let page = doc.pages.iter().find(|p| p.id == *pid)?;
+            let sh = crate::scope::find_shape(&page.shapes, *sid)?;
+            // The REAL ancestor chain: a nested group member's master
+            // identity lives on its parent, and the empty chain misses
+            // it (CodeRabbit round 3).
+            let Ok(chain) = crate::scope::shape_chain(doc, *pid, *sid) else {
+                return None;
+            };
+            // `shape_chain` includes the shape itself as the last
+            // entry — `instance_source` wants the ancestors only.
+            let ancestors: Vec<_> = chain.into_iter().filter(|c| c.id != *sid).collect();
+            let src = doc.instance_source(sh, &ancestors)?;
             let max_ix = src
                 .sheet
                 .section("Field", 0)
