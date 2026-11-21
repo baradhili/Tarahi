@@ -1068,6 +1068,10 @@ pub fn plan_connector_frame(
                 g.rows
                     .iter()
                     .filter(|r| (2..=4).contains(&r.ix))
+                    // Deleted rows are not part of the visible curve —
+                    // translating one would un-delete invisible junk
+                    // (#293).
+                    .filter(|r| !r.is_deleted())
                     .filter_map(|r| {
                         let x = literal(r, "X")?;
                         let y = literal(r, "Y")?;
@@ -1852,6 +1856,52 @@ mod reroute_master_tests {
         assert!(
             (ex - 3.0).abs() < 1e-6,
             "dynamic glue walks to the facing (left) edge: EndX {ex} (want 3.0)"
+        );
+    }
+
+    /// #293: a connector whose inherited-deleted row 3 (`Del="1"`,
+    /// no cells — the MisterDiagram/Visio pattern) reroutes THROUGH
+    /// the row: the route's endpoint lands on the last structural row
+    /// and the write UN-DELETES it (the Expected rule), so the saved
+    /// file renders the same in Visio instead of dropping the row and
+    /// losing the connector's tail.
+    #[test]
+    fn reroute_undeletes_a_reused_deleted_row() {
+        let (mut ed, page_id) = doc_with_master_connector(3, false);
+        // Shrink to the #293 shape: 3 rows, row 3 deleted (no cells).
+        for sh in ed.doc.pages[0].shapes.iter_mut() {
+            if sh.id == 11 {
+                for sec in sh.sheet.children.iter_mut() {
+                    if let SheetChild::Section(geo) = sec {
+                        geo.rows.retain(|r| r.ix <= 3);
+                        if let Some(r3) = geo.rows.iter_mut().find(|r| r.ix == 3) {
+                            r3.attrs = vec![("Del".to_string(), "1".to_string())];
+                            r3.cells.clear();
+                        }
+                    }
+                }
+            }
+        }
+        for sh in ed.doc.pages[0].shapes.iter_mut() {
+            if sh.id == 10 {
+                sh.sheet.set_cell("PinX", VCell::value("4.0"));
+            }
+        }
+        let mut cmd = RerouteConnectors::new(page_id, vec![10]);
+        cmd.apply(&mut ed.doc).unwrap();
+        let conn = ed.doc.pages[0].shapes.iter().find(|s| s.id == 11).unwrap();
+        let geo = conn.sheet.sections_named("Geometry").remove(0);
+        assert_eq!(geo.rows.len(), 3, "no row materializes: {rows:?}", rows = geo.rows.len());
+        let r3 = geo.rows.iter().find(|r| r.ix == 3).unwrap();
+        assert!(
+            !r3.is_deleted(),
+            "the reroute un-deleted the reused row: attrs {:?}",
+            r3.attrs
+        );
+        assert!(
+            r3.cell("Y").and_then(|c| c.numeric()).is_some_and(|y| y.abs() > 1e-6),
+            "row 3 carries route values: {:?}",
+            r3.cells
         );
     }
 

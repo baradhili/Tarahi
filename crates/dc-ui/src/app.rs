@@ -2514,6 +2514,9 @@ impl App {
             for geo in sh.sheet.sections_named("Geometry") {
                 let mut cur: Option<(f64, f64)> = None; // local end of the previous row
                 for row in &geo.rows {
+                    if row.is_deleted() {
+                        continue; // deleted rows stay deleted (#293) — no handles for invisible ink
+                    }
                     let t = row.t.as_deref().unwrap_or("");
                     let rel = t.starts_with("Rel");
                     let (Some(x), Some(y)) = (

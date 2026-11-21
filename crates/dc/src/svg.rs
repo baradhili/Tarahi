@@ -617,6 +617,9 @@ fn node_ink_box(
         }
         for row in &geo.rows {
             let Some(t) = row.t.as_deref() else { continue };
+            if row.is_deleted() {
+                continue; // deleted rows stay deleted (#293)
+            }
             let rel = t.starts_with("Rel");
             let (mut x, mut y) = (row_num_in(genv, row, "X"), row_num_in(genv, row, "Y"));
             if rel {
@@ -3742,7 +3745,11 @@ fn render_all_geometry(
                     let have: Vec<i64> = m.rows.iter().map(|r| r.ix).collect();
                     let mut inserted: Vec<(usize, Row)> = Vec::new();
                     for src_row in &sg.rows {
-                        if src_row.ix > 0 && !have.contains(&src_row.ix) && src_row.t.is_some() {
+                        if src_row.ix > 0
+                            && !have.contains(&src_row.ix)
+                            && src_row.t.is_some()
+                            && !src_row.is_deleted()
+                        {
                             let mut nr = src_row.clone();
                             // scale per cell name
                             for (cname, cell) in nr.cells.iter_mut() {
@@ -4175,7 +4182,7 @@ fn render_geometry(
     // review).
     let evald: Vec<(&vsdx::Row, &str, (f64, f64))> = rows
         .iter()
-        .filter(|r| r.t.is_some())
+        .filter(|r| r.t.is_some() && !r.is_deleted())
         .map(|row| {
             let t = row.t.as_deref().unwrap_or("");
             let (mx, my) = (
@@ -8375,6 +8382,92 @@ mod tests {
         assert!(
             svg.contains(r#"x1="4.45833"#) && !svg.contains(r#"x1="2.95833"#),
             "one hop at the current crossing, nothing at the stale arc"
+        );
+    }
+
+    /// #293: a `Del="1"` geometry row stays deleted — an OWN row
+    /// carrying values (what 0.2.15's corrupted save wrote: the
+    /// diagonal into row 3) renders nothing, and the phantom jump the
+    /// row used to feed is gone (the #294 part-4 prediction).
+    #[test]
+    fn export_drops_deleted_geometry_rows() {
+        // A vertical connector whose deleted row 3 carries the master's
+        // hook values (the saved-by-0.2.15 corruption shape), crossed
+        // by a horizontal one.
+        let mut s = shape_at(5, (3.5, 2.3047), 0.25, 2.2031, 0.0);
+        s.sheet.set_cell("ObjType", Cell::value("2"));
+        let mut sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec.rows = vec![
+            Row {
+                t: Some("MoveTo".into()),
+                ix: 1,
+                cells: vec![("X".to_string(), Cell::value("0.125"))],
+                ..Row::default()
+            },
+            Row {
+                t: Some("LineTo".into()),
+                ix: 2,
+                cells: vec![
+                    ("X".to_string(), Cell::value("0.125")),
+                    ("Y".to_string(), Cell::value("2.2031")),
+                ],
+                ..Row::default()
+            },
+            Row {
+                t: Some("LineTo".into()),
+                ix: 3,
+                attrs: vec![("Del".to_string(), "1".to_string())],
+                cells: vec![
+                    ("X".to_string(), Cell::value("1")),
+                    ("Y".to_string(), Cell::value("-1")),
+                ],
+                ..Row::default()
+            },
+        ];
+        s.sheet.children.push(SheetChild::Section(sec));
+        // The A→B twin: a horizontal connector at page y = 2.297 that
+        // BOTH the vertical run (x = 3.5) and the deleted hook (its
+        // page chord runs (3.5, 3.4)→(4.375, 0.2)) would cross.
+        let mut ab = shape_at(6, (3.0, 2.2969), 3.0, 0.0, 0.0);
+        ab.sheet.set_cell("ObjType", Cell::value("2"));
+        let mut asec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        asec.rows = vec![
+            Row {
+                t: Some("MoveTo".into()),
+                ix: 1,
+                cells: vec![("X".to_string(), Cell::value("0"))],
+                ..Row::default()
+            },
+            Row {
+                t: Some("LineTo".into()),
+                ix: 2,
+                cells: vec![("X".to_string(), Cell::value("3"))],
+                ..Row::default()
+            },
+        ];
+        ab.sheet.children.push(SheetChild::Section(asec));
+        let (doc, page) = page_fixture(vec![ab, s]);
+        let svg = render_page(&doc, &page).unwrap();
+        // The diagonal hook (local (0.125,2.2)→(1,−1) → page
+        // (3.5,3.4)→(4.375,0.2)) draws nothing.
+        assert!(
+            !svg.contains("4.37500"),
+            "the deleted row's diagonal is not drawn"
+        );
+        // The crossing hops once — the phantom jump the deleted row
+        // fed is gone.
+        assert_eq!(
+            svg.matches(r##"stroke="#ffffff""##).count(),
+            1,
+            "one jump at the real crossing"
         );
     }
 

@@ -71,6 +71,31 @@ impl Row {
     pub fn cell(&self, name: &str) -> Option<&Cell> {
         self.cells.iter().find(|(n, _)| n == name).map(|(_, c)| c)
     }
+
+    /// `Del="1"` — the row is deleted locally (GitHub #293). The
+    /// attribute is schema-defined on `Row_Type` (xsd:boolean) and the
+    /// shipped corpus carries it pervasively: the built-in catalog's
+    /// 371 stencils — repackaged from the shipped Visio 2016 masters —
+    /// hold ~44,000 deleted rows across 79 stencils, and Visio honors
+    /// them on open (the #293 oracle: the deleted connector row renders
+    /// gone in Visio 2021). `xsd:boolean` accepts both spellings.
+    pub fn is_deleted(&self) -> bool {
+        self.attrs
+            .iter()
+            .find(|(n, _)| n == "Del")
+            .and_then(|(_, v)| match v.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" => Some(true),
+                "0" | "false" => Some(false),
+                _ => None,
+            })
+            .unwrap_or(false)
+    }
+
+    /// Drop the local deletion marker (an edit that needs the row
+    /// again un-deletes it — GitHub #293's Expected).
+    pub fn undelete(&mut self) {
+        self.attrs.retain(|(n, _)| n != "Del");
+    }
 }
 
 /// A sheet section, e.g. `Geometry`, `User`, `Character`, `Connection`.

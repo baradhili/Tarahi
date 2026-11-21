@@ -116,6 +116,9 @@ pub fn rewrite_route_rows(shape: &mut Shape, rows: &[(f64, f64); 3]) {
             for (i, (x, y)) in rows.iter().enumerate() {
                 let ix = (i + 2) as i64;
                 if let Some(row) = geo.rows.iter_mut().find(|r| r.ix == ix) {
+                    // Writing a route row un-deletes it (#293 Expected:
+                    // an edit that needs the row drops `Del`).
+                    row.undelete();
                     for (cell, v) in [("X", *x), ("Y", *y)] {
                         match row.cells.iter_mut().find(|(n, _)| n == cell) {
                             Some((_, c)) => *c = Cell::value(fmt(v)),

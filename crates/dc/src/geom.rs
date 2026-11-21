@@ -228,6 +228,9 @@ pub fn cubic_row(s: &Shape, frame: &HitFrame) -> Option<CubicRow> {
     for geo in s.sheet.sections_named("Geometry") {
         let mut cur: Option<(f64, f64)> = None;
         for row in &geo.rows {
+            if row.is_deleted() {
+                continue; // deleted rows stay deleted (#293)
+            }
             let cell = |name: &str| -> f64 {
                 row_cell_value(row.cell(name), None, 1.0, &frame.env).unwrap_or(0.0)
             };
@@ -328,6 +331,9 @@ pub fn arc_row(s: &Shape, master_root: Option<&Shape>, frame: &HitFrame) -> Opti
         if !walk.iter().any(|(row, _)| row.ix == r.ix) {
             walk.push((r, None));
         }
+    // Deleted rows stay deleted (#293) — an instance marker wins over
+    // the master row it shadows.
+    walk.retain(|(row, _)| !row.is_deleted());
     }
     walk.sort_by_key(|(row, _)| row.ix);
     let cell = |row: &Row, master: Option<&Row>, name: &str| -> Option<f64> {
@@ -538,6 +544,11 @@ pub fn geometry_hit_segments(
         }
     }
     walk.sort_by_key(|(row, _)| row.ix);
+    // `Del="1"` rows stay deleted (GitHub #293): the INSTANCE row's
+    // marker wins when one is present, else the master-only row's own.
+    // The #293 repro's connector inherits its master's hook row through
+    // an instance `<Row Del="1" IX="3" T="LineTo"/>` with no cells.
+    walk.retain(|(row, _)| !row.is_deleted());
     // A row's evaluated endpoint in the same frame the walk uses —
     // also the route-context lookahead for stored-jump classification
     // (#294 review). The bool: the row is a MoveTo (positions the pen,
@@ -1358,6 +1369,122 @@ mod tests {
             Some((1.0, 0.0)),
             None,
         ));
+    }
+
+    /// #293: an instance `<Row Del="1" IX="3" T="LineTo"/>` (no
+    /// cells) kills the master's row 3 — the merged walk skips it, so
+    /// the master's hook never joins the hit polyline (and the
+    /// crossing set). A master-only deleted row is dead too; an
+    /// instance re-declaring the row alive keeps it.
+    #[test]
+    fn deleted_row_kills_the_merged_master_row() {
+        let master_rows = |del_master: bool| {
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: vec![("X".to_string(), Cell::value("0.125"))],
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 2,
+                    cells: vec![
+                        ("X".to_string(), Cell::value("0.125")),
+                        ("Y".to_string(), Cell::value("2.2")),
+                    ],
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 3,
+                    attrs: if del_master {
+                        vec![("Del".to_string(), "1".to_string())]
+                    } else {
+                        Vec::new()
+                    },
+                    cells: vec![
+                        ("X".to_string(), Cell::value("1")),
+                        ("Y".to_string(), Cell::value("-1")),
+                    ],
+                    ..Row::default()
+                },
+            ]
+        };
+        let root = |del_master: bool| {
+            let mut r = Shape {
+                id: 1,
+                ..Shape::default()
+            };
+            r.sheet.set_cell("Width", Cell::value("0.25"));
+            r.sheet.set_cell("Height", Cell::value("2.2"));
+            r.sheet.children.push(SheetChild::Section(Section {
+                name: "Geometry".into(),
+                ix: 0,
+                rows: master_rows(del_master),
+                ..Section::default()
+            }));
+            r
+        };
+        let inst = |row3: Option<Row>| {
+            let mut s = Shape {
+                id: 2,
+                master: Some(1),
+                ..Shape::default()
+            };
+            let mut rows = vec![Row {
+                t: Some("MoveTo".into()),
+                ix: 1,
+                cells: vec![("X".to_string(), Cell::value("0.125"))],
+                ..Row::default()
+            }];
+            if let Some(r3) = row3 {
+                rows.push(Row {
+                    t: Some("LineTo".into()),
+                    ix: 2,
+                    cells: vec![
+                        ("X".to_string(), Cell::value("0.125")),
+                        ("Y".to_string(), Cell::value("2.2")),
+                    ],
+                    ..Row::default()
+                });
+                rows.push(r3);
+            }
+            s.sheet.children.push(SheetChild::Section(Section {
+                name: "Geometry".into(),
+                ix: 0,
+                rows,
+                ..Section::default()
+            }));
+            s
+        };
+        let del_row = || Row {
+            t: Some("LineTo".into()),
+            ix: 3,
+            attrs: vec![("Del".to_string(), "1".to_string())],
+            ..Row::default()
+        };
+        let doc = vsdx::Document::default();
+        // The #293 repro: the instance deletes the master's hook row.
+        let root1 = root(false);
+        let s1 = inst(Some(del_row()));
+        let frame = hit_frame(&doc, &[&s1, &root1], &s1, (0.25, 2.2));
+        let segs = geometry_hit_segments(&s1, Some(&root1), &frame, false);
+        assert!(!segs.is_empty());
+        assert!(
+            segs.iter().all(|(a, b)| a.0.abs() < 1.0 && b.0.abs() < 1.0),
+            "no hook segment reaches the master's (1, -1): {segs:?}"
+        );
+        // The marker lives on the MASTER row alone (a master-only
+        // deletion) — dead as well.
+        let root2 = root(true);
+        let s2 = inst(None);
+        let frame = hit_frame(&doc, &[&s2, &root2], &s2, (0.25, 2.2));
+        let segs = geometry_hit_segments(&s2, Some(&root2), &frame, false);
+        assert!(
+            segs.iter().all(|(a, b)| a.0.abs() < 1.0 && b.0.abs() < 1.0),
+            "a master-only deleted row is dead too: {segs:?}"
+        );
     }
 
     /// #294 review: a crossing exactly ON an interior vertex of the
