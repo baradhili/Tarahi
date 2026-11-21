@@ -1123,31 +1123,30 @@ mod snap_glue_tests {
             tag: "PageSheet".to_string(),
             sheet,
         });
+        // NON-default values: the fixture must fail if resolution
+        // skipped style 0 and fell through to the Visio defaults (the
+        // bare-page case below pins those separately, #294 review).
         let mut style = StyleSheet {
             id: 0,
             ..Default::default()
         };
-        style.sheet.set_cell("LineToLineX", Cell::value("0.125"));
-        style
-            .sheet
-            .set_cell("LineJumpFactorX", Cell::value("0.66666666666667"));
+        style.sheet.set_cell("LineToLineX", Cell::value("0.2"));
+        style.sheet.set_cell("LineJumpFactorX", Cell::value("1.5"));
         doc.stylesheets.push(style);
         doc.pages.push(page);
 
         assert!(
-            (doc.page_line_to_line_x(&doc.pages[0]) - 0.125).abs() < 1e-9,
+            (doc.page_line_to_line_x(&doc.pages[0]) - 0.2).abs() < 1e-9,
             "LineToLineX comes off the style chain"
         );
         assert!(
-            (doc.page_line_jump_factor(&doc.pages[0]) - 2.0 / 3.0).abs() < 1e-9,
+            (doc.page_line_jump_factor(&doc.pages[0]) - 1.5).abs() < 1e-9,
             "LineJumpFactorX comes off the style chain"
         );
-        // The jump radius identity the repro's stored ArcTo pins:
-        // |A| = 0.0416667 = 0.125 × 2/3 / 2.
         let radius = doc.page_line_to_line_x(&doc.pages[0])
             * doc.page_line_jump_factor(&doc.pages[0])
             / 2.0;
-        assert!((radius - 0.041_666_666_666_666_7).abs() < 1e-9);
+        assert!((radius - 0.15).abs() < 1e-9);
 
         // An inline PageSheet cell wins over the chain (the GUI's jump
         // size dialog writes here).

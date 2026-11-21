@@ -4180,7 +4180,15 @@ fn render_geometry(
     // env feeds keep their order — #249), so the stored-jump
     // classification can see the route's neighboring runs (#294
     // review).
-    let evald: Vec<(&vsdx::Row, &str, (f64, f64))> = rows
+    // Control cells (A/B/C/D) evaluate at the row's ORIGINAL point in
+    // the ordered walk — each row sees exactly the feeds of the rows
+    // before it, never a later row's evaluated coordinate (#294
+    // review; #249 covers the back-reference case the feeds exist
+    // for).
+    // A walked row: the row, its type, the evaluated endpoint, and the
+    // control cells captured at the row's own point in the walk.
+    type EvaldRow<'a> = (&'a vsdx::Row, &'a str, (f64, f64), [Option<f64>; 4]);
+    let evald: Vec<EvaldRow<'_>> = rows
         .iter()
         .filter(|r| r.t.is_some() && !r.is_deleted())
         .map(|row| {
@@ -4196,10 +4204,11 @@ fn render_geometry(
             // whole chain at the authored pose.
             env.insert(format!("{}.X{}", gname, row.ix), x);
             env.insert(format!("{}.Y{}", gname, row.ix), y);
-            (row, t, (x, y))
+            let ctrl = ["A", "B", "C", "D"].map(|n| row_num(env, row, n));
+            (row, t, (x, y), ctrl)
         })
         .collect();
-    for (ri, (row, t, xy)) in evald.iter().enumerate() {
+    for (ri, (row, t, xy, ctrl)) in evald.iter().enumerate() {
         let (x, y) = *xy;
         // Any row type except SplineKnot ends an open spline (#188,
         // #185 review): flush the accumulated curve BEFORE the row's
@@ -4224,7 +4233,7 @@ fn render_geometry(
                 // verified against the Process master's rounded rect, which
                 // traverses CCW (y-up, interior on the left) with positive-A
                 // corner arcs bulging outward.
-                let h = row_num(env, row, "A").unwrap_or(0.0);
+                let h = ctrl[0].unwrap_or(0.0);
                 let (sx, sy) = cur;
                 let chord = ((x - sx).powi(2) + (y - sy).powi(2)).sqrt();
                 // Route context (#294 review): the run continues
@@ -4246,11 +4255,11 @@ fn render_geometry(
                 let mut prev_dir = None;
                 let mut pi = ri as isize - 1;
                 while pi >= 1 {
-                    let (_, pt, pp) = evald[pi as usize];
+                    let (_, pt, pp, _) = evald[pi as usize];
                     if kind_of(pt) != 1 {
                         break;
                     }
-                    let (_, _, p0) = evald[pi as usize - 1];
+                    let (_, _, p0, _) = evald[pi as usize - 1];
                     let pd = (pp.0 - p0.0, pp.1 - p0.1);
                     if pd.0.hypot(pd.1) > 1e-9 {
                         prev_dir = Some(pd);
@@ -4261,7 +4270,7 @@ fn render_geometry(
                 let mut next_dir = None;
                 let mut ni = ri + 1;
                 while ni < evald.len() {
-                    let (_, nt, ne) = evald[ni];
+                    let (_, nt, ne, _) = evald[ni];
                     if kind_of(nt) != 1 {
                         break;
                     }
@@ -4317,11 +4326,11 @@ fn render_geometry(
                 // rider; we only read today, preserve-bytes covers
                 // round-trips.)
                 let m = (
-                    row_num(env, row, "A").unwrap_or((cur.0 + x) / 2.0),
-                    row_num(env, row, "B").unwrap_or((cur.1 + y) / 2.0),
+                    ctrl[0].unwrap_or((cur.0 + x) / 2.0),
+                    ctrl[1].unwrap_or((cur.1 + y) / 2.0),
                 );
-                let c_ang = row_num(env, row, "C").unwrap_or(0.0);
-                let d_cell = row_num(env, row, "D");
+                let c_ang = ctrl[2].unwrap_or(0.0);
+                let d_cell = ctrl[3];
                 // #233: an authored D=0 is a ZERO-WIDTH arc — the
                 // minor axis collapses onto the major, so the arc IS
                 // the endpoint chord. Visio draws the chord even when
@@ -4377,10 +4386,10 @@ fn render_geometry(
             }
             "Ellipse" => {
                 // (X,Y) center, (A,B) major-axis endpoint, (C,D) minor-axis endpoint.
-                let a = row_num(env, row, "A").unwrap_or(x + 1.0);
-                let b = row_num(env, row, "B").unwrap_or(y);
-                let c2 = row_num(env, row, "C").unwrap_or(x);
-                let d2 = row_num(env, row, "D").unwrap_or(y + 1.0);
+                let a = ctrl[0].unwrap_or(x + 1.0);
+                let b = ctrl[1].unwrap_or(y);
+                let c2 = ctrl[2].unwrap_or(x);
+                let d2 = ctrl[3].unwrap_or(y + 1.0);
                 let rx = ((a - x).powi(2) + (b - y).powi(2)).sqrt().max(1e-6);
                 let ry = ((c2 - x).powi(2) + (d2 - y).powi(2)).sqrt().max(1e-6);
                 let ang = (b - y).atan2(a - x); // major-axis angle, y-up frame
@@ -4410,15 +4419,15 @@ fn render_geometry(
                 // relative fractions of Width/Height.
                 let (a, b) = rel_adjust(
                     t,
-                    row_num(env, row, "A").unwrap_or(cur.0),
-                    row_num(env, row, "B").unwrap_or(cur.1),
+                    ctrl[0].unwrap_or(cur.0),
+                    ctrl[1].unwrap_or(cur.1),
                     width,
                     height,
                 );
                 let (c2, d2) = rel_adjust(
                     t,
-                    row_num(env, row, "C").unwrap_or(x),
-                    row_num(env, row, "D").unwrap_or(y),
+                    ctrl[2].unwrap_or(x),
+                    ctrl[3].unwrap_or(y),
                     width,
                     height,
                 );
@@ -4434,8 +4443,8 @@ fn render_geometry(
             "QuadBezTo" | "RelQuadBezTo" => {
                 let (a, b) = rel_adjust(
                     t,
-                    row_num(env, row, "A").unwrap_or((cur.0 + x) / 2.0),
-                    row_num(env, row, "B").unwrap_or((cur.1 + y) / 2.0),
+                    ctrl[0].unwrap_or((cur.0 + x) / 2.0),
+                    ctrl[1].unwrap_or((cur.1 + y) / 2.0),
                     width,
                     height,
                 );
@@ -4456,17 +4465,17 @@ fn render_geometry(
                 spline_acc = Some(crate::curve::SplineAcc::start(
                     cur,
                     (x, y),
-                    row_num(env, row, "A").unwrap_or(0.0),
-                    row_num(env, row, "B").unwrap_or(0.0),
-                    row_num(env, row, "C").unwrap_or(1.0),
-                    row_num(env, row, "D").unwrap_or(3.0),
+                    ctrl[0].unwrap_or(0.0),
+                    ctrl[1].unwrap_or(0.0),
+                    ctrl[2].unwrap_or(1.0),
+                    ctrl[3].unwrap_or(3.0),
                 ));
                 cur = (x, y);
             }
             "SplineKnot" => {
                 match spline_acc.as_mut() {
                     Some(acc) => {
-                        acc.knot((x, y), row_num(env, row, "A").unwrap_or(0.0));
+                        acc.knot((x, y), ctrl[0].unwrap_or(0.0));
                         cur = (x, y);
                     }
                     None => {
@@ -4508,16 +4517,16 @@ fn render_geometry(
                         1.0
                     };
                     let mut points = vec![cur];
-                    let mut knots = vec![row_num(env, row, "C").unwrap_or(0.0)];
-                    let mut weights = vec![row_num(env, row, "D").unwrap_or(1.0)];
+                    let mut knots = vec![ctrl[2].unwrap_or(0.0)];
+                    let mut weights = vec![ctrl[3].unwrap_or(1.0)];
                     for (gx, gy, gk, gw) in &f.points {
                         points.push((gx * fx, gy * fy));
                         knots.push(*gk);
                         weights.push(*gw);
                     }
-                    knots.push(row_num(env, row, "A").unwrap_or(0.0));
+                    knots.push(ctrl[0].unwrap_or(0.0));
                     knots.push(f.last_knot);
-                    weights.push(row_num(env, row, "B").unwrap_or(1.0));
+                    weights.push(ctrl[1].unwrap_or(1.0));
                     points.push((x, y));
                     let built = crate::curve::SplineData {
                         degree: f.degree,
@@ -8193,11 +8202,10 @@ mod tests {
         // The radius is the page's resolved LineToLineX × factor / 2
         // (#294 — the fixture page sets neither cell, so Visio's
         // defaults apply: 0.125 × 2/3 / 2).
-        let apex = format!(
-            "{:.5} {:.5}",
-            3.0,
-            6.0 - crate::geom::jump_radius_in(&doc, &page)
-        );
+        // Independent expectation — not the renderer's own helper
+        // (a tautology would survive a resolver regression, #294
+        // review): 0.125 in × 2/3 / 2.
+        let apex = format!("{:.5} {:.5}", 3.0, 6.0 - 0.125 * (2.0 / 3.0) / 2.0);
         assert!(svg.contains(&apex), "the arc apex is page-up: {apex}");
     }
 
@@ -8278,11 +8286,8 @@ mod tests {
             .unwrap()
             .set_cell("LineJumpFactorX", Cell::value("2"));
         let svg = render_page(&big, &big.pages[0]).unwrap();
-        let apex = format!(
-            "{:.5} {:.5}",
-            3.0,
-            6.0 - crate::geom::jump_radius_in(&big, &big.pages[0])
-        );
+        // 0.125 in × 2 / 2, by hand.
+        let apex = format!("{:.5} {:.5}", 3.0, 6.0 - 0.125);
         assert!(svg.contains(&apex), "the 2× arc apex: {apex}");
     }
 

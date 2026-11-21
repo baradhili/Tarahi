@@ -761,6 +761,10 @@ pub struct SetRowCell {
     /// materializes inherited sections on first edit); undo removes them.
     created_section: bool,
     created_row: bool,
+    /// The target row carried `Del="1"` before the write (#293): the
+    /// write un-deletes it, and undo restores the marker — the exact-
+    /// restoration contract covers row attributes too (#294 review).
+    deleted_before: bool,
 }
 
 impl SetRowCell {
@@ -782,6 +786,7 @@ impl SetRowCell {
             old: None,
             created_section: false,
             created_row: false,
+            deleted_before: false,
         }
     }
 }
@@ -959,6 +964,35 @@ impl crate::Command for SetRowCell {
                 self.created_row = true;
             }
         }
+        // #293: an edit that writes into a deleted row un-deletes it
+        // (the Expected rule — the saved row drops `Del`), so a
+        // reroute reusing an inherited-deleted row lands alive and
+        // Visio-visible.
+        {
+            let sec = s
+                .children
+                .iter_mut()
+                .find_map(|c| match c {
+                    vsdx::model::SheetChild::Section(sec)
+                        if sec.name == self.section && sec.ix == self.section_ix =>
+                    {
+                        Some(sec)
+                    }
+                    _ => None,
+                })
+                .expect("section just ensured");
+            let target = match &self.row {
+                RowSel::Ix(ix) => sec.rows.iter_mut().find(|r| r.ix == *ix),
+                RowSel::Named(n) => sec
+                    .rows
+                    .iter_mut()
+                    .find(|r| r.n.as_deref() == Some(n.as_str())),
+            };
+            if let Some(row) = target {
+                self.deleted_before = row.is_deleted();
+                row.undelete();
+            }
+        }
         self.old = row_cell(s, &self.section, self.section_ix, &self.row, &self.name)?.cloned();
         set_row_cell(
             s,
@@ -980,6 +1014,32 @@ impl crate::Command for SetRowCell {
             &self.name,
             self.old.clone(),
         )?;
+        // #293 (review round): undo restores the row's prior deletion
+        // state — the exact-restoration contract covers attributes.
+        if self.deleted_before {
+            let sec = s.children.iter_mut().find_map(|c| match c {
+                vsdx::model::SheetChild::Section(sec)
+                    if sec.name == self.section && sec.ix == self.section_ix =>
+                {
+                    Some(sec)
+                }
+                _ => None,
+            });
+            if let Some(sec) = sec {
+                let target = match &self.row {
+                    RowSel::Ix(ix) => sec.rows.iter_mut().find(|r| r.ix == *ix),
+                    RowSel::Named(n) => sec
+                        .rows
+                        .iter_mut()
+                        .find(|r| r.n.as_deref() == Some(n.as_str())),
+                };
+                if let Some(row) = target {
+                    if !row.is_deleted() {
+                        row.attrs.push(("Del".to_string(), "1".to_string()));
+                    }
+                }
+            }
+        }
         if self.created_row && !self.created_section {
             // We added a row to a pre-existing section: remove just it.
             if let Some(sec) = s.children.iter_mut().find_map(|c| match c {

@@ -472,12 +472,14 @@ fn set_row_cell_undeletes_a_deleted_row() {
         row.attrs
     );
     assert_eq!(row.cell("Y").unwrap().v.as_deref(), Some("0"));
-    // Undo restores the cell value; the row stays locally alive.
+    // Undo restores the cell value AND the row's prior deletion
+    // state — the exact-restoration contract covers attributes (#294
+    // review).
     ed.undo().unwrap();
     let s = scope_sheet(&ed.doc, &scope).unwrap();
     let row = s.sections_named("Geometry")[0].row_by_ix(3).unwrap();
     assert_eq!(row.cell("Y").unwrap().v.as_deref(), Some("-1"));
-    assert!(!row.is_deleted(), "undo keeps the row un-deleted");
+    assert!(row.is_deleted(), "undo restores the deletion marker");
 }
 
 #[test]

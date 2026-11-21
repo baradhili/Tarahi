@@ -641,7 +641,10 @@ pub fn geometry_hit_segments(
                             break;
                         }
                         let p = if ni == k + 1 {
-                            end
+                            // The arc's LOCAL end — the lookahead must
+                            // stay in the classification frame under
+                            // instance scaling (#294 review).
+                            end_local
                         } else {
                             match walk_row(ni - 1) {
                                 Some((q, _)) => q,
@@ -906,11 +909,6 @@ pub fn jump_radius_in(doc: &vsdx::Document, page: &vsdx::Page) -> f64 {
     doc.page_line_to_line_x(page) * doc.page_line_jump_factor(page) / 2.0
 }
 
-/// The largest sagitta a stored jump `ArcTo` may carry (inches):
-/// Visio's radius = LineToLineX × LineJumpFactorX / 2, and even a
-/// doubled LineToLineX with factor 2 stays under it.
-const MAX_STORED_JUMP_SAGITTA_IN: f64 = 0.5;
-
 /// The run continues along the chord: the neighboring segment exists,
 /// is collinear with it, and points the same way (Visio writes jumps
 /// MID-RUN — an isolated authored semicircle has no such context and
@@ -948,8 +946,13 @@ pub fn is_stored_jump_arc(
 ) -> bool {
     let len = chord.0.hypot(chord.1);
     let a = sagitta.abs();
+    // No absolute size cap: the radius is LineToLineX ×
+    // LineJumpFactorX / 2 and LineJumpFactorX=10 is documented-valid
+    // (a 0.625 in semicircle at the default spacing) — the semicircle
+    // band, the axis-aligned chord, the straight-run context and the
+    // connector gate already separate jumps from artwork (#294
+    // review).
     len > 1e-9
-        && a <= MAX_STORED_JUMP_SAGITTA_IN
         && a >= 0.4 * len
         && a <= 0.6 * len
         && chord.0.abs().min(chord.1.abs()) <= len * 0.02
@@ -989,6 +992,23 @@ fn seg_cross_open(
     Some(((a0.0 + t * r.0, a0.1 + t * r.1), t, u))
 }
 
+/// The two routes' runs at a SHARED contact vertex alternate around
+/// it (r1, r2, r1, r2 in angular order) — they cross; grouped-by-
+/// route rays mean the routes merely touch (#294 review).
+fn alternating(vi: usize, a: &[(f64, f64)], vj: usize, b: &[(f64, f64)]) -> bool {
+    let (vx, vy) = a[vi];
+    let ray = |p: (f64, f64)| (p.0 - vx).atan2(p.1 - vy);
+    let mut angs = [
+        (ray(a[vi - 1]), 0u8),
+        (ray(a[vi + 1]), 0u8),
+        (ray(b[vj - 1]), 1u8),
+        (ray(b[vj + 1]), 1u8),
+    ];
+    angs.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+    let seq: Vec<u8> = angs.iter().map(|(_, r)| *r).collect();
+    seq.windows(2).all(|w| w[0] != w[1]) && seq[0] != seq[3]
+}
+
 /// The two runs at the INTERIOR vertex `vx` sit on the same side of
 /// the other segment's line — the polyline touches it and bounces
 /// back (a tangency), it does not cross (#294 review).
@@ -997,7 +1017,9 @@ fn same_side(vx: usize, pts: &[(f64, f64)], other: &[(f64, f64)]) -> bool {
     let dir = (b.0 - a.0, b.1 - a.1);
     let side = |p: (f64, f64)| dir.0 * (p.1 - a.1) - dir.1 * (p.0 - a.0);
     let (s1, s2) = (side(pts[vx - 1]), side(pts[vx + 1]));
-    s1 * s2 > 1e-12
+    // Pure sign comparison — a magnitude cutoff would wave through
+    // shallow same-side contacts on short segments (#294 review).
+    s1 * s2 > 0.0
 }
 
 /// The polyline index a crossing hugs, when it hugs a segment
@@ -1074,18 +1096,29 @@ pub fn line_jumps(lines: &[JumpLine], radius: f64) -> Vec<Jump> {
                     // when the vertex's two runs straddle the other
                     // segment's line — same-side runs TOUCH the line
                     // and bounce back (a tangency), never a hop (#294
-                    // review).
-                    if hugged_vertex(t, k1)
-                        .filter(|&ix| ix > 0 && ix + 1 < pts[i].len())
-                        .is_some_and(|ix| same_side(ix, &pts[i], w2))
-                    {
-                        continue;
-                    }
-                    if hugged_vertex(u, k2)
-                        .filter(|&ix| ix > 0 && ix + 1 < pts[j].len())
-                        .is_some_and(|ix| same_side(ix, &pts[j], w1))
-                    {
-                        continue;
+                    // review). When BOTH routes turn at the contact,
+                    // the four incident runs must alternate by route
+                    // around the vertex; grouped-by-route rays mean
+                    // the routes merely touch.
+                    let vi = hugged_vertex(t, k1).filter(|&ix| ix > 0 && ix + 1 < pts[i].len());
+                    let vj = hugged_vertex(u, k2).filter(|&ix| ix > 0 && ix + 1 < pts[j].len());
+                    match (vi, vj) {
+                        (Some(vi), Some(vj)) => {
+                            if !alternating(vi, &pts[i], vj, &pts[j]) {
+                                continue;
+                            }
+                        }
+                        (Some(vi), None) => {
+                            if same_side(vi, &pts[i], w2) {
+                                continue;
+                            }
+                        }
+                        (None, Some(vj)) => {
+                            if same_side(vj, &pts[j], w1) {
+                                continue;
+                            }
+                        }
+                        (None, None) => {}
                     }
                     let unit = |a: (f64, f64), b: (f64, f64)| {
                         let d = (b.0 - a.0, b.1 - a.1);
@@ -1337,8 +1370,19 @@ mod tests {
             Some((1.0, 0.0)),
             Some((1.0, 0.0)),
         ));
-        // Artwork-sized arcs stay.
+        // A large SHALLOW arc stays a curve — size alone never makes
+        // a jump (the semicircle band does the work; the old 0.5 in
+        // cap wrongly rejected documented factor-10 jumps, #294
+        // review).
         assert!(!is_stored_jump_arc(
+            1.0,
+            (0.0, 4.0),
+            Some((0.0, 1.0)),
+            Some((0.0, 1.0)),
+        ));
+        // A large SEMICIRCLE with full route context is a jump at any
+        // size (LineJumpFactorX=10 → 0.625 in at the defaults).
+        assert!(is_stored_jump_arc(
             2.0,
             (0.0, 4.0),
             Some((0.0, 1.0)),
@@ -1470,10 +1514,14 @@ mod tests {
         let s1 = inst(Some(del_row()));
         let frame = hit_frame(&doc, &[&s1, &root1], &s1, (0.25, 2.2));
         let segs = geometry_hit_segments(&s1, Some(&root1), &frame, false);
-        assert!(!segs.is_empty());
+        // Exactly the surviving shaft: one segment on the run's page x
+        // spanning the frame height (the hook's page x would differ by
+        // LocPinX, and an empty walk would also pass a vaguer check).
+        assert_eq!(segs.len(), 1, "only the shaft survives: {segs:?}");
+        let (a, b) = segs[0];
         assert!(
-            segs.iter().all(|(a, b)| a.0.abs() < 1.0 && b.0.abs() < 1.0),
-            "no hook segment reaches the master's (1, -1): {segs:?}"
+            (a.0 - b.0).abs() < 1e-9 && (b.1 - a.1).abs() - 2.2 < 1e-6,
+            "the shaft is one straight span of the frame height: {segs:?}"
         );
         // The marker lives on the MASTER row alone (a master-only
         // deletion) — dead as well.
@@ -1526,6 +1574,28 @@ mod tests {
             TEST_JUMP_RADIUS,
         );
         assert_eq!(js.len(), 0, "a tangency never hops: {js:?}");
+        // BOTH routes turning at the shared contact: the four runs
+        // must alternate by route around the vertex. An L meeting a V
+        // groups two L-runs and two V-runs — a touch, no hop (#294
+        // review).
+        let js = line_jumps(
+            &[
+                jline(1, 0, &[(1.0, 0.0), (0.0, 0.0), (0.0, 1.0)]),
+                jline(2, 1, &[(-1.0, 1.0), (0.0, 0.0), (-1.0, -1.0)]),
+            ],
+            TEST_JUMP_RADIUS,
+        );
+        assert_eq!(js.len(), 0, "a two-corner touch never hops: {js:?}");
+        // Two routes cornering THROUGH each other interleave — a real
+        // crossing hops.
+        let js = line_jumps(
+            &[
+                jline(1, 0, &[(-1.0, 1.0), (0.0, 0.0), (1.0, 0.0)]),
+                jline(2, 1, &[(1.0, 1.0), (0.0, 0.0), (-1.0, 0.0)]),
+            ],
+            TEST_JUMP_RADIUS,
+        );
+        assert_eq!(js.len(), 1, "interleaved corner runs cross: {js:?}");
     }
 
     /// A hit segment: start and end in page space.
