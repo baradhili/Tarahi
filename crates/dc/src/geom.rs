@@ -1634,42 +1634,46 @@ mod tests {
 
     /// Round 3 (PR #299 review): the cluster reach is the crossing's
     /// OWN axis radius — the unrelated axis's radius must not merge
-    /// two crossings the drawn arcs never overlap.
+    /// two crossings the drawn arcs never overlap. ONE pair must
+    /// produce BOTH crossings (clustering merges within a pair only),
+    /// and the weights stay tiny so the stroke-width reach cannot
+    /// mask the radius difference (round-4 review).
     #[test]
     fn line_jumps_clusters_on_the_crossing_axis_radius() {
         let lines = [
-            // The jumper: one horizontal run crossing x=1 and x=1.5.
+            // The jumper: one horizontal run.
             JumpLine {
                 id: 1,
                 z: 1,
-                weight: 1.0,
+                weight: 0.01,
                 color: (0, 0, 0),
                 pts: vec![(0.0, 1.0), (2.0, 1.0)],
             },
-            // The crossed line twice: vertical at x=1 and x=1.5.
+            // The crossed line: a U crossing the run TWICE — at x=1
+            // and x=1.5. One pair, two crossings 0.5 in apart.
             JumpLine {
                 id: 2,
                 z: 2,
-                weight: 1.0,
+                weight: 0.01,
                 color: (0, 0, 0),
-                pts: vec![(1.0, 0.0), (1.0, 2.0)],
-            },
-            JumpLine {
-                id: 2,
-                z: 3,
-                weight: 1.0,
-                color: (0, 0, 0),
-                pts: vec![(1.5, 0.0), (1.5, 2.0)],
+                pts: vec![(1.0, 0.0), (1.0, 2.0), (1.5, 2.0), (1.5, 0.0)],
             },
         ];
         // X radius tiny, Y radius huge: the horizontal hops draw at
         // the X radius, so 0.5 in apart they stay TWO hops — the old
-        // max-axis reach merged them into one at x=1.25.
+        // max-axis reach (1.0 in) merged them into one hop at their
+        // midpoint, x=1.25, where no crossing exists.
         let js = line_jumps(&lines, (0.041_666_7, 0.5));
         assert_eq!(js.len(), 2, "no unrelated-axis clustering: {js:?}");
         assert!(
             js.iter().all(|j| j.dir.1.abs() < 1e-9),
-            "the horizontal line hops"
+            "the horizontal line hops: {js:?}"
+        );
+        // And the hops sit ON the crossings, not at a centroid.
+        assert!(
+            js.iter().any(|j| (j.at.0 - 1.0).abs() < 1e-9)
+                && js.iter().any(|j| (j.at.0 - 1.5).abs() < 1e-9),
+            "the hops stay at their crossings: {js:?}"
         );
     }
 
