@@ -657,7 +657,10 @@ pub fn geometry_hit_segments(
     // route-context directions read LOCAL endpoints (the frame the
     // classification chord lives in) — the scaled frame would bend
     // collinearity under non-uniform instance scaling.
-    for (k, (row, master, _gname, t, end_local, end, ca, cb, cc, cd)) in
+    // The master fallback rode the FIRST pass: every control read the
+    // second pass makes is the captured per-row value (the round-3
+    // review — a post-pass env read would sample later rows' feeds).
+    for (k, (row, _master, _gname, t, end_local, end, ca, cb, cc, cd)) in
         evald.iter().take(MAX_ROWS).enumerate()
     {
         let t = t.as_str();
@@ -869,7 +872,7 @@ pub fn geometry_hit_segments(
                     let start = cur.unwrap_or(end);
                     let mut points = vec![start];
                     let mut knots = vec![(*cc).unwrap_or(0.0)];
-                    let mut weights = vec![cell(&env, row, *master, "D").unwrap_or(1.0)];
+                    let mut weights = vec![(*cd).unwrap_or(1.0)];
                     for (gx, gy, gk, gw) in &f.points {
                         points.push((gx * fx, gy * fy));
                         knots.push(*gk);
@@ -1067,15 +1070,16 @@ pub fn is_stored_jump_arc(
         // a jump on a horizontal run at the X cells, on a vertical run
         // at the Y cells (PR #299 review — one shared radius fails a
         // vertical stored jump whenever the page's Y spacing differs).
-        && radius_x > 0.0
-        && radius_y > 0.0
+        // Only the CHOSEN axis's radius must be positive: a FactorY=0
+        // page still recognizes horizontal stored jumps (PR #299
+        // round-3 review); a zero on the chosen axis never strips.
         && {
             let radius = if chord.0.abs() >= chord.1.abs() {
                 radius_x
             } else {
                 radius_y
             };
-            (a - radius).abs() <= (radius * 0.05).max(1e-6)
+            radius > 0.0 && (a - radius).abs() <= (radius * 0.05).max(1e-6)
         }
 }
 
@@ -1272,8 +1276,15 @@ pub fn line_jumps(lines: &[JumpLine], (radius, radius_y): (f64, f64)) -> Vec<Jum
             // stay.
             let mut clustered: Vec<Jump> = Vec::new();
             for jmp in pair {
-                let reach = (radius.max(radius_y) * 2.0)
-                    .max((jmp.weight + jmp.under_weight) * 2.0);
+                // The reach is the hop's OWN axis radius — the unrelated
+                // axis's would merge crossings the drawn arcs never
+                // overlap (PR #299 round-3 review).
+                let jr = if jmp.dir.0.abs() >= jmp.dir.1.abs() {
+                    radius
+                } else {
+                    radius_y
+                };
+                let reach = (jr * 2.0).max((jmp.weight + jmp.under_weight) * 2.0);
                 // Compare EVERY existing cluster (#218 review): the
                 // last-only check (under the old x-sort) let a jump
                 // near an earlier cluster open a duplicate instead of
@@ -1600,6 +1611,66 @@ mod tests {
             0.0,
             0.0,
         ));
+        // Round 3 (PR #299 review): only the CHOSEN axis's radius must
+        // be positive — a FactorY=0 page still recognizes horizontal
+        // stored jumps, and a zero on the arc's own axis never strips.
+        assert!(is_stored_jump_arc(
+            -0.041_666_7,
+            (0.083_333_3, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            0.041_666_7,
+            0.0,
+        ));
+        assert!(!is_stored_jump_arc(
+            -0.041_666_7,
+            (0.0, 0.083_333_3),
+            Some((0.0, 1.0)),
+            Some((0.0, 1.0)),
+            0.041_666_7,
+            0.0,
+        ));
+    }
+
+    /// Round 3 (PR #299 review): the cluster reach is the crossing's
+    /// OWN axis radius — the unrelated axis's radius must not merge
+    /// two crossings the drawn arcs never overlap.
+    #[test]
+    fn line_jumps_clusters_on_the_crossing_axis_radius() {
+        let lines = [
+            // The jumper: one horizontal run crossing x=1 and x=1.5.
+            JumpLine {
+                id: 1,
+                z: 1,
+                weight: 1.0,
+                color: (0, 0, 0),
+                pts: vec![(0.0, 1.0), (2.0, 1.0)],
+            },
+            // The crossed line twice: vertical at x=1 and x=1.5.
+            JumpLine {
+                id: 2,
+                z: 2,
+                weight: 1.0,
+                color: (0, 0, 0),
+                pts: vec![(1.0, 0.0), (1.0, 2.0)],
+            },
+            JumpLine {
+                id: 2,
+                z: 3,
+                weight: 1.0,
+                color: (0, 0, 0),
+                pts: vec![(1.5, 0.0), (1.5, 2.0)],
+            },
+        ];
+        // X radius tiny, Y radius huge: the horizontal hops draw at
+        // the X radius, so 0.5 in apart they stay TWO hops — the old
+        // max-axis reach merged them into one at x=1.25.
+        let js = line_jumps(&lines, (0.041_666_7, 0.5));
+        assert_eq!(js.len(), 2, "no unrelated-axis clustering: {js:?}");
+        assert!(
+            js.iter().all(|j| j.dir.1.abs() < 1e-9),
+            "the horizontal line hops"
+        );
     }
 
     /// #293: an instance `<Row Del="1" IX="3" T="LineTo"/>` (no

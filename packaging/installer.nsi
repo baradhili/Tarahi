@@ -1,6 +1,11 @@
 ; Tarahi Windows installer (NSIS). Build:
-;   makensis -DVERSION=<ver> packaging/installer.nsi
-; from the repo root; expects target\release\tarahi.exe.
+;   cargo build --release -p dc-ui
+;   bash packaging/collect-licenses.sh licenses-third-party
+;   makensis -DVERSION=<ver> -DBINDIR=target\release packaging/installer.nsi
+; from the repo root. The license `File` inputs are MANDATORY (a
+; missing input is an NSIS compile error): stage them first with
+; packaging/collect-licenses.sh — the release workflow runs the same
+; step before makensis (PR #299 review).
 
 !define APPNAME "Tarahi"
 ; Local builds: makensis -DVERSION=x packaging/installer.nsi from the
