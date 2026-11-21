@@ -30,4 +30,16 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
       - run: cargo build --workspace --locked
-      - run: cargo test --workspace --locked
+      # The software-rendered kittest suites segfault intermittently on
+      # hosted runners (two PR-#299 runs died with SIGSEGV mid-binary on
+      # ubuntu-latest — different binaries, no libtest failure summary —
+      # and both passed on rerun). Retry the suite: one green attempt
+      # passes the job, three red attempts still fail it.
+      - name: cargo test (retry — hosted-runner rendering flakes)
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            cargo test --workspace --locked && exit 0
+            echo "::warning::test attempt $i failed; retrying"
+          done
+          exit 1

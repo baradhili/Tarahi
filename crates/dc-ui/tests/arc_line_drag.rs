@@ -68,7 +68,9 @@ fn arc_page_end(ed: &dc_core::Editor, id: i64) -> (f64, f64) {
         })
         .unwrap_or((1.0, 1.0));
     let frame = dc::geom::hit_frame(&ed.doc, &chain, sh, msize);
-    let segs = dc::geom::geometry_hit_segments(sh, None, &frame);
+    // Not a connector: the Line-arc's EllipticalArcTo is real ink and
+    // must never strip (#294's strip gate is connector + ArcTo rows).
+    let segs = dc::geom::geometry_hit_segments(sh, None, &frame, None);
     segs.last().unwrap().1
 }
 

@@ -761,6 +761,14 @@ pub struct SetRowCell {
     /// materializes inherited sections on first edit); undo removes them.
     created_section: bool,
     created_row: bool,
+    /// The target row carried a `Del` attribute before the write
+    /// (#293): the write un-deletes it, and undo restores the marker —
+    /// the exact-restoration contract covers row attributes too (#294
+    /// review). The attribute itself is captured (value AND position),
+    /// not just the parsed flag: `undelete()` drops it entirely, and a
+    /// `Del="0"`/`Del="false"`/`Del="true"` spelling must survive an
+    /// edit+undo byte-exactly (PR #299 review).
+    del_before: Option<(usize, String)>,
 }
 
 impl SetRowCell {
@@ -782,6 +790,7 @@ impl SetRowCell {
             old: None,
             created_section: false,
             created_row: false,
+            del_before: None,
         }
     }
 }
@@ -959,6 +968,41 @@ impl crate::Command for SetRowCell {
                 self.created_row = true;
             }
         }
+        // #293: an edit that writes into a deleted row un-deletes it
+        // (the Expected rule — the saved row drops `Del`), so a
+        // reroute reusing an inherited-deleted row lands alive and
+        // Visio-visible.
+        {
+            let sec = s
+                .children
+                .iter_mut()
+                .find_map(|c| match c {
+                    vsdx::model::SheetChild::Section(sec)
+                        if sec.name == self.section && sec.ix == self.section_ix =>
+                    {
+                        Some(sec)
+                    }
+                    _ => None,
+                })
+                .expect("section just ensured");
+            let target = match &self.row {
+                RowSel::Ix(ix) => sec.rows.iter_mut().find(|r| r.ix == *ix),
+                RowSel::Named(n) => sec
+                    .rows
+                    .iter_mut()
+                    .find(|r| r.n.as_deref() == Some(n.as_str())),
+            };
+            if let Some(row) = target {
+                // Capture the original attribute (value AND position),
+                // not just the parsed flag (PR #299 review — F9).
+                self.del_before = row
+                    .attrs
+                    .iter()
+                    .position(|(n, _)| n == "Del")
+                    .map(|ix| (ix, row.attrs[ix].1.clone()));
+                row.undelete();
+            }
+        }
         self.old = row_cell(s, &self.section, self.section_ix, &self.row, &self.name)?.cloned();
         set_row_cell(
             s,
@@ -980,6 +1024,36 @@ impl crate::Command for SetRowCell {
             &self.name,
             self.old.clone(),
         )?;
+        // #293 (review round): undo restores the row's prior deletion
+        // state — the exact-restoration contract covers attributes.
+        // The ORIGINAL Del attribute goes back verbatim (value and
+        // position): `Del="1"`, `Del="true"`, and the explicit alive
+        // `Del="0"`/`Del="false"` spellings all survive edit+undo
+        // byte-exactly (PR #299 review — F9).
+        if let Some((ix, val)) = self.del_before.take() {
+            let sec = s.children.iter_mut().find_map(|c| match c {
+                vsdx::model::SheetChild::Section(sec)
+                    if sec.name == self.section && sec.ix == self.section_ix =>
+                {
+                    Some(sec)
+                }
+                _ => None,
+            });
+            if let Some(sec) = sec {
+                let target = match &self.row {
+                    RowSel::Ix(ix) => sec.rows.iter_mut().find(|r| r.ix == *ix),
+                    RowSel::Named(n) => sec
+                        .rows
+                        .iter_mut()
+                        .find(|r| r.n.as_deref() == Some(n.as_str())),
+                };
+                if let Some(row) = target {
+                    row.undelete();
+                    let ix = ix.min(row.attrs.len());
+                    row.attrs.insert(ix, ("Del".to_string(), val));
+                }
+            }
+        }
         if self.created_row && !self.created_section {
             // We added a row to a pre-existing section: remove just it.
             if let Some(sec) = s.children.iter_mut().find_map(|c| match c {
@@ -1101,6 +1175,207 @@ pub enum FieldInsert {
     /// stay valid). Offsets are plain CHARACTERS, mapped onto the
     /// raw through [`vsdx::text::plain_to_raw_offset`].
     ReplacePlain { offset: usize, len: usize },
+}
+
+/// Replace one plain-text range of a sheet's text — the spell check's
+/// `Change` (GitHub #121). The plain span `[start, start+len)` (plain
+/// CHARACTERS over the full projection — field cached displays included,
+/// the space [`vsdx::text::plain_to_raw_offset`] maps) is spliced out of
+/// the RAW text and `replacement` spliced in, so every other marker
+/// (`<cp>`/`<pp>`/`<tp>`/`<fld>`) survives byte-identical — unlike
+/// [`SetText`], whose plain-text store would flatten a field-bearing
+/// shape. The spell tokenizer never emits a token that overlaps a field
+/// run, so the range always lands in literal text.
+#[derive(Debug, Clone)]
+pub struct ReplaceTextRange {
+    pub scope: Scope,
+    /// Plain char offset of the span's first character.
+    pub start: usize,
+    /// Plain char count to replace.
+    pub len: usize,
+    pub replacement: String,
+    old: Option<(Option<String>, Option<String>)>, // (text, text_raw)
+}
+
+impl ReplaceTextRange {
+    pub fn new(scope: Scope, start: usize, len: usize, replacement: impl Into<String>) -> Self {
+        ReplaceTextRange {
+            scope,
+            start,
+            len,
+            replacement: replacement.into(),
+            old: None,
+        }
+    }
+}
+
+impl crate::Command for ReplaceTextRange {
+    fn touched(&self, doc: &Document) -> crate::TouchList {
+        match &self.scope {
+            Scope::Shape { page, shape } => {
+                match crate::scope::top_level_ancestor(doc, *page, *shape) {
+                    Some(root) => crate::TouchList {
+                        pages: vec![],
+                        shapes: vec![crate::Touched {
+                            page: *page,
+                            shape: root,
+                            touch: crate::Touch::Ink,
+                            sub: sub_shape(root, *shape),
+                        }],
+                    },
+                    None => crate::TouchList::page(*page),
+                }
+            }
+            _ => crate::TouchList::all_pages(doc),
+        }
+    }
+
+    fn label(&self) -> String {
+        format!(
+            "replace text [{}, +{}) of {}",
+            self.start, self.len, self.scope
+        )
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<()> {
+        let scope = self.scope.clone();
+        let escape = |t: &str| {
+            t.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        };
+        // The immutable pre-pass: the old values plus the raw seed (the
+        // InsertField convention: local raw → escaped local plain → the
+        // master's inherited raw — an instance with no local text
+        // materializes its master's text rather than growing just the
+        // replacement).
+        let pre = match &scope {
+            Scope::Shape { page, shape } => doc
+                .pages
+                .iter()
+                .find(|p| p.id == *page)
+                .and_then(|p| crate::scope::find_shape(&p.shapes, *shape))
+                .map(|sh| {
+                    let inherited = if sh.sheet.text_raw.is_some() || sh.sheet.text.is_some() {
+                        None
+                    } else {
+                        crate::scope::shape_chain(doc, *page, *shape).ok().and_then(|chain| {
+                            let ancestors: Vec<_> =
+                                chain.into_iter().filter(|c| c.id != *shape).collect();
+                            doc.instance_source(sh, &ancestors)
+                                .and_then(|src| src.sheet.text_raw.clone())
+                        })
+                    };
+                    (sh.sheet.text.clone(), sh.sheet.text_raw.clone(), inherited)
+                }),
+            _ => None,
+        };
+        let (old_text, old_raw, inherited) = match pre {
+            Some(t) => t,
+            None => {
+                let s = sheet_mut(doc, &scope)?;
+                (s.text.clone(), s.text_raw.clone(), None)
+            }
+        };
+        self.old = Some((old_text.clone(), old_raw.clone()));
+        let s = sheet_mut(doc, &scope)?;
+        let raw = old_raw
+            .or_else(|| old_text.map(|t| escape(&t)))
+            .or(inherited)
+            .unwrap_or_default();
+        // The splice-safe span mapping: bounds land in the text segment
+        // that contains the target characters — after a zero-plain
+        // marker for the head, before one for the tail (the splice
+        // never swallows a marker between two literal runs), and inside
+        // a CDATA section when the span lives there (where the
+        // replacement is written UNescaped — CDATA content is literal).
+        // Bounds GUARD first (PR #299 review): an end past the target's
+        // plain length would otherwise splice from the head to the RAW
+        // end — the mapper's tail falls back to `raw.len()` — deleting
+        // everything after it, CDATA terminator included. Zero-length
+        // spans stay insertions, including at the text's end.
+        let plain_len = vsdx::text::text_pieces(&raw)
+            .iter()
+            .map(|p| p.plain().chars().count())
+            .sum::<usize>();
+        if self.start > plain_len || self.start + self.len > plain_len {
+            return Err(anyhow::anyhow!(
+                "text span [{}, {}) runs past the text's {} plain characters",
+                self.start,
+                self.start + self.len,
+                plain_len
+            ));
+        }
+        let span = vsdx::text::map_plain_span(&raw, self.start, self.start + self.len)
+            .ok_or_else(|| {
+                anyhow::anyhow!("text span crosses a CDATA boundary; nothing spliced")
+            })?;
+        let mut new_raw;
+        if span.head_is_cdata {
+            // CDATA content is literal — but a `]]>` anywhere in the
+            // RESULTING content would terminate the section early and
+            // leave invalid XML behind. Escaping only the replacement
+            // misses the splice JOINS (PR #299 review): a retained
+            // `]]` before the head plus a replacement opening with
+            // `>` (and the mirror at the tail) form the terminator
+            // across the boundary. Rebuild the whole section at
+            // content level and split terminators canonically there:
+            // `]]>` becomes `]]]]><![CDATA[>` (the section-content
+            // scan then finds its `]]>` only after the doubled
+            // brackets, so the plain text keeps the literal
+            // characters).
+            let (cs, ce) = span
+                .cdata_content
+                .expect("a CDATA-head span carries its section's content range");
+            let mut content = String::with_capacity(
+                (span.tail - span.head) + self.replacement.len() + (ce - cs),
+            );
+            content.push_str(&raw[cs..span.head]);
+            content.push_str(&self.replacement);
+            content.push_str(&raw[span.tail..ce]);
+            let escaped = content.replace("]]>", "]]]]><![CDATA[>");
+            new_raw = String::with_capacity(raw.len() + escaped.len());
+            // The section's opener sits at `cs - 9` (`<![CDATA[`'s
+            // length) — everything before it is preserved verbatim.
+            new_raw.push_str(&raw[..cs - 9]);
+            new_raw.push_str("<![CDATA[");
+            new_raw.push_str(&escaped);
+            if escaped.ends_with(']') {
+                // Content ending with `]` cannot precede a bare `]]>`
+                // close — the close's own `]]` merges with the content's
+                // trailing bracket(s) and the scan eats them. Split the
+                // close off through an empty reopened section.
+                new_raw.push_str("]]><![CDATA[");
+            }
+            new_raw.push_str("]]>");
+            // `ce` is the close's START — skip the original `]]>` (an
+            // unterminated section has none).
+            let skip_close = usize::from(raw[ce..].starts_with("]]>"));
+            new_raw.push_str(&raw[ce + 3 * skip_close..]);
+        } else {
+            let replacement = escape(&self.replacement);
+            new_raw = String::with_capacity(raw.len() + replacement.len());
+            new_raw.push_str(&raw[..span.head]);
+            new_raw.push_str(&replacement);
+            new_raw.push_str(&raw[span.tail..]);
+        }
+        s.text_raw = Some(new_raw.clone());
+        s.text = Some(
+            vsdx::text::text_pieces(&new_raw)
+                .iter()
+                .map(|p| p.plain())
+                .collect::<String>(),
+        );
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<()> {
+        let s = sheet_mut(doc, &self.scope)?;
+        let (text, raw) = self.old.take().unwrap_or((None, None));
+        s.text = text;
+        s.text_raw = raw;
+        Ok(())
+    }
 }
 
 /// Insert a Field row and its `<fld IX='n'/>` marker in ONE undo step

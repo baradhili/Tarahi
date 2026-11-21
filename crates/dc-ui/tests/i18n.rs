@@ -19,7 +19,7 @@ static LANG_LOCK: Mutex<()> = Mutex::new(());
 
 /// The shipped catalogs — every one must satisfy every structural
 /// check. A new language is a folder here plus its `language-name`.
-const LOCALES: &[&str] = &["en", "de", "fa", "es", "zh-Hans"];
+const LOCALES: &[&str] = &["en", "de", "fa", "es", "zh-Hans", "ja", "ko"];
 
 /// Panic-safe: restores English even when an assertion fails mid-test,
 /// so a leaked German setting can't flip parallel tests in this binary.
@@ -630,6 +630,62 @@ fn language_switch_renders_zh_hans_shell() {
     // from the Noto Sans SC shell fallback (not tofu).
     harness.get_by_label_contains("文件");
     harness.snapshot("i18n_zh_hans_shell");
+}
+
+/// Same harness, Japanese catalog (#282's ja/ko wave): kana and kanji
+/// render through the vendored Noto Sans JP fallback (the egui CJK
+/// order prefers the current language's regional face) while the
+/// chrome stays LTR. The golden pins the translated chrome — tofu
+/// boxes or clipped labels fail it.
+#[test]
+fn language_switch_renders_japanese_shell() {
+    let _guard = LANG_LOCK.lock().unwrap();
+    let _english = EnglishOnDrop;
+    dc_ui::i18n::pin_english();
+    let mut app = App::with_blank();
+    dc_ui::i18n::set_language_ephemeral(dc_ui::i18n::L10n::Ja);
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_ui(move |ui| {
+            dc_ui::theme::install_for(ui.ctx(), egui::ThemePreference::Light);
+            app.draw(ui);
+        });
+    for _ in 0..6 {
+        harness.run(); // let the canvas layer textures settle
+    }
+    // The Japanese catalog's File tab — the chrome must come from the
+    // catalog, not hardcoded English, and the kana/kanji glyphs must
+    // come from the Noto Sans JP shell fallback (not tofu).
+    harness.get_by_label_contains("ファイル");
+    harness.snapshot("i18n_japanese_shell");
+}
+
+/// Same harness, Korean catalog (#282's ja/ko wave): Hangul renders
+/// through the vendored Noto Sans KR fallback — the only registered
+/// face carrying Hangul syllables — while the chrome stays LTR.
+#[test]
+fn language_switch_renders_korean_shell() {
+    let _guard = LANG_LOCK.lock().unwrap();
+    let _english = EnglishOnDrop;
+    dc_ui::i18n::pin_english();
+    let mut app = App::with_blank();
+    dc_ui::i18n::set_language_ephemeral(dc_ui::i18n::L10n::Ko);
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_ui(move |ui| {
+            dc_ui::theme::install_for(ui.ctx(), egui::ThemePreference::Light);
+            app.draw(ui);
+        });
+    for _ in 0..6 {
+        harness.run(); // let the canvas layer textures settle
+    }
+    // The Korean catalog's File tab — the chrome must come from the
+    // catalog, not hardcoded English, and the Hangul glyphs must come
+    // from the Noto Sans KR shell fallback (not tofu).
+    harness.get_by_label_contains("파일");
+    harness.snapshot("i18n_korean_shell");
 }
 
 /// Same harness, Persian catalog: the Arabic-script glyphs render

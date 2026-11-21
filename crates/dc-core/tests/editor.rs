@@ -417,6 +417,71 @@ fn set_cell_on_absent_cell_undo_removes_it() {
     let _ = tmp;
 }
 
+/// #293: writing into a `Del="1"` row un-deletes it (the Expected
+/// rule — an edit that needs the row again drops `Del`), so a reroute
+/// reusing an inherited-deleted row lands alive and Visio-visible.
+/// Undo restores the CELL value; the row stays un-deleted (it is now
+/// locally owned).
+#[test]
+fn set_row_cell_undeletes_a_deleted_row() {
+    let mut doc = bare_doc();
+    let mut sec = vsdx::model::Section {
+        name: "Geometry".into(),
+        ix: 0,
+        ..vsdx::model::Section::default()
+    };
+    sec.rows.push(vsdx::model::Row {
+        t: Some("MoveTo".into()),
+        ix: 1,
+        cells: vec![("X".to_string(), Cell::value("0")), ("Y".to_string(), Cell::value("0"))],
+        ..vsdx::model::Row::default()
+    });
+    sec.rows.push(vsdx::model::Row {
+        t: Some("LineTo".into()),
+        ix: 2,
+        cells: vec![("X".to_string(), Cell::value("1")), ("Y".to_string(), Cell::value("0"))],
+        ..vsdx::model::Row::default()
+    });
+    sec.rows.push(vsdx::model::Row {
+        t: Some("LineTo".into()),
+        ix: 3,
+        attrs: vec![("Del".to_string(), "1".to_string())],
+        cells: vec![("X".to_string(), Cell::value("1")), ("Y".to_string(), Cell::value("-1"))],
+        ..vsdx::model::Row::default()
+    });
+    doc.pages[0].shapes[0]
+        .sheet
+        .children
+        .push(vsdx::model::SheetChild::Section(sec));
+    let mut ed = Editor::new(doc);
+    let scope = Scope::Shape { page: 0, shape: 1 };
+    ed.apply(SetRowCell::new(
+        scope.clone(),
+        "Geometry",
+        0,
+        RowSel::Ix(3),
+        "Y",
+        Cell::value("0"),
+    ))
+    .unwrap();
+    let s = scope_sheet(&ed.doc, &scope).unwrap();
+    let row = s.sections_named("Geometry")[0].row_by_ix(3).unwrap();
+    assert!(
+        !row.is_deleted(),
+        "the write un-deleted the row: attrs {:?}",
+        row.attrs
+    );
+    assert_eq!(row.cell("Y").unwrap().v.as_deref(), Some("0"));
+    // Undo restores the cell value AND the row's prior deletion
+    // state — the exact-restoration contract covers attributes (#294
+    // review).
+    ed.undo().unwrap();
+    let s = scope_sheet(&ed.doc, &scope).unwrap();
+    let row = s.sections_named("Geometry")[0].row_by_ix(3).unwrap();
+    assert_eq!(row.cell("Y").unwrap().v.as_deref(), Some("-1"));
+    assert!(row.is_deleted(), "undo restores the deletion marker");
+}
+
 #[test]
 fn set_row_cell_and_undo() {
     let (ed, _tmp) = open_fixture();

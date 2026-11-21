@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       linux_only:
-        description: "Run only the linux job (glibc-floor verification)"
+        description: "Run only the linux jobs (glibc-floor verification)"
         type: boolean
         default: false
 
@@ -24,7 +24,26 @@ jobs:
     # made every linked binary refuse to start on older distros); do
     # not move this back to a bare runner — the glibc-floor step below
     # fails the build if the base ever drifts above the floor.
-    runs-on: ubuntu-24.04
+    #
+    # Two legs (#296): x86_64 and aarch64. Each leg runs the SAME
+    # ubuntu:22.04 container NATIVELY on its own runner (the
+    # ubuntu-24.04-arm hosted runner is free for public repos) — the
+    # multi-arch ubuntu image pulls the matching variant — so both
+    # artifacts share the glibc 2.35 floor with no cross toolchain,
+    # sysroot, or arch-specific build steps to maintain. The app is
+    # pure Rust (harfrust/usvg/zbus, system libraries only dlopen'd),
+    # so a native build per arch is all the portability that exists.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            rpm_arch: amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            rpm_arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     container:
       image: ubuntu:22.04
     steps:
@@ -83,17 +102,19 @@ jobs:
         working-directory: crates/dc-ui
         run: |
           cargo generate-rpm
-          mv target/generate-rpm/*.rpm "${GITHUB_WORKSPACE}/Tarahi_${{ steps.ver.outputs.version }}_amd64.rpm"
+          mv target/generate-rpm/*.rpm "${GITHUB_WORKSPACE}/Tarahi_${{ steps.ver.outputs.version }}_${{ matrix.rpm_arch }}.rpm"
       - name: AppImage
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
           # Current linuxdeploy: its embedded AppImage runtime is what
           # the catalog test flagged as outdated with the 2024-01 pin.
+          # The aarch64 continuous build embeds the matching aarch64
+          # AppImage runtime, so each leg bundles its own architecture.
           # curl, not wget — the bare 22.04 container installs curl
           # above but ships neither downloader by default (PR #269
           # review).
-          curl -fsSL https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -o /tmp/linuxdeploy
+          curl -fsSL https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${{ matrix.arch }}.AppImage -o /tmp/linuxdeploy
           chmod +x /tmp/linuxdeploy
           mkdir -p AppDir/usr/lib
           # winit/rfd/arboard dlopen the X11/Wayland client libraries,
@@ -102,6 +123,18 @@ jobs:
           # its transitive closure) is copied in explicitly (#261: the
           # catalog test system has none of them and the app must work
           # offline on a bare desktop).
+          #
+          # EXCEPTION (#292): the libwayland client libraries are
+          # deliberately NOT bundled. They must match the host's Mesa
+          # EGL driver, which is always loaded from the host — the
+          # 22.04 copy (libwayland 1.20) shadows the host's newer one,
+          # and the driver's wl_display_create_queue_with_name (1.22+)
+          # then fails to resolve, crashing at startup on any Wayland
+          # session with current Mesa (0.2.12–0.2.15). Every
+          # Wayland-session host ships them (a Wayland session cannot
+          # exist without libwayland-client); on a bare X11 desktop
+          # winit's dlopen simply fails and it falls back to X11. 0.2.11
+          # (pre-#261) shipped none and ran fine under Wayland.
           for lib in \
             libX11.so.6 libX11-xcb.so.1 libxcb.so.1 libXau.so.6 libXdmcp.so.6 \
             libxkbcommon.so.0 libxkbcommon-x11.so.0 \
@@ -110,7 +143,6 @@ jobs:
             libmd.so.0 \
             libdbus-1.so.3 libsystemd.so.0 liblzma.so.5 libzstd.so.1 \
             liblz4.so.1 libcap.so.2 libgcrypt.so.20 libgpg-error.so.0 \
-            libwayland-client.so.0 libwayland-cursor.so.0 libwayland-egl.so.1 \
             libffi.so.8; do
             src="$(ldconfig -p | awk -v lib="$lib" '$NF ~ ("/" lib "$") {print $NF; exit}')"
             if [ -z "$src" ]; then
@@ -119,6 +151,16 @@ jobs:
               cp -aL "$src" AppDir/usr/lib/
             fi
           done
+          # Guard against re-introducing #292: a bundled libwayland-client
+          # shadows the host's and breaks the host's EGL driver.
+          test ! -e AppDir/usr/lib/libwayland-client.so.0 || {
+            echo "::error::libwayland-client.so.0 got bundled — it shadows the host's libwayland and breaks the host Mesa EGL driver (#292)"
+            exit 1
+          }
+          # Third-party license files ride in the image (PR #299
+          # review: the hunspell dictionaries' notices require the
+          # license to accompany the shipped binaries).
+          bash packaging/collect-licenses.sh AppDir/usr/share/doc/tarahi
           # The AppImage FILE name must match the desktop entry's
           # application name (Name=Tarahi) — the catalog test rejects
           # diagramcraft_*.AppImage for it (#261).
@@ -136,8 +178,8 @@ jobs:
           # prerelease, AppImageUpdate would keep resolving the
           # previous stable one (channel decision to revisit then,
           # per the #281 caveat).
-          UPDATE_INFORMATION="gh-releases-zsync|baradhili|Tarahi|latest|Tarahi_*_x86_64.AppImage.zsync" \
-          OUTPUT="Tarahi_${{ steps.ver.outputs.version }}_x86_64.AppImage" /tmp/linuxdeploy \
+          UPDATE_INFORMATION="gh-releases-zsync|baradhili|Tarahi|latest|Tarahi_*_${{ matrix.arch }}.AppImage.zsync" \
+          OUTPUT="Tarahi_${{ steps.ver.outputs.version }}_${{ matrix.arch }}.AppImage" /tmp/linuxdeploy \
             --appdir AppDir \
             -e target/release/tarahi \
             -d packaging/tarahi.desktop \
@@ -147,23 +189,23 @@ jobs:
         run: |
           mkdir -p dist
           cp target/debian/*.deb dist/
-          cp Tarahi_*_amd64.rpm dist/
-          cp Tarahi_*_x86_64.AppImage dist/
+          cp Tarahi_*_${{ matrix.rpm_arch }}.rpm dist/
+          cp Tarahi_*_${{ matrix.arch }}.AppImage dist/
           # The zsync sidecar (#281): AppImageUpdate deltas download
           # through it; without it the embedded update information
           # points at nothing. appimagetool only WARNS when zsyncmake
           # is missing (zsync is in the tool list above), so an absent
           # sidecar must fail here with a clear message, not a bare
           # cp glob error (PR review on #281).
-          test -s Tarahi_*_x86_64.AppImage.zsync || {
+          test -s Tarahi_*_${{ matrix.arch }}.AppImage.zsync || {
             echo "::error::the AppImage step produced no .zsync sidecar — update information is embedded but AppImageUpdate has nothing to download"
             exit 1
           }
-          cp Tarahi_*_x86_64.AppImage.zsync dist/
+          cp Tarahi_*_${{ matrix.arch }}.AppImage.zsync dist/
           ls -la dist/
       - uses: actions/upload-artifact@v7
         with:
-          name: linux
+          name: linux-${{ matrix.arch }}
           path: dist/*
 
   windows:
@@ -188,6 +230,13 @@ jobs:
           echo "version=$VER" >> "$GITHUB_OUTPUT"
       - name: Build binary
         run: cargo build --release -p dc-ui --locked
+      - name: Stage third-party license files
+        shell: bash
+        run: |
+          # The installer and the portable zip both install these (PR
+          # #299 review: the dictionaries' notices require the license
+          # to accompany the shipped binaries).
+          bash packaging/collect-licenses.sh licenses-third-party
       - name: Build installer
         shell: cmd
         run: |
@@ -197,6 +246,7 @@ jobs:
         run: |
           mkdir -p dist
           7z a -tzip "dist/Tarahi_${{ steps.ver.outputs.version }}_windows_x64.zip" ./target/release/tarahi.exe
+          7z a -tzip "dist/Tarahi_${{ steps.ver.outputs.version }}_windows_x64.zip" ./licenses-third-party
       - name: Collect artifacts
         shell: bash
         run: |
@@ -246,9 +296,10 @@ jobs:
       - name: Bundle app + dmg
         run: |
           cp packaging/Info.plist "Tarahi.app/Contents/Info.plist"
-          mkdir -p "Tarahi.app/Contents/Resources/licenses"
-          cp LICENSE-MIT LICENSE-APACHE "Tarahi.app/Contents/Resources/licenses/"
-          cp crates/dc/assets/fonts/LICENSE-Carlito "Tarahi.app/Contents/Resources/licenses/"
+          # Every vendored asset's license rides in the bundle (PR
+          # #299 review; packaging/collect-licenses.sh keeps the set
+          # identical to the other formats).
+          bash packaging/collect-licenses.sh "Tarahi.app/Contents/Resources/licenses"
           codesign --force --sign - --deep "Tarahi.app"
           mkdir -p dist
           hdiutil create -volname "Tarahi" \

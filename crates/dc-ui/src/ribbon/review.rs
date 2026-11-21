@@ -19,9 +19,8 @@ pub(crate) fn groups(s: &'static crate::l10n::L10nLanguage, _ctx: &TabCtx) -> Ve
 fn proofing_cols(s: &'static crate::l10n::L10nLanguage) -> Vec<super::Col> {
     vec![
         big(
-            RibbonButton::new(Icon::Spell, s.msg_spelling(), Action::Macros)
-                .enabled(false)
-                .tip(s.msg_spell_check_planned()),
+            RibbonButton::new(Icon::Spell, s.msg_spelling(), Action::SpellCheck)
+                .tip(s.msg_spelling_tip()),
         ),
         grid(vec![
             vec![

@@ -159,15 +159,29 @@ impl SheetTextMeasure {
         // The per-cluster fallback CHAIN `emit_text` measures the
         // runs a paragraph's own face cannot cover (#282 zh-Hans grew
         // the #257 single Vazirmatn fallback to a chain): Vazirmatn
-        // for the Arabic script, then Noto Sans SC for the Han
-        // glyphs — in the order the raster fontdb registers them,
-        // which is the order usvg's per-cluster fallback picks a
-        // face. Unregistered (the dc unit-test binaries), both
-        // resolve like the Latin default and the runs never split.
-        let fallbacks = [
-            crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic),
-            crate::textmetrics::resolve(Some("Noto Sans SC"), self.tb.bold, self.tb.italic),
-        ];
+        // for the Arabic script, then the vendored CJK faces in
+        // `dc::CJK_FACE_ORDER` — SC for Han, JP for the kana/JIS
+        // Kanji the SC subset lacks, KR for Hangul — in the same
+        // order the raster fontdb registers them, which is the order
+        // usvg's per-cluster fallback picks a face (the ja/ko wave
+        // #282 extended this chain and emit_text's TOGETHER: a
+        // TEXTHEIGHT built on the old pair would size Korean text
+        // with missing-glyph estimates the render never draws).
+        // Unregistered (the dc unit-test binaries), every entry
+        // resolves like the Latin default and the runs never split.
+        let mut fallbacks = Vec::new();
+        fallbacks.push(crate::textmetrics::resolve(
+            Some("Vazirmatn"),
+            self.tb.bold,
+            self.tb.italic,
+        ));
+        for family in crate::CJK_FACE_ORDER {
+            fallbacks.push(crate::textmetrics::resolve(
+                Some(family),
+                self.tb.bold,
+                self.tb.italic,
+            ));
+        }
         let fb_chain: Vec<&crate::textmetrics::ResolvedFace> = fallbacks.iter().collect();
         let usable = (width - self.tb.insets.0 - self.tb.insets.1).max(0.02);
         // The first-line offset the RENDERER lays out (inches): the
@@ -221,22 +235,32 @@ impl TextMeasure for SheetTextMeasure {
         // 3; LTR too since #282's CJK wave): the renderer measures
         // and rasterizes runs the paragraph's own chain can't cover
         // through the per-cluster fallback (the vendored Vazirmatn /
-        // Noto Sans SC), so TEXTWIDTH composes the same runs and
-        // takes its terminal-run space from the final run's face
-        // instead of missing-glyph estimates.
+        // CJK faces), so TEXTWIDTH composes the same runs and takes
+        // its terminal-run space from the final run's face instead
+        // of missing-glyph estimates.
         let text = text.trim_end_matches(TRAILING_TRIM);
         if text.is_empty() {
             return Some(0.0);
         }
         let (face, cs_face, size_l, size_r) = self.paint_metrics();
         // The same fallback chain `lines_at`/`emit_text` measure with
-        // (see there) — BOTH directions run-split since #282: an LTR
-        // paragraph carrying Han glyphs composes those runs on Noto
-        // Sans SC, the face the raster paints them with.
-        let fallbacks = [
-            crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic),
-            crate::textmetrics::resolve(Some("Noto Sans SC"), self.tb.bold, self.tb.italic),
-        ];
+        // (see `lines_at` for the CJK_FACE_ORDER walk) — BOTH
+        // directions run-split since #282: an LTR paragraph carrying
+        // Han glyphs composes those runs on the vendored CJK face the
+        // raster paints them with.
+        let mut fallbacks = Vec::new();
+        fallbacks.push(crate::textmetrics::resolve(
+            Some("Vazirmatn"),
+            self.tb.bold,
+            self.tb.italic,
+        ));
+        for family in crate::CJK_FACE_ORDER {
+            fallbacks.push(crate::textmetrics::resolve(
+                Some(family),
+                self.tb.bold,
+                self.tb.italic,
+            ));
+        }
         let fb_chain: Vec<&crate::textmetrics::ResolvedFace> = fallbacks.iter().collect();
         let mut best = 0.0;
         for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {

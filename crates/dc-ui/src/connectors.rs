@@ -116,6 +116,9 @@ pub fn rewrite_route_rows(shape: &mut Shape, rows: &[(f64, f64); 3]) {
             for (i, (x, y)) in rows.iter().enumerate() {
                 let ix = (i + 2) as i64;
                 if let Some(row) = geo.rows.iter_mut().find(|r| r.ix == ix) {
+                    // Writing a route row un-deletes it (#293 Expected:
+                    // an edit that needs the row drops `Del`).
+                    row.undelete();
                     for (cell, v) in [("X", *x), ("Y", *y)] {
                         match row.cells.iter_mut().find(|(n, _)| n == cell) {
                             Some((_, c)) => *c = Cell::value(fmt(v)),
@@ -134,8 +137,8 @@ pub fn rewrite_route_rows(shape: &mut Shape, rows: &[(f64, f64); 3]) {
 // re-exported here so every dc-ui call site and test stays put.
 pub use dc::geom::{
     arc_row, cubic_row, geometry_hit_segments, hit_frame, is_connector, is_connector_in,
-    line_jumps, row_cell_value, seg_cross, ArcRow, CubicRow, HitFrame, Jump, JumpLine,
-    JUMP_RADIUS_IN,
+    is_stored_jump_arc, jump_radii_in, line_jumps, row_cell_value, seg_cross, ArcRow, CubicRow,
+    HitFrame, Jump, JumpLine,
 };
 fn set(cells: &mut Vec<SheetChild>, n: &str, v: f64) {
     cells.push(SheetChild::Cell(n.to_string(), Cell::value(fmt(v))));
@@ -652,6 +655,9 @@ pub fn endpoint_word(end: End) -> String {
 mod tests {
     use super::*;
 
+    /// The tests' hop radius — Visio's default (0.125 in × 2/3 / 2).
+    const TEST_JUMP_RADIUS: f64 = 0.125 * (2.0 / 3.0) / 2.0;
+
     fn near(a: (f64, f64), b: (f64, f64)) -> bool {
         (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9
     }
@@ -722,7 +728,7 @@ mod tests {
         let doc = vsdx::Document::default();
         let chain = vec![&s];
         let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
-        let segs = geometry_hit_segments(&s, None, &frame);
+        let segs = geometry_hit_segments(&s, None, &frame, None);
         // Many samples along the curve, and some OFF the (0,0)→(4,2)
         // chord (the interior points pull the belly up through
         // (1,0.5)/(3,1.5) — chord y at x=1 is 0.5, belly is above it).
@@ -810,8 +816,12 @@ mod tests {
             &[("X", "4"), ("Y", "0"), ("A", "2"), ("B", "2")],
         ));
         s.sheet.children.push(SheetChild::Section(geo));
-        let segs =
-            geometry_hit_segments(&s, None, &plain_frame((10.0, 10.0), (4.0, 4.0), (1.0, 1.0)));
+        let segs = geometry_hit_segments(
+            &s,
+            None,
+            &plain_frame((10.0, 10.0), (4.0, 4.0), (1.0, 1.0)),
+            None,
+        );
         assert!(!segs.is_empty(), "the arc produced segments");
         // The sampled interior sits above the chord (y > 10 in page
         // space, y-up): the belly is covered.
@@ -858,6 +868,7 @@ mod tests {
             &inst,
             Some(&root),
             &plain_frame((10.0, 10.0), (4.0, 4.0), (2.0, 2.0)),
+            None,
         );
         assert_eq!(
             segs,
@@ -963,7 +974,7 @@ mod tests {
                 .into_iter()
                 .collect(),
         };
-        let segs = geometry_hit_segments(&inst, Some(&root), &frame);
+        let segs = geometry_hit_segments(&inst, Some(&root), &frame, None);
         assert!(!segs.is_empty(), "inherited rows still produce segments");
         let last = segs.last().unwrap().1;
         assert!(
@@ -1012,7 +1023,7 @@ mod tests {
             flip: (1.0, 1.0),
             env: vsdx::formula::Env::new(),
         };
-        let segs = geometry_hit_segments(&s, None, &frame);
+        let segs = geometry_hit_segments(&s, None, &frame, None);
         assert_eq!(segs.len(), 1, "one segment");
         let (a, b) = segs[0];
         assert!(
@@ -1148,21 +1159,27 @@ mod tests {
             l(1, 0, &[(0.0, 1.0), (2.0, 1.0)]),
             l(2, 1, &[(1.0, 0.0), (1.0, 2.0)]),
         ];
-        let js = line_jumps(&lines);
+        let js = line_jumps(&lines, (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS));
         assert_eq!(js.len(), 1);
         assert_eq!(js[0].at, (1.0, 1.0));
         assert!((js[0].dir.0 - 1.0).abs() < 1e-9, "the horizontal hops");
         // Parallel lines never hop.
-        assert!(line_jumps(&[
-            l(1, 0, &[(0.0, 0.0), (2.0, 0.0)]),
-            l(2, 1, &[(0.0, 1.0), (2.0, 1.0)]),
-        ])
+        assert!(line_jumps(
+            &[
+                l(1, 0, &[(0.0, 0.0), (2.0, 0.0)]),
+                l(2, 1, &[(0.0, 1.0), (2.0, 1.0)]),
+            ],
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
+        )
         .is_empty());
         // Perpendicular tie (both diagonal): the later z hops.
-        let js = line_jumps(&[
-            l(1, 0, &[(0.0, 0.0), (2.0, 2.0)]),
-            l(2, 5, &[(0.0, 2.0), (2.0, 0.0)]),
-        ]);
+        let js = line_jumps(
+            &[
+                l(1, 0, &[(0.0, 0.0), (2.0, 2.0)]),
+                l(2, 5, &[(0.0, 2.0), (2.0, 0.0)]),
+            ],
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
+        );
         assert_eq!(js.len(), 1);
         // The later-in-z line 2 hops: its direction (0,2)->(2,0)
         // normalizes to (1/sqrt(2), -1/sqrt(2)).
@@ -1178,10 +1195,13 @@ mod tests {
             js[0].dir.1
         );
         // Non-crossing segments never hop.
-        assert!(line_jumps(&[
-            l(1, 0, &[(0.0, 0.0), (1.0, 0.0)]),
-            l(2, 1, &[(2.0, 0.0), (2.0, 2.0)]),
-        ])
+        assert!(line_jumps(
+            &[
+                l(1, 0, &[(0.0, 0.0), (1.0, 0.0)]),
+                l(2, 1, &[(2.0, 0.0), (2.0, 2.0)]),
+            ],
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
+        )
         .is_empty());
     }
 

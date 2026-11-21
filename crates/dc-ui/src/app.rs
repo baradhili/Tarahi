@@ -125,6 +125,10 @@ pub struct App {
     last_edit_caret: Option<(i64, i64, usize)>,
     /// The Insert Field dialog's edit state (#267).
     fields_draft: Option<crate::fields_dlg::FieldsDraft>,
+    /// Check Spelling (#121): the session walk, language choice, and
+    /// the app-level custom dictionary (the domain lives in
+    /// `spellcheck.rs`; app.rs keeps only the state field + glue).
+    spell: crate::spellcheck::SpellState,
     /// The Comments popup is open for this shape (#29 rework: the
     /// Visio 2016 thread view — author header, edit/delete/reply).
     comment_target: Option<i64>,
@@ -640,6 +644,17 @@ impl App {
         app.recent = RecentFiles::open();
         app.quick_shapes = crate::quickshapes::QuickShapes::open();
         app.relative_paths = crate::hyperlink::RelativePaths::open();
+        // #121: the persisted custom dictionary, and local dictionary
+        // discovery — the headless ctor pinned it, so production
+        // re-enables with the user-config `dictionaries/` drop-point
+        // joining the system scan.
+        app.spell = crate::spellcheck::SpellState::prod();
+        dc::spellcheck::enable_local_discovery();
+        dc::spellcheck::register_local_dirs(
+            crate::recent::config_base()
+                .map(|b| vec![b.join("diagramcraft").join("dictionaries")])
+                .unwrap_or_default(),
+        );
         // Production entry only: built-ins open from the extracted
         // My Shapes files (#104) — headless constructors stay on the
         // embedded fallback so they never touch the user's home.
@@ -675,6 +690,10 @@ impl App {
         // Headless constructors pin English so kittest goldens never
         // move with the user's real language (#246).
         crate::i18n::pin_english();
+        // …and pin the embedded dictionaries — local discovery stays
+        // off so kittest never reads the user's installed hunspell
+        // dictionaries (#121, the stencil built-ins' rule).
+        dc::spellcheck::pin_embedded();
         let mut app = App {
             ed: None,
             path: PathBuf::new(),
@@ -688,6 +707,7 @@ impl App {
             tab_scroll_to_active: false,
             reorder_open: false,
             hyperlink_open: None,
+            spell: crate::spellcheck::SpellState::headless(),
             hyperlink_draft: None,
             fields_open: None,
             fields_caret: None,
@@ -1124,6 +1144,10 @@ impl App {
                 self.fields_caret = None;
                 self.fields_draft = None;
                 self.last_edit_caret = None;
+                // The Check Spelling pass is document-scoped the same
+                // way (#121): page and shape IDs collide across
+                // documents, so the session must not outlive its own.
+                self.spell.session = None;
                 self.ed = Some(Editor::new(ed));
                 self.reload_snap_settings();
                 self.path = path;
@@ -1407,6 +1431,9 @@ impl App {
         self.fields_open = None;
         self.fields_caret = None;
         self.fields_draft = None;
+        // #121: the spelling pass does not survive a document load
+        // (same-ID collision rule).
+        self.spell.session = None;
         {
             self.page_states.insert(
                 cur_id,
@@ -2146,7 +2173,18 @@ impl App {
                         && page_pos.1 >= by0 - threshold
                         && page_pos.1 <= by1 + threshold
                     {
-                        let segs = crate::connectors::geometry_hit_segments(shape, root, &frame);
+                        // #294: connector ink strips stored jump arcs —
+                        // the hit walk agrees with the rendered ink,
+                        // with the SAME radius evidence the strip uses.
+                        let strip_jumps =
+                            crate::connectors::is_connector_in(&ed.doc, &chain, shape);
+                        let radius = crate::connectors::jump_radii_in(&ed.doc, page);
+                        let segs = crate::connectors::geometry_hit_segments(
+                            shape,
+                            root,
+                            &frame,
+                            if strip_jumps { Some(radius) } else { None },
+                        );
                         for (a, b) in segs {
                             if segment_hit(a, b, page_pos, threshold) {
                                 return Some(shape.id);
@@ -2505,6 +2543,9 @@ impl App {
             for geo in sh.sheet.sections_named("Geometry") {
                 let mut cur: Option<(f64, f64)> = None; // local end of the previous row
                 for row in &geo.rows {
+                    if row.is_deleted() {
+                        continue; // deleted rows stay deleted (#293) — no handles for invisible ink
+                    }
                     let t = row.t.as_deref().unwrap_or("");
                     let rel = t.starts_with("Rel");
                     let (Some(x), Some(y)) = (
@@ -3140,6 +3181,17 @@ impl App {
                     }
                 }
             }
+            // F7: Check Spelling (Visio's key) — a page-wide pass,
+            // selection optional. A live text edit commits first
+            // (start_spellcheck's #22 journey): the CANVAS editor
+            // owning the keyboard must still let F7 through — other
+            // owners (dialog text fields) keep it consumed
+            // (PR #299 review: egui_wants_keyboard_input is true for
+            // the editor's own TextEdit, so the bare !kb_owned guard
+            // dead-ended the advertised flow).
+            if i.key_pressed(egui::Key::F7) && (!kb_owned || self.text_edit.is_some()) {
+                self.dispatch(Action::SpellCheck);
+            }
             // Shape clipboard / duplicate / text edit (Visio keys). Not
             // while a text field owns the keyboard.
             if !kb_owned && self.sel.is_some() {
@@ -3584,6 +3636,11 @@ impl App {
         }
         if self.language_dlg_open {
             self.language_dlg_open = false;
+            return true;
+        }
+        // #121: the Check Spelling dialog.
+        if self.spell.session.is_some() {
+            self.spell.session = None;
             return true;
         }
         if self.snap_dlg_open {
@@ -5653,7 +5710,23 @@ impl App {
                 })
                 .unwrap_or((None, (1.0, 1.0)));
             let frame = crate::connectors::hit_frame(&ed.doc, &chain, sh, msize);
-            let segs = crate::connectors::geometry_hit_segments(sh, root, &frame);
+            // The loop gate above guarantees a connector, so stored
+            // jump arcs strip from the polyline (#294) — with the
+            // page's own radius as the evidence.
+            let segs = crate::connectors::geometry_hit_segments(
+                sh,
+                root,
+                &frame,
+                // jump_radius_in resolves through the Page, not its id.
+                Some(
+                    ed.doc
+                        .pages
+                        .iter()
+                        .find(|p| p.id == page_id)
+                        .map(|p| crate::connectors::jump_radii_in(&ed.doc, p))
+                        .unwrap_or((0.0, 0.0)),
+                ),
+            );
             let mut pts = Vec::with_capacity(segs.len() + 1);
             if let Some((a, _)) = segs.first() {
                 pts.push(*a);
@@ -7398,10 +7471,13 @@ impl App {
                         .ed
                         .as_ref()
                         .map(|ed| {
-                            ed.doc.pages[self.page_idx.min(ed.doc.pages.len() - 1)]
-                                .line_jump_factor()
+                            let page = &ed.doc.pages[self.page_idx.min(ed.doc.pages.len() - 1)];
+                            // #294: the RESOLVED factor — the page
+                            // usually carries no inline cell and rides
+                            // the style chain.
+                            ed.doc.page_line_jump_factor(page)
                         })
-                        .unwrap_or(1.0) as f32;
+                        .unwrap_or(2.0 / 3.0) as f32;
                     let mut jump_factor = self.line_jump_draft.unwrap_or(doc_factor);
                     // #257: mirrored emission under RTL (horizontal).
                     let jump_label = crate::i18n::strs().msg_jump_size();
@@ -8206,6 +8282,7 @@ impl App {
             }
             Action::SnapGlue => self.snap_dlg_open = !self.snap_dlg_open,
             Action::Language => self.language_dlg_open = true,
+            Action::SpellCheck => self.start_spellcheck(),
             Action::PointerTool => {
                 self.tool = Tool::Pointer;
                 self.connpt_sel = None;
@@ -10040,17 +10117,19 @@ impl App {
         let underlays = self.build_bg_underlays(ui.ctx());
         // #108: line-jump hops for the frame's connector crossings.
         // The page's Show-Line-Jumps switch gates the overlay (#251);
-        // the jump-size multiplier scales the hops.
-        let jump_factor = {
-            let page = &self.ed.as_ref().unwrap().doc.pages[self.page_idx];
+        // the hop radius is the page's own (#294 — LineToLineX ×
+        // LineJumpFactorX / 2, style-resolved).
+        let jump_radius = {
+            let doc = &self.ed.as_ref().unwrap().doc;
+            let page = &doc.pages[self.page_idx];
             if page.line_jumps_shown() {
-                page.line_jump_factor()
+                crate::connectors::jump_radii_in(doc, page)
             } else {
-                0.0
+                (0.0, 0.0)
             }
         };
-        let jump_fx: Vec<canvas::JumpFx> = if jump_factor > 0.0 {
-            crate::connectors::line_jumps(&self.jump_lines())
+        let jump_fx: Vec<canvas::JumpFx> = if jump_radius.0 > 0.0 || jump_radius.1 > 0.0 {
+            crate::connectors::line_jumps(&self.jump_lines(), jump_radius)
                 .into_iter()
                 .map(|j| canvas::JumpFx {
                     at: j.at,
@@ -10064,7 +10143,14 @@ impl App {
                         j.under_color.1,
                         j.under_color.2,
                     ),
-                    factor: jump_factor as f32,
+                    // The hop sizes with the radius of the jumping
+                    // segment's own axis (the svg overlay's rule —
+                    // PR #299 review).
+                    radius_in: (if j.dir.0.abs() >= j.dir.1.abs() {
+                        jump_radius.0
+                    } else {
+                        jump_radius.1
+                    }) as f32,
                 })
                 .collect()
         } else {
@@ -14207,8 +14293,333 @@ impl App {
         }
     }
 
+    // -------------------------------------------------------------------
+    // Check Spelling (#121) — the domain lives in `spellcheck.rs`; this
+    // is the state field's glue: entry, the dialog frame, and the
+    // outcome commands.
+    // -------------------------------------------------------------------
+
+    /// F7: the dialog-driven pass over the page's shape text. A live
+    /// text edit commits first (#22's click-away semantics — the same
+    /// journey the Insert Field dialog's keyboard path takes), so the
+    /// check sees the committed text.
+    fn start_spellcheck(&mut self) {
+        if self.text_edit.is_some() {
+            self.end_text_edit(true);
+        }
+        let Some(page) = self.page_id() else {
+            return;
+        };
+        let Some(ed) = self.ed.as_ref() else {
+            return;
+        };
+        let found = self.spell.start(&ed.doc, page);
+        if !found {
+            self.spell_finish_status();
+            return;
+        }
+        self.select_spell_shape();
+    }
+
+    /// The pass-ended status: the completion note on a clean page, the
+    /// dictionary-failure note when the checker never came up (a
+    /// discovered pair that fails to load is not a clean page —
+    /// CodeRabbit round).
+    fn spell_finish_status(&mut self) {
+        let loaded = dc::spellcheck::loaded(&self.spell.lang);
+        self.status = if loaded {
+            crate::i18n::strs().msg_spell_check_complete()
+        } else {
+            crate::i18n::strs().msg_spell_dict_failed()
+        };
+    }
+
+    /// While the dialog is open the misspelled shape is selected (the
+    /// Visio model: the flagged word is visible on canvas).
+    fn select_spell_shape(&mut self) {
+        let sel = self
+            .spell
+            .session
+            .as_ref()
+            .and_then(|s| s.word.as_ref().map(|w| (s.page, w.shape)));
+        if let Some(sel) = sel {
+            self.set_selection(Some(sel));
+        }
+    }
+
+    /// Advance the pass; completion closes the dialog with the
+    /// status-bar note.
+    fn spell_advance(&mut self) {
+        let Some(ed) = self.ed.as_ref() else {
+            return;
+        };
+        let found = self.spell.advance(&ed.doc);
+        if found {
+            self.select_spell_shape();
+        } else {
+            self.spell.session = None;
+            self.spell_finish_status();
+        }
+    }
+
+    fn spell_window(&mut self, ctx: &egui::Context) {
+        if self.spell.session.is_none() {
+            return;
+        }
+        // Pin to the page the pass opened on (shape IDs collide across
+        // pages and documents — the fields-dialog rule). The document
+        // closing under an open pass ends it.
+        let pass_page = self.spell.session.as_ref().map(|s| s.page);
+        if pass_page != self.page_id() || self.ed.is_none() {
+            self.spell.session = None;
+            return;
+        }
+        let mut open = true;
+        let outcome = crate::spellcheck::window(ctx, &mut open, &mut self.spell);
+        if !open {
+            self.spell.session = None;
+            return;
+        }
+        self.handle_spell_outcome(outcome);
+    }
+
+    fn handle_spell_outcome(&mut self, outcome: crate::spellcheck::SpellOutcome) {
+        use crate::spellcheck::SpellOutcome as O;
+        match outcome {
+            O::Open => {}
+            O::Close => self.spell.session = None,
+            O::Restart => {
+                // The language dropdown changed — restart the pass on
+                // the same page with the new dictionary.
+                let page = self
+                    .spell
+                    .session
+                    .as_ref()
+                    .map(|s| s.page)
+                    .or(self.page_id());
+                if let Some(page) = page {
+                    let Some(ed) = self.ed.as_ref() else {
+                        return;
+                    };
+                    let found = self.spell.start(&ed.doc, page);
+                    if found {
+                        self.select_spell_shape();
+                    } else {
+                        self.spell.session = None;
+                        self.spell_finish_status();
+                    }
+                }
+            }
+            O::Ignore => {
+                // Skip this occurrence: the cursor moves past it.
+                let end = self
+                    .spell
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.word.as_ref())
+                    .map(|w| w.token.end);
+                if let Some(end) = end {
+                    if let Some(session) = self.spell.session.as_mut() {
+                        session.cursor = end;
+                    }
+                }
+                self.spell_advance();
+            }
+            O::IgnoreAll => {
+                let word = self
+                    .spell
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.word.as_ref())
+                    .map(|w| w.token.word.clone());
+                if let Some(word) = word {
+                    if !self.spell.ignore_all.contains(&word) {
+                        self.spell.ignore_all.push(word);
+                    }
+                }
+                self.handle_spell_outcome(O::Ignore);
+            }
+            O::Change { to } => {
+                let edit = self
+                    .spell
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.word.as_ref().map(|w| (s.page, w.shape, w.token.clone())));
+                let Some((page, shape, token)) = edit else {
+                    return;
+                };
+                if to == token.word {
+                    self.handle_spell_outcome(O::Ignore);
+                    return;
+                }
+                let Some(ed) = self.ed.as_ref() else {
+                    return;
+                };
+                // Stale-snapshot guard (CodeRabbit round): an undo, redo,
+                // or any edit while the dialog is open can invalidate the
+                // captured span — the replacement only fires when the
+                // SAME word still occupies the SAME plain span. A stale
+                // token restarts the shape's scan instead of splicing.
+                let fresh = ed
+                    .doc
+                    .pages
+                    .iter()
+                    .any(|p| p.id == page)
+                    && dc::spellcheck::effective_raw(&ed.doc, page, shape).is_some_and(
+                        |raw| {
+                            dc::spellcheck::words(&raw).iter().any(|t| {
+                                t.start == token.start
+                                    && t.end == token.end
+                                    && t.word == token.word
+                            })
+                        },
+                    );
+                if !fresh {
+                    if let Some(session) = self.spell.session.as_mut() {
+                        session.cursor = 0;
+                    }
+                    self.spell_advance();
+                    return;
+                }
+                let built =
+                    crate::spellcheck::replace_macro(&ed.doc, page, shape, &token, &to);
+                match built {
+                    Some((mac, cursor)) => {
+                        self.apply(mac);
+                        if let Some(session) = self.spell.session.as_mut() {
+                            session.cursor = cursor;
+                        }
+                        // The replacement re-checks from its own start: a fix
+                        // that introduces a new typo flags immediately.
+                        self.spell_advance();
+                    }
+                    // An unsplicable span (a CDATA boundary crossing) also
+                    // restarts the scan rather than splicing blind.
+                    None => self.handle_spell_outcome(O::Ignore),
+                }
+            }
+            O::ChangeAll { to } => {
+                let run = self.spell.session.as_ref().and_then(|s| {
+                    s.word
+                        .as_ref()
+                        .map(|w| (s.page, w.token.word.clone(), s.shapes.clone()))
+                });
+                let Some((page, word, shapes)) = run else {
+                    return;
+                };
+                if word.eq_ignore_ascii_case(&to) {
+                    self.handle_spell_outcome(O::Ignore);
+                    return;
+                }
+                let Some(ed) = self.ed.as_ref() else {
+                    return;
+                };
+                let lang = self.spell.lang.clone();
+                let built =
+                    crate::spellcheck::change_all_macro(&ed.doc, page, &shapes, &lang, &word, &to);
+                match built {
+                    Some(mac) => {
+                        self.apply(mac);
+                        // Whatever Change All fixed, the current shape re-scans
+                        // from its start — the Ignore-All list holds, so only
+                        // genuinely other typos re-flag.
+                        if let Some(session) = self.spell.session.as_mut() {
+                            session.cursor = 0;
+                        }
+                        self.spell_advance();
+                    }
+                    // An unsplicable span (a CDATA boundary crossing)
+                    // advances past the current word like the single-Change
+                    // path does — a global cursor reset would re-flag the
+                    // same word forever with no progress (PR #299 review).
+                    None => self.handle_spell_outcome(O::Ignore),
+                }
+            }
+            O::Add => {
+                let word = self
+                    .spell
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.word.as_ref())
+                    .map(|w| w.token.word.clone());
+                if let Some(word) = word {
+                    if !self.spell.custom.contains(&word) {
+                        self.spell.custom.push(word);
+                        // Headless instances never persist (the stencil
+                        // pinning rule — a kittest Add must not rewrite
+                        // the user's real dictionary).
+                        if self.spell.persist {
+                            crate::spellcheck::save_custom(&self.spell.custom);
+                        }
+                    }
+                }
+                self.handle_spell_outcome(O::Ignore);
+            }
+        }
+    }
+
     /// Test/introspection hooks for the kittest interaction tests.
     #[doc(hidden)]
+    /// #121: seed a shape's text for the spell-check tests — the text
+    /// editor's own commit path (one undo step, cache refreshes), so
+    /// the dialog walk sees exactly what a user edit produces.
+    #[doc(hidden)]
+    pub fn debug_set_shape_text_for_test(&mut self, shape: i64, text: &str) {
+        let Some(page) = self.page_id() else {
+            return;
+        };
+        let Some(ed) = self.ed.as_ref() else {
+            return;
+        };
+        let scope = dc_core::Scope::Shape { page, shape };
+        let mac = dc::textfunc::text_edit_macro(&ed.doc, &scope, text);
+        self.apply(mac);
+    }
+
+    /// #121: the word currently flagged by the open spelling pass.
+    #[doc(hidden)]
+    pub fn debug_spell_word(&self) -> Option<String> {
+        self.spell
+            .session
+            .as_ref()
+            .and_then(|s| s.word.as_ref())
+            .map(|w| w.token.word.clone())
+    }
+
+    /// #121: the ranked suggestions for the flagged word.
+    #[doc(hidden)]
+    pub fn debug_spell_suggestions(&self) -> Vec<String> {
+        self.spell
+            .session
+            .as_ref()
+            .map(|s| s.suggestions.clone())
+            .unwrap_or_default()
+    }
+
+    /// #121: the session's walk position (page, shape index, total).
+    #[doc(hidden)]
+    pub fn debug_spell_position(&self) -> Option<(i64, usize, usize)> {
+        self.spell
+            .session
+            .as_ref()
+            .map(|s| (s.page, s.idx, s.total))
+    }
+
+    /// #121: the app-level custom dictionary's words (Add assertions).
+    #[doc(hidden)]
+    pub fn debug_spell_custom(&self) -> &[String] {
+        &self.spell.custom
+    }
+
+    /// #121: a shape's current plain text (the Change assertions).
+    #[doc(hidden)]
+    pub fn debug_shape_plain_text(&self, shape: i64) -> Option<String> {
+        let page = self.page_id()?;
+        let ed = self.ed.as_ref()?;
+        let p = ed.doc.pages.iter().find(|p| p.id == page)?;
+        vsdx::model::find_shape_by_id(&p.shapes, shape).and_then(|s| s.sheet.text.clone())
+    }
+
     pub fn debug_shape_count(&self) -> usize {
         self.ed
             .as_ref()
@@ -15813,6 +16224,7 @@ impl App {
         self.language_window(&ctx);
         self.hyperlink_window(&ctx);
         self.fields_insert_window(&ctx);
+        self.spell_window(&ctx);
         self.comment_window(&ctx);
         self.shape_data_window(&ctx);
         self.color_palette_window(&ctx);
@@ -16434,6 +16846,9 @@ impl App {
         self.fields_caret = None;
         self.fields_draft = None;
         self.last_edit_caret = None;
+        // #121: the spelling pass does not carry across documents
+        // (same-ID collision rule).
+        self.spell.session = None;
         self.tex.clear();
         self.layers.clear();
         self.page_states.clear();
@@ -16478,6 +16893,9 @@ impl App {
         self.fields_caret = None;
         self.fields_draft = None;
         self.last_edit_caret = None;
+        // #121: the spelling pass does not survive a close/promote
+        // (same-ID collision rule).
+        self.spell.session = None;
         // #192 4a: another open document promotes to active.
         if !self.docs.is_empty() {
             let next = self.docs.remove(0);
@@ -17887,7 +18305,7 @@ mod tests {
             lines.len()
         );
         // And the crossing hops: the axis line (flatter) jumps.
-        let jumps = crate::connectors::line_jumps(&lines);
+        let jumps = crate::connectors::line_jumps(&lines, (0.041_666_7, 0.041_666_7));
         assert_eq!(jumps.len(), 1, "one crossing: {jumps:?}");
         assert!(jumps[0].dir.1.abs() < 1e-6, "the axis line hops");
     }

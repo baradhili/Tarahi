@@ -5392,7 +5392,84 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "spell-check-planned",
+        message: "spell-add",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-change",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-change-all",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-check-complete",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-dict-failed",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-dialog-title",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-ignore",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-ignore-all",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-no-suggestions",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-not-in-dictionary",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-shape-counter",
+        attribute: None,
+        vars: &["n", "total"],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spell-suggestions",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -5400,6 +5477,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "spelling",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "spelling-tip",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -6576,12 +6660,14 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
 ];
 #[allow(dead_code)]
-static ALL_LANGS: [L10n; 5] = [
+static ALL_LANGS: [L10n; 7] = [
     // languages as an array
     L10n::De,
     L10n::En,
     L10n::Es,
     L10n::Fa,
+    L10n::Ja,
+    L10n::Ko,
     L10n::ZhHans,
 ];
 
@@ -6592,6 +6678,8 @@ pub enum L10n {
     En,
     Es,
     Fa,
+    Ja,
+    Ko,
     ZhHans,
 }
 
@@ -6610,6 +6698,8 @@ impl FromStr for L10n {
             "en" => Ok(Self::En),
             "es" => Ok(Self::Es),
             "fa" => Ok(Self::Fa),
+            "ja" => Ok(Self::Ja),
+            "ko" => Ok(Self::Ko),
             "zh-Hans" => Ok(Self::ZhHans),
             _ => Err(format!("Unknown language: {}", s)),
         }
@@ -6624,6 +6714,8 @@ impl Deref for L10n {
             Self::En => "en",
             Self::Es => "es",
             Self::Fa => "fa",
+            Self::Ja => "ja",
+            Self::Ko => "ko",
             Self::ZhHans => "zh-Hans",
         }
     }
@@ -6657,17 +6749,21 @@ impl L10n {
             Self::En => "English",
             Self::Es => "Español",
             Self::Fa => "فارسی",
+            Self::Ja => "日本語",
+            Self::Ko => "한국어",
             Self::ZhHans => "简体中文",
         }
     }
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..46675,
-            Self::En => 46675..91840,
-            Self::Es => 91840..141618,
-            Self::Fa => 141618..200825,
-            Self::ZhHans => 200825..241168,
+            Self::De => 0..47149,
+            Self::En => 47149..92840,
+            Self::Es => 92840..143054,
+            Self::Fa => 143054..202770,
+            Self::Ja => 202770..253220,
+            Self::Ko => 253220..299805,
+            Self::ZhHans => 299805..340545,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -9695,11 +9791,56 @@ impl L10nLanguage {
     pub fn msg_spacing(&self) -> String {
         self.0.msg("spacing", None).unwrap()
     }
-    pub fn msg_spell_check_planned(&self) -> String {
-        self.0.msg("spell-check-planned", None).unwrap()
+    pub fn msg_spell_add(&self) -> String {
+        self.0.msg("spell-add", None).unwrap()
+    }
+    pub fn msg_spell_change(&self) -> String {
+        self.0.msg("spell-change", None).unwrap()
+    }
+    pub fn msg_spell_change_all(&self) -> String {
+        self.0.msg("spell-change-all", None).unwrap()
+    }
+    pub fn msg_spell_check_complete(&self) -> String {
+        self.0.msg("spell-check-complete", None).unwrap()
+    }
+    pub fn msg_spell_dict_failed(&self) -> String {
+        self.0.msg("spell-dict-failed", None).unwrap()
+    }
+    pub fn msg_spell_dialog_title(&self) -> String {
+        self.0.msg("spell-dialog-title", None).unwrap()
+    }
+    pub fn msg_spell_ignore(&self) -> String {
+        self.0.msg("spell-ignore", None).unwrap()
+    }
+    pub fn msg_spell_ignore_all(&self) -> String {
+        self.0.msg("spell-ignore-all", None).unwrap()
+    }
+    pub fn msg_spell_no_suggestions(&self) -> String {
+        self.0.msg("spell-no-suggestions", None).unwrap()
+    }
+    pub fn msg_spell_not_in_dictionary(&self) -> String {
+        self.0.msg("spell-not-in-dictionary", None).unwrap()
+    }
+    /// $n (Number) - the shape under inspection's 1-based position
+    /// $total (Number) - the page's text-bearing shape count
+    pub fn msg_spell_shape_counter<F0: Into<FluentNumber>, F1: Into<FluentNumber>>(
+        &self,
+        n: F0,
+        total: F1,
+    ) -> String {
+        let mut _args = FluentArgs::new();
+        _args.set("n", n.into());
+        _args.set("total", total.into());
+        self.0.msg("spell-shape-counter", Some(_args)).unwrap()
+    }
+    pub fn msg_spell_suggestions(&self) -> String {
+        self.0.msg("spell-suggestions", None).unwrap()
     }
     pub fn msg_spelling(&self) -> String {
         self.0.msg("spelling", None).unwrap()
+    }
+    pub fn msg_spelling_tip(&self) -> String {
+        self.0.msg("spelling-tip", None).unwrap()
     }
     pub fn msg_splash_wordmark(&self) -> String {
         self.0.msg("splash-wordmark", None).unwrap()

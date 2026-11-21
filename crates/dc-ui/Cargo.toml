@@ -33,7 +33,23 @@ assets = [
     ["../../packaging/tarahi.png", "usr/share/icons/hicolor/512x512/apps/tarahi.png", "644"],
     ["../../LICENSE-MIT", "usr/share/doc/tarahi/LICENSE-MIT", "644"],
     ["../../LICENSE-APACHE", "usr/share/doc/tarahi/LICENSE-APACHE", "644"],
-    ["../../crates/dc/assets/fonts/LICENSE-Carlito", "usr/share/doc/tarahi/LICENSE-Carlito", "644"],
+    # Every vendored asset's license accompanies the package (PR #299
+    # review: the hunspell dictionaries' notices require it; the flat
+    # names match packaging/collect-licenses.sh's staging).
+    ["../../crates/dc/assets/fonts/LICENSE-Carlito", "usr/share/doc/tarahi/LICENSE-font-Carlito", "644"],
+    ["../../crates/dc/assets/fonts/LICENSE-Liberation", "usr/share/doc/tarahi/LICENSE-font-Liberation", "644"],
+    ["../../crates/dc/assets/fonts/vazirmatn/OFL.txt", "usr/share/doc/tarahi/LICENSE-font-Vazirmatn-OFL", "644"],
+    ["../../crates/dc/assets/fonts/noto-sc/OFL.txt", "usr/share/doc/tarahi/LICENSE-font-NotoSansSC-OFL", "644"],
+    ["../../crates/dc/assets/fonts/noto-jp/OFL.txt", "usr/share/doc/tarahi/LICENSE-font-NotoSansJP-OFL", "644"],
+    ["../../crates/dc/assets/fonts/noto-kr/OFL.txt", "usr/share/doc/tarahi/LICENSE-font-NotoSansKR-OFL", "644"],
+    ["../../crates/dc-ui/assets/fonts/opensans/OFL.txt", "usr/share/doc/tarahi/LICENSE-font-OpenSans-OFL", "644"],
+    ["../../crates/dc/assets/dictionaries/en_US/LICENSE-en_US.txt", "usr/share/doc/tarahi/LICENSE-dict-en-US", "644"],
+    ["../../crates/dc/assets/dictionaries/en_US/README.txt", "usr/share/doc/tarahi/README-dict-en_US", "644"],
+    ["../../crates/dc/assets/dictionaries/en_US/README_en_US.txt", "usr/share/doc/tarahi/README-dict-en_US-wordlist", "644"],
+    ["../../crates/dc/assets/dictionaries/de_DE/COPYING.GPLv2", "usr/share/doc/tarahi/LICENSE-dict-de-DE-GPLv2", "644"],
+    ["../../crates/dc/assets/dictionaries/de_DE/COPYING.GPLv3", "usr/share/doc/tarahi/LICENSE-dict-de-DE-GPLv3", "644"],
+    ["../../crates/dc/assets/dictionaries/de_DE/README_de_DE_frami.txt", "usr/share/doc/tarahi/README-dict-de-DE-frami", "644"],
+    ["../../crates/dc/assets/dictionaries/fa_IR/LICENSE", "usr/share/doc/tarahi/LICENSE-dict-fa-IR", "644"],
 ]
 
 [package.metadata.generate-rpm]
@@ -43,7 +59,22 @@ assets = [
     { source = "../../packaging/tarahi.png", dest = "/usr/share/icons/hicolor/512x512/apps/tarahi.png", mode = "644" },
     { source = "../../LICENSE-MIT", dest = "/usr/share/licenses/tarahi/LICENSE-MIT", mode = "644" },
     { source = "../../LICENSE-APACHE", dest = "/usr/share/licenses/tarahi/LICENSE-APACHE", mode = "644" },
-    { source = "../../crates/dc/assets/fonts/LICENSE-Carlito", dest = "/usr/share/licenses/tarahi/LICENSE-Carlito", mode = "644" },
+    # Every vendored asset's license accompanies the package (PR #299
+    # review; the flat names match packaging/collect-licenses.sh).
+    { source = "../../crates/dc/assets/fonts/LICENSE-Carlito", dest = "/usr/share/licenses/tarahi/LICENSE-font-Carlito", mode = "644" },
+    { source = "../../crates/dc/assets/fonts/LICENSE-Liberation", dest = "/usr/share/licenses/tarahi/LICENSE-font-Liberation", mode = "644" },
+    { source = "../../crates/dc/assets/fonts/vazirmatn/OFL.txt", dest = "/usr/share/licenses/tarahi/LICENSE-font-Vazirmatn-OFL", mode = "644" },
+    { source = "../../crates/dc/assets/fonts/noto-sc/OFL.txt", dest = "/usr/share/licenses/tarahi/LICENSE-font-NotoSansSC-OFL", mode = "644" },
+    { source = "../../crates/dc/assets/fonts/noto-jp/OFL.txt", dest = "/usr/share/licenses/tarahi/LICENSE-font-NotoSansJP-OFL", mode = "644" },
+    { source = "../../crates/dc/assets/fonts/noto-kr/OFL.txt", dest = "/usr/share/licenses/tarahi/LICENSE-font-NotoSansKR-OFL", mode = "644" },
+    { source = "../../crates/dc-ui/assets/fonts/opensans/OFL.txt", dest = "/usr/share/licenses/tarahi/LICENSE-font-OpenSans-OFL", mode = "644" },
+    { source = "../../crates/dc/assets/dictionaries/en_US/LICENSE-en_US.txt", dest = "/usr/share/licenses/tarahi/LICENSE-dict-en-US", mode = "644" },
+    { source = "../../crates/dc/assets/dictionaries/en_US/README.txt", dest = "/usr/share/licenses/tarahi/README-dict-en_US", mode = "644" },
+    { source = "../../crates/dc/assets/dictionaries/en_US/README_en_US.txt", dest = "/usr/share/licenses/tarahi/README-dict-en_US-wordlist", mode = "644" },
+    { source = "../../crates/dc/assets/dictionaries/de_DE/COPYING.GPLv2", dest = "/usr/share/licenses/tarahi/LICENSE-dict-de-DE-GPLv2", mode = "644" },
+    { source = "../../crates/dc/assets/dictionaries/de_DE/COPYING.GPLv3", dest = "/usr/share/licenses/tarahi/LICENSE-dict-de-DE-GPLv3", mode = "644" },
+    { source = "../../crates/dc/assets/dictionaries/de_DE/README_de_DE_frami.txt", dest = "/usr/share/licenses/tarahi/README-dict-de-DE-frami", mode = "644" },
+    { source = "../../crates/dc/assets/dictionaries/fa_IR/LICENSE", dest = "/usr/share/licenses/tarahi/LICENSE-dict-fa-IR", mode = "644" },
 ]
 
 [dependencies]

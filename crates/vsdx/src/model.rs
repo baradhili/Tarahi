@@ -71,6 +71,31 @@ impl Row {
     pub fn cell(&self, name: &str) -> Option<&Cell> {
         self.cells.iter().find(|(n, _)| n == name).map(|(_, c)| c)
     }
+
+    /// `Del="1"` — the row is deleted locally (GitHub #293). The
+    /// attribute is schema-defined on `Row_Type` (xsd:boolean) and the
+    /// shipped corpus carries it pervasively: the built-in catalog's
+    /// 371 stencils — repackaged from the shipped Visio 2016 masters —
+    /// hold ~44,000 deleted rows across 79 stencils, and Visio honors
+    /// them on open (the #293 oracle: the deleted connector row renders
+    /// gone in Visio 2021). `xsd:boolean` accepts both spellings.
+    pub fn is_deleted(&self) -> bool {
+        self.attrs
+            .iter()
+            .find(|(n, _)| n == "Del")
+            .and_then(|(_, v)| match v.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" => Some(true),
+                "0" | "false" => Some(false),
+                _ => None,
+            })
+            .unwrap_or(false)
+    }
+
+    /// Drop the local deletion marker (an edit that needs the row
+    /// again un-deletes it — GitHub #293's Expected).
+    pub fn undelete(&mut self) {
+        self.attrs.retain(|(n, _)| n != "Del");
+    }
 }
 
 /// A sheet section, e.g. `Geometry`, `User`, `Character`, `Connection`.
@@ -305,17 +330,6 @@ impl Page {
             .unwrap_or(true)
     }
 
-    /// The page's line-jump SIZE multiplier (#251): the PageSheet's
-    /// `LineJumpFactorX` (Visio's Layout and Routing jump size),
-    /// defaulting to 1.0.
-    pub fn line_jump_factor(&self) -> f64 {
-        self.sheet()
-            .and_then(|s| s.cell("LineJumpFactorX"))
-            .and_then(|c| c.numeric())
-            .filter(|v| v.is_finite() && *v > 0.0)
-            .unwrap_or(1.0)
-    }
-
     /// The page's sheet: the inline `<PageSheet>` from the pages index.
     pub fn sheet(&self) -> Option<&Sheet> {
         self.children.iter().find_map(|c| match c {
@@ -412,6 +426,78 @@ impl Document {
         self.colors.iter().find(|(i, _)| *i == ix).map(|(_, c)| c)
     }
 
+    /// Resolve a page-layout cell (the PageSheet's PageLayout section —
+    /// `LineJumpFactorX`, `LineToLineX`, …) through the page's style
+    /// inheritance: the PageSheet's own cell first, then the chain its
+    /// `LineStyle` attribute opens. Visio writes pages with
+    /// `LineStyle="0"` and **no inline layout cells** — the "No Style"
+    /// stylesheet in document.xml carries the values, which is how
+    /// Visio itself resolves them (GitHub #294: the shipped repro's
+    /// page sets nothing and Visio still hops with `LineJumpFactorX =
+    /// 0.6667` from stylesheet 0; reading the PageSheet alone fell
+    /// back to 1.0). `None` when nothing in the chain carries the cell.
+    pub fn resolve_page_layout_cell(&self, page: &Page, name: &str) -> Option<Cell> {
+        let sheet = page.sheet()?;
+        if let Some(c) = sheet.cell(name) {
+            if !c.is_inherited() {
+                return Some(c.clone());
+            }
+        }
+        let style_id = sheet
+            .attrs
+            .iter()
+            .find(|(n, _)| n == "LineStyle")
+            .and_then(|(_, v)| v.parse::<i64>().ok())
+            .unwrap_or(0);
+        self.stylesheet_cascade_cell(style_id, name, true)
+    }
+
+    /// The page's resolved `LineToLineX` (inches — the horizontal
+    /// clearance between parallel connectors), falling back to Visio's
+    /// 0.125 in default when neither the PageSheet nor its style chain
+    /// carries it (#294).
+    pub fn page_line_to_line_x(&self, page: &Page) -> f64 {
+        self.resolve_page_layout_cell(page, "LineToLineX")
+            .and_then(|c| c.numeric())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(0.125)
+    }
+
+    /// The page's resolved `LineToLineY` (inches — the vertical
+    /// clearance), falling back to Visio's 0.125 in default like the X
+    /// twin (#294; PR #299 review — vertical stored jumps are authored
+    /// at the Y spacing, so the Y cells need their own resolver).
+    pub fn page_line_to_line_y(&self, page: &Page) -> f64 {
+        self.resolve_page_layout_cell(page, "LineToLineY")
+            .and_then(|c| c.numeric())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(0.125)
+    }
+
+    /// The page's resolved `LineJumpFactorX` (Visio's jump-size
+    /// multiplier), falling back to Visio's 2/3 default (#294 — the
+    /// shipped corpus's "No Style" and the #294 repro both carry
+    /// 0.66666666666667; the old PageSheet-only read defaulted to 1.0).
+    /// An EXPLICIT 0 is valid ([MS-Learn] LineJumpFactorX cell) and
+    /// means zero-size hops — only missing or non-finite/negative
+    /// values fall back (#294 review).
+    pub fn page_line_jump_factor(&self, page: &Page) -> f64 {
+        self.resolve_page_layout_cell(page, "LineJumpFactorX")
+            .and_then(|c| c.numeric())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .unwrap_or(2.0 / 3.0)
+    }
+
+    /// The page's resolved `LineJumpFactorY` — the vertical hop-size
+    /// multiplier, same fallback contract as the X twin (PR #299
+    /// review).
+    pub fn page_line_jump_factor_y(&self, page: &Page) -> f64 {
+        self.resolve_page_layout_cell(page, "LineJumpFactorY")
+            .and_then(|c| c.numeric())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .unwrap_or(2.0 / 3.0)
+    }
+
     /// Deep model equality ignoring the retained raw package (part bytes
     /// legitimately differ after a write).
     pub fn same_model(&self, other: &Document) -> bool {
@@ -502,26 +588,56 @@ impl Document {
             _ => shape.line_style.or(shape.fill_style),
         }
         .unwrap_or(0);
-        if let Some(style) = self.stylesheet(style_id) {
-            let mut cur = style;
-            for _ in 0..8 {
-                if let Some(c) = cur.sheet.cell(name) {
-                    if !c.is_inherited() {
-                        return Some(c.clone());
-                    }
+        self.stylesheet_cascade_cell(style_id, name, false)
+    }
+
+    /// The shared stylesheet walk (GitHub #294): `start_id`'s sheet first,
+    /// then the chain of `LineStyle` links styles point at each other
+    /// with, 8 links deep. `follow_attr_parents` also reads the parent
+    /// from the style's `LineStyle` ATTRIBUTE when no linking cell
+    /// exists (the schema carries it in both places). Only the
+    /// page-layout resolution
+    /// ([`resolve_page_layout_cell`](Self::resolve_page_layout_cell))
+    /// sets it: page-layout cells are numeric layout constants, never
+    /// themed, so an attribute-only hop can't hijack the theme chain.
+    /// The SHAPE walk keeps the cell-only link — shipped stencils chain
+    /// Normal→Theme through attributes with `V="Themed"` cells, and a
+    /// theme-less document resolves those to plain black (the Basic
+    /// Shapes contact sheet filled `#FFFFFF` → `#000000`); honoring the
+    /// attribute link there needs theme-aware `Themed` handling first
+    /// (see the issue filed from the #294 review).
+    fn stylesheet_cascade_cell(
+        &self,
+        start_id: i64,
+        name: &str,
+        follow_attr_parents: bool,
+    ) -> Option<Cell> {
+        let mut cur = self.stylesheet(start_id)?;
+        for _ in 0..8 {
+            if let Some(c) = cur.sheet.cell(name) {
+                if !c.is_inherited() {
+                    return Some(c.clone());
                 }
-                let next_id = cur
-                    .sheet
-                    .cell("LineStyle")
-                    .and_then(|c| c.numeric())
-                    .map(|v| v as i64);
-                match next_id {
-                    Some(nid) if nid != cur.id => match self.stylesheet(nid) {
-                        Some(next) => cur = next,
-                        None => break,
-                    },
-                    _ => break,
-                }
+            }
+            let next_id = cur
+                .sheet
+                .cell("LineStyle")
+                .and_then(|c| c.numeric())
+                .map(|v| v as i64)
+                .or_else(|| {
+                    follow_attr_parents.then(|| {
+                        cur.attrs
+                            .iter()
+                            .find(|(n, _)| n == "LineStyle")
+                            .and_then(|(_, v)| v.parse::<i64>().ok())
+                    })?
+                });
+            match next_id {
+                Some(nid) if nid != cur.id => match self.stylesheet(nid) {
+                    Some(next) => cur = next,
+                    None => break,
+                },
+                _ => break,
             }
         }
         None
@@ -557,27 +673,8 @@ impl Document {
             _ => shape.line_style.or(shape.fill_style),
         }
         .unwrap_or(0);
-        if let Some(style) = self.stylesheet(style_id) {
-            let mut cur = style;
-            for _ in 0..8 {
-                if let Some(c) = cur.sheet.cell(name) {
-                    if !c.is_inherited() {
-                        return Some(c.clone());
-                    }
-                }
-                let next_id = cur
-                    .sheet
-                    .cell("LineStyle")
-                    .and_then(|c| c.numeric())
-                    .map(|v| v as i64);
-                match next_id {
-                    Some(nid) if nid != cur.id => match self.stylesheet(nid) {
-                        Some(next) => cur = next,
-                        None => break,
-                    },
-                    _ => break,
-                }
-            }
+        if let Some(c) = self.stylesheet_cascade_cell(style_id, name, false) {
+            return Some(c);
         }
         if let Some(c) = self.sheet.cell(name) {
             if !c.is_inherited() {
@@ -1031,6 +1128,104 @@ impl Document {
 #[cfg(test)]
 mod snap_glue_tests {
     use super::*;
+
+    /// #294: a Visio page carries NO inline layout cells — `LineStyle="0"`
+    /// hands resolution to the "No Style" stylesheet in document.xml
+    /// (the shipped repro: LineToLineX 0.125, LineJumpFactorX 0.66667
+    /// on stylesheet 0, nothing on the PageSheet). Reading the
+    /// PageSheet alone fell back to 1.0 and drew 3× jumps.
+    #[test]
+    fn page_layout_cells_resolve_through_the_style_chain() {
+        let mut doc = Document::default();
+        let mut page = Page::default();
+        let mut sheet = Sheet::default();
+        sheet.attrs.push(("LineStyle".to_string(), "0".to_string()));
+        page.children.push(IndexChild::Sheet {
+            tag: "PageSheet".to_string(),
+            sheet,
+        });
+        // NON-default values: the fixture must fail if resolution
+        // skipped style 0 and fell through to the Visio defaults (the
+        // bare-page case below pins those separately, #294 review).
+        let mut style = StyleSheet {
+            id: 0,
+            ..Default::default()
+        };
+        style.sheet.set_cell("LineToLineX", Cell::value("0.2"));
+        style.sheet.set_cell("LineJumpFactorX", Cell::value("1.5"));
+        doc.stylesheets.push(style);
+        doc.pages.push(page);
+
+        assert!(
+            (doc.page_line_to_line_x(&doc.pages[0]) - 0.2).abs() < 1e-9,
+            "LineToLineX comes off the style chain"
+        );
+        assert!(
+            (doc.page_line_jump_factor(&doc.pages[0]) - 1.5).abs() < 1e-9,
+            "LineJumpFactorX comes off the style chain"
+        );
+        let radius = doc.page_line_to_line_x(&doc.pages[0])
+            * doc.page_line_jump_factor(&doc.pages[0])
+            / 2.0;
+        assert!((radius - 0.15).abs() < 1e-9);
+
+        // An inline PageSheet cell wins over the chain (the GUI's jump
+        // size dialog writes here).
+        doc.pages[0]
+            .sheet_mut()
+            .unwrap()
+            .set_cell("LineJumpFactorX", Cell::value("2"));
+        assert!((doc.page_line_jump_factor(&doc.pages[0]) - 2.0).abs() < 1e-9);
+
+        // Attribute-only parent links (#294 review): the schema carries
+        // the parent in the StyleSheet's LineStyle ATTRIBUTE as well as
+        // the cell — a style without the linking cell used to stop the
+        // walk at the fallback.
+        let mut chain = Document::default();
+        let mut page = Page::default();
+        let mut sheet = Sheet::default();
+        sheet.attrs.push(("LineStyle".to_string(), "7".to_string()));
+        page.children.push(IndexChild::Sheet {
+            tag: "PageSheet".to_string(),
+            sheet,
+        });
+        let mut mid = StyleSheet {
+            id: 7,
+            ..Default::default()
+        };
+        mid.attrs
+            .push(("LineStyle".to_string(), "8".to_string()));
+        let mut top = StyleSheet {
+            id: 8,
+            ..Default::default()
+        };
+        top.sheet.set_cell("LineJumpFactorX", Cell::value("2"));
+        chain.stylesheets.extend([mid, top]);
+        chain.pages.push(page);
+        assert!(
+            (chain.page_line_jump_factor(&chain.pages[0]) - 2.0).abs() < 1e-9,
+            "the attribute parent link continues the walk"
+        );
+
+        // An EXPLICIT 0 is a zero-size hop, not the default (#294
+        // review) — the overlay skips radius-0 pages.
+        doc.pages[0]
+            .sheet_mut()
+            .unwrap()
+            .set_cell("LineJumpFactorX", Cell::value("0"));
+        assert_eq!(doc.page_line_jump_factor(&doc.pages[0]), 0.0);
+
+        // Nothing anywhere — Visio's defaults, never 1.0.
+        let mut bare = Document::default();
+        let mut bare_page = Page::default();
+        bare_page.children.push(IndexChild::Sheet {
+            tag: "PageSheet".to_string(),
+            sheet: Sheet::default(),
+        });
+        bare.pages.push(bare_page);
+        assert!((bare.page_line_to_line_x(&bare.pages[0]) - 0.125).abs() < 1e-9);
+        assert!((bare.page_line_jump_factor(&bare.pages[0]) - 2.0 / 3.0).abs() < 1e-9);
+    }
 
     /// A minimal document carrying one verbatim `DocumentSettings`
     /// element (exactly what the parser produces for the corpus shape

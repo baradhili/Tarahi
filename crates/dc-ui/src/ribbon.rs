@@ -221,6 +221,9 @@ pub enum Action {
     RotateRight,
     /// #246: open the Language dialog (View ▸ Window).
     Language,
+    /// #121 Review ▸ Proofing: the dialog-driven Check Spelling pass
+    /// over the page's shape text (F7).
+    SpellCheck,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
