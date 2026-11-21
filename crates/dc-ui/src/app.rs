@@ -2178,7 +2178,7 @@ impl App {
                         // with the SAME radius evidence the strip uses.
                         let strip_jumps =
                             crate::connectors::is_connector_in(&ed.doc, &chain, shape);
-                        let radius = crate::connectors::jump_radius_in(&ed.doc, page);
+                        let radius = crate::connectors::jump_radii_in(&ed.doc, page);
                         let segs = crate::connectors::geometry_hit_segments(
                             shape,
                             root,
@@ -3183,8 +3183,13 @@ impl App {
             }
             // F7: Check Spelling (Visio's key) — a page-wide pass,
             // selection optional. A live text edit commits first
-            // (start_spellcheck's #22 journey).
-            if !kb_owned && i.key_pressed(egui::Key::F7) {
+            // (start_spellcheck's #22 journey): the CANVAS editor
+            // owning the keyboard must still let F7 through — other
+            // owners (dialog text fields) keep it consumed
+            // (PR #299 review: egui_wants_keyboard_input is true for
+            // the editor's own TextEdit, so the bare !kb_owned guard
+            // dead-ended the advertised flow).
+            if i.key_pressed(egui::Key::F7) && (!kb_owned || self.text_edit.is_some()) {
                 self.dispatch(Action::SpellCheck);
             }
             // Shape clipboard / duplicate / text edit (Visio keys). Not
@@ -5718,8 +5723,8 @@ impl App {
                         .pages
                         .iter()
                         .find(|p| p.id == page_id)
-                        .map(|p| crate::connectors::jump_radius_in(&ed.doc, p))
-                        .unwrap_or(0.0),
+                        .map(|p| crate::connectors::jump_radii_in(&ed.doc, p))
+                        .unwrap_or((0.0, 0.0)),
                 ),
             );
             let mut pts = Vec::with_capacity(segs.len() + 1);
@@ -10118,12 +10123,12 @@ impl App {
             let doc = &self.ed.as_ref().unwrap().doc;
             let page = &doc.pages[self.page_idx];
             if page.line_jumps_shown() {
-                crate::connectors::jump_radius_in(doc, page)
+                crate::connectors::jump_radii_in(doc, page)
             } else {
-                0.0
+                (0.0, 0.0)
             }
         };
-        let jump_fx: Vec<canvas::JumpFx> = if jump_radius > 0.0 {
+        let jump_fx: Vec<canvas::JumpFx> = if jump_radius.0 > 0.0 || jump_radius.1 > 0.0 {
             crate::connectors::line_jumps(&self.jump_lines(), jump_radius)
                 .into_iter()
                 .map(|j| canvas::JumpFx {
@@ -10138,7 +10143,14 @@ impl App {
                         j.under_color.1,
                         j.under_color.2,
                     ),
-                    radius_in: jump_radius as f32,
+                    // The hop sizes with the radius of the jumping
+                    // segment's own axis (the svg overlay's rule —
+                    // PR #299 review).
+                    radius_in: (if j.dir.0.abs() >= j.dir.1.abs() {
+                        jump_radius.0
+                    } else {
+                        jump_radius.1
+                    }) as f32,
                 })
                 .collect()
         } else {
@@ -14505,16 +14517,23 @@ impl App {
                 let lang = self.spell.lang.clone();
                 let built =
                     crate::spellcheck::change_all_macro(&ed.doc, page, &shapes, &lang, &word, &to);
-                if let Some(mac) = built {
-                    self.apply(mac);
+                match built {
+                    Some(mac) => {
+                        self.apply(mac);
+                        // Whatever Change All fixed, the current shape re-scans
+                        // from its start — the Ignore-All list holds, so only
+                        // genuinely other typos re-flag.
+                        if let Some(session) = self.spell.session.as_mut() {
+                            session.cursor = 0;
+                        }
+                        self.spell_advance();
+                    }
+                    // An unsplicable span (a CDATA boundary crossing)
+                    // advances past the current word like the single-Change
+                    // path does — a global cursor reset would re-flag the
+                    // same word forever with no progress (PR #299 review).
+                    None => self.handle_spell_outcome(O::Ignore),
                 }
-                // Whatever Change All fixed, the current shape re-scans
-                // from its start — the Ignore-All list holds, so only
-                // genuinely other typos re-flag.
-                if let Some(session) = self.spell.session.as_mut() {
-                    session.cursor = 0;
-                }
-                self.spell_advance();
             }
             O::Add => {
                 let word = self
@@ -18286,7 +18305,7 @@ mod tests {
             lines.len()
         );
         // And the crossing hops: the axis line (flatter) jumps.
-        let jumps = crate::connectors::line_jumps(&lines, 0.041_666_7);
+        let jumps = crate::connectors::line_jumps(&lines, (0.041_666_7, 0.041_666_7));
         assert_eq!(jumps.len(), 1, "one crossing: {jumps:?}");
         assert!(jumps[0].dir.1.abs() < 1e-6, "the axis line hops");
     }

@@ -335,6 +335,7 @@ fn is_ja_no_line_start(c: char) -> bool {
             | '\u{309B}'..='\u{309C}'   // ゛゜ (standalone sound marks)
             | '\u{309D}'..='\u{309E}'   // ゝゞ
             | '\u{3041}' | '\u{3043}' | '\u{3045}' | '\u{3047}' | '\u{3049}' // ぁぃぅぇぉ
+            | '\u{3095}' | '\u{3096}'   // ゕゖ (small ka/ke)
             | '\u{3063}'                // っ
             | '\u{3083}' | '\u{3085}' | '\u{3087}' | '\u{308E}' // ゃゅょゎ
             | '\u{30A1}' | '\u{30A3}' | '\u{30A5}' | '\u{30A7}' | '\u{30A9}' // ァィゥェォ
@@ -1122,6 +1123,8 @@ mod tests {
         // their predecessor.
         assert!(!brk('ア', 'ィ'));
         assert!(!brk('カ', 'っ'));
+        assert!(!brk('あ', 'ゕ'));
+        assert!(!brk('け', 'ゖ'));
         assert!(!brk('追', '々'));
         assert!(!brk('サ', '・'));
         // The STANDALONE sound marks (both widths — Lm class, not

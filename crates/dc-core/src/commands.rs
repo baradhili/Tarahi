@@ -761,10 +761,14 @@ pub struct SetRowCell {
     /// materializes inherited sections on first edit); undo removes them.
     created_section: bool,
     created_row: bool,
-    /// The target row carried `Del="1"` before the write (#293): the
-    /// write un-deletes it, and undo restores the marker — the exact-
-    /// restoration contract covers row attributes too (#294 review).
-    deleted_before: bool,
+    /// The target row carried a `Del` attribute before the write
+    /// (#293): the write un-deletes it, and undo restores the marker —
+    /// the exact-restoration contract covers row attributes too (#294
+    /// review). The attribute itself is captured (value AND position),
+    /// not just the parsed flag: `undelete()` drops it entirely, and a
+    /// `Del="0"`/`Del="false"`/`Del="true"` spelling must survive an
+    /// edit+undo byte-exactly (PR #299 review).
+    del_before: Option<(usize, String)>,
 }
 
 impl SetRowCell {
@@ -786,7 +790,7 @@ impl SetRowCell {
             old: None,
             created_section: false,
             created_row: false,
-            deleted_before: false,
+            del_before: None,
         }
     }
 }
@@ -989,7 +993,13 @@ impl crate::Command for SetRowCell {
                     .find(|r| r.n.as_deref() == Some(n.as_str())),
             };
             if let Some(row) = target {
-                self.deleted_before = row.is_deleted();
+                // Capture the original attribute (value AND position),
+                // not just the parsed flag (PR #299 review — F9).
+                self.del_before = row
+                    .attrs
+                    .iter()
+                    .position(|(n, _)| n == "Del")
+                    .map(|ix| (ix, row.attrs[ix].1.clone()));
                 row.undelete();
             }
         }
@@ -1016,7 +1026,11 @@ impl crate::Command for SetRowCell {
         )?;
         // #293 (review round): undo restores the row's prior deletion
         // state — the exact-restoration contract covers attributes.
-        if self.deleted_before {
+        // The ORIGINAL Del attribute goes back verbatim (value and
+        // position): `Del="1"`, `Del="true"`, and the explicit alive
+        // `Del="0"`/`Del="false"` spellings all survive edit+undo
+        // byte-exactly (PR #299 review — F9).
+        if let Some((ix, val)) = self.del_before.take() {
             let sec = s.children.iter_mut().find_map(|c| match c {
                 vsdx::model::SheetChild::Section(sec)
                     if sec.name == self.section && sec.ix == self.section_ix =>
@@ -1034,9 +1048,9 @@ impl crate::Command for SetRowCell {
                         .find(|r| r.n.as_deref() == Some(n.as_str())),
                 };
                 if let Some(row) = target {
-                    if !row.is_deleted() {
-                        row.attrs.push(("Del".to_string(), "1".to_string()));
-                    }
+                    row.undelete();
+                    let ix = ix.min(row.attrs.len());
+                    row.attrs.insert(ix, ("Del".to_string(), val));
                 }
             }
         }
@@ -1275,26 +1289,76 @@ impl crate::Command for ReplaceTextRange {
         // never swallows a marker between two literal runs), and inside
         // a CDATA section when the span lives there (where the
         // replacement is written UNescaped — CDATA content is literal).
+        // Bounds GUARD first (PR #299 review): an end past the target's
+        // plain length would otherwise splice from the head to the RAW
+        // end — the mapper's tail falls back to `raw.len()` — deleting
+        // everything after it, CDATA terminator included. Zero-length
+        // spans stay insertions, including at the text's end.
+        let plain_len = vsdx::text::text_pieces(&raw)
+            .iter()
+            .map(|p| p.plain().chars().count())
+            .sum::<usize>();
+        if self.start > plain_len || self.start + self.len > plain_len {
+            return Err(anyhow::anyhow!(
+                "text span [{}, {}) runs past the text's {} plain characters",
+                self.start,
+                self.start + self.len,
+                plain_len
+            ));
+        }
         let span = vsdx::text::map_plain_span(&raw, self.start, self.start + self.len)
             .ok_or_else(|| {
                 anyhow::anyhow!("text span crosses a CDATA boundary; nothing spliced")
             })?;
-        let replacement = if span.head_is_cdata {
-            // CDATA content is literal — but a `]]>` inside it would
-            // terminate the section early and leave invalid XML behind.
-            // The standard XML escape splits the terminator itself:
-            // `]]>` becomes `]]]]><![CDATA[>` (the section-content scan
-            // then finds its `]]>` only after the doubled brackets, so
-            // the plain text keeps the literal characters).
-            self.replacement
-                .replace("]]>", "]]]]><![CDATA[>")
+        let mut new_raw;
+        if span.head_is_cdata {
+            // CDATA content is literal — but a `]]>` anywhere in the
+            // RESULTING content would terminate the section early and
+            // leave invalid XML behind. Escaping only the replacement
+            // misses the splice JOINS (PR #299 review): a retained
+            // `]]` before the head plus a replacement opening with
+            // `>` (and the mirror at the tail) form the terminator
+            // across the boundary. Rebuild the whole section at
+            // content level and split terminators canonically there:
+            // `]]>` becomes `]]]]><![CDATA[>` (the section-content
+            // scan then finds its `]]>` only after the doubled
+            // brackets, so the plain text keeps the literal
+            // characters).
+            let (cs, ce) = span
+                .cdata_content
+                .expect("a CDATA-head span carries its section's content range");
+            let mut content = String::with_capacity(
+                (span.tail - span.head) + self.replacement.len() + (ce - cs),
+            );
+            content.push_str(&raw[cs..span.head]);
+            content.push_str(&self.replacement);
+            content.push_str(&raw[span.tail..ce]);
+            let escaped = content.replace("]]>", "]]]]><![CDATA[>");
+            new_raw = String::with_capacity(raw.len() + escaped.len());
+            // The section's opener sits at `cs - 9` (`<![CDATA[`'s
+            // length) — everything before it is preserved verbatim.
+            new_raw.push_str(&raw[..cs - 9]);
+            new_raw.push_str("<![CDATA[");
+            new_raw.push_str(&escaped);
+            if escaped.ends_with(']') {
+                // Content ending with `]` cannot precede a bare `]]>`
+                // close — the close's own `]]` merges with the content's
+                // trailing bracket(s) and the scan eats them. Split the
+                // close off through an empty reopened section.
+                new_raw.push_str("]]><![CDATA[");
+            }
+            new_raw.push_str("]]>");
+            // `ce` is the close's START — skip the original `]]>` (an
+            // unterminated section has none).
+            let skip_close = usize::from(raw[ce..].starts_with("]]>"));
+            new_raw.push_str(&raw[ce + 3 * skip_close..]);
         } else {
-            escape(&self.replacement)
-        };
-        let mut new_raw = String::with_capacity(raw.len() + replacement.len());
-        new_raw.push_str(&raw[..span.head]);
-        new_raw.push_str(&replacement);
-        new_raw.push_str(&raw[span.tail..]);
+            let replacement = escape(&self.replacement);
+            new_raw = String::with_capacity(raw.len() + replacement.len());
+            new_raw.push_str(&raw[..span.head]);
+            new_raw.push_str(&replacement);
+            new_raw.push_str(&raw[span.tail..]);
+        }
         s.text_raw = Some(new_raw.clone());
         s.text = Some(
             vsdx::text::text_pieces(&new_raw)

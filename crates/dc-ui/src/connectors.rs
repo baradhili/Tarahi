@@ -137,7 +137,7 @@ pub fn rewrite_route_rows(shape: &mut Shape, rows: &[(f64, f64); 3]) {
 // re-exported here so every dc-ui call site and test stays put.
 pub use dc::geom::{
     arc_row, cubic_row, geometry_hit_segments, hit_frame, is_connector, is_connector_in,
-    is_stored_jump_arc, jump_radius_in, line_jumps, row_cell_value, seg_cross, ArcRow, CubicRow,
+    is_stored_jump_arc, jump_radii_in, line_jumps, row_cell_value, seg_cross, ArcRow, CubicRow,
     HitFrame, Jump, JumpLine,
 };
 fn set(cells: &mut Vec<SheetChild>, n: &str, v: f64) {
@@ -1159,7 +1159,7 @@ mod tests {
             l(1, 0, &[(0.0, 1.0), (2.0, 1.0)]),
             l(2, 1, &[(1.0, 0.0), (1.0, 2.0)]),
         ];
-        let js = line_jumps(&lines, TEST_JUMP_RADIUS);
+        let js = line_jumps(&lines, (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS));
         assert_eq!(js.len(), 1);
         assert_eq!(js[0].at, (1.0, 1.0));
         assert!((js[0].dir.0 - 1.0).abs() < 1e-9, "the horizontal hops");
@@ -1169,7 +1169,7 @@ mod tests {
                 l(1, 0, &[(0.0, 0.0), (2.0, 0.0)]),
                 l(2, 1, &[(0.0, 1.0), (2.0, 1.0)]),
             ],
-            TEST_JUMP_RADIUS
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         )
         .is_empty());
         // Perpendicular tie (both diagonal): the later z hops.
@@ -1178,7 +1178,7 @@ mod tests {
                 l(1, 0, &[(0.0, 0.0), (2.0, 2.0)]),
                 l(2, 5, &[(0.0, 2.0), (2.0, 0.0)]),
             ],
-            TEST_JUMP_RADIUS,
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         );
         assert_eq!(js.len(), 1);
         // The later-in-z line 2 hops: its direction (0,2)->(2,0)
@@ -1200,7 +1200,7 @@ mod tests {
                 l(1, 0, &[(0.0, 0.0), (1.0, 0.0)]),
                 l(2, 1, &[(2.0, 0.0), (2.0, 2.0)]),
             ],
-            TEST_JUMP_RADIUS
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         )
         .is_empty());
     }

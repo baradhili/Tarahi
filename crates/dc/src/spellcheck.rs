@@ -62,11 +62,17 @@ impl LangEntry {
 /// Native names for the language subtags a Hunspell dictionary stem can
 /// carry (LibreOffice's set plus the common extras).
 fn display_name(stem: &str) -> String {
-    let primary = stem
-        .split(['_', '-'])
+    let mut subtags = stem.split(['_', '-']);
+    let primary = subtags
         .next()
         .unwrap_or(stem)
         .to_ascii_lowercase();
+    // The remaining subtags distinguish variants that share a language:
+    // `en_GB` and `en_US` both read "English", so the qualifier rides
+    // along — `English (GB)` vs `English (US)`, `de_DE_frami` reads
+    // `Deutsch (DE, frami)` (PR #299 review: the dropdown's entries AND
+    // its selected value both route through here).
+    let qualifier = subtags.filter(|p| !p.is_empty()).collect::<Vec<_>>();
     let name = match primary.as_str() {
         "af" => "Afrikaans",
         "an" => "Aragonés",
@@ -138,7 +144,11 @@ fn display_name(stem: &str) -> String {
         "zh" => "中文",
         _ => return stem.to_string(),
     };
-    name.to_string()
+    if qualifier.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name} ({})", qualifier.join(", "))
+    }
 }
 
 /// The three embedded dictionaries — the deterministic floor every
@@ -203,7 +213,15 @@ impl SpellDictionary {
 
     /// Is `word` in the dictionary (hunspell case/affix semantics)?
     pub fn check(&self, word: &str) -> bool {
-        self.inner.check(word)
+        if self.inner.check(word) {
+            return true;
+        }
+        // Decomposed input (`grü` + combining diaeresis + `n`) never
+        // matches the dictionary's composed entry — try the NFC form
+        // before ruling the word misspelled (PR #299 review).
+        use unicode_normalization::UnicodeNormalization;
+        let composed: String = word.nfc().collect();
+        composed != word && self.inner.check(&composed)
     }
 
     /// Ranked spelling suggestions (Nuspell-modeled; no phonetic
@@ -419,28 +437,26 @@ fn system_dict_dirs() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
         // LibreOffice's per-locale extension dictionaries (the common
-        // Hunspell source on Windows); Firefox-style install `dictionaries`
-        // folders arrive through `register_local_dirs` from the app layer.
+        // Hunspell source on Windows) live DIRECTLY under the install's
+        // `share\extensions` as `dict-en`, `dict-de`, … folders — the
+        // old scan looked for a `dict` subfolder real installs never
+        // have (PR #299 review). Firefox-style install `dictionaries`
+        // folders arrive through `register_local_dirs` from the app
+        // layer. Both ProgramFiles hops carry installs.
         let mut out = Vec::new();
-        if let Ok(pf) = std::env::var("ProgramFiles") {
-            let lo = PathBuf::from(&pf).join("LibreOffice");
-            if let Ok(entries) = std::fs::read_dir(&lo) {
-                for e in entries.flatten() {
-                    let dicts = e
-                        .path()
-                        .join("share")
-                        .join("extensions")
-                        .join("dict");
-                    if dicts.is_dir() {
-                        if let Ok(locales) = std::fs::read_dir(&dicts) {
-                            out.extend(
-                                locales
-                                    .flatten()
-                                    .map(|x| x.path())
-                                    .filter(|p| p.is_dir()),
-                            );
-                        }
-                    }
+        for var in ["ProgramFiles", "ProgramFiles(x86)"] {
+            if let Ok(pf) = std::env::var(var) {
+                let ext = PathBuf::from(&pf)
+                    .join("LibreOffice")
+                    .join("share")
+                    .join("extensions");
+                if let Ok(entries) = std::fs::read_dir(&ext) {
+                    out.extend(
+                        entries
+                            .flatten()
+                            .map(|x| x.path())
+                            .filter(|p| p.is_dir()),
+                    );
                 }
             }
         }
@@ -549,17 +565,19 @@ fn is_joiner(c: char) -> bool {
     matches!(c, '\'' | '\u{2019}' | '-' | '\u{2011}' | '\u{200C}' | '\u{200D}')
 }
 
-/// Arabic-script combining marks (harakat/tanwin/sukun/shadda…) — not
-/// `char::is_alphabetic()`, but part of a word when they follow letters.
-fn is_arabic_mark(c: char) -> bool {
-    matches!(c,
-        '\u{0610}'..='\u{061A}'
-        | '\u{064B}'..='\u{065F}'
-        | '\u{0670}'
-        | '\u{06D6}'..='\u{06DC}'
-        | '\u{06DF}'..='\u{06E4}'
-        | '\u{06E7}'..='\u{06E8}'
-        | '\u{06EA}'..='\u{06ED}')
+/// Combining MARKS that ride inside a word — not
+/// `char::is_alphabetic()`, but part of the word when they follow
+/// letters. The general Mark category covers the Arabic harakat the
+/// fa-IR dictionary needs AND the decomposed Latin accents pasted
+/// text carries (`grün` NFD splits into `gru`|`n` without them —
+/// PR #299 review); the lookup then tries the word's NFC form so the
+/// composed dictionary entry matches.
+fn is_word_mark(c: char) -> bool {
+    use unicode_general_category::{get_general_category, GeneralCategory};
+    matches!(
+        get_general_category(c),
+        GeneralCategory::SpacingMark | GeneralCategory::NonspacingMark | GeneralCategory::ModifierLetter
+    )
 }
 
 /// Every checkable word in the raw `<Text>`, in reading order. Field
@@ -593,7 +611,7 @@ pub fn words(raw: &str) -> Vec<WordToken> {
 fn tokenize_piece(t: &str, base: usize, out: &mut Vec<WordToken>) {
     let mut chars = t.chars().enumerate().peekable();
     while let Some((ci, c)) = chars.next() {
-        if !(c.is_alphabetic() || is_arabic_mark(c)) {
+        if !(c.is_alphabetic() || is_word_mark(c)) {
             continue;
         }
         // Walk the run: word letters/marks, with joiners only when the
@@ -602,12 +620,12 @@ fn tokenize_piece(t: &str, base: usize, out: &mut Vec<WordToken>) {
         let mut nchars = 0usize;
         let mut cur = Some((ci, c));
         while let Some((_, ch)) = cur {
-            if ch.is_alphabetic() || is_arabic_mark(ch) {
+            if ch.is_alphabetic() || is_word_mark(ch) {
                 word.push(ch);
                 nchars += 1;
             } else if is_joiner(ch) {
                 match chars.peek() {
-                    Some((_, nx)) if nx.is_alphabetic() || is_arabic_mark(*nx) => {
+                    Some((_, nx)) if nx.is_alphabetic() || is_word_mark(*nx) => {
                         word.push(ch);
                         nchars += 1;
                     }
@@ -852,9 +870,12 @@ mod tests {
         // test (the registry is process-global; this binary's tests run
         // in parallel).
         let names: Vec<String> = available().into_iter().map(|e| e.display_name()).collect();
-        assert!(names.contains(&"English".to_string()));
-        assert!(names.contains(&"Deutsch".to_string()));
-        assert!(names.contains(&"فارسی".to_string()));
+        // The stems' region/variant qualifiers ride along (PR #299
+        // review): two dictionaries sharing a language must read
+        // distinctly in the dropdown.
+        assert!(names.contains(&"English (US)".to_string()));
+        assert!(names.contains(&"Deutsch (DE, frami)".to_string()));
+        assert!(names.contains(&"فارسی (IR)".to_string()));
     }
 
     #[test]
@@ -873,6 +894,21 @@ mod tests {
         for w in ["Diagramm", "Form", "Diagramme"] {
             assert!(c.check(w), "de accepts {w:?}");
         }
+    }
+
+    #[test]
+    fn de_accepts_decomposed_nfc_form() {
+        // PR #299 review (Greptile): pasted text decomposes (NFD) —
+        // the tokenizer keeps the marks inside the word and the check
+        // tries the word's NFC form against the composed dictionary.
+        let _g = fresh_registry();
+        let c = checker("de_DE_frami");
+        use unicode_normalization::UnicodeNormalization;
+        let decomposed: String = "grün".nfd().collect();
+        assert_ne!(decomposed, "grün", "the fixture really decomposes");
+        let toks = words(&format!("{} Haus", decomposed));
+        assert_eq!(toks.len(), 2, "one decomposed word + Haus, got {toks:?}");
+        assert!(c.check(&toks[0].word), "de accepts the NFC lookup of {toks:?}");
     }
 
     #[test]

@@ -96,6 +96,11 @@ impl SpellState {
         let found = scan(doc, &mut session, &checker);
         if found {
             self.session = Some(session);
+        } else {
+            // A completed pass closes any live session (PR #299 review):
+            // a re-click while the dialog is up must not keep showing a
+            // word the user just fixed or undid.
+            self.session = None;
         }
         found
     }

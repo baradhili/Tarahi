@@ -211,3 +211,68 @@ fn replace_never_swallows_a_marker_between_runs() {
     let sh = &doc.pages[0].shapes[0];
     assert_eq!(sh.sheet.text_raw.as_deref(), Some("run <cp IX='0'/> stop"));
 }
+
+#[test]
+fn replace_refuses_a_span_running_past_the_plain_length() {
+    // PR #299 review (CodeRabbit): an end past the target's plain
+    // length must ERROR, not splice from the head to the raw end —
+    // the mapper's tail falls back to `raw.len()` and would delete
+    // everything after it, CDATA terminator included (invalid XML).
+    let mut doc = doc_with_text(Some("<![CDATA[abc]]>"), Some("abc"));
+    // Plain length 3; [1, 4) runs past it.
+    let mut cmd = ReplaceTextRange::new(shape_scope(), 1, 3, "X");
+    assert!(cmd.apply(&mut doc).is_err());
+    // The raw is untouched.
+    assert_eq!(doc.pages[0].shapes[0].sheet.text_raw.as_deref(), Some("<![CDATA[abc]]>"));
+    // A zero-length span AT the end stays a legal insertion (the
+    // plain-text form; inside a CDATA content end the mapper refuses
+    // outright — a head cannot land on a content boundary there).
+    let mut doc = doc_with_text(Some("abc"), Some("abc"));
+    let mut cmd = ReplaceTextRange::new(shape_scope(), 3, 0, "d");
+    cmd.apply(&mut doc).unwrap();
+    assert_eq!(doc.pages[0].shapes[0].sheet.text.as_deref(), Some("abcd"));
+}
+
+#[test]
+fn cdata_terminator_does_not_form_at_the_left_splice_join() {
+    // PR #299 review (CodeRabbit): a RETAINED `]]` before the head
+    // plus a replacement opening with `>` form `]]>` ACROSS the join —
+    // escaping only the replacement misses it. The section rebuilds at
+    // content level and splits the terminator canonically.
+    let mut doc = doc_with_text(Some("<![CDATA[ab]]cdef]]>"), Some("ab]]cdef"));
+    // Plain: ab=0..2, ]]=2..4, c=4, def=5..8. Replace `c` with `>`.
+    let mut cmd = ReplaceTextRange::new(shape_scope(), 4, 1, ">");
+    cmd.apply(&mut doc).unwrap();
+    let sh = &doc.pages[0].shapes[0];
+    assert_eq!(
+        sh.sheet.text_raw.as_deref(),
+        Some("<![CDATA[ab]]]]><![CDATA[>def]]>")
+    );
+    let pieces = vsdx::text::text_pieces(sh.sheet.text_raw.as_deref().unwrap());
+    let plain: String = pieces.iter().map(|p| p.plain()).collect();
+    assert_eq!(plain, "ab]]>def");
+}
+
+#[test]
+fn cdata_content_ending_in_brackets_still_closes_exactly() {
+    // The section rebuild's other edge: content ENDING with `]` (any
+    // count) cannot precede a bare `]]>` close — the close's own `]]`
+    // merges with it and the scan eats brackets. The split-before-close
+    // form keeps the content exact.
+    let mut doc = doc_with_text(Some("<![CDATA[ab]]cdef]]>"), Some("ab]]cdef"));
+    // Replace `cdef` (5..8) with `]]`: the content ends `ab]]]]`.
+    let mut cmd = ReplaceTextRange::new(shape_scope(), 5, 3, "]]");
+    cmd.apply(&mut doc).unwrap();
+    let sh = &doc.pages[0].shapes[0];
+    let pieces = vsdx::text::text_pieces(sh.sheet.text_raw.as_deref().unwrap());
+    let plain: String = pieces.iter().map(|p| p.plain()).collect();
+    assert_eq!(plain, "ab]]c]]");
+    // A single trailing bracket splits the same way.
+    let mut doc = doc_with_text(Some("<![CDATA[a>b]c]]>"), Some("a>b]c"));
+    let mut cmd = ReplaceTextRange::new(shape_scope(), 4, 1, "]");
+    cmd.apply(&mut doc).unwrap();
+    let sh = &doc.pages[0].shapes[0];
+    let pieces = vsdx::text::text_pieces(sh.sheet.text_raw.as_deref().unwrap());
+    let plain: String = pieces.iter().map(|p| p.plain()).collect();
+    assert_eq!(plain, "a>b]]");
+}

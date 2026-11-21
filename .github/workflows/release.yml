@@ -157,6 +157,10 @@ jobs:
             echo "::error::libwayland-client.so.0 got bundled — it shadows the host's libwayland and breaks the host Mesa EGL driver (#292)"
             exit 1
           }
+          # Third-party license files ride in the image (PR #299
+          # review: the hunspell dictionaries' notices require the
+          # license to accompany the shipped binaries).
+          bash packaging/collect-licenses.sh AppDir/usr/share/doc/tarahi
           # The AppImage FILE name must match the desktop entry's
           # application name (Name=Tarahi) — the catalog test rejects
           # diagramcraft_*.AppImage for it (#261).
@@ -226,6 +230,13 @@ jobs:
           echo "version=$VER" >> "$GITHUB_OUTPUT"
       - name: Build binary
         run: cargo build --release -p dc-ui --locked
+      - name: Stage third-party license files
+        shell: bash
+        run: |
+          # The installer and the portable zip both install these (PR
+          # #299 review: the dictionaries' notices require the license
+          # to accompany the shipped binaries).
+          bash packaging/collect-licenses.sh licenses-third-party
       - name: Build installer
         shell: cmd
         run: |
@@ -235,6 +246,7 @@ jobs:
         run: |
           mkdir -p dist
           7z a -tzip "dist/Tarahi_${{ steps.ver.outputs.version }}_windows_x64.zip" ./target/release/tarahi.exe
+          7z a -tzip "dist/Tarahi_${{ steps.ver.outputs.version }}_windows_x64.zip" ./licenses-third-party
       - name: Collect artifacts
         shell: bash
         run: |
@@ -284,9 +296,10 @@ jobs:
       - name: Bundle app + dmg
         run: |
           cp packaging/Info.plist "Tarahi.app/Contents/Info.plist"
-          mkdir -p "Tarahi.app/Contents/Resources/licenses"
-          cp LICENSE-MIT LICENSE-APACHE "Tarahi.app/Contents/Resources/licenses/"
-          cp crates/dc/assets/fonts/LICENSE-Carlito "Tarahi.app/Contents/Resources/licenses/"
+          # Every vendored asset's license rides in the bundle (PR
+          # #299 review; packaging/collect-licenses.sh keeps the set
+          # identical to the other formats).
+          bash packaging/collect-licenses.sh "Tarahi.app/Contents/Resources/licenses"
           codesign --force --sign - --deep "Tarahi.app"
           mkdir -p dist
           hdiutil create -volname "Tarahi" \

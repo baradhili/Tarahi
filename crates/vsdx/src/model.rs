@@ -463,6 +463,17 @@ impl Document {
             .unwrap_or(0.125)
     }
 
+    /// The page's resolved `LineToLineY` (inches — the vertical
+    /// clearance), falling back to Visio's 0.125 in default like the X
+    /// twin (#294; PR #299 review — vertical stored jumps are authored
+    /// at the Y spacing, so the Y cells need their own resolver).
+    pub fn page_line_to_line_y(&self, page: &Page) -> f64 {
+        self.resolve_page_layout_cell(page, "LineToLineY")
+            .and_then(|c| c.numeric())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(0.125)
+    }
+
     /// The page's resolved `LineJumpFactorX` (Visio's jump-size
     /// multiplier), falling back to Visio's 2/3 default (#294 — the
     /// shipped corpus's "No Style" and the #294 repro both carry
@@ -472,6 +483,16 @@ impl Document {
     /// values fall back (#294 review).
     pub fn page_line_jump_factor(&self, page: &Page) -> f64 {
         self.resolve_page_layout_cell(page, "LineJumpFactorX")
+            .and_then(|c| c.numeric())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .unwrap_or(2.0 / 3.0)
+    }
+
+    /// The page's resolved `LineJumpFactorY` — the vertical hop-size
+    /// multiplier, same fallback contract as the X twin (PR #299
+    /// review).
+    pub fn page_line_jump_factor_y(&self, page: &Page) -> f64 {
+        self.resolve_page_layout_cell(page, "LineJumpFactorY")
             .and_then(|c| c.numeric())
             .filter(|v| v.is_finite() && *v >= 0.0)
             .unwrap_or(2.0 / 3.0)

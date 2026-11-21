@@ -140,7 +140,7 @@ pub fn render_masters(doc: &Document) -> anyhow::Result<String> {
                 // covers page renders only (#294 review), and a master
                 // carries no page to resolve a radius from: stored-jump
                 // evidence is unavailable, so nothing strips.
-                0.0,
+                (0.0, 0.0),
                 &mut svg,
             );
         }
@@ -260,7 +260,7 @@ pub fn render_master(doc: &Document, m: &vsdx::Master) -> anyhow::Result<String>
             // covers page renders only (#294 review), and a master
             // carries no page to resolve a radius from: stored-jump
             // evidence is unavailable, so nothing strips.
-            0.0,
+            (0.0, 0.0),
             &mut svg,
         );
     }
@@ -1069,8 +1069,9 @@ fn render_shape_layer_inner(
             Some(fields),
             // The canvas jump overlay draws exactly this walk's
             // top-level connectors (#294 review). The page's own
-            // radius is the stored-jump evidence.
-            crate::geom::jump_radius_in(doc, page),
+            // radii (X and Y — a stored jump on a vertical run was
+            // authored at the Y spacing) are the stored-jump evidence.
+            crate::geom::jump_radii_in(doc, page),
             &mut svg,
         );
     }
@@ -1186,9 +1187,9 @@ fn render_page_full(
             // but the ink strips with the page's radius either way: a
             // stored arc is stale decoration even in a scoped view.
             if only.is_none() {
-                crate::geom::jump_radius_in(doc, page)
+                crate::geom::jump_radii_in(doc, page)
             } else {
-                0.0
+                (0.0, 0.0)
             },
             &mut svg,
         );
@@ -1203,18 +1204,43 @@ fn render_page_full(
     // a resolved radius of 0 (an explicit LineJumpFactorX=0, #294
     // review) draws nothing rather than degenerate zero-size hops.
     let radius = crate::geom::jump_radius_in(doc, page);
-    let jumps = if only.is_none() && page.line_jumps_shown() && radius > 0.0 {
+    let radius_y = crate::geom::jump_radius_y_in(doc, page);
+    let jumps = if only.is_none()
+        && page.line_jumps_shown()
+        && (radius > 0.0 || radius_y > 0.0)
+    {
         crate::geom::page_jumps(doc, page, hidden)
     } else {
         Vec::new()
     };
+    // Per-crossing hop radius: the jumping SEGMENT's own axis (the
+    // more-horizontal line may hop on a vertical leg — Visio sizes
+    // that with the Y cells, PR #299 review). An explicit Factor=0 on
+    // that axis is a zero-size hop — the crossing draws no arc at all,
+    // never a degenerate one (#294 review); a page whose every hop is
+    // zero-sized draws no group.
+    let jumps: Vec<_> = jumps
+        .into_iter()
+        .filter(|j| {
+            if j.dir.0.abs() >= j.dir.1.abs() {
+                radius > 0.0
+            } else {
+                radius_y > 0.0
+            }
+        })
+        .collect();
     if !jumps.is_empty() {
-        // #294: the hop radius is the page's own LineToLineX ×
-        // LineJumpFactorX / 2, resolved through the style chain —
+        // #294: the hop radius is the page's own LineToLineX/Y ×
+        // LineJumpFactorX/Y / 2, resolved through the style chain —
         // never the old 0.12 constant.
         let _ = writeln!(svg, r#"<g data-dc="line-jumps">"#);
         for j in &jumps {
-            append_jump_scaled(&mut svg, h, j, radius);
+            let r = if j.dir.0.abs() >= j.dir.1.abs() {
+                radius
+            } else {
+                radius_y
+            };
+            append_jump_scaled(&mut svg, h, j, r);
         }
         let _ = writeln!(svg, "</g>");
     }
@@ -1539,7 +1565,7 @@ fn render_shape<'a>(
     // inches — the stored-jump evidence (#294; 0 = never strip: master
     // contact sheets carry no page context, and an authored arc that
     // matches no radius is preserved).
-    jump_radius: f64,
+    jump_radius: (f64, f64),
     out: &mut String,
 ) {
     let mut chain: Vec<&'a Shape> = chain.to_vec();
@@ -1659,7 +1685,7 @@ fn render_shape_local<'a>(
         // Group children aren't in the jump overlay's crossing set
         // (page_jumps collects top-level connectors only, #294
         // review): their stored jump arcs keep rendering as ink.
-        render_all_geometry(doc, s, &chain, width, height, 0.0, out);
+        render_all_geometry(doc, s, &chain, width, height, (0.0, 0.0), out);
         if let Some(uri) = foreign_image_uri(doc, part, s) {
             let _ = writeln!(
                 out,
@@ -3685,7 +3711,7 @@ fn render_all_geometry(
     chain: &[&Shape],
     width: f64,
     height: f64,
-    jump_radius: f64,
+    jump_radius: (f64, f64),
     out: &mut String,
 ) {
     // Groups usually don't self-draw (children + the master drawing
@@ -4009,7 +4035,7 @@ fn render_geometry(
     scale: (f64, f64),
     frame: Frame<'_>,
     gname: &str,
-    jump_radius: f64,
+    jump_radius: (f64, f64),
     out: &mut String,
     paint: &mut ShapePaint,
 ) {
@@ -4311,7 +4337,10 @@ fn render_geometry(
                 // authoring), and the stored arc's A was authored at
                 // the page's radius.
                 let radius_in_frame = jump_radius;
-                if jump_radius > 0.0
+                // PR #299 review: BOTH radii gate the strip — the
+                // classifier itself selects the arc's axis radius, so a
+                // zero on one axis only kills that axis's strips.
+                if (jump_radius.0 > 0.0 || jump_radius.1 > 0.0)
                     // Connector-ness gates the kind: artwork arcs never
                     // strip even with a resolved radius (#294 review).
                     && crate::geom::is_connector_in(doc, chain, s)
@@ -4320,7 +4349,8 @@ fn render_geometry(
                         (x - sx, y - sy),
                         prev_dir,
                         next_dir,
-                        radius_in_frame,
+                        radius_in_frame.0,
+                        radius_in_frame.1,
                     )
                 {
                     // #294: a stored jump arc straightens — the ink
@@ -7013,7 +7043,7 @@ mod tests {
         let chain: Vec<&Shape> = Vec::new();
         let mut out = String::new();
         render_shape(
-            &doc, &inst, 8.5, &chain, "", None, None, None, None, 0.0, &mut out,
+            &doc, &inst, 8.5, &chain, "", None, None, None, None, (0.0, 0.0), &mut out,
         );
         // The controls land at gx·W: 0.5 → 2.0 and 0.75 → 3.0; the y
         // fraction 0.5 of H=2 → 1.0 (emitted negated). The old
@@ -7067,7 +7097,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, 0.0, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
             out
         };
         // 0 = no head at all.
@@ -7225,7 +7255,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, 0.0, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
             out
         };
         // A closed rectangle walk (returns to its start) with both
@@ -7313,7 +7343,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, 0.0, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
             out
         };
         let flat = render("0");
@@ -7352,7 +7382,7 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, 0.0, &mut out);
+        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
         assert!(
             out.contains(r#"stroke-width="0.00000""#),
             "an explicit zero stays zero: {out}"
@@ -7425,7 +7455,7 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, 0.0, &mut out);
+        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
         // ONE even-odd fill element, first among the paths (under the
         // ink), carrying exactly the three fill-eligible subpaths.
         assert_eq!(
@@ -7995,7 +8025,7 @@ mod tests {
             ..Document::default()
         };
         let mut out = String::new();
-        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, 0.0, &mut out);
+        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, (0.0, 0.0), &mut out);
         assert!(
             !out.contains("<path"),
             "NoShow'd section must not draw: {out}"
@@ -8008,7 +8038,7 @@ mod tests {
             ..Document::default()
         };
         let mut out = String::new();
-        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, 0.0, &mut out);
+        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, (0.0, 0.0), &mut out);
         assert!(
             out.contains("<path"),
             "formula must beat the stale cache: {out}"
@@ -8024,7 +8054,7 @@ mod tests {
             ..Document::default()
         };
         let mut out = String::new();
-        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, 0.0, &mut out);
+        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, (0.0, 0.0), &mut out);
         assert!(!out.contains("<path"), "cached NoShow must hide: {out}");
     }
 

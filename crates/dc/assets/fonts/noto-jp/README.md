@@ -26,10 +26,10 @@ Rides the SAME one-drop contract as the zh-Hans wave (#282): the
 measurement floor and the usvg raster fontdb register it through
 `dc::register_complex_script_faces` (the idempotent entry point), and
 dc-ui's `theme::install_fonts` also loads the bytes into egui as the
-Japanese fallback of the proportional and monospace families. Where a
-run's Han/kana resolves — this face or Noto Sans SC — follows the
-process's registered CJK face order (`dc::complex_script_face_order`):
-the startup UI language's preferred regional face leads, so a Japanese
-shell paints Japanese glyph forms while a Chinese shell keeps the SC
-forms the zh-Hans wave shipped. Never extract fonts from Microsoft
-products.
+Japanese fallback of the proportional and monospace families. The
+CANVAS stack keeps the fixed `dc::CJK_FACE_ORDER` (SC leads — the
+zh rendering never moves), shared by the raster registration and both
+measurement chains; only the EGUI SHELL varies the order by the
+current language's regional face, so a Japanese shell paints Japanese
+glyph forms while a Chinese shell keeps the SC forms the zh-Hans wave
+shipped. Never extract fonts from Microsoft products.

@@ -20,6 +20,11 @@ ttf-parser = "0.25"
 # (Renovate's harfrust-only PRs are superseded until then).
 harfrust = "0.15"
 unicode-bidi = "0.3"
+# The spellcheck tokenizer (Mn marks join decomposed words) and its NFC
+# lookup — the general-category crate is already in the graph via the
+# font stack; normalization composes pasted text for the dictionary.
+unicode-general-category = "1"
+unicode-normalization = "0.1"
 # The shared SVG raster stack (#35): the same resvg 0.50 the GUI's
 # svgimg canvas half uses (matching lock entries), so PNG exports are
 # the canvas picture.

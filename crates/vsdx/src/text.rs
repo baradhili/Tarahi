@@ -447,6 +447,12 @@ pub struct PlainSpan {
     /// `&amp;` entity inside CDATA would read as the six characters
     /// `&amp;`, not `&`).
     pub head_is_cdata: bool,
+    /// When [`Self::head_is_cdata`], the enclosing section's CONTENT
+    /// byte range in `raw` (between `<![CDATA[` and its `]]>`): the
+    /// caller can rebuild the whole section at content level, which is
+    /// what keeps a splice from FORMING a `]]>` across its joins (a
+    /// retained `]]` plus a replacement opening `>`, PR #299 review).
+    pub cdata_content: Option<(usize, usize)>,
 }
 
 /// Map the plain span `[start, end)` (plain CHARACTERS over the full
@@ -481,6 +487,8 @@ pub fn map_plain_span(raw: &str, start: usize, end: usize) -> Option<PlainSpan> 
     // Whether the head's region is CDATA content (captured at head-set
     // time — the walk may leave that region long before it ends).
     let mut head_is_cdata = false;
+    // The enclosing section's content range, captured at head-set time.
+    let mut cdata_content: Option<(usize, usize)> = None;
     let mut i = 0usize;
     while i < raw.len() {
         // Inside a CDATA section the content is literal text up to `]]>`.
@@ -501,6 +509,7 @@ pub fn map_plain_span(raw: &str, start: usize, end: usize) -> Option<PlainSpan> 
                     .unwrap_or(content.len());
                 head = Some((cs + off, region));
                 head_is_cdata = true;
+                cdata_content = Some((cs, ce));
             }
             if tail.is_none() && end > count && end <= count + n {
                 let off = if end == count + n {
@@ -573,6 +582,7 @@ pub fn map_plain_span(raw: &str, start: usize, end: usize) -> Option<PlainSpan> 
         head,
         tail,
         head_is_cdata,
+        cdata_content,
     })
 }
 
