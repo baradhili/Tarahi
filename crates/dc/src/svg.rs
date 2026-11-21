@@ -1173,8 +1173,11 @@ fn render_page_full(
     // paddings pin the canvas's screen-px extras at 96 dpi. Scoped
     // renders (`only`) draw one shape's subtree — page-wide jumps
     // would drag in crossings from connectors outside the scope.
-    // The page's Show-Line-Jumps switch gates the overlay (#251).
-    let jumps = if only.is_none() && page.line_jumps_shown() {
+    // The page's Show-Line-Jumps switch gates the overlay (#251), and
+    // a resolved radius of 0 (an explicit LineJumpFactorX=0, #294
+    // review) draws nothing rather than degenerate zero-size hops.
+    let radius = crate::geom::jump_radius_in(doc, page);
+    let jumps = if only.is_none() && page.line_jumps_shown() && radius > 0.0 {
         crate::geom::page_jumps(doc, page, hidden)
     } else {
         Vec::new()
@@ -1183,7 +1186,6 @@ fn render_page_full(
         // #294: the hop radius is the page's own LineToLineX ×
         // LineJumpFactorX / 2, resolved through the style chain —
         // never the old 0.12 constant.
-        let radius = crate::geom::jump_radius_in(doc, page);
         let _ = writeln!(svg, r#"<g data-dc="line-jumps">"#);
         for j in &jumps {
             append_jump_scaled(&mut svg, h, j, radius);
@@ -8165,6 +8167,18 @@ mod tests {
                 "the page set to LineJumpCode {off} draws no jump group"
             );
         }
+        // An explicit LineJumpFactorX=0 is a zero-size hop (#294
+        // review) — no overlay at all, never degenerate hops.
+        let mut zero = doc.clone();
+        zero.pages[0]
+            .sheet_mut()
+            .unwrap()
+            .set_cell("LineJumpFactorX", Cell::value("0"));
+        let svg = render_page(&zero, &zero.pages[0]).unwrap();
+        assert!(
+            !svg.contains(r##"data-dc="line-jumps""##),
+            "a zero jump factor draws no hop group"
+        );
         // Shown at 2×: the radius is LineToLineX × factor / 2 (#294) —
         // the fixture page sets only the factor, so 0.125 × 2 / 2.
         let mut big = doc.clone();
@@ -8277,6 +8291,49 @@ mod tests {
         assert!(
             svg.contains(r#"x1="4.45833"#) && !svg.contains(r#"x1="2.95833"#),
             "one hop at the current crossing, nothing at the stale arc"
+        );
+    }
+
+    /// #294 review: an AUTHORED shallow ArcTo on a connector is a
+    /// curve — the semicircle band leaves it alone, and with no
+    /// crossing nothing replaces it.
+    #[test]
+    fn export_preserves_authored_shallow_connector_arcs() {
+        let mut s = shape_at(1, (3.0, 5.0), 4.0, 0.0, 0.0);
+        s.sheet.set_cell("ObjType", Cell::value("2"));
+        let mut sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec.rows = vec![
+            Row {
+                t: Some("MoveTo".into()),
+                ix: 1,
+                cells: vec![
+                    ("X".to_string(), Cell::value("0")),
+                    ("Y".to_string(), Cell::value("0")),
+                ],
+                ..Row::default()
+            },
+            Row {
+                t: Some("ArcTo".into()),
+                ix: 2,
+                cells: vec![
+                    ("X".to_string(), Cell::value("4")),
+                    ("Y".to_string(), Cell::value("0")),
+                    ("A".to_string(), Cell::value("0.25")),
+                ],
+                ..Row::default()
+            },
+        ];
+        s.sheet.children.push(SheetChild::Section(sec));
+        let (doc, page) = page_fixture(vec![s]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(svg.contains(" A "), "the shallow arc renders as an arc");
+        assert!(
+            !svg.contains(r##"data-dc="line-jumps""##),
+            "no crossing, no overlay"
         );
     }
 

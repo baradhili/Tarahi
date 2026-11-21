@@ -424,7 +424,7 @@ impl Document {
             .find(|(n, _)| n == "LineStyle")
             .and_then(|(_, v)| v.parse::<i64>().ok())
             .unwrap_or(0);
-        self.stylesheet_cascade_cell(style_id, name)
+        self.stylesheet_cascade_cell(style_id, name, true)
     }
 
     /// The page's resolved `LineToLineX` (inches — the horizontal
@@ -442,10 +442,13 @@ impl Document {
     /// multiplier), falling back to Visio's 2/3 default (#294 — the
     /// shipped corpus's "No Style" and the #294 repro both carry
     /// 0.66666666666667; the old PageSheet-only read defaulted to 1.0).
+    /// An EXPLICIT 0 is valid ([MS-Learn] LineJumpFactorX cell) and
+    /// means zero-size hops — only missing or non-finite/negative
+    /// values fall back (#294 review).
     pub fn page_line_jump_factor(&self, page: &Page) -> f64 {
         self.resolve_page_layout_cell(page, "LineJumpFactorX")
             .and_then(|c| c.numeric())
-            .filter(|v| v.is_finite() && *v > 0.0)
+            .filter(|v| v.is_finite() && *v >= 0.0)
             .unwrap_or(2.0 / 3.0)
     }
 
@@ -539,15 +542,30 @@ impl Document {
             _ => shape.line_style.or(shape.fill_style),
         }
         .unwrap_or(0);
-        self.stylesheet_cascade_cell(style_id, name)
+        self.stylesheet_cascade_cell(style_id, name, false)
     }
 
     /// The shared stylesheet walk (GitHub #294): `start_id`'s sheet first,
-    /// then the chain of `LineStyle` cells styles point at each other, 8
-    /// links deep. Both shape resolution paths and the page-layout
-    /// resolution ([`resolve_page_layout_cell`](Self::resolve_page_layout_cell))
-    /// ride it.
-    fn stylesheet_cascade_cell(&self, start_id: i64, name: &str) -> Option<Cell> {
+    /// then the chain of `LineStyle` links styles point at each other
+    /// with, 8 links deep. `follow_attr_parents` also reads the parent
+    /// from the style's `LineStyle` ATTRIBUTE when no linking cell
+    /// exists (the schema carries it in both places). Only the
+    /// page-layout resolution
+    /// ([`resolve_page_layout_cell`](Self::resolve_page_layout_cell))
+    /// sets it: page-layout cells are numeric layout constants, never
+    /// themed, so an attribute-only hop can't hijack the theme chain.
+    /// The SHAPE walk keeps the cell-only link — shipped stencils chain
+    /// Normal→Theme through attributes with `V="Themed"` cells, and a
+    /// theme-less document resolves those to plain black (the Basic
+    /// Shapes contact sheet filled `#FFFFFF` → `#000000`); honoring the
+    /// attribute link there needs theme-aware `Themed` handling first
+    /// (see the issue filed from the #294 review).
+    fn stylesheet_cascade_cell(
+        &self,
+        start_id: i64,
+        name: &str,
+        follow_attr_parents: bool,
+    ) -> Option<Cell> {
         let mut cur = self.stylesheet(start_id)?;
         for _ in 0..8 {
             if let Some(c) = cur.sheet.cell(name) {
@@ -559,7 +577,15 @@ impl Document {
                 .sheet
                 .cell("LineStyle")
                 .and_then(|c| c.numeric())
-                .map(|v| v as i64);
+                .map(|v| v as i64)
+                .or_else(|| {
+                    follow_attr_parents.then(|| {
+                        cur.attrs
+                            .iter()
+                            .find(|(n, _)| n == "LineStyle")
+                            .and_then(|(_, v)| v.parse::<i64>().ok())
+                    })?
+                });
             match next_id {
                 Some(nid) if nid != cur.id => match self.stylesheet(nid) {
                     Some(next) => cur = next,
@@ -601,7 +627,7 @@ impl Document {
             _ => shape.line_style.or(shape.fill_style),
         }
         .unwrap_or(0);
-        if let Some(c) = self.stylesheet_cascade_cell(style_id, name) {
+        if let Some(c) = self.stylesheet_cascade_cell(style_id, name, false) {
             return Some(c);
         }
         if let Some(c) = self.sheet.cell(name) {
@@ -1105,6 +1131,44 @@ mod snap_glue_tests {
             .unwrap()
             .set_cell("LineJumpFactorX", Cell::value("2"));
         assert!((doc.page_line_jump_factor(&doc.pages[0]) - 2.0).abs() < 1e-9);
+
+        // Attribute-only parent links (#294 review): the schema carries
+        // the parent in the StyleSheet's LineStyle ATTRIBUTE as well as
+        // the cell — a style without the linking cell used to stop the
+        // walk at the fallback.
+        let mut chain = Document::default();
+        let mut page = Page::default();
+        let mut sheet = Sheet::default();
+        sheet.attrs.push(("LineStyle".to_string(), "7".to_string()));
+        page.children.push(IndexChild::Sheet {
+            tag: "PageSheet".to_string(),
+            sheet,
+        });
+        let mut mid = StyleSheet {
+            id: 7,
+            ..Default::default()
+        };
+        mid.attrs
+            .push(("LineStyle".to_string(), "8".to_string()));
+        let mut top = StyleSheet {
+            id: 8,
+            ..Default::default()
+        };
+        top.sheet.set_cell("LineJumpFactorX", Cell::value("2"));
+        chain.stylesheets.extend([mid, top]);
+        chain.pages.push(page);
+        assert!(
+            (chain.page_line_jump_factor(&chain.pages[0]) - 2.0).abs() < 1e-9,
+            "the attribute parent link continues the walk"
+        );
+
+        // An EXPLICIT 0 is a zero-size hop, not the default (#294
+        // review) — the overlay skips radius-0 pages.
+        doc.pages[0]
+            .sheet_mut()
+            .unwrap()
+            .set_cell("LineJumpFactorX", Cell::value("0"));
+        assert_eq!(doc.page_line_jump_factor(&doc.pages[0]), 0.0);
 
         // Nothing anywhere — Visio's defaults, never 1.0.
         let mut bare = Document::default();

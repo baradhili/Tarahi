@@ -800,17 +800,23 @@ const MAX_STORED_JUMP_SAGITTA_IN: f64 = 0.5;
 
 /// A stored line-jump arc (#294): Visio saves a connector's jump as an
 /// `ArcTo` row ON the orthogonal run — the chord lies along one axis
-/// (the run continues into the arc's endpoints) and |A| = the jump
-/// radius. Corner arcs cut ACROSS the run (a diagonal chord), so the
-/// axis test leaves them alone; the callers additionally gate on
-/// connector-ness so artwork arcs never strip. Once stripped, the
-/// route is straight at the old arc and the jump overlay draws the
-/// ONE arc at the current crossing with the page's own radius — a
-/// stored arc stops lingering after a move (#294).
+/// (the run continues into the arc's endpoints) and the arc is a
+/// SEMICIRCLE over the gap: `|A| = radius = chord / 2` exactly (the
+/// #294 repro's row: chord 0.0833, A −0.0416667; the band admits
+/// writer rounding). Corner arcs cut ACROSS the run (a diagonal
+/// chord) and authored shallow bumps fall far below the band, so both
+/// stay curves; the callers additionally gate on connector-ness so
+/// artwork arcs never strip. Once stripped, the route is straight at
+/// the old arc and the jump overlay draws the ONE arc at the current
+/// crossing with the page's own radius — a stored arc stops lingering
+/// after a move (#294).
 pub fn is_stored_jump_arc(sagitta: f64, chord: (f64, f64)) -> bool {
     let len = chord.0.hypot(chord.1);
+    let a = sagitta.abs();
     len > 1e-9
-        && sagitta.abs() <= MAX_STORED_JUMP_SAGITTA_IN
+        && a <= MAX_STORED_JUMP_SAGITTA_IN
+        && a >= 0.4 * len
+        && a <= 0.6 * len
         && chord.0.abs().min(chord.1.abs()) <= len * 0.02
 }
 
@@ -822,6 +828,19 @@ pub fn seg_cross(
     b0: (f64, f64),
     b1: (f64, f64),
 ) -> Option<(f64, f64)> {
+    seg_cross_open(a0, a1, b0, b1)
+        .filter(|(_, t, u)| (1e-9..=1.0 - 1e-9).contains(t) && (1e-9..=1.0 - 1e-9).contains(u))
+        .map(|(p, _, _)| p)
+}
+
+/// Open segment intersection: the point plus both window parameters —
+/// the caller decides which endpoint coincidences count.
+fn seg_cross_open(
+    a0: (f64, f64),
+    a1: (f64, f64),
+    b0: (f64, f64),
+    b1: (f64, f64),
+) -> Option<((f64, f64), f64, f64)> {
     let (r, s) = ((a1.0 - a0.0, a1.1 - a0.1), (b1.0 - b0.0, b1.1 - b0.1));
     let denom = r.0 * s.1 - r.1 * s.0;
     if denom.abs() < 1e-12 {
@@ -830,8 +849,19 @@ pub fn seg_cross(
     let qp = (b0.0 - a0.0, b0.1 - a0.1);
     let t = (qp.0 * s.1 - qp.1 * s.0) / denom;
     let u = (qp.0 * r.1 - qp.1 * r.0) / denom;
-    ((1e-9..=1.0 - 1e-9).contains(&t) && (1e-9..=1.0 - 1e-9).contains(&u))
-        .then_some((a0.0 + t * r.0, a0.1 + t * r.1))
+    Some(((a0.0 + t * r.0, a0.1 + t * r.1), t, u))
+}
+
+/// The polyline index a crossing hugs, when it hugs a segment
+/// endpoint at all (`t` ≈ 0 or 1).
+fn hugged_vertex(t: f64, window_index: usize) -> Option<usize> {
+    if t <= 1e-9 {
+        Some(window_index)
+    } else if t >= 1.0 - 1e-9 {
+        Some(window_index + 1)
+    } else {
+        None
+    }
 }
 
 /// Every crossing hop among the lines (#108): pairwise proper
@@ -849,11 +879,33 @@ pub fn line_jumps(lines: &[JumpLine], radius: f64) -> Vec<Jump> {
             // drew overlapping arcs on one intersection (the #238
             // screenshot). Clusters within the hop radius merge.
             let mut pair: Vec<Jump> = Vec::new();
-            for w1 in lines[i].pts.windows(2) {
-                for w2 in lines[j].pts.windows(2) {
-                    let Some(at) = seg_cross(w1[0], w1[1], w2[0], w2[1]) else {
+            for (k1, w1) in lines[i].pts.windows(2).enumerate() {
+                for (k2, w2) in lines[j].pts.windows(2).enumerate() {
+                    // #294 review: a crossing ON an interior vertex of
+                    // either polyline (an elbow corner exactly on the
+                    // other line) is a real crossing — the strict-
+                    // interior test used to drop it and, with stored
+                    // jump arcs straightened, the replacement hop
+                    // vanished with it. A crossing at a polyline's
+                    // first/last point stays excluded: that is the
+                    // connector's glue end, not a crossing.
+                    let Some((at, t, u)) = seg_cross_open(w1[0], w1[1], w2[0], w2[1]) else {
                         continue;
                     };
+                    // Off-segment hits (the crossing sits on the
+                    // segment's EXTENSION) are not crossings.
+                    if !(-1e-9..=1.0 + 1e-9).contains(&t)
+                        || !(-1e-9..=1.0 + 1e-9).contains(&u)
+                    {
+                        continue;
+                    }
+                    let at_end_i = hugged_vertex(t, k1)
+                        .is_some_and(|ix| ix == 0 || ix == lines[i].pts.len() - 1);
+                    let at_end_j = hugged_vertex(u, k2)
+                        .is_some_and(|ix| ix == 0 || ix == lines[j].pts.len() - 1);
+                    if at_end_i || at_end_j {
+                        continue;
+                    }
                     let unit = |a: (f64, f64), b: (f64, f64)| {
                         let d = (b.0 - a.0, b.1 - a.1);
                         let l = d.0.hypot(d.1).max(1e-9);
@@ -1016,6 +1068,17 @@ mod tests {
     /// the #294 identity).
     const TEST_JUMP_RADIUS: f64 = 0.125 * (2.0 / 3.0) / 2.0;
 
+    /// A plain black 0.01-in test line.
+    fn jline(id: i64, z: usize, pts: &[(f64, f64)]) -> JumpLine {
+        JumpLine {
+            id,
+            z,
+            weight: 0.01,
+            color: (0, 0, 0),
+            pts: pts.to_vec(),
+        }
+    }
+
     /// #251: one crossing REGION hops once — a flattened curve's
     /// entry/exit sample windows converge onto the same pixels and
     /// merge to a single arc; distinct crossings beyond the hop
@@ -1067,8 +1130,8 @@ mod tests {
 
     /// #294: the stored-jump detector recognizes Visio's saved jump
     /// row (the repro's `X 1.4583→1.5417, A −0.0416667` — chord ON the
-    /// run) and leaves corner arcs (diagonal chord) and artwork-sized
-    /// arcs alone.
+    /// run) and leaves corner arcs (diagonal chord), authored shallow
+    /// bumps and artwork-sized arcs alone.
     #[test]
     fn stored_jump_arcs_match_the_repro_row() {
         assert!(is_stored_jump_arc(
@@ -1077,11 +1140,46 @@ mod tests {
         ));
         // A corner arc cuts across the run — never a jump.
         assert!(!is_stored_jump_arc(0.09, (0.5, 0.5)));
+        // An authored shallow bump (the #294 review's control) is a
+        // curve: |A| ≪ the semicircle band.
+        assert!(!is_stored_jump_arc(0.25, (4.0, 0.0)));
         // Artwork-sized arcs stay.
         assert!(!is_stored_jump_arc(2.0, (0.0, 4.0)));
-        // Degenerate: zero chord and a zero-sagitta straight row.
+        // Degenerate: zero chord and a zero-sagitta straight row
+        // (which the ink path already emits as a line).
         assert!(!is_stored_jump_arc(0.0, (0.0, 0.0)));
-        assert!(is_stored_jump_arc(0.0, (0.0, 1.0)));
+        assert!(!is_stored_jump_arc(0.0, (0.0, 1.0)));
+    }
+
+    /// #294 review: a crossing exactly ON an interior vertex of the
+    /// under polyline still hops — the strict-interior intersection
+    /// used to drop it (and with stored jump arcs straightened, the
+    /// replacement hop vanished with it). A crossing at a connector's
+    /// glue END never hops.
+    #[test]
+    fn line_jumps_hop_at_interior_vertices_not_at_glue_ends() {
+        // The vertical's corner (2,1) sits exactly on the horizontal.
+        let js = line_jumps(
+            &[
+                jline(1, 0, &[(1.0, 1.0), (3.0, 1.0)]),
+                jline(2, 1, &[(2.0, 0.0), (2.0, 1.0), (2.0, 2.0)]),
+            ],
+            TEST_JUMP_RADIUS,
+        );
+        assert_eq!(
+            js.len(),
+            1,
+            "the T-junction at the interior vertex hops: {js:?}"
+        );
+        // The same corner AT the horizontal's glue end: no hop.
+        let js = line_jumps(
+            &[
+                jline(1, 0, &[(1.0, 1.0), (2.0, 1.0)]),
+                jline(2, 1, &[(2.0, 0.0), (2.0, 1.0), (2.0, 2.0)]),
+            ],
+            TEST_JUMP_RADIUS,
+        );
+        assert_eq!(js.len(), 0, "a glue end never hops: {js:?}");
     }
 
     use super::*;
