@@ -2174,14 +2174,16 @@ impl App {
                         && page_pos.1 <= by1 + threshold
                     {
                         // #294: connector ink strips stored jump arcs —
-                        // the hit walk agrees with the rendered ink.
+                        // the hit walk agrees with the rendered ink,
+                        // with the SAME radius evidence the strip uses.
                         let strip_jumps =
                             crate::connectors::is_connector_in(&ed.doc, &chain, shape);
+                        let radius = crate::connectors::jump_radius_in(&ed.doc, page);
                         let segs = crate::connectors::geometry_hit_segments(
                             shape,
                             root,
                             &frame,
-                            strip_jumps,
+                            if strip_jumps { Some(radius) } else { None },
                         );
                         for (a, b) in segs {
                             if segment_hit(a, b, page_pos, threshold) {
@@ -5704,8 +5706,22 @@ impl App {
                 .unwrap_or((None, (1.0, 1.0)));
             let frame = crate::connectors::hit_frame(&ed.doc, &chain, sh, msize);
             // The loop gate above guarantees a connector, so stored
-            // jump arcs strip from the polyline (#294).
-            let segs = crate::connectors::geometry_hit_segments(sh, root, &frame, true);
+            // jump arcs strip from the polyline (#294) — with the
+            // page's own radius as the evidence.
+            let segs = crate::connectors::geometry_hit_segments(
+                sh,
+                root,
+                &frame,
+                // jump_radius_in resolves through the Page, not its id.
+                Some(
+                    ed.doc
+                        .pages
+                        .iter()
+                        .find(|p| p.id == page_id)
+                        .map(|p| crate::connectors::jump_radius_in(&ed.doc, p))
+                        .unwrap_or(0.0),
+                ),
+            );
             let mut pts = Vec::with_capacity(segs.len() + 1);
             if let Some((a, _)) = segs.first() {
                 pts.push(*a);

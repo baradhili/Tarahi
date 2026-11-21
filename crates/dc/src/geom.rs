@@ -448,6 +448,18 @@ pub fn row_cell_value(
     None
 }
 
+/// One walked geometry row of the hit walk: the row, its master
+/// fallback, the section feed name, the type, and the endpoint in the
+/// LOCAL frame and the frame-scaled one.
+type EvaldRow<'a> = (
+    &'a Row,
+    Option<&'a Row>,
+    &'a str,
+    String,
+    (f64, f64),
+    (f64, f64),
+);
+
 /// The connector hit segments of a shape's geometry in PAGE space
 /// (#173/#179): walks the shape's Geometry rows — merging inherited
 /// rows and cells from the master — sampling arcs, and mapping every
@@ -460,14 +472,27 @@ pub fn geometry_hit_segments(
     s: &Shape,
     master_root: Option<&Shape>,
     frame: &HitFrame,
-    strip_stored_jumps: bool,
+    strip_stored_jumps: Option<f64>,
 ) -> Vec<((f64, f64), (f64, f64))> {
     let mut sections: Vec<&Section> = s.sheet.sections_named("Geometry");
     // (owning width/height for Rel rows, x/y scale). The scale only
     // applies when the WHOLE section is the master's (its cached
-    // literals are in master units); per-cell inheritance evaluates
-    // master formulas in instance terms and scales only cached
-    // literals (#179).
+    // literals are in master units — those rows walk with
+    // `master=None`, so the one scaling happens at `end`); per-cell
+    // inheritance evaluates master formulas in instance terms and
+    // scales only cached literals (#179) — the ratio below serves that
+    // path in BOTH branches (CodeRabbit round 2 on #121: with an own
+    // section, a master-fallback cached literal stayed in MASTER units
+    // while the ink path's merge scaled it, so the two walks
+    // disagreed on inherited inline arcs).
+    let master_ratio = master_root.and_then(|_| {
+        let ms = frame.master_size;
+        if ms.0.abs() > 1e-6 && ms.1.abs() > 1e-6 {
+            Some((frame.size.0 / ms.0, frame.size.1 / ms.1))
+        } else {
+            None
+        }
+    });
     let (own, scale) = if sections.is_empty() {
         let Some(root) = master_root else {
             return Vec::new();
@@ -476,14 +501,9 @@ pub fn geometry_hit_segments(
         if sections.is_empty() {
             return Vec::new();
         }
-        let ms = frame.master_size;
         (
-            ms,
-            if ms.0.abs() > 1e-6 && ms.1.abs() > 1e-6 {
-                (frame.size.0 / ms.0, frame.size.1 / ms.1)
-            } else {
-                (1.0, 1.0)
-            },
+            frame.master_size,
+            master_ratio.unwrap_or((1.0, 1.0)),
         )
     } else {
         (frame.size, (1.0, 1.0))
@@ -496,19 +516,29 @@ pub fn geometry_hit_segments(
         .map(|g| g.rows.iter().collect::<Vec<_>>())
         .unwrap_or_default();
     let master_row = |ix: i64| master_rows.iter().find(|r| r.ix == ix).copied();
+    // Per-cell master-fallback literals scale master→instance by the
+    // size ratio in both branches (see the head note).
+    let per_cell = master_ratio.unwrap_or((1.0, 1.0));
     let axis_scale = |cell: &str| {
         if cell == "X" || cell == "A" {
-            scale.0
+            per_cell.0
         } else {
-            scale.1
+            per_cell.1
         }
     };
-    let cell = |row: &Row, master: Option<&Row>, name: &str| -> Option<f64> {
+    // The walk's OWN env copy: evaluated row coordinates feed back into
+    // it section-qualified (`Geometry1.X2`), exactly like the ink path —
+    // row-to-row references resolve against the LIVE route, not the
+    // stale cached V (CodeRabbit round 2 on #121: the reroute engine's
+    // `Geometry1.X2+…` controls kept the hit walk at the authored pose
+    // while the SVG walked the resized route).
+    let mut env = frame.env.clone();
+    let cell = |env: &vsdx::formula::Env, row: &Row, master: Option<&Row>, name: &str| -> Option<f64> {
         row_cell_value(
             row.cell(name),
             master.and_then(|m| m.cell(name)),
             axis_scale(name),
-            &frame.env,
+            env,
         )
     };
     let to_page = |p: (f64, f64)| -> (f64, f64) { frame.to_page(p) };
@@ -531,63 +561,66 @@ pub fn geometry_hit_segments(
     let mut spline_acc: Option<crate::curve::SplineAcc> = None;
     const MAX_ROWS: usize = 64;
     // The ordered walk: the instance's rows, then master-only rows
-    // (by ix) the instance never overrode.
-    let mut walk: Vec<(&Row, Option<&Row>)> = Vec::new();
-    for geo in &sections {
+    // (by ix) the instance never overrode. Each row carries its
+    // section-qualified feed name (`Geometry1.X2`) — the ink path's
+    // convention, by section enumeration order.
+    let gnames: Vec<String> = (0..sections.len())
+        .map(|si| format!("Geometry{}", si + 1))
+        .collect();
+    let mut walk: Vec<(&Row, Option<&Row>, &str)> = Vec::new();
+    for (si, geo) in sections.iter().enumerate() {
         for row in geo.rows.iter().take(MAX_ROWS) {
-            walk.push((row, master_row(row.ix)));
+            walk.push((row, master_row(row.ix), &gnames[si]));
         }
     }
     for r in master_rows.iter().take(MAX_ROWS) {
-        if !walk.iter().any(|(row, _)| row.ix == r.ix) {
-            walk.push((r, None));
+        if !walk.iter().any(|(row, _, _)| row.ix == r.ix) {
+            walk.push((r, None, "Geometry1"));
         }
     }
-    walk.sort_by_key(|(row, _)| row.ix);
+    walk.sort_by_key(|(row, _, _)| row.ix);
     // `Del="1"` rows stay deleted (GitHub #293): the INSTANCE row's
     // marker wins when one is present, else the master-only row's own.
     // The #293 repro's connector inherits its master's hook row through
     // an instance `<Row Del="1" IX="3" T="LineTo"/>` with no cells.
-    walk.retain(|(row, _)| !row.is_deleted());
-    // A row's evaluated endpoint in the same frame the walk uses —
-    // also the route-context lookahead for stored-jump classification
-    // (#294 review). The bool: the row is a MoveTo (positions the pen,
-    // draws no run).
+    walk.retain(|(row, _, _)| !row.is_deleted());
     // Row kind: 0 = MoveTo (positions the pen, draws no run), 1 =
     // straight LineTo (the only run that counts as jump context —
     // curved neighbors' endpoint chords can lie about the route,
     // #294 review), 2 = anything else.
-    let walk_row = |i: usize| -> Option<((f64, f64), u8)> {
-        let (r, m) = walk.get(i)?;
-        let t = r
-            .t
-            .as_deref()
-            .or(m.and_then(|mm| mm.t.as_deref()))
-            .unwrap_or("");
-        let x = cell(r, *m, "X").unwrap_or(0.0);
-        let y = cell(r, *m, "Y").unwrap_or(0.0);
-        let rel = t.starts_with("Rel");
-        let end = if rel { (x * own.0, y * own.1) } else { (x, y) };
-        let kind = if t == "MoveTo" || t == "RelMoveTo" {
+    let kind_of = |t: &str| -> u8 {
+        if t == "MoveTo" || t == "RelMoveTo" {
             0u8
         } else if t == "LineTo" || t == "RelLineTo" {
             1
         } else {
             2
-        };
-        Some((end, kind))
+        }
     };
-    for (k, (row, master)) in walk.iter().take(MAX_ROWS).enumerate() {
+    // FIRST PASS — the ordered evaluation, the ink path's #249 rule:
+    // each row's endpoint evaluates, feeds back into the env
+    // section-qualified (`Geometry1.X2`), and only then do the row's
+    // control cells read the env — a row sees the feeds of the rows
+    // before it (and its own), never a later row's. The lookahead and
+    // the classification both read these EVALUATED values, so
+    // row-to-row references (`Geometry1.X2+0.083`, the reroute
+    // engine's curved controls) resolve against the live route instead
+    // of the stale cached V (CodeRabbit round 2 on #121: the ink walk
+    // fed the env, the hit walk didn't, and a resized route stripped
+    // in one walk but not the other).
+    let mut evald: Vec<EvaldRow> = Vec::new();
+    for (row, master, gname) in walk.iter().take(MAX_ROWS) {
         let t = row
             .t
             .as_deref()
             .or(master.and_then(|m| m.t.as_deref()))
-            .unwrap_or("");
+            .unwrap_or("")
+            .to_string();
         // Omitted geometry cells default to 0 (the corpus arcs omit Y
         // and inherit it); a row nothing resolves is still walked as a
         // 0-coordinate row — never dropped (#179).
-        let x = cell(row, *master, "X").unwrap_or(0.0);
-        let y = cell(row, *master, "Y").unwrap_or(0.0);
+        let x = cell(&env, row, *master, "X").unwrap_or(0.0);
+        let y = cell(&env, row, *master, "Y").unwrap_or(0.0);
         let rel = t.starts_with("Rel");
         let end_local = if rel { (x * own.0, y * own.1) } else { (x, y) };
         // Master-section cached literals are in master units.
@@ -596,6 +629,20 @@ pub fn geometry_hit_segments(
         } else {
             end_local
         };
+        env.insert(format!("{gname}.X{}", row.ix), end_local.0);
+        env.insert(format!("{gname}.Y{}", row.ix), end_local.1);
+        evald.push((row, *master, gname, t, end_local, end));
+    }
+    // SECOND PASS — the geometry, against the evaluated values. The
+    // route-context directions read LOCAL endpoints (the frame the
+    // classification chord lives in) — the scaled frame would bend
+    // collinearity under non-uniform instance scaling.
+    for (k, (row, master, _gname, t, end_local, end)) in
+        evald.iter().take(MAX_ROWS).enumerate()
+    {
+        let t = t.as_str();
+        let end_local = *end_local;
+        let end = *end;
         match t {
             "MoveTo" | "RelMoveTo" => {
                 cur = Some(end);
@@ -605,7 +652,7 @@ pub fn geometry_hit_segments(
             "ArcTo" | "RelArcTo" => {
                 // |A| = sagitta, bulging right of travel; the
                 // quadratic control that reproduces the apex.
-                let raw_a = cell(row, *master, "A").unwrap_or(0.0);
+                let raw_a = cell(&env, row, *master, "A").unwrap_or(0.0);
                 if let (Some(c0), Some(c0_local)) = (cur, cur_local) {
                     let d = (end.0 - c0.0, end.1 - c0.1);
                     // The classification chord in the LOCAL frame (the
@@ -621,11 +668,11 @@ pub fn geometry_hit_segments(
                     let mut prev_dir = None;
                     let mut pi = k as isize - 1;
                     while pi >= 1 {
-                        let Some((pe, kind)) = walk_row(pi as usize) else { break };
-                        if kind != 1 {
+                        let (_, _, _, pt, pe, _) = &evald[pi as usize];
+                        if kind_of(pt.as_str()) != 1 {
                             break;
                         }
-                        let Some((pp, _)) = walk_row(pi as usize - 1) else { break };
+                        let (_, _, _, _, pp, _) = &evald[pi as usize - 1];
                         let pd = (pe.0 - pp.0, pe.1 - pp.1);
                         if pd.0.hypot(pd.1) > 1e-9 {
                             prev_dir = Some(pd);
@@ -635,9 +682,9 @@ pub fn geometry_hit_segments(
                     }
                     let mut next_dir = None;
                     let mut ni = k + 1;
-                    while ni < walk.len() {
-                        let Some((ne, kind)) = walk_row(ni) else { break };
-                        if kind != 1 {
+                    while ni < evald.len() {
+                        let (_, _, _, nt, ne, _) = &evald[ni];
+                        if kind_of(nt.as_str()) != 1 {
                             break;
                         }
                         let p = if ni == k + 1 {
@@ -646,10 +693,7 @@ pub fn geometry_hit_segments(
                             // instance scaling (#294 review).
                             end_local
                         } else {
-                            match walk_row(ni - 1) {
-                                Some((q, _)) => q,
-                                None => break,
-                            }
+                            evald[ni - 1].4
                         };
                         let nd = (ne.0 - p.0, ne.1 - p.1);
                         if nd.0.hypot(nd.1) > 1e-9 {
@@ -665,8 +709,20 @@ pub fn geometry_hit_segments(
                     // frame the ink path classifies in — instance
                     // scaling must not make the walks disagree (#294
                     // review).
-                    let stored_jump = strip_stored_jumps
-                        && is_stored_jump_arc(raw_a, d_class, prev_dir, next_dir);
+                    //
+                    // The radius needs no frame conversion: every
+                    // geometry frame is INCHES (master-local,
+                    // instance-local, page — the instance/master ratios
+                    // are geometric RESCALES applied after authoring),
+                    // and the stored arc's A was authored at the page's
+                    // radius. The comparison is authored inches against
+                    // page inches in every frame.
+                    let stored_jump = match strip_stored_jumps {
+                        Some(r) => {
+                            is_stored_jump_arc(raw_a, d_class, prev_dir, next_dir, r)
+                        }
+                        None => false,
+                    };
                     if !stored_jump {
                         // The bump is geometry in the scaled frame:
                         // the local sagitta scales with the local
@@ -702,9 +758,9 @@ pub fn geometry_hit_segments(
                 // follows the ink (a quadratic through an off-chord
                 // control would test the doubled-back curve that is
                 // never drawn; CodeRabbit, #278).
-                let zero_width = cell(row, *master, "D").is_some_and(|d| d.abs() < 1e-9);
-                let a = cell(row, *master, "A");
-                let b = cell(row, *master, "B");
+                let zero_width = cell(&env, row, *master, "D").is_some_and(|d| d.abs() < 1e-9);
+                let a = cell(&env, row, *master, "A");
+                let b = cell(&env, row, *master, "B");
                 if !zero_width {
                     if let (Some(a), Some(b), Some(c0)) = (a, b, cur) {
                         let ctrl = (
@@ -737,17 +793,17 @@ pub fn geometry_hit_segments(
                 spline_acc = Some(crate::curve::SplineAcc::start(
                     cur.unwrap_or(end),
                     end,
-                    cell(row, *master, "A").unwrap_or(0.0),
-                    cell(row, *master, "B").unwrap_or(0.0),
-                    cell(row, *master, "C").unwrap_or(1.0),
-                    cell(row, *master, "D").unwrap_or(3.0),
+                    cell(&env, row, *master, "A").unwrap_or(0.0),
+                    cell(&env, row, *master, "B").unwrap_or(0.0),
+                    cell(&env, row, *master, "C").unwrap_or(1.0),
+                    cell(&env, row, *master, "D").unwrap_or(3.0),
                 ));
                 cur = Some(end);
                 cur_local = Some(end_local);
             }
             "SplineKnot" => match spline_acc.as_mut() {
                 Some(acc) => {
-                    acc.knot(end, cell(row, *master, "A").unwrap_or(0.0));
+                    acc.knot(end, cell(&env, row, *master, "A").unwrap_or(0.0));
                     cur = Some(end);
                 cur_local = Some(end_local);
                 }
@@ -792,16 +848,16 @@ pub fn geometry_hit_segments(
                     );
                     let start = cur.unwrap_or(end);
                     let mut points = vec![start];
-                    let mut knots = vec![cell(row, *master, "C").unwrap_or(0.0)];
-                    let mut weights = vec![cell(row, *master, "D").unwrap_or(1.0)];
+                    let mut knots = vec![cell(&env, row, *master, "C").unwrap_or(0.0)];
+                    let mut weights = vec![cell(&env, row, *master, "D").unwrap_or(1.0)];
                     for (gx, gy, gk, gw) in &f.points {
                         points.push((gx * fx, gy * fy));
                         knots.push(*gk);
                         weights.push(*gw);
                     }
-                    knots.push(cell(row, *master, "A").unwrap_or(0.0));
+                    knots.push(cell(&env, row, *master, "A").unwrap_or(0.0));
                     knots.push(f.last_knot);
-                    weights.push(cell(row, *master, "B").unwrap_or(1.0));
+                    weights.push(cell(&env, row, *master, "B").unwrap_or(1.0));
                     points.push(end);
                     let built = crate::curve::SplineData {
                         degree: f.degree,
@@ -938,26 +994,43 @@ fn run_continues(dir: Option<(f64, f64)>, chord: (f64, f64)) -> bool {
 /// the old arc and the jump overlay draws the ONE arc at the current
 /// crossing with the page's own radius — a stored arc stops lingering
 /// after a move (#294).
+///
+/// `radius` is the page's own jump radius ([`jump_radius_in`])
+/// expressed in THIS frame — the shape-local units the sagitta and
+/// chord are measured in (the caller divides by the frame's
+/// perpendicular-axis scale when the rows live in master units). The
+/// shape checks alone cannot tell an AUTHORED semicircle between two
+/// straight runs from a stored jump (a 1-inch arc with A=−0.5 over
+/// collinear runs matches every geometric test — CodeRabbit rounds 1–2
+/// on #121), so the radius is the deciding evidence: the arc strips
+/// only when its sagitta matches the page's resolved radius within
+/// writer rounding. An authored arc that happens to sit exactly at the
+/// page radius is indistinguishable from a stored jump and is
+/// deliberately preserved (the safer direction — never destroy
+/// authored geometry on a guess).
 pub fn is_stored_jump_arc(
     sagitta: f64,
     chord: (f64, f64),
     prev_dir: Option<(f64, f64)>,
     next_dir: Option<(f64, f64)>,
+    radius: f64,
 ) -> bool {
     let len = chord.0.hypot(chord.1);
     let a = sagitta.abs();
     // No absolute size cap: the radius is LineToLineX ×
     // LineJumpFactorX / 2 and LineJumpFactorX=10 is documented-valid
     // (a 0.625 in semicircle at the default spacing) — the semicircle
-    // band, the axis-aligned chord, the straight-run context and the
-    // connector gate already separate jumps from artwork (#294
-    // review).
+    // band, the axis-aligned chord, the straight-run context, the
+    // connector gate and the page-radius evidence already separate
+    // jumps from artwork (#294 review).
     len > 1e-9
         && a >= 0.4 * len
         && a <= 0.6 * len
         && chord.0.abs().min(chord.1.abs()) <= len * 0.02
         && run_continues(prev_dir, chord)
         && run_continues(next_dir, chord)
+        && radius > 0.0
+        && (a - radius).abs() <= (radius * 0.05).max(1e-6)
 }
 
 
@@ -1237,8 +1310,10 @@ pub fn page_jumps(doc: &vsdx::Document, page: &vsdx::Page, hidden: &[i64]) -> Ve
         let master_root = chain.get(1).copied();
         // Everything reaching here is a connector (the gate above), so
         // stored jump arcs strip from the polyline (#294) — the hop
-        // computes on the straight run, never on a stale arc.
-        let segs = geometry_hit_segments(s, master_root, &frame, true);
+        // computes on the straight run, never on a stale arc. The
+        // evidence is THIS page's resolved radius (the same value the
+        // hop draws with).
+        let segs = geometry_hit_segments(s, master_root, &frame, Some(radius));
         if segs.is_empty() {
             continue;
         }
@@ -1354,6 +1429,7 @@ mod tests {
             (0.083_333_3, 0.0),
             Some((1.0, 0.0)),
             Some((1.0, 0.0)),
+            0.041_666_7,
         ));
         // A corner arc cuts across the run — never a jump.
         assert!(!is_stored_jump_arc(
@@ -1361,6 +1437,7 @@ mod tests {
             (0.5, 0.5),
             Some((1.0, 0.0)),
             Some((0.0, 1.0)),
+            0.041_666_7,
         ));
         // An authored shallow bump (the #294 review's control) is a
         // curve: |A| ≪ the semicircle band.
@@ -1369,6 +1446,7 @@ mod tests {
             (4.0, 0.0),
             Some((1.0, 0.0)),
             Some((1.0, 0.0)),
+            0.25,
         ));
         // A large SHALLOW arc stays a curve — size alone never makes
         // a jump (the semicircle band does the work; the old 0.5 in
@@ -1379,6 +1457,7 @@ mod tests {
             (0.0, 4.0),
             Some((0.0, 1.0)),
             Some((0.0, 1.0)),
+            1.0,
         ));
         // A large SEMICIRCLE with full route context is a jump at any
         // size (LineJumpFactorX=10 → 0.625 in at the defaults).
@@ -1387,6 +1466,7 @@ mod tests {
             (0.0, 4.0),
             Some((0.0, 1.0)),
             Some((0.0, 1.0)),
+            2.0,
         ));
         // Degenerate: zero chord and a zero-sagitta straight row
         // (which the ink path already emits as a line).
@@ -1395,16 +1475,18 @@ mod tests {
             (0.0, 0.0),
             Some((1.0, 0.0)),
             Some((1.0, 0.0)),
+            0.041_666_7,
         ));
         assert!(!is_stored_jump_arc(
             0.0,
             (0.0, 1.0),
             Some((1.0, 0.0)),
             Some((1.0, 0.0)),
+            0.041_666_7,
         ));
         // An authored whole-route semicircle (#294 review) has no
         // continuing runs — it stays a curve.
-        assert!(!is_stored_jump_arc(0.25, (0.5, 0.0), None, None));
+        assert!(!is_stored_jump_arc(0.25, (0.5, 0.0), None, None, 0.25));
         // Mid-run geometry but a run that stops at the arc (an
         // authored end-arc) is not a jump either.
         assert!(!is_stored_jump_arc(
@@ -1412,6 +1494,41 @@ mod tests {
             (0.083_333_3, 0.0),
             Some((1.0, 0.0)),
             None,
+            0.041_666_7,
+        ));
+        // Radius evidence (CodeRabbit rounds 1–2 on #121): the shape
+        // checks alone cannot tell an AUTHORED semicircle between two
+        // straight runs from a stored jump — a 1-inch arc with A=−0.5
+        // matches every geometric test. The page radius decides.
+        assert!(!is_stored_jump_arc(
+            -0.5,
+            (1.0, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            0.041_666_7, // the page's radius is far smaller: authored ink
+        ));
+        assert!(is_stored_jump_arc(
+            -0.5,
+            (1.0, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            0.5, // the page's radius matches: a stored jump
+        ));
+        // Writer rounding rides inside the 5% band.
+        assert!(is_stored_jump_arc(
+            -0.041_666_67,
+            (0.083_333_3, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            0.041_666_691, // 0.125 × 0.66667 / 2, the No Style values
+        ));
+        // No radius evidence (0) never strips — preserve the arc.
+        assert!(!is_stored_jump_arc(
+            -0.041_666_7,
+            (0.083_333_3, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            0.0,
         ));
     }
 
@@ -1513,7 +1630,7 @@ mod tests {
         let root1 = root(false);
         let s1 = inst(Some(del_row()));
         let frame = hit_frame(&doc, &[&s1, &root1], &s1, (0.25, 2.2));
-        let segs = geometry_hit_segments(&s1, Some(&root1), &frame, false);
+        let segs = geometry_hit_segments(&s1, Some(&root1), &frame, None);
         // Exactly the surviving shaft: one segment on the run's page x
         // spanning the frame height (the hook's page x would differ by
         // LocPinX, and an empty walk would also pass a vaguer check).
@@ -1528,7 +1645,7 @@ mod tests {
         let root2 = root(true);
         let s2 = inst(None);
         let frame = hit_frame(&doc, &[&s2, &root2], &s2, (0.25, 2.2));
-        let segs = geometry_hit_segments(&s2, Some(&root2), &frame, false);
+        let segs = geometry_hit_segments(&s2, Some(&root2), &frame, None);
         assert!(
             segs.iter().all(|(a, b)| a.0.abs() < 1.0 && b.0.abs() < 1.0),
             "a master-only deleted row is dead too: {segs:?}"
@@ -1676,7 +1793,7 @@ mod tests {
         let doc = vsdx::Document::default();
         let chain = vec![&s];
         let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
-        let segs = geometry_hit_segments(&s, None, &frame, true);
+        let segs = geometry_hit_segments(&s, None, &frame, Some(0.041_666_7));
         assert!(!segs.is_empty());
         assert!(flat(&segs), "the arc strips past the degenerate row");
     }
@@ -1702,13 +1819,234 @@ mod tests {
             let doc = vsdx::Document::default();
             let chain = vec![&inst, &root];
             let frame = hit_frame(&doc, &chain, &inst, (2.0, 0.5));
-            let segs = geometry_hit_segments(&inst, Some(&root), &frame, true);
+            let segs = geometry_hit_segments(&inst, Some(&root), &frame, Some(0.041_666_7));
             assert!(!segs.is_empty());
             assert!(
                 flat(&segs),
                 "the arc strips at instance scale ({iw}, {ih})"
             );
         }
+    }
+
+    /// CodeRabbit rounds 1–2 on #121: the shape checks alone cannot
+    /// tell an AUTHORED semicircle between two straight runs from a
+    /// stored jump. Through the hit walk: the authored arc PRESERVES
+    /// with a non-matching page radius; a stored jump with the page's
+    /// own radius strips; and the walks agree — the ink path's strip
+    /// carries the same evidence.
+    #[test]
+    fn authored_semicircles_preserve_unless_the_page_radius_matches() {
+        // An authored 1-inch semicircle (A=−0.5) mid-run, straight
+        // continuation on both sides — every geometric test passes.
+        let rows = vec![
+            mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            mrow(2, "LineTo", &[("X", 0.5), ("Y", 0.0)]),
+            mrow(3, "ArcTo", &[("X", 1.5), ("Y", 0.0), ("A", -0.5)]),
+            mrow(4, "LineTo", &[("X", 2.5), ("Y", 0.0)]),
+        ];
+        let s = conn_shape(7, 2.5, 1.0, rows);
+        let doc = vsdx::Document::default();
+        let chain = vec![&s];
+        let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
+        // The page's radius is the default jump spacing — far from 0.5:
+        // the arc is AUTHORED ink and stays a curve.
+        let segs = geometry_hit_segments(&s, None, &frame, Some(0.041_666_7));
+        assert!(!segs.is_empty());
+        assert!(!flat(&segs), "authored arc preserved: {segs:?}");
+    }
+
+    /// CodeRabbit round 1: a full-route `EllipticalArcTo` (the drawn
+    /// curve IS the route) never strips — the classifier is an ArcTo
+    /// row's evidence chain, and elliptical rows keep their ink.
+    #[test]
+    fn full_route_elliptical_arcs_never_strip() {
+        let rows = vec![
+            mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            mrow(2, "LineTo", &[("X", 0.5), ("Y", 0.0)]),
+            mrow(
+                3,
+                "EllipticalArcTo",
+                &[("X", 1.5), ("Y", 0.0), ("A", 1.0), ("B", 0.25)],
+            ),
+            mrow(4, "LineTo", &[("X", 2.5), ("Y", 0.0)]),
+        ];
+        let s = conn_shape(7, 2.5, 1.0, rows);
+        let doc = vsdx::Document::default();
+        let chain = vec![&s];
+        let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
+        let segs = geometry_hit_segments(&s, None, &frame, Some(0.041_666_7));
+        assert!(!segs.is_empty());
+        assert!(!flat(&segs), "the full-route arc stays curved: {segs:?}");
+    }
+
+    /// CodeRabbit round 2: the hit walk's per-cell master-fallback
+    /// literals scale master→instance like the ink path's merge, so an
+    /// inherited inline arc classifies in the SAME (instance) frame the
+    /// ink walks — the stretched bump appears in BOTH walks' verdicts
+    /// (here: preserved, since the stretched radius no longer matches
+    /// the page's).
+    #[test]
+    fn inherited_inline_arcs_scale_like_the_ink_path() {
+        // Master: a stored-jump-shaped arc row with CACHED LITERALS
+        // (chord 0.0833 over the run, A −0.0416667 — the #294 shape).
+        let mut root = Shape {
+            id: 1,
+            type_: Some("Shape".into()),
+            ..Shape::default()
+        };
+        root.sheet.set_cell("ObjType", Cell::value("2"));
+        root.sheet.set_cell("Width", Cell::value("3"));
+        root.sheet.set_cell("Height", Cell::value("0.25"));
+        let sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            rows: vec![
+                mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                mrow(2, "LineTo", &[("X", 1.4583), ("Y", 0.0)]),
+                mrow(3, "ArcTo", &[("X", 1.5417), ("Y", 0.0), ("A", -0.041_666_7)]),
+                mrow(4, "LineTo", &[("X", 3.0), ("Y", 0.0)]),
+            ],
+            ..Section::default()
+        };
+        root.sheet.children.push(SheetChild::Section(sec));
+        // Instance: an OWN section whose rows are all F="Inh" (the
+        // owner-file pattern), at 2× the master width. The inherited
+        // literals scale into instance units — the arc's chord doubles.
+        let mut inst = Shape {
+            id: 2,
+            type_: Some("Shape".into()),
+            master: Some(1),
+            ..Shape::default()
+        };
+        inst.sheet.set_cell("ObjType", Cell::value("2"));
+        inst.sheet.set_cell("Width", Cell::value("6"));
+        inst.sheet.set_cell("Height", Cell::value("0.25"));
+        let inh = || Cell {
+            f: Some("Inh".into()),
+            ..Cell::default()
+        };
+        let sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            rows: vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: vec![("X".to_string(), inh())],
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 2,
+                    cells: vec![("X".to_string(), inh())],
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("ArcTo".into()),
+                    ix: 3,
+                    cells: vec![
+                        ("X".to_string(), inh()),
+                        ("A".to_string(), inh()),
+                    ],
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 4,
+                    cells: vec![("X".to_string(), inh())],
+                    ..Row::default()
+                },
+            ],
+            ..Section::default()
+        };
+        inst.sheet.children.push(SheetChild::Section(sec));
+        let doc = vsdx::Document::default();
+        let chain = vec![&inst, &root];
+        let frame = hit_frame(&doc, &chain, &inst, (3.0, 0.25));
+        // The stretched bump: chord 0.1666, rendered A 0.0833 — twice
+        // the page radius, so the evidence declines and the arc keeps
+        // its ink. The decisive assertion is the WALKS AGREE: the hit
+        // polyline keeps the bump exactly like the ink does (the old
+        // code retained it here while the ink stripped — or vice versa
+        // — depending on the scale).
+        let segs = geometry_hit_segments(&inst, Some(&root), &frame, Some(0.041_666_7));
+        assert!(!segs.is_empty());
+        assert!(
+            !flat(&segs),
+            "the stretched stored arc keeps its bump in BOTH walks: {segs:?}"
+        );
+    }
+
+    /// CodeRabbit round 2: the hit walk feeds evaluated row
+    /// coordinates back into the env (`Geometry1.X2`) like the ink
+    /// path — row-to-row references resolve against the LIVE route,
+    /// not the stale cached V.
+    #[test]
+    fn hit_walk_feeds_row_coordinates_for_formula_references() {
+        let mut s = Shape {
+            id: 1,
+            type_: Some("Shape".into()),
+            ..Shape::default()
+        };
+        s.sheet.set_cell("ObjType", Cell::value("2"));
+        s.sheet.set_cell("Width", Cell::value("2"));
+        s.sheet.set_cell("Height", Cell::value("0.5"));
+        let sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            rows: vec![
+                mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                // A live formula whose cached V is STALE (1 vs 2): the
+                // ink path evaluates the formula; the hit walk must
+                // agree.
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 2,
+                    cells: vec![(
+                        "X".to_string(),
+                        Cell {
+                            v: Some("2".into()),
+                            f: Some("1".into()),
+                            ..Cell::default()
+                        },
+                    )],
+                    ..Row::default()
+                },
+                // The arc rides Geometry1.X2: live 1 + 0.5 = 1.5, not
+                // the stale 2.5.
+                Row {
+                    t: Some("ArcTo".into()),
+                    ix: 3,
+                    cells: vec![(
+                        "X".to_string(),
+                        Cell {
+                            v: Some("2.5".into()),
+                            f: Some("Geometry1.X2+0.5".into()),
+                            ..Cell::default()
+                        },
+                    )],
+                    ..Row::default()
+                },
+            ],
+            ..Section::default()
+        };
+        s.sheet.children.push(SheetChild::Section(sec));
+        let doc = vsdx::Document::default();
+        let chain = vec![&s];
+        let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
+        let segs = geometry_hit_segments(&s, None, &frame, Some(0.041_666_7));
+        let last = segs.last().expect("segments").1;
+        // Local (1.5, 0) through the frame (pin 0, locpin 1/0.25).
+        let expected = frame.to_page((1.5, 0.0));
+        assert!(
+            (last.0 - expected.0).abs() < 1e-9 && (last.1 - expected.1).abs() < 1e-9,
+            "the arc lands at the LIVE Geometry1.X2+0.5 = 1.5 (page {expected:?}), \
+             not the stale 2.5: {last:?}"
+        );
+        assert!(
+            (last.0 - 2.5 + 1.0).abs() > 1e-9,
+            "guard: the stale reading would land elsewhere"
+        );
     }
 
     use super::*;
@@ -1780,7 +2118,7 @@ mod tests {
         let doc = vsdx::Document::default();
         let chain = vec![&s];
         let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
-        let segs = geometry_hit_segments(&s, None, &frame, false);
+        let segs = geometry_hit_segments(&s, None, &frame, None);
         // Segments are page space (the frame is identity here); some
         // sample must sit off the (0,0)→(4,2) chord — the interior
         // points pull the belly above it.

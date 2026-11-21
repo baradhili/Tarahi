@@ -728,7 +728,7 @@ mod tests {
         let doc = vsdx::Document::default();
         let chain = vec![&s];
         let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
-        let segs = geometry_hit_segments(&s, None, &frame, false);
+        let segs = geometry_hit_segments(&s, None, &frame, None);
         // Many samples along the curve, and some OFF the (0,0)→(4,2)
         // chord (the interior points pull the belly up through
         // (1,0.5)/(3,1.5) — chord y at x=1 is 0.5, belly is above it).
@@ -820,7 +820,7 @@ mod tests {
             &s,
             None,
             &plain_frame((10.0, 10.0), (4.0, 4.0), (1.0, 1.0)),
-            false,
+            None,
         );
         assert!(!segs.is_empty(), "the arc produced segments");
         // The sampled interior sits above the chord (y > 10 in page
@@ -868,7 +868,7 @@ mod tests {
             &inst,
             Some(&root),
             &plain_frame((10.0, 10.0), (4.0, 4.0), (2.0, 2.0)),
-            false,
+            None,
         );
         assert_eq!(
             segs,
@@ -974,7 +974,7 @@ mod tests {
                 .into_iter()
                 .collect(),
         };
-        let segs = geometry_hit_segments(&inst, Some(&root), &frame, false);
+        let segs = geometry_hit_segments(&inst, Some(&root), &frame, None);
         assert!(!segs.is_empty(), "inherited rows still produce segments");
         let last = segs.last().unwrap().1;
         assert!(
@@ -1023,7 +1023,7 @@ mod tests {
             flip: (1.0, 1.0),
             env: vsdx::formula::Env::new(),
         };
-        let segs = geometry_hit_segments(&s, None, &frame, false);
+        let segs = geometry_hit_segments(&s, None, &frame, None);
         assert_eq!(segs.len(), 1, "one segment");
         let (a, b) = segs[0];
         assert!(
