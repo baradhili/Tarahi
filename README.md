@@ -127,7 +127,12 @@ or newer — Ubuntu 22.04+, Debian 12+, Fedora 36+** (the oldest still-supported
 Ubuntu LTS). The AppImage is therefore intentionally *not* "self-contained" in
 the C-library sense every glibc-based AppImage shares: glibc itself comes from
 the host (bundling it is the known-broken path for AppImages); the dlopen'd
-X11/Wayland/dbus client libraries ARE bundled. The release enforces the floor
+X11/dbus client libraries ARE bundled — but the Wayland client libraries
+deliberately are NOT (#292): they must match the host's Mesa EGL driver, which
+is always loaded from the host, and a bundled older copy shadows the host's and
+crashes startup on current-Mesa Wayland sessions. Every Wayland-session host
+ships libwayland anyway, and an X11-only host simply falls back to X11. The
+release enforces the floor
 at build time (`GLIBC_FLOOR=2.35` symbol check) and will fail loudly if the
 base ever drifts. Raise the floor (or lower it via an older-baseline linker)
 only with an explicit compat decision. The AppImage also embeds

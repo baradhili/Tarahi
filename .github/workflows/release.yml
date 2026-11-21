@@ -123,6 +123,18 @@ jobs:
           # its transitive closure) is copied in explicitly (#261: the
           # catalog test system has none of them and the app must work
           # offline on a bare desktop).
+          #
+          # EXCEPTION (#292): the libwayland client libraries are
+          # deliberately NOT bundled. They must match the host's Mesa
+          # EGL driver, which is always loaded from the host — the
+          # 22.04 copy (libwayland 1.20) shadows the host's newer one,
+          # and the driver's wl_display_create_queue_with_name (1.22+)
+          # then fails to resolve, crashing at startup on any Wayland
+          # session with current Mesa (0.2.12–0.2.15). Every
+          # Wayland-session host ships them (a Wayland session cannot
+          # exist without libwayland-client); on a bare X11 desktop
+          # winit's dlopen simply fails and it falls back to X11. 0.2.11
+          # (pre-#261) shipped none and ran fine under Wayland.
           for lib in \
             libX11.so.6 libX11-xcb.so.1 libxcb.so.1 libXau.so.6 libXdmcp.so.6 \
             libxkbcommon.so.0 libxkbcommon-x11.so.0 \
@@ -131,7 +143,6 @@ jobs:
             libmd.so.0 \
             libdbus-1.so.3 libsystemd.so.0 liblzma.so.5 libzstd.so.1 \
             liblz4.so.1 libcap.so.2 libgcrypt.so.20 libgpg-error.so.0 \
-            libwayland-client.so.0 libwayland-cursor.so.0 libwayland-egl.so.1 \
             libffi.so.8; do
             src="$(ldconfig -p | awk -v lib="$lib" '$NF ~ ("/" lib "$") {print $NF; exit}')"
             if [ -z "$src" ]; then
@@ -140,6 +151,12 @@ jobs:
               cp -aL "$src" AppDir/usr/lib/
             fi
           done
+          # Guard against re-introducing #292: a bundled libwayland-client
+          # shadows the host's and breaks the host's EGL driver.
+          test ! -e AppDir/usr/lib/libwayland-client.so.0 || {
+            echo "::error::libwayland-client.so.0 got bundled — it shadows the host's libwayland and breaks the host Mesa EGL driver (#292)"
+            exit 1
+          }
           # The AppImage FILE name must match the desktop entry's
           # application name (Name=Tarahi) — the catalog test rejects
           # diagramcraft_*.AppImage for it (#261).
