@@ -187,6 +187,94 @@ fn replace_plain_boundaries_stay_outside_existing_fields() {
     );
 }
 
+/// A plain-selection splice over PART of a CDATA section keeps the
+/// unselected remainder: the section splits at the selection
+/// boundaries, the splice removes only the selected part, and the
+/// marker lands between sections — never inside a wrapper
+/// (CodeRabbit round 9: `a<![CDATA[bc]]>d` + offset 1 len 1 used to
+/// swallow `c` with `b`).
+#[test]
+fn replace_plain_over_partial_cdata_keeps_the_unselected_part() {
+    let mut ed = doc_with_shapes();
+    {
+        let s = &mut ed.doc.pages[0].shapes[0];
+        s.sheet.text_raw = Some("a<![CDATA[bc]]>d".into());
+        s.sheet.text = Some("abcd".into());
+    }
+    let cmd = InsertField::new(
+        Scope::Shape { page: 0, shape: 1 },
+        "User.Label",
+        FieldInsert::ReplacePlain { offset: 1, len: 1 },
+    );
+    ed.apply(cmd).unwrap();
+    assert_eq!(
+        shape(&ed, 1).sheet.text_raw.as_deref(),
+        Some("a<fld IX='0'/><![CDATA[c]]>d"),
+        "only the selected `b` goes; `c` survives in its own section"
+    );
+    assert_eq!(shape(&ed, 1).sheet.text.as_deref(), Some("acd"));
+
+    // Both ends inside ONE section: the middle part is replaced
+    // wholesale, the surrounding parts survive.
+    let mut ed = doc_with_shapes();
+    {
+        let s = &mut ed.doc.pages[0].shapes[0];
+        s.sheet.text_raw = Some("a<![CDATA[bcd]]>e".into());
+        s.sheet.text = Some("abcde".into());
+    }
+    let cmd = InsertField::new(
+        Scope::Shape { page: 0, shape: 1 },
+        "User.Label",
+        FieldInsert::ReplacePlain { offset: 2, len: 1 },
+    );
+    ed.apply(cmd).unwrap();
+    assert_eq!(
+        shape(&ed, 1).sheet.text_raw.as_deref(),
+        Some("a<![CDATA[b]]><fld IX='0'/><![CDATA[d]]>e"),
+        "the unselected `b` and `d` keep their wrappers"
+    );
+}
+
+/// A display with NESTED markup maps its END past the `</fld>` — a
+/// replacement of the display swaps the whole marker instead of
+/// splicing an empty range beside it (CodeRabbit round 9:
+/// `<fld IX='0'><b>X</b></fld>Y` + offset 0 len 1 used to leave the
+/// old field intact under the new marker).
+#[test]
+fn nested_markup_display_end_maps_past_the_marker() {
+    let mut ed = doc_with_shapes();
+    {
+        let s = &mut ed.doc.pages[0].shapes[0];
+        s.sheet.text_raw = Some("<fld IX='0'><b>X</b></fld>Y".into());
+        s.sheet.text = Some("XY".into());
+        s.sheet
+            .children
+            .push(vsdx::model::SheetChild::Section(vsdx::model::Section {
+                name: "Field".into(),
+                rows: vec![vsdx::model::Row {
+                    ix: 0,
+                    cells: vec![(
+                        "Value".to_string(),
+                        vsdx::model::Cell::value("X"),
+                    )],
+                    ..vsdx::model::Row::default()
+                }],
+                ..vsdx::model::Section::default()
+            }));
+    }
+    let cmd = InsertField::new(
+        Scope::Shape { page: 0, shape: 1 },
+        "User.Label",
+        FieldInsert::ReplacePlain { offset: 0, len: 1 },
+    );
+    ed.apply(cmd).unwrap();
+    assert_eq!(
+        shape(&ed, 1).sheet.text_raw.as_deref(),
+        Some("<fld IX='1'/>Y"),
+        "the whole nested-markup marker is replaced, not duplicated"
+    );
+}
+
 #[test]
 fn format_override_carries_the_picture() {
     let mut ed = doc_with_shapes();

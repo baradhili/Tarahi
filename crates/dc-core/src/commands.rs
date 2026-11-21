@@ -1368,18 +1368,28 @@ impl crate::Command for InsertField {
             }
             at
         };
-        let (head, tail) = match insert {
-            FieldInsert::End => (raw.len(), raw.len()),
-            FieldInsert::RawOffset(at) => (boundary(at), boundary(at)),
-            FieldInsert::ReplacePlain { offset, len } => (
-                vsdx::text::plain_to_raw_offset(&raw, offset),
-                vsdx::text::plain_to_raw_offset(&raw, offset + len),
-            ),
+        // The splice BASE: a plain-selection splice runs against the
+        // CDATA-split raw (sections the selection partially covers
+        // are re-wrapped as adjacent sections, so the boundaries map
+        // BETWEEN sections — the range never swallows unselected
+        // content and the marker never lands inside a wrapper,
+        // CodeRabbit round 9; the plain projection is unchanged, so
+        // the plain offsets still map). `split_cdata_at_plain` passes
+        // the raw through untouched when no section is covered.
+        let (base, head, tail) = match insert {
+            FieldInsert::End => (raw.clone(), raw.len(), raw.len()),
+            FieldInsert::RawOffset(at) => (raw.clone(), boundary(at), boundary(at)),
+            FieldInsert::ReplacePlain { offset, len } => {
+                let base = vsdx::text::split_cdata_at_plain(&raw, &[offset, offset + len]);
+                let head = vsdx::text::plain_to_raw_offset(&base, offset);
+                let tail = vsdx::text::plain_to_raw_offset(&base, offset + len);
+                (base, head, tail)
+            }
         };
-        let mut new_raw = String::with_capacity(raw.len() + marker.len());
-        new_raw.push_str(&raw[..head]);
+        let mut new_raw = String::with_capacity(base.len() + marker.len());
+        new_raw.push_str(&base[..head]);
         new_raw.push_str(&marker);
-        new_raw.push_str(&raw[tail..]);
+        new_raw.push_str(&base[tail..]);
         s.text_raw = Some(new_raw.clone());
         s.text = Some(
             vsdx::text::text_pieces(&new_raw)

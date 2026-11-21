@@ -241,6 +241,73 @@ fn tag_end(raw: &str, i: usize) -> usize {
     raw.len()
 }
 
+/// Split CDATA sections at the given PLAIN offsets, so a splice
+/// boundary never falls inside a section's content — the parts
+/// re-wrap as adjacent sections and the plain projection stays
+/// byte-identical (CodeRabbit round 9: `ReplacePlain` over part of a
+/// section used to swallow the unselected remainder, and a marker
+/// must never land inside a wrapper). Boundaries AT a section's
+/// content start/end need no cut — `plain_to_raw_offset` already
+/// maps those outside the wrapper.
+pub fn split_cdata_at_plain(raw: &str, boundaries: &[usize]) -> String {
+    if !raw.contains("<![CDATA[") {
+        return raw.to_string();
+    }
+    let mut out = String::with_capacity(raw.len() + 32);
+    let mut count = 0usize; // plain chars before the scan point
+    let mut i = 0usize;
+    while i < raw.len() {
+        let c = raw[i..].chars().next().unwrap();
+        if c == '<' {
+            if raw[i..].starts_with("<![CDATA[") {
+                const OPEN: usize = 9; // "<![CDATA[".len()
+                let cs = i + OPEN;
+                let end = raw[cs..].find("]]>").map_or(raw.len(), |k| cs + k);
+                let content = &raw[cs..end];
+                // Cut points strictly INSIDE the content, at the
+                // given plain positions (char-counted).
+                let mut cuts: Vec<usize> = Vec::new(); // byte offsets in content
+                let mut seen = 0usize;
+                for (bi, _) in content.char_indices() {
+                    if bi > 0 && boundaries.contains(&(count + seen)) {
+                        cuts.push(bi);
+                    }
+                    seen += 1;
+                }
+                // Each part carries its own wrapper.
+                let mut prev = 0usize;
+                for cut in cuts.iter().copied().chain([content.len()]) {
+                    out.push_str("<![CDATA[");
+                    out.push_str(&content[prev..cut]);
+                    out.push_str("]]>");
+                    prev = cut;
+                }
+                count += seen;
+                i = if end < raw.len() { end + 3 } else { raw.len() };
+                continue;
+            }
+            // Any other tag contributes no plain characters.
+            let close = tag_end(raw, i);
+            out.push_str(&raw[i..close]);
+            i = close;
+            continue;
+        }
+        if c == '&' {
+            // An entity resolves to its unescaped characters.
+            let semi = raw[i..].find(';').map_or(raw.len(), |k| i + k + 1);
+            let n = crate::opc::unescape(&raw.as_bytes()[i..semi]).chars().count();
+            out.push_str(&raw[i..semi]);
+            count += n;
+            i = semi;
+            continue;
+        }
+        out.push(c);
+        count += 1;
+        i += c.len_utf8();
+    }
+    out
+}
+
 pub fn plain_to_raw_offset(raw: &str, plain_chars: usize) -> usize {
     let mut count = 0usize;
     let mut chars = raw.char_indices().peekable();
@@ -303,11 +370,27 @@ pub fn plain_to_raw_offset(raw: &str, plain_chars: usize) -> usize {
                     // caret inside a display snaps to the marker's
                     // opening (the `_` arm's rule — a marker written
                     // inside the display disappears into it,
-                    // Greptile round 7).
+                    // Greptile round 7) — UNLESS nested CLOSING tags
+                    // run straight into `</fld>`: the target is then
+                    // the display's END (`<fld><b>X</b></fld>Y`
+                    // offset 1 must map past the marker, or a
+                    // replacement splices an empty range and leaves
+                    // overlapping markers — CodeRabbit round 9).
                     if closing_fld {
                         return close;
                     }
-                    return open_fld_at.unwrap_or(i);
+                    if let Some(open) = open_fld_at {
+                        let mut j = i;
+                        while raw[j..].starts_with("</") {
+                            let cj = tag_end(raw, j);
+                            if raw[j..cj].starts_with("</fld") {
+                                return cj;
+                            }
+                            j = cj;
+                        }
+                        return open;
+                    }
+                    return i;
                 }
                 if opening_fld {
                     open_fld_at = Some(i);
@@ -576,6 +659,60 @@ mod tests {
         assert_eq!(&raw[plain_to_raw_offset(raw, 3)..], "D");
         // Offset 4 (past the end) clamps.
         assert_eq!(plain_to_raw_offset(raw, 4), raw.len());
+    }
+
+    /// A display with NESTED markup: the display's END (nested
+    /// closing tags running into `</fld>`) maps PAST the marker —
+    /// round 7's blanket snap-to-opening used to send it to the
+    /// field start (CodeRabbit round 9). Interior positions keep
+    /// the snap.
+    #[test]
+    fn nested_markup_display_end_maps_past_the_marker() {
+        let raw = "<fld IX='0'><b>X</b></fld>Y";
+        // Plain "XY"; offset 1 == the display end -> past `</fld>`.
+        assert_eq!(&raw[plain_to_raw_offset(raw, 1)..], "Y");
+        // Offset 0 == before the display -> the opening tag.
+        assert_eq!(plain_to_raw_offset(raw, 0), 0);
+        // Interior with content after the nested close: plain "ABC"
+        // — offset 2 (after B, inside the bold run) is interior ->
+        // snaps to the opening.
+        let inner = "<fld IX='0'>A<b>B</b>C</fld>Y";
+        assert_eq!(plain_to_raw_offset(inner, 2), 0);
+        // Offset 3 == the display end -> past the marker.
+        assert_eq!(&inner[plain_to_raw_offset(inner, 3)..], "Y");
+    }
+
+    /// `split_cdata_at_plain` re-wraps a partially-selected section
+    /// as adjacent sections — plain projection unchanged, boundaries
+    /// landing between sections (the InsertField splice's base).
+    #[test]
+    fn split_cdata_at_plain_preserves_the_projection() {
+        // No sections covered: byte-identical passthrough.
+        assert_eq!(
+            split_cdata_at_plain("ab<cp IX='0'/>cd", &[1]),
+            "ab<cp IX='0'/>cd"
+        );
+        // One boundary strictly inside: two sections.
+        assert_eq!(
+            split_cdata_at_plain("a<![CDATA[bc]]>d", &[2]),
+            "a<![CDATA[b]]><![CDATA[c]]>d"
+        );
+        // Two boundaries inside one section: three parts.
+        assert_eq!(
+            split_cdata_at_plain("a<![CDATA[bcd]]>e", &[2, 3]),
+            "a<![CDATA[b]]><![CDATA[c]]><![CDATA[d]]>e"
+        );
+        // Boundaries AT the content start/end cut nothing.
+        assert_eq!(
+            split_cdata_at_plain("a<![CDATA[bc]]>d", &[1, 3]),
+            "a<![CDATA[bc]]>d"
+        );
+        // Entities count their resolved chars toward the positions
+        // (`&amp;` is one plain char: x|y sits at plain offset 2).
+        assert_eq!(
+            split_cdata_at_plain("&amp;<![CDATA[xy]]>z", &[2]),
+            "&amp;<![CDATA[x]]><![CDATA[y]]>z"
+        );
     }
 
     #[test]
