@@ -108,7 +108,9 @@ cargo test -p dc-ui --test interactions
 
 Release tags (`v*`) build installers through GitHub Actions
 (`.github/workflows/release.yml`): a Windows NSIS installer (+ portable zip), a
-universal macOS dmg, and Linux deb / rpm / AppImage packages. Push a tag
+universal macOS dmg, and Linux deb / rpm / AppImage packages for x86_64 and
+aarch64 (the arm64 packages build natively on GitHub's ARM runners inside the
+same glibc-2.35 container as x64 — #296). Push a tag
 to cut a release:
 
 ```sh

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       linux_only:
-        description: "Run only the linux job (glibc-floor verification)"
+        description: "Run only the linux jobs (glibc-floor verification)"
         type: boolean
         default: false
 
@@ -24,7 +24,26 @@ jobs:
     # made every linked binary refuse to start on older distros); do
     # not move this back to a bare runner — the glibc-floor step below
     # fails the build if the base ever drifts above the floor.
-    runs-on: ubuntu-24.04
+    #
+    # Two legs (#296): x86_64 and aarch64. Each leg runs the SAME
+    # ubuntu:22.04 container NATIVELY on its own runner (the
+    # ubuntu-24.04-arm hosted runner is free for public repos) — the
+    # multi-arch ubuntu image pulls the matching variant — so both
+    # artifacts share the glibc 2.35 floor with no cross toolchain,
+    # sysroot, or arch-specific build steps to maintain. The app is
+    # pure Rust (harfrust/usvg/zbus, system libraries only dlopen'd),
+    # so a native build per arch is all the portability that exists.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            rpm_arch: amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            rpm_arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     container:
       image: ubuntu:22.04
     steps:
@@ -83,17 +102,19 @@ jobs:
         working-directory: crates/dc-ui
         run: |
           cargo generate-rpm
-          mv target/generate-rpm/*.rpm "${GITHUB_WORKSPACE}/Tarahi_${{ steps.ver.outputs.version }}_amd64.rpm"
+          mv target/generate-rpm/*.rpm "${GITHUB_WORKSPACE}/Tarahi_${{ steps.ver.outputs.version }}_${{ matrix.rpm_arch }}.rpm"
       - name: AppImage
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
           # Current linuxdeploy: its embedded AppImage runtime is what
           # the catalog test flagged as outdated with the 2024-01 pin.
+          # The aarch64 continuous build embeds the matching aarch64
+          # AppImage runtime, so each leg bundles its own architecture.
           # curl, not wget — the bare 22.04 container installs curl
           # above but ships neither downloader by default (PR #269
           # review).
-          curl -fsSL https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -o /tmp/linuxdeploy
+          curl -fsSL https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${{ matrix.arch }}.AppImage -o /tmp/linuxdeploy
           chmod +x /tmp/linuxdeploy
           mkdir -p AppDir/usr/lib
           # winit/rfd/arboard dlopen the X11/Wayland client libraries,
@@ -136,8 +157,8 @@ jobs:
           # prerelease, AppImageUpdate would keep resolving the
           # previous stable one (channel decision to revisit then,
           # per the #281 caveat).
-          UPDATE_INFORMATION="gh-releases-zsync|baradhili|Tarahi|latest|Tarahi_*_x86_64.AppImage.zsync" \
-          OUTPUT="Tarahi_${{ steps.ver.outputs.version }}_x86_64.AppImage" /tmp/linuxdeploy \
+          UPDATE_INFORMATION="gh-releases-zsync|baradhili|Tarahi|latest|Tarahi_*_${{ matrix.arch }}.AppImage.zsync" \
+          OUTPUT="Tarahi_${{ steps.ver.outputs.version }}_${{ matrix.arch }}.AppImage" /tmp/linuxdeploy \
             --appdir AppDir \
             -e target/release/tarahi \
             -d packaging/tarahi.desktop \
@@ -147,23 +168,23 @@ jobs:
         run: |
           mkdir -p dist
           cp target/debian/*.deb dist/
-          cp Tarahi_*_amd64.rpm dist/
-          cp Tarahi_*_x86_64.AppImage dist/
+          cp Tarahi_*_${{ matrix.rpm_arch }}.rpm dist/
+          cp Tarahi_*_${{ matrix.arch }}.AppImage dist/
           # The zsync sidecar (#281): AppImageUpdate deltas download
           # through it; without it the embedded update information
           # points at nothing. appimagetool only WARNS when zsyncmake
           # is missing (zsync is in the tool list above), so an absent
           # sidecar must fail here with a clear message, not a bare
           # cp glob error (PR review on #281).
-          test -s Tarahi_*_x86_64.AppImage.zsync || {
+          test -s Tarahi_*_${{ matrix.arch }}.AppImage.zsync || {
             echo "::error::the AppImage step produced no .zsync sidecar — update information is embedded but AppImageUpdate has nothing to download"
             exit 1
           }
-          cp Tarahi_*_x86_64.AppImage.zsync dist/
+          cp Tarahi_*_${{ matrix.arch }}.AppImage.zsync dist/
           ls -la dist/
       - uses: actions/upload-artifact@v7
         with:
-          name: linux
+          name: linux-${{ matrix.arch }}
           path: dist/*
 
   windows:
