@@ -902,7 +902,8 @@ pub fn render_shape_layer(
     hidden: &[i64],
     bounds: (f64, f64, f64, f64),
 ) -> anyhow::Result<String> {
-    render_shape_layer_opts(doc, page, shape_id, hidden, bounds, None, None).map(|(_, svg)| svg)
+    render_shape_layer_opts(doc, page, shape_id, hidden, bounds, None, None, None)
+        .map(|(_, svg)| svg)
 }
 
 /// [`render_shape_layer`] with the canvas-only options (GitHub #22,
@@ -913,6 +914,13 @@ pub fn render_shape_layer(
 /// bars instead of glyphs. Returns the SVG plus every text size the
 /// walk met (inches), the cache's greek profile for deciding whether
 /// a ppi-bucket change re-renders or re-serializes.
+///
+/// `fields` shares one page walk's [`crate::fields::FieldsCtx`]
+/// across roots (its `Sheet.N!` layer caches per CONTEXT — a
+/// per-shape context rebuilds it every call, the quadratic cost the
+/// sharing exists to remove); `None` builds a fresh one for one-shot
+/// renders.
+#[allow(clippy::too_many_arguments)] // the layer's full identity + the shared field walk
 pub fn render_shape_layer_opts(
     doc: &Document,
     page: &vsdx::Page,
@@ -921,9 +929,10 @@ pub fn render_shape_layer_opts(
     bounds: (f64, f64, f64, f64),
     skip_text: Option<i64>,
     greek_ppi: Option<f32>,
+    fields: Option<&crate::fields::FieldsCtx<'_>>,
 ) -> anyhow::Result<(Vec<f64>, String)> {
     render_shape_layer_inner(
-        doc, page, shape_id, hidden, bounds, skip_text, greek_ppi, None,
+        doc, page, shape_id, hidden, bounds, skip_text, greek_ppi, None, fields,
     )
 }
 
@@ -946,6 +955,7 @@ pub fn render_shape_layer_opts_culled(
     skip_text: Option<i64>,
     greek_ppi: Option<f32>,
     cull_rect: (f64, f64, f64, f64),
+    fields: Option<&crate::fields::FieldsCtx<'_>>,
 ) -> anyhow::Result<(Vec<f64>, String)> {
     let boxes = subtree_ink_boxes(doc, page, shape_id)
         .ok_or_else(|| anyhow::anyhow!("shape {shape_id} not found on page {}", page.id))?;
@@ -962,6 +972,7 @@ pub fn render_shape_layer_opts_culled(
         skip_text,
         greek_ppi,
         Some(&cull),
+        fields,
     )
 }
 
@@ -991,7 +1002,7 @@ fn boxes_intersect(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
     a.0 <= b.0 + b.2 && b.0 <= a.0 + a.2 && a.1 <= b.1 + b.3 && b.1 <= a.1 + a.3
 }
 
-#[allow(clippy::too_many_arguments)] // shared body of the plain and culled serializers
+#[allow(clippy::too_many_arguments)] // shared body of the plain and culled serializers + the field walk
 fn render_shape_layer_inner(
     doc: &Document,
     page: &vsdx::Page,
@@ -1001,7 +1012,18 @@ fn render_shape_layer_inner(
     skip_text: Option<i64>,
     greek_ppi: Option<f32>,
     cull: Option<&InkCull>,
+    fields: Option<&crate::fields::FieldsCtx<'_>>,
 ) -> anyhow::Result<(Vec<f64>, String)> {
+    // A caller-supplied context shares the page walk's `Sheet.N!`
+    // layer across roots; a fresh one serves one-shot renders.
+    let owned_fields;
+    let fields = match fields {
+        Some(f) => f,
+        None => {
+            owned_fields = crate::fields::FieldsCtx::for_page(doc, page);
+            &owned_fields
+        }
+    };
     let page_h = num(page.sheet().and_then(|s| s.cell("PageHeight"))).unwrap_or(11.0);
     let Some(shape) = page.shapes.iter().find(|s| s.id == shape_id) else {
         anyhow::bail!("shape {shape_id} not found on page {}", page.id);
@@ -1021,7 +1043,6 @@ fn render_shape_layer_inner(
         pw = bw * PX_PER_IN,
         ph = bh * PX_PER_IN,
     );
-    let fields = crate::fields::FieldsCtx::for_page(doc, page);
     if !hidden_member(shape) {
         render_shape(
             doc,
@@ -1032,7 +1053,7 @@ fn render_shape_layer_inner(
             skip_text,
             greek.as_ref(),
             cull,
-            Some(&fields),
+            Some(fields),
             &mut svg,
         );
     }
@@ -6178,17 +6199,34 @@ pub fn shape_env(doc: &Document, s: &Shape, chain: &[&Shape]) -> vsdx::formula::
         for user in sheet.sections_named("User") {
             for row in user.rows.iter().filter(|r| r.n.is_some()) {
                 let key = format!("User.{}", row.n.as_deref().unwrap_or(""));
+                let inh = row
+                    .cell("Value")
+                    .and_then(|c| c.f.as_deref())
+                    .is_some_and(|f| f == "Inh");
                 match row.cell("Value").and_then(|c| c.numeric()) {
+                    // The master sheet seeds first; an Inh-marked
+                    // local row's numeric cache is the STALE snapshot
+                    // and must not override it (CodeRabbit agent
+                    // review — the string-side twin of the round-5
+                    // render_field rule).
                     Some(v) => {
+                        if inh && env.contains_key(&key) {
+                            continue;
+                        }
                         env.insert(key, v);
                     }
                     // A row whose Value cache is EXPLICITLY emptied
                     // (V='') clears the inherited number: the string
                     // env seeds the empty binding, but the numeric
                     // layer kept the master's 42 for the evaluator to
-                    // read FIRST (CodeRabbit PR review). No cache at
-                    // all (a sparse F-only row) still inherits.
-                    None if row.cell("Value").is_some_and(|c| c.v.is_some()) => {
+                    // read FIRST (CodeRabbit PR review). An Inh-marked
+                    // EMPTY cache inherits instead of clearing. No
+                    // cache at all (a sparse F-only row) still
+                    // inherits.
+                    None if row
+                        .cell("Value")
+                        .is_some_and(|c| c.v.is_some() && c.f.as_deref() != Some("Inh")) =>
+                    {
                         env.remove(&key);
                     }
                     None => {}
@@ -6567,6 +6605,67 @@ mod tests {
             shape_env(&doc, &local, &chain).get("User.Label").copied(),
             Some(7.0),
             "a local value overrides the master's"
+        );
+
+        // An Inh-marked row inherits instead of overriding — its
+        // numeric cache is the stale snapshot; and an Inh-marked
+        // EMPTY cache inherits rather than clearing (CodeRabbit
+        // agent review).
+        let with_row = |f: Option<&str>, v: Option<&str>| {
+            let mut sheet = vsdx::model::Sheet::default();
+            sheet.children.push(vsdx::model::SheetChild::Section(
+                vsdx::model::Section {
+                    name: "User".into(),
+                    rows: vec![vsdx::model::Row {
+                        n: Some("Label".into()),
+                        cells: vec![(
+                            "Value".to_string(),
+                            vsdx::model::Cell {
+                                v: v.map(str::to_string),
+                                f: f.map(str::to_string),
+                                ..vsdx::model::Cell::default()
+                            },
+                        )],
+                        ..vsdx::model::Row::default()
+                    }],
+                    ..vsdx::model::Section::default()
+                },
+            ));
+            sheet
+        };
+        let mut doc2 = Document::default();
+        doc2.masters.push(vsdx::model::Master {
+            id: 8,
+            shapes: vec![Shape {
+                id: 1,
+                sheet: user_sheet(Some("42")),
+                ..Shape::default()
+            }],
+            ..vsdx::model::Master::default()
+        });
+        let stale = Shape {
+            id: 1,
+            master: Some(8),
+            sheet: with_row(Some("Inh"), Some("41")),
+            ..Shape::default()
+        };
+        let chain = [&stale];
+        assert_eq!(
+            shape_env(&doc2, &stale, &chain).get("User.Label").copied(),
+            Some(42.0),
+            "an Inh row's stale cache does not override the master"
+        );
+        let inh_empty = Shape {
+            id: 1,
+            master: Some(8),
+            sheet: with_row(Some("Inh"), Some("")),
+            ..Shape::default()
+        };
+        let chain = [&inh_empty];
+        assert_eq!(
+            shape_env(&doc2, &inh_empty, &chain).get("User.Label").copied(),
+            Some(42.0),
+            "an Inh row's empty cache inherits, it does not clear"
         );
     }
 
@@ -8829,7 +8928,8 @@ mod tests {
         // leaves share their y range, so x does the separating).
         let cull = (bounds.0, bounds.1, 1.4, bounds.3);
         let (_, culled) =
-            render_shape_layer_opts_culled(&doc, &page, 1, &[], bounds, None, None, cull).unwrap();
+            render_shape_layer_opts_culled(&doc, &page, 1, &[], bounds, None, None, cull, None)
+                .unwrap();
         assert!(
             culled.contains("#ff2200"),
             "the covered leaf stays in the patch: {culled}"
@@ -8839,7 +8939,8 @@ mod tests {
             "the far leaf is omitted from the patch serialization: {culled}"
         );
         // The full serialization keeps both.
-        let (_, full) = render_shape_layer_opts(&doc, &page, 1, &[], bounds, None, None).unwrap();
+        let (_, full) =
+            render_shape_layer_opts(&doc, &page, 1, &[], bounds, None, None, None).unwrap();
         assert!(full.contains("#ff2200") && full.contains("#22cc00"));
     }
 

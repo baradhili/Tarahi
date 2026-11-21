@@ -129,6 +129,64 @@ fn insert_field_at_offset_and_two_fields() {
     );
 }
 
+/// ReplacePlain's insertion and replacement boundaries stay OUTSIDE
+/// existing `<fld>` elements (CodeRabbit agent review question —
+/// pinned as the answer): an offset after a display lands after the
+/// `</fld>`, and replacing the display swaps the WHOLE marker
+/// element for the new one.
+#[test]
+fn replace_plain_boundaries_stay_outside_existing_fields() {
+    let mut ed = doc_with_shapes();
+    let scope = Scope::Shape { page: 0, shape: 1 };
+    {
+        let s = &mut ed.doc.pages[0].shapes[0];
+        s.sheet.text_raw = Some("A<fld IX='0'>X</fld>B".into());
+        s.sheet.text = Some("AXB".into());
+        // The Field row the existing marker pairs with (a real
+        // package never carries one without the other).
+        s.sheet
+            .children
+            .push(vsdx::model::SheetChild::Section(vsdx::model::Section {
+                name: "Field".into(),
+                rows: vec![vsdx::model::Row {
+                    ix: 0,
+                    cells: vec![(
+                        "Value".to_string(),
+                        vsdx::model::Cell::value("X"),
+                    )],
+                    ..vsdx::model::Row::default()
+                }],
+                ..vsdx::model::Section::default()
+            }));
+    }
+    // Insert at plain offset 2 (after the display): a SIBLING marker
+    // after the `</fld>`, never nested inside it.
+    let cmd = InsertField::new(
+        scope,
+        "PAGENAME()",
+        FieldInsert::ReplacePlain { offset: 2, len: 0 },
+    );
+    ed.apply(cmd).unwrap();
+    assert_eq!(
+        shape(&ed, 1).sheet.text_raw.as_deref(),
+        Some("A<fld IX='0'>X</fld><fld IX='1'/>B"),
+        "the new marker follows the existing field"
+    );
+    // Replace the display X (offset 1, len 1): the whole marker
+    // element is swapped for the new one.
+    let cmd = InsertField::new(
+        Scope::Shape { page: 0, shape: 1 },
+        "User.Label",
+        FieldInsert::ReplacePlain { offset: 1, len: 1 },
+    );
+    ed.apply(cmd).unwrap();
+    assert_eq!(
+        shape(&ed, 1).sheet.text_raw.as_deref(),
+        Some("A<fld IX='2'/><fld IX='1'/>B"),
+        "replacing a display swaps the entire marker element"
+    );
+}
+
 #[test]
 fn format_override_carries_the_picture() {
     let mut ed = doc_with_shapes();

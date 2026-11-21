@@ -579,12 +579,23 @@ fn seed_rows(sheet: &Sheet, sec_name: &str, prefix: &str, strs: &mut formula::St
             let Some(name) = row.n.as_deref() else {
                 continue;
             };
+            let key = format!("{prefix}.{name}");
+            // An `Inh`-marked cell never OVERRIDES an already-seeded
+            // key — its cached V is the stale snapshot of the
+            // inherited formula, and the master pass (which runs
+            // first) seeded the live value. With nothing seeded (no
+            // master row), the cache stays as the fallback
+            // (CodeRabbit agent review, extends the round-5
+            // render_field rule to the environment seeding).
+            if cell.f.as_deref() == Some("Inh") && strs.get(&key).is_some() {
+                continue;
+            }
             // EMPTY values seed too: a cleared local row must shadow
             // the master's value (an empty string resolves and blanks
             // the field) instead of falling back to the master's
             // non-empty cache (Greptile round 1).
             if let Some(v) = cell.v.as_deref() {
-                strs.insert(format!("{prefix}.{name}"), v.to_string());
+                strs.insert(key, v.to_string());
             }
         }
     }
@@ -983,6 +994,78 @@ mod tests {
             substituted_text(&doc, &reader, &chain, Some(&fctx)).as_deref(),
             Some("local-three"),
             "a local override outranks the inherited row"
+        );
+    }
+
+    /// An `Inh`-marked local User row never shadows the master's
+    /// live value in the seeded environments — the stale `V` cache
+    /// must not become the override (CodeRabbit agent review, the
+    /// environment-side twin of `field_inh_resolves_through_the_
+    /// master`).
+    #[test]
+    fn inh_user_row_seeds_the_master_value() {
+        let user_row = |v: &str, f: Option<&str>| {
+            vsdx::model::Row {
+                n: Some("Label".into()),
+                cells: vec![(
+                    "Value".to_string(),
+                    vsdx::model::Cell {
+                        v: Some(v.to_string()),
+                        f: f.map(str::to_string),
+                        ..vsdx::model::Cell::default()
+                    },
+                )],
+                ..vsdx::model::Row::default()
+            }
+        };
+        let mut doc = Document::default();
+        doc.masters.push(vsdx::model::Master {
+            id: 7,
+            shapes: vec![Shape {
+                id: 1,
+                sheet: {
+                    let mut sheet = vsdx::model::Sheet::default();
+                    sheet.children.push(vsdx::model::SheetChild::Section(
+                        vsdx::model::Section {
+                            name: "User".into(),
+                            rows: vec![user_row("Current", None)],
+                            ..vsdx::model::Section::default()
+                        },
+                    ));
+                    sheet
+                },
+                ..Shape::default()
+            }],
+            ..vsdx::model::Master::default()
+        });
+        let mut sheet = field_row_sheet(&[(
+            "Value",
+            vsdx::model::Cell {
+                f: Some("User.Label".into()),
+                ..vsdx::model::Cell::default()
+            },
+        )]);
+        sheet.children.push(vsdx::model::SheetChild::Section(
+            vsdx::model::Section {
+                name: "User".into(),
+                rows: vec![user_row("Old", Some("Inh"))],
+                ..vsdx::model::Section::default()
+            },
+        ));
+        let mut s = Shape {
+            id: 2,
+            master: Some(7),
+            sheet,
+            ..Shape::default()
+        };
+        s.sheet.text_raw = Some("<fld IX='0'>Old</fld>".into());
+        let chain = [&s];
+        let page = Page::default();
+        let fctx = FieldsCtx::for_page(&doc, &page);
+        assert_eq!(
+            substituted_text(&doc, &s, &chain, Some(&fctx)).as_deref(),
+            Some("Current"),
+            "the master's live row wins over the stale Inh cache"
         );
     }
 
