@@ -252,6 +252,15 @@ pub fn pin_embedded() {
     registry().lock().unwrap().local_enabled = false;
 }
 
+/// Re-enable local discovery after a [`pin_embedded`] — the production
+/// ctor's path (it boots through the headless ctor, which pins, then
+/// adopts the user-machine state).
+pub fn enable_local_discovery() {
+    let mut r = registry().lock().unwrap();
+    r.local_enabled = true;
+    r.local = None; // rescan on next use
+}
+
 /// Register extra local-scan directories (the app layer's config dir and
 /// any platform-specific locations). Best-effort: unknown stems simply
 /// never appear.

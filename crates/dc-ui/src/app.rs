@@ -644,9 +644,12 @@ impl App {
         app.recent = RecentFiles::open();
         app.quick_shapes = crate::quickshapes::QuickShapes::open();
         app.relative_paths = crate::hyperlink::RelativePaths::open();
-        // #121: the persisted custom dictionary, and the user-config
-        // `dictionaries/` drop-point joins the system scan.
+        // #121: the persisted custom dictionary, and local dictionary
+        // discovery — the headless ctor pinned it, so production
+        // re-enables with the user-config `dictionaries/` drop-point
+        // joining the system scan.
         app.spell = crate::spellcheck::SpellState::prod();
+        dc::spellcheck::enable_local_discovery();
         dc::spellcheck::register_local_dirs(
             crate::recent::config_base()
                 .map(|b| vec![b.join("diagramcraft").join("dictionaries")])
