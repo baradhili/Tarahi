@@ -159,6 +159,40 @@ fn replace_inside_cdata_writes_unescaped() {
 }
 
 #[test]
+fn replace_splits_cdata_terminators_in_the_replacement() {
+    // A replacement carrying `]]>` inside a CDATA splice must not
+    // terminate the section early — adjacent sections keep the XML
+    // valid and the plain text exact.
+    let mut doc = doc_with_text(Some("<![CDATA[teh]]> tail"), Some("teh tail"));
+    let mut cmd = ReplaceTextRange::new(shape_scope(), 0, 3, "a]]>b");
+    cmd.apply(&mut doc).unwrap();
+    let sh = &doc.pages[0].shapes[0];
+    assert_eq!(
+        sh.sheet.text_raw.as_deref(),
+        Some("<![CDATA[a]]]]><![CDATA[>b]]> tail")
+    );
+    assert_eq!(sh.sheet.text.as_deref(), Some("a]]>b tail"));
+    // And the text round-trips through the piece model.
+    let pieces = vsdx::text::text_pieces(sh.sheet.text_raw.as_deref().unwrap());
+    let plain: String = pieces.iter().map(|p| p.plain()).collect();
+    assert_eq!(plain, "a]]>b tail");
+}
+
+#[test]
+fn replace_refuses_a_span_crossing_a_cdata_boundary() {
+    // A merged word spanning the `]]>` (adjacent CDATA + text merge in
+    // text_pieces) errors instead of splicing blind.
+    let mut doc = doc_with_text(Some("<![CDATA[shp]]>ae tail"), Some("shpae tail"));
+    let mut cmd = ReplaceTextRange::new(shape_scope(), 0, 5, "shape");
+    assert!(cmd.apply(&mut doc).is_err());
+    // The raw is untouched.
+    assert_eq!(
+        doc.pages[0].shapes[0].sheet.text_raw.as_deref(),
+        Some("<![CDATA[shp]]>ae tail")
+    );
+}
+
+#[test]
 fn replace_never_swallows_a_marker_between_runs() {
     // A word BEFORE and a word AFTER a zero-plain marker: replacing the
     // word after the marker must not eat it (the head resolves into the

@@ -1280,7 +1280,14 @@ impl crate::Command for ReplaceTextRange {
                 anyhow::anyhow!("text span crosses a CDATA boundary; nothing spliced")
             })?;
         let replacement = if span.head_is_cdata {
-            self.replacement.clone()
+            // CDATA content is literal — but a `]]>` inside it would
+            // terminate the section early and leave invalid XML behind.
+            // The standard XML escape splits the terminator itself:
+            // `]]>` becomes `]]]]><![CDATA[>` (the section-content scan
+            // then finds its `]]>` only after the doubled brackets, so
+            // the plain text keeps the literal characters).
+            self.replacement
+                .replace("]]>", "]]]]><![CDATA[>")
         } else {
             escape(&self.replacement)
         };

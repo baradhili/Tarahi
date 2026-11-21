@@ -443,6 +443,67 @@ pub fn load_custom_from_for_test(path: &std::path::Path) -> Vec<String> {
 // Dialog
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vsdx::model::Shape;
+
+    fn doc_with_shape_text(text: &str) -> Document {
+        let sheet = vsdx::model::Sheet {
+            text_raw: Some(text.to_string()),
+            text: Some(text.to_string()),
+            ..vsdx::model::Sheet::default()
+        };
+        let shape = Shape {
+            id: 1,
+            type_: Some("Shape".into()),
+            sheet,
+            ..Shape::default()
+        };
+        let page = vsdx::model::Page {
+            id: 0,
+            name: "P1".into(),
+            shapes: vec![shape],
+            ..vsdx::model::Page::default()
+        };
+        Document {
+            pages: vec![page],
+            ..Document::default()
+        }
+    }
+
+    /// CodeRabbit round: Change All must not leave the scan offset
+    /// stale — replacing BOTH occurrences in "tehhh tehhh wrng" moves
+    /// "wrng" from 12 to 8, and the resumed scan must still flag it.
+    #[test]
+    fn change_all_rescans_the_updated_text() {
+        let doc = doc_with_shape_text("tehhh tehhh wrng");
+        let page = 0;
+        let shapes = vec![1];
+        let mut mac = change_all_macro(&doc, page, &shapes, "en_US", "tehhh", "the")
+            .expect("replacements exist");
+        let mut probe = doc.clone();
+        mac.apply(&mut probe).unwrap();
+        // The word list of the UPDATED text: no tehhh left, and wrng
+        // sits at its new position 8.
+        let raw = spellcheck::effective_raw(&probe, page, 1).unwrap();
+        let toks = spellcheck::words(&raw);
+        assert_eq!(
+            toks.iter().map(|t| t.word.as_str()).collect::<Vec<_>>(),
+            vec!["the", "the", "wrng"]
+        );
+        let wrng = toks.last().unwrap();
+        assert_eq!(wrng.start, 8, "the scan sees the UPDATED offsets");
+        assert_eq!(&raw[wrng.start..wrng.end], "wrng");
+        // A fresh scan from cursor 0 (what the Change All handler does)
+        // flags wrng — nothing is skipped.
+        let dict = spellcheck::get("en_US").unwrap();
+        let checker = Checker::new(dict);
+        let flagged = checker.first_misspelling(&raw, 0).expect("wrng flagged");
+        assert_eq!(flagged.word, "wrng");
+    }
+}
+
 /// What the dialog decided this frame (the fields_dlg outcome pattern —
 /// app.rs performs the commands).
 #[derive(Debug, Clone, PartialEq)]

@@ -463,15 +463,24 @@ pub struct PlainSpan {
 ///   one keeps a marker insertion from becoming literal markup, this
 ///   one splices actual text, which is the point of CDATA).
 ///
-/// `None` when the span CROSSES a region boundary: `text_pieces`
-/// merges adjacent CDATA and ordinary text into one piece, so a merged
-/// word can span the `]]>` — checking sees the merged word (correct),
-/// but splicing it would delete the boundary, and the splice refuses
-/// instead (CodeRabbit round; the caller restarts its scan).
+/// `None` when the span CROSSES a region boundary. A REGION is one
+/// contiguous replaceable run — the ordinary text between two markers,
+/// or one CDATA section's content. `text_pieces` merges adjacent CDATA
+/// and ordinary text (and adjacent CDATA sections) into one piece, so a
+/// merged word can span the `]]>` between two sections or sit across a
+/// formatting marker — checking sees the merged word (correct), but
+/// splicing it would delete the boundary, and the splice refuses
+/// instead (CodeRabbit round; the caller restarts its scan). The tail
+/// lands in the head's region when the walk reaches the span's end
+/// before any boundary, so marker-adjacent replacements stay valid.
 pub fn map_plain_span(raw: &str, start: usize, end: usize) -> Option<PlainSpan> {
     let mut count = 0usize; // plain chars consumed so far
-    let mut head: Option<(usize, bool)> = None; // (raw offset, in CDATA)
-    let mut tail: Option<(usize, bool)> = None;
+    let mut region = 0usize; // identity of the current replaceable run
+    let mut head: Option<(usize, usize)> = None; // (raw offset, region)
+    let mut tail: Option<(usize, usize)> = None;
+    // Whether the head's region is CDATA content (captured at head-set
+    // time — the walk may leave that region long before it ends).
+    let mut head_is_cdata = false;
     let mut i = 0usize;
     while i < raw.len() {
         // Inside a CDATA section the content is literal text up to `]]>`.
@@ -483,13 +492,15 @@ pub fn map_plain_span(raw: &str, start: usize, end: usize) -> Option<PlainSpan> 
             };
             let content = &raw[cs..ce];
             let n = content.chars().count();
+            region += 1; // the section's content is its own region
             if head.is_none() && start >= count && start < count + n {
                 let off = content
                     .char_indices()
                     .nth(start - count)
                     .map(|(b, _)| b)
                     .unwrap_or(content.len());
-                head = Some((cs + off, true));
+                head = Some((cs + off, region));
+                head_is_cdata = true;
             }
             if tail.is_none() && end > count && end <= count + n {
                 let off = if end == count + n {
@@ -501,10 +512,11 @@ pub fn map_plain_span(raw: &str, start: usize, end: usize) -> Option<PlainSpan> 
                         .map(|(b, _)| b)
                         .unwrap_or(content.len())
                 };
-                tail = Some((cs + off, true));
+                tail = Some((cs + off, region));
             }
             count += n;
             i = after;
+            region += 1; // text after the section is a new region
             continue;
         }
         let c = raw[i..].chars().next().unwrap();
@@ -517,9 +529,10 @@ pub fn map_plain_span(raw: &str, start: usize, end: usize) -> Option<PlainSpan> 
                 // tag: the span's characters live in the NEXT text
                 // segment.
                 if head.is_some() && tail.is_none() && count >= end {
-                    tail = Some((i, false));
+                    tail = Some((i, region));
                 }
                 i = tag_end(raw, i);
+                region += 1; // text after the tag is a new region
             }
             '&' => {
                 // An entity resolves to its unescaped characters — an
@@ -528,30 +541,32 @@ pub fn map_plain_span(raw: &str, start: usize, end: usize) -> Option<PlainSpan> 
                 let bytes = raw.as_bytes();
                 let n = crate::opc::unescape(&bytes[i..semi]).chars().count();
                 if head.is_none() && start >= count && start < count + n {
-                    head = Some((i, false));
+                    head = Some((i, region));
                 }
                 count += n;
                 if head.is_some() && tail.is_none() && count >= end {
-                    tail = Some((semi, false));
+                    tail = Some((semi, region));
                 }
                 i = semi;
             }
             _ => {
                 if head.is_none() && start == count {
-                    head = Some((i, false));
+                    head = Some((i, region));
                 }
                 count += 1;
                 if head.is_some() && tail.is_none() && count >= end {
-                    tail = Some((i + c.len_utf8(), false));
+                    tail = Some((i + c.len_utf8(), region));
                 }
                 i += c.len_utf8();
             }
         }
     }
-    let (head, head_is_cdata) = head.unwrap_or((raw.len(), false));
+    let (head, head_region) = head.unwrap_or((raw.len(), region));
     let tail = match tail {
-        Some((t, in_cdata)) if in_cdata == head_is_cdata => t,
-        Some(_) => return None, // the span crosses a CDATA boundary
+        Some((t, tail_region)) if tail_region == head_region => t,
+        // A region mismatch means the span crosses a marker or a CDATA
+        // boundary (or runs past the head's region to the raw end).
+        Some(_) => return None,
         None => raw.len(),
     };
     Some(PlainSpan {

@@ -249,7 +249,12 @@ fn registry() -> &'static Mutex<Registry> {
 /// of the process, so kittest never reads the user's installed
 /// dictionaries (the stencil built-ins' pinning rule).
 pub fn pin_embedded() {
-    registry().lock().unwrap().local_enabled = false;
+    let mut r = registry().lock().unwrap();
+    r.local_enabled = false;
+    // A policy change must not keep dictionaries compiled under the
+    // previous policy — `get` recompiles from the effective source
+    // (CodeRabbit round).
+    r.loaded.clear();
 }
 
 /// Re-enable local discovery after a [`pin_embedded`] — the production
@@ -259,6 +264,7 @@ pub fn enable_local_discovery() {
     let mut r = registry().lock().unwrap();
     r.local_enabled = true;
     r.local = None; // rescan on next use
+    r.loaded.clear(); // same rule as pin_embedded
 }
 
 /// Register extra local-scan directories (the app layer's config dir and
@@ -276,6 +282,7 @@ pub fn set_local_dirs_for_test(dirs: Vec<PathBuf>) {
     let mut r = registry().lock().unwrap();
     r.override_dirs = Some(dirs);
     r.local = None; // rescan on next use
+    r.loaded.clear(); // policy change — recompile from the new sources
 }
 
 /// Every dictionary the process can check against: the embedded three,
@@ -463,14 +470,19 @@ fn load_local(stem: &str, aff_path: &Path, dic_path: &Path) -> Option<SpellDicti
     }
 }
 
-/// Decode an `.aff`/`.dic` byte pair into UTF-8 strings. UTF-8 input
-/// passes through; otherwise the aff's `SET <encoding>` line names the
-/// codec for BOTH files (the hunspell contract — the .dic carries no SET
-/// of its own), decoded through `encoding_rs`. Without a SET the hunspell
-/// default is ISO-8859-1 (windows-1252 is its superset).
+/// Decode an `.aff`/`.dic` byte pair into UTF-8 strings. The hunspell
+/// contract: the aff's `SET <encoding>` names the codec for BOTH files
+/// (the .dic carries no SET of its own) and applies even when the bytes
+/// happen to also form valid UTF-8 — a SET ISO8859-1 dictionary with
+/// bytes `C3 A9` means `Ã©`, not `é`. An unsupported or ambiguous SET
+/// label REJECTS the pair rather than silently re-encoding its
+/// vocabulary (CodeRabbit round, citing the hunspell man page); without
+/// a SET the UTF-8 attempt runs first, falling back to the hunspell
+/// default codec (windows-1252, the ISO-8859-1 superset encoding_rs
+/// maps the default to).
 fn decode_pair(aff: &[u8], dic: &[u8]) -> Option<(String, String)> {
-    let encoding = |bytes: &[u8]| -> Option<&'static encoding_rs::Encoding> {
-        for line in bytes.split(|&b| b == b'\n') {
+    let declared = || -> Option<Option<&'static encoding_rs::Encoding>> {
+        for line in aff.split(|&b| b == b'\n') {
             let line = String::from_utf8_lossy(line);
             let t = line.trim_start();
             if let Some(rest) = t.strip_prefix("SET") {
@@ -478,31 +490,41 @@ fn decode_pair(aff: &[u8], dic: &[u8]) -> Option<(String, String)> {
                 if label.is_empty() {
                     continue;
                 }
-                return Some(
-                    encoding_rs::Encoding::for_label(label.as_bytes())
-                        .unwrap_or(encoding_rs::WINDOWS_1252),
-                );
+                // An unknown label must not silently pick a codec — the
+                // decoded vocabulary would be wrong in a way nothing
+                // downstream can detect. Outer `None` = reject the pair.
+                return match encoding_rs::Encoding::for_label(label.as_bytes()) {
+                    Some(enc) => Some(Some(enc)),
+                    None => None,
+                };
             }
         }
-        Some(encoding_rs::WINDOWS_1252)
-    };
-    let aff_s = match std::str::from_utf8(aff) {
-        Ok(s) => s.to_string(),
-        Err(_) => {
-            let enc = encoding(aff)?;
-            let (s, _, _) = enc.decode(aff);
-            s.into_owned()
+        Some(None) // no SET declaration
+    }()?;
+    match declared {
+        Some(enc) => {
+            let (a, _, _) = enc.decode(aff);
+            let (d, _, _) = enc.decode(dic);
+            Some((a.into_owned(), d.into_owned()))
         }
-    };
-    let dic_s = match std::str::from_utf8(dic) {
-        Ok(s) => s.to_string(),
-        Err(_) => {
-            let enc = encoding(aff)?;
-            let (s, _, _) = enc.decode(dic);
-            s.into_owned()
+        None => {
+            let aff_s = match std::str::from_utf8(aff) {
+                Ok(s) => s.to_string(),
+                Err(_) => {
+                    let (s, _, _) = encoding_rs::WINDOWS_1252.decode(aff);
+                    s.into_owned()
+                }
+            };
+            let dic_s = match std::str::from_utf8(dic) {
+                Ok(s) => s.to_string(),
+                Err(_) => {
+                    let (s, _, _) = encoding_rs::WINDOWS_1252.decode(dic);
+                    s.into_owned()
+                }
+            };
+            Some((aff_s, dic_s))
         }
-    };
-    Some((aff_s, dic_s))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -559,8 +581,12 @@ pub fn words(raw: &str) -> Vec<WordToken> {
     }
     // Whole-context filters: the whitespace run each token sits in must
     // not be a URL, an e-mail, a formula, or touch a digit (Visio never
-    // checks those).
-    out.retain(|tok| checkable_context(&full_plain, tok));
+    // checks those). The char index and the run verdicts build ONCE for
+    // the whole text — per-token rescans made a large block quadratic
+    // (CodeRabbit round).
+    let chars: Vec<char> = full_plain.chars().collect();
+    let runs = checkable_runs(&chars);
+    out.retain(|tok| checkable_context(&chars, &runs, tok));
     out
 }
 
@@ -600,10 +626,39 @@ fn tokenize_piece(t: &str, base: usize, out: &mut Vec<WordToken>) {
     }
 }
 
-/// The plain-space context filters: digit-adjacent tokens and tokens
-/// inside a URL/e-mail/formula whitespace run never check.
-fn checkable_context(plain: &str, tok: &WordToken) -> bool {
-    let chars: Vec<char> = plain.chars().collect();
+/// One whitespace-delimited run of the plain text: its char span and
+/// whether tokens inside it are checkable at all (URLs, e-mails,
+/// formulas, hostnames never are).
+type TextRun = (usize, usize, bool);
+
+/// Classify every whitespace-delimited run once — O(n) over the text,
+/// shared by all tokens (CodeRabbit round: the per-token rescan made a
+/// large block quadratic).
+fn checkable_runs(chars: &[char]) -> Vec<TextRun> {
+    let mut runs = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i].is_whitespace() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && !chars[i].is_whitespace() {
+            i += 1;
+        }
+        let run: String = chars[start..i].iter().collect();
+        let ok = !run.contains("://")
+            && !run.contains('@')
+            && !run.starts_with('=')
+            && !run.to_ascii_lowercase().starts_with("www.");
+        runs.push((start, i, ok));
+    }
+    runs
+}
+
+/// The plain-space context filters for one token: digit-adjacent tokens
+/// never check, and the token's run must be a checkable one.
+fn checkable_context(chars: &[char], runs: &[TextRun], tok: &WordToken) -> bool {
     // A letter run that touches a digit ("v2", "A4") is part of a label,
     // not prose.
     if tok.start > 0 && chars[tok.start - 1].is_numeric() {
@@ -612,20 +667,15 @@ fn checkable_context(plain: &str, tok: &WordToken) -> bool {
     if tok.end < chars.len() && chars[tok.end].is_numeric() {
         return false;
     }
-    // The enclosing whitespace-delimited run.
-    let mut run_start = tok.start;
-    while run_start > 0 && !chars[run_start - 1].is_whitespace() {
-        run_start -= 1;
+    // The token's enclosing run (runs are disjoint and ordered — binary
+    // search by run start).
+    let idx = runs
+        .binary_search_by(|(rs, _, _)| rs.cmp(&tok.start))
+        .unwrap_or_else(|insert| insert.saturating_sub(1));
+    match runs.get(idx) {
+        Some((rs, re, ok)) => tok.start >= *rs && tok.end <= *re && *ok,
+        None => false,
     }
-    let mut run_end = tok.end;
-    while run_end < chars.len() && !chars[run_end].is_whitespace() {
-        run_end += 1;
-    }
-    let run: String = chars[run_start..run_end].iter().collect();
-    !run.contains("://")
-        && !run.contains('@')
-        && !run.starts_with('=')
-        && !run.to_ascii_lowercase().starts_with("www.")
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,6 +1078,19 @@ mod tests {
         // The following word still splices normally.
         let tail = toks.iter().find(|t| t.word == "tail").expect("tail");
         assert!(vsdx::text::map_plain_span(raw, tail.start, tail.end).is_some());
+        // Two ADJACENT CDATA sections merge into one piece the same way:
+        // the merged word spans the `]]><![CDATA[` between them.
+        let raw = "<![CDATA[sh]]><![CDATA[pae]]> tail";
+        let toks = words(raw);
+        let shpae = toks.iter().find(|t| t.word == "shpae").expect("merged word checks");
+        assert!(vsdx::text::map_plain_span(raw, shpae.start, shpae.end).is_none());
+        // And a span covering a formatting marker between two ordinary
+        // tokens refuses the same way — the tag is a region boundary.
+        let raw = "te<cp IX='1'/>h";
+        assert!(vsdx::text::map_plain_span(raw, 0, 3).is_none());
+        // Marker-adjacent replacements stay valid (one region each).
+        assert!(vsdx::text::map_plain_span(raw, 0, 2).is_some());
+        assert!(vsdx::text::map_plain_span(raw, 2, 3).is_some());
     }
 
     #[test]
@@ -1095,6 +1158,24 @@ mod tests {
         assert!(d.check("diagram"), "rest of the vocabulary intact");
         // fresh_registry's guard releases on drop; the next test resets
         // the state itself.
+    }
+
+    #[test]
+    fn decode_pair_lets_a_declared_set_win_over_valid_utf8_bytes() {
+        // C3 A9 is valid UTF-8 (é) — but the aff declares ISO8859-1, and
+        // the hunspell contract applies that codec to BOTH files: the
+        // bytes decode as Ã© (CodeRabbit round, hunspell man page).
+        let (a, d) =
+            decode_pair(b"SET ISO8859-1\n".as_slice(), b"caf\xc3\xa9\n".as_slice()).unwrap();
+        assert_eq!(d, "caf\u{c3}\u{a9}\n");
+        assert!(a.starts_with("SET ISO8859-1"));
+    }
+
+    #[test]
+    fn decode_pair_rejects_an_unknown_set_label() {
+        // An unsupported declaration must not silently pick a codec —
+        // the decoded vocabulary would be undetectably wrong.
+        assert!(decode_pair(b"SET klingon-9\n".as_slice(), b"x\n".as_slice()).is_none());
     }
 
     #[test]
