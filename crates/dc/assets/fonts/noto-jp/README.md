@@ -12,6 +12,10 @@ that path), retrieved 2026-11-21 for #282 (ja/ko wave).
 
 Upstream: https://github.com/notofonts/noto-cjk
 License: SIL Open Font License 1.1 (see OFL.txt beside the files).
+Copyright: © 2014-2021 Adobe (http://www.adobe.com/.) — carried in the
+font's own name table (nameID 0, with the OFL text at nameID 13/14),
+the upstream LICENSE file being the license text without a holder
+line.
 
 | file | face |
 |---|---|
