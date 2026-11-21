@@ -853,6 +853,7 @@ spell-add = افزودن
 spell-change = تغییر
 spell-change-all = تغییر همه
 spell-check-complete = بررسی املا کامل شد.
+spell-dict-failed = بارگذاری واژه‌نامهٔ املا ممکن نشد.
 spell-dialog-title = بررسی املا
 spell-ignore = نادیده گرفتن
 spell-ignore-all = نادیده گرفتن همه

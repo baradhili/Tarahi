@@ -791,6 +791,7 @@ spell-add = 添加
 spell-change = 更改
 spell-change-all = 全部更改
 spell-check-complete = 拼写检查完成。
+spell-dict-failed = 拼写词典加载失败。
 spell-dialog-title = 拼写检查
 spell-ignore = 忽略
 spell-ignore-all = 全部忽略

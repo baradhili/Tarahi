@@ -853,6 +853,7 @@ spell-add = Hinzufügen
 spell-change = Ändern
 spell-change-all = Alle ändern
 spell-check-complete = Die Rechtschreibprüfung ist abgeschlossen.
+spell-dict-failed = Das Rechtschreibwörterbuch konnte nicht geladen werden.
 spell-dialog-title = Rechtschreibprüfung
 spell-ignore = Ignorieren
 spell-ignore-all = Alle ignorieren

@@ -918,6 +918,7 @@ spell-add = Agregar
 spell-change = Cambiar
 spell-change-all = Cambiar todo
 spell-check-complete = Revisión de ortografía completada.
+spell-dict-failed = No se pudo cargar el diccionario de ortografía.
 spell-dialog-title = Ortografía
 spell-ignore = Omitir
 spell-ignore-all = Omitir todos

@@ -1144,6 +1144,10 @@ impl App {
                 self.fields_caret = None;
                 self.fields_draft = None;
                 self.last_edit_caret = None;
+                // The Check Spelling pass is document-scoped the same
+                // way (#121): page and shape IDs collide across
+                // documents, so the session must not outlive its own.
+                self.spell.session = None;
                 self.ed = Some(Editor::new(ed));
                 self.reload_snap_settings();
                 self.path = path;
@@ -1427,6 +1431,9 @@ impl App {
         self.fields_open = None;
         self.fields_caret = None;
         self.fields_draft = None;
+        // #121: the spelling pass does not survive a document load
+        // (same-ID collision rule).
+        self.spell.session = None;
         {
             self.page_states.insert(
                 cur_id,
@@ -14280,10 +14287,23 @@ impl App {
         };
         let found = self.spell.start(&ed.doc, page);
         if !found {
-            self.status = crate::i18n::strs().msg_spell_check_complete();
+            self.spell_finish_status();
             return;
         }
         self.select_spell_shape();
+    }
+
+    /// The pass-ended status: the completion note on a clean page, the
+    /// dictionary-failure note when the checker never came up (a
+    /// discovered pair that fails to load is not a clean page —
+    /// CodeRabbit round).
+    fn spell_finish_status(&mut self) {
+        let loaded = dc::spellcheck::loaded(&self.spell.lang);
+        self.status = if loaded {
+            crate::i18n::strs().msg_spell_check_complete()
+        } else {
+            crate::i18n::strs().msg_spell_dict_failed()
+        };
     }
 
     /// While the dialog is open the misspelled shape is selected (the
@@ -14310,7 +14330,7 @@ impl App {
             self.select_spell_shape();
         } else {
             self.spell.session = None;
-            self.status = crate::i18n::strs().msg_spell_check_complete();
+            self.spell_finish_status();
         }
     }
 
@@ -14358,7 +14378,7 @@ impl App {
                         self.select_spell_shape();
                     } else {
                         self.spell.session = None;
-                        self.status = crate::i18n::strs().msg_spell_check_complete();
+                        self.spell_finish_status();
                     }
                 }
             }
@@ -14407,16 +14427,47 @@ impl App {
                 let Some(ed) = self.ed.as_ref() else {
                     return;
                 };
+                // Stale-snapshot guard (CodeRabbit round): an undo, redo,
+                // or any edit while the dialog is open can invalidate the
+                // captured span — the replacement only fires when the
+                // SAME word still occupies the SAME plain span. A stale
+                // token restarts the shape's scan instead of splicing.
+                let fresh = ed
+                    .doc
+                    .pages
+                    .iter()
+                    .any(|p| p.id == page)
+                    && dc::spellcheck::effective_raw(&ed.doc, page, shape).is_some_and(
+                        |raw| {
+                            dc::spellcheck::words(&raw).iter().any(|t| {
+                                t.start == token.start
+                                    && t.end == token.end
+                                    && t.word == token.word
+                            })
+                        },
+                    );
+                if !fresh {
+                    if let Some(session) = self.spell.session.as_mut() {
+                        session.cursor = 0;
+                    }
+                    self.spell_advance();
+                    return;
+                }
                 let built =
                     crate::spellcheck::replace_macro(&ed.doc, page, shape, &token, &to);
-                if let Some((mac, cursor)) = built {
-                    self.apply(mac);
-                    if let Some(session) = self.spell.session.as_mut() {
-                        session.cursor = cursor;
+                match built {
+                    Some((mac, cursor)) => {
+                        self.apply(mac);
+                        if let Some(session) = self.spell.session.as_mut() {
+                            session.cursor = cursor;
+                        }
+                        // The replacement re-checks from its own start: a fix
+                        // that introduces a new typo flags immediately.
+                        self.spell_advance();
                     }
-                    // The replacement re-checks from its own start: a fix
-                    // that introduces a new typo flags immediately.
-                    self.spell_advance();
+                    // An unsplicable span (a CDATA boundary crossing) also
+                    // restarts the scan rather than splicing blind.
+                    None => self.handle_spell_outcome(O::Ignore),
                 }
             }
             O::ChangeAll { to } => {
@@ -14459,7 +14510,12 @@ impl App {
                 if let Some(word) = word {
                     if !self.spell.custom.contains(&word) {
                         self.spell.custom.push(word);
-                        crate::spellcheck::save_custom(&self.spell.custom);
+                        // Headless instances never persist (the stencil
+                        // pinning rule — a kittest Add must not rewrite
+                        // the user's real dictionary).
+                        if self.spell.persist {
+                            crate::spellcheck::save_custom(&self.spell.custom);
+                        }
                     }
                 }
                 self.handle_spell_outcome(O::Ignore);
@@ -16755,6 +16811,9 @@ impl App {
         self.fields_caret = None;
         self.fields_draft = None;
         self.last_edit_caret = None;
+        // #121: the spelling pass does not carry across documents
+        // (same-ID collision rule).
+        self.spell.session = None;
         self.tex.clear();
         self.layers.clear();
         self.page_states.clear();
@@ -16799,6 +16858,9 @@ impl App {
         self.fields_caret = None;
         self.fields_draft = None;
         self.last_edit_caret = None;
+        // #121: the spelling pass does not survive a close/promote
+        // (same-ID collision rule).
+        self.spell.session = None;
         // #192 4a: another open document promotes to active.
         if !self.docs.is_empty() {
             let next = self.docs.remove(0);

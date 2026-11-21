@@ -5420,6 +5420,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "spell-dict-failed",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "spell-dialog-title",
         attribute: None,
         vars: &[],
@@ -6740,11 +6747,11 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..47072,
-            Self::En => 47072..92703,
-            Self::Es => 92703..142848,
-            Self::Fa => 142848..202479,
-            Self::ZhHans => 202479..243171,
+            Self::De => 0..47149,
+            Self::En => 47149..92840,
+            Self::Es => 92840..143054,
+            Self::Fa => 143054..202770,
+            Self::ZhHans => 202770..243510,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -9783,6 +9790,9 @@ impl L10nLanguage {
     }
     pub fn msg_spell_check_complete(&self) -> String {
         self.0.msg("spell-check-complete", None).unwrap()
+    }
+    pub fn msg_spell_dict_failed(&self) -> String {
+        self.0.msg("spell-dict-failed", None).unwrap()
     }
     pub fn msg_spell_dialog_title(&self) -> String {
         self.0.msg("spell-dialog-title", None).unwrap()

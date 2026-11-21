@@ -29,6 +29,10 @@ use dc_core::Command as _;
 pub(crate) struct SpellState {
     /// The open Check Spelling pass (`None` = dialog closed).
     pub session: Option<SpellSession>,
+    /// Whether Add persists to the user's custom-dictionary store —
+    /// production only; headless instances stay in-memory so a kittest
+    /// Add never rewrites the real config (CodeRabbit round).
+    pub persist: bool,
     /// The check language — a dictionary stem from
     /// [`spellcheck::available`]. Empty until the first pass, which
     /// picks the UI language's dictionary when one exists.
@@ -46,6 +50,7 @@ impl SpellState {
     /// Production: loads the persisted custom dictionary.
     pub(crate) fn prod() -> Self {
         let mut s = Self::headless();
+        s.persist = true;
         s.custom = load_custom();
         s
     }
@@ -55,6 +60,7 @@ impl SpellState {
     pub(crate) fn headless() -> Self {
         SpellState {
             session: None,
+            persist: false,
             lang: String::new(),
             custom: Vec::new(),
             ignore_all: Vec::new(),
@@ -72,7 +78,7 @@ impl SpellState {
         let Some(p) = doc.pages.iter().find(|p| p.id == page) else {
             return false;
         };
-        let shapes = shape_ids_with_text(p);
+        let shapes = shape_ids_with_effective_text(doc, p);
         let total = shapes.len();
         let mut session = SpellSession {
             page,
@@ -204,22 +210,23 @@ pub(crate) struct SpellSession {
     pub total: usize,
 }
 
-/// The page's shapes that carry text (local or master-inherited), in
-/// document order, group members included.
-fn shape_ids_with_text(page: &Page) -> Vec<i64> {
-    fn walk(out: &mut Vec<i64>, shapes: &[Shape]) {
+/// The page's shapes whose EFFECTIVE text resolves (local text, master
+/// text, or text inherited through an enclosing group's master — the
+/// `master_shape`-only child of a master-backed group has no markers of
+/// its own but still renders the master's words), in document order,
+/// group members included (CodeRabbit round: the old static predicate
+/// dropped such children before `effective_raw` could resolve them).
+fn shape_ids_with_effective_text(doc: &Document, page: &Page) -> Vec<i64> {
+    fn walk(out: &mut Vec<i64>, doc: &Document, page_id: i64, shapes: &[Shape]) {
         for s in shapes {
-            let has_text = s.sheet.text_raw.is_some()
-                || s.sheet.text.is_some()
-                || s.master.is_some(); // may inherit the master's text
-            if has_text {
+            if spellcheck::effective_raw(doc, page_id, s.id).is_some() {
                 out.push(s.id);
             }
-            walk(out, &s.sub_shapes);
+            walk(out, doc, page_id, &s.sub_shapes);
         }
     }
     let mut out = Vec::new();
-    walk(&mut out, &page.shapes);
+    walk(&mut out, doc, page.id, &page.shapes);
     out
 }
 
@@ -276,6 +283,13 @@ pub(crate) fn change_all_macro(
     word: &str,
     to: &str,
 ) -> Option<dc_core::Macro> {
+    // Contract (the Visio "change all instances of this word" semantics):
+    // every occurrence of the FLAGGED word across the page's shapes,
+    // including occurrences the walk already passed. The flagged word is
+    // by definition not in the Ignore-All list, and single-Ignores
+    // record words, not occurrences — a Change All after an Ignore
+    // deliberately overrides the earlier skip (the oracle caveat stands:
+    // re-verify against a Visio bottle when one returns).
     let _dict = spellcheck::get(lang); // dictionary presence gate
     let mut cmds: Vec<Box<dyn dc_core::Command>> = Vec::new();
     let mut probe = doc.clone();

@@ -463,13 +463,15 @@ pub struct PlainSpan {
 ///   one keeps a marker insertion from becoming literal markup, this
 ///   one splices actual text, which is the point of CDATA).
 ///
-/// A word never spans a marker or a CDATA boundary (`text_pieces`
-/// yields one piece per contiguous literal run), so head and tail
-/// always land in the same region kind.
-pub fn map_plain_span(raw: &str, start: usize, end: usize) -> PlainSpan {
+/// `None` when the span CROSSES a region boundary: `text_pieces`
+/// merges adjacent CDATA and ordinary text into one piece, so a merged
+/// word can span the `]]>` — checking sees the merged word (correct),
+/// but splicing it would delete the boundary, and the splice refuses
+/// instead (CodeRabbit round; the caller restarts its scan).
+pub fn map_plain_span(raw: &str, start: usize, end: usize) -> Option<PlainSpan> {
     let mut count = 0usize; // plain chars consumed so far
     let mut head: Option<(usize, bool)> = None; // (raw offset, in CDATA)
-    let mut tail: Option<usize> = None;
+    let mut tail: Option<(usize, bool)> = None;
     let mut i = 0usize;
     while i < raw.len() {
         // Inside a CDATA section the content is literal text up to `]]>`.
@@ -499,7 +501,7 @@ pub fn map_plain_span(raw: &str, start: usize, end: usize) -> PlainSpan {
                         .map(|(b, _)| b)
                         .unwrap_or(content.len())
                 };
-                tail = Some(cs + off);
+                tail = Some((cs + off, true));
             }
             count += n;
             i = after;
@@ -515,7 +517,7 @@ pub fn map_plain_span(raw: &str, start: usize, end: usize) -> PlainSpan {
                 // tag: the span's characters live in the NEXT text
                 // segment.
                 if head.is_some() && tail.is_none() && count >= end {
-                    tail = Some(i);
+                    tail = Some((i, false));
                 }
                 i = tag_end(raw, i);
             }
@@ -530,7 +532,7 @@ pub fn map_plain_span(raw: &str, start: usize, end: usize) -> PlainSpan {
                 }
                 count += n;
                 if head.is_some() && tail.is_none() && count >= end {
-                    tail = Some(semi);
+                    tail = Some((semi, false));
                 }
                 i = semi;
             }
@@ -540,17 +542,23 @@ pub fn map_plain_span(raw: &str, start: usize, end: usize) -> PlainSpan {
                 }
                 count += 1;
                 if head.is_some() && tail.is_none() && count >= end {
-                    tail = Some(i + c.len_utf8());
+                    tail = Some((i + c.len_utf8(), false));
                 }
                 i += c.len_utf8();
             }
         }
     }
-    PlainSpan {
-        head: head.map(|(h, _)| h).unwrap_or(raw.len()),
-        tail: tail.unwrap_or(raw.len()),
-        head_is_cdata: head.is_some_and(|(_, cd)| cd),
-    }
+    let (head, head_is_cdata) = head.unwrap_or((raw.len(), false));
+    let tail = match tail {
+        Some((t, in_cdata)) if in_cdata == head_is_cdata => t,
+        Some(_) => return None, // the span crosses a CDATA boundary
+        None => raw.len(),
+    };
+    Some(PlainSpan {
+        head,
+        tail,
+        head_is_cdata,
+    })
 }
 
 #[cfg(test)]

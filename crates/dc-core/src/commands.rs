@@ -1275,7 +1275,10 @@ impl crate::Command for ReplaceTextRange {
         // never swallows a marker between two literal runs), and inside
         // a CDATA section when the span lives there (where the
         // replacement is written UNescaped — CDATA content is literal).
-        let span = vsdx::text::map_plain_span(&raw, self.start, self.start + self.len);
+        let span = vsdx::text::map_plain_span(&raw, self.start, self.start + self.len)
+            .ok_or_else(|| {
+                anyhow::anyhow!("text span crosses a CDATA boundary; nothing spliced")
+            })?;
         let replacement = if span.head_is_cdata {
             self.replacement.clone()
         } else {

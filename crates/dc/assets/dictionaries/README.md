@@ -12,7 +12,7 @@ UTF-8` Hunspell dictionaries loadable by `spellbook::Dictionary::new`.
 
 | Directory | Dictionary | License | Files |
 |---|---|---|---|
-| `en_US/` | en_US 2010-03-09 (SCOWL/Pspell wordlist) | wordlist **LGPL** (Kevin Atkinson, Aspell); aff **BSD** (Geoff Kuenning, ispell) | `en_US.aff`, `en_US.dic`, upstream `README.txt`, `LICENSE-en_US.txt` (the GPL text the upstream folder also carries) |
+| `en_US/` | en_US (SCOWL/Pspell wordlist; 2010 UTF-8 rework per `README.txt`, 2020.12.07 SCOWL release per `README_en_US.txt`) | wordlist **LGPL** (Kevin Atkinson, Aspell); aff **BSD** (Geoff Kuenning, ispell); SCOWL copyright/permission notices in `README_en_US.txt` | `en_US.aff`, `en_US.dic`, upstream `README.txt`, `README_en_US.txt`, `LICENSE-en_US.txt` (the GPL text the upstream folder also carries) |
 | `de_DE/` | de_DE_frami (igerman98-derived, Franz Michael Baumann) | **GNU GPL v2 or v3** (author's statement in `README_de_DE_frami.txt`) | `de_DE_frami.aff`, `de_DE_frami.dic`, upstream `README_de_DE_frami.txt`, `COPYING.GPLv2`, `COPYING.GPLv3` |
 | `fa_IR/` | fa-IR "Lilak" Persian dictionary | **Apache-2.0** | `fa-IR.aff`, `fa-IR.dic`, `LICENSE` |
 

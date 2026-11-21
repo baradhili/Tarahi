@@ -308,6 +308,13 @@ pub fn available() -> Vec<LangEntry> {
     out
 }
 
+/// Did the dictionary for `stem` actually load? The UI distinguishes a
+/// clean page from a failed dictionary (a discovered pair that fails to
+/// load must not read as "Spelling check complete" — CodeRabbit round).
+pub fn loaded(stem: &str) -> bool {
+    registry().lock().unwrap().loaded.contains_key(stem)
+}
+
 /// Get (compiling on first use) the dictionary for `stem` — the local
 /// pair when one was discovered, else the embedded bytes.
 pub fn get(stem: &str) -> Option<Arc<SpellDictionary>> {
@@ -322,9 +329,8 @@ pub fn get(stem: &str) -> Option<Arc<SpellDictionary>> {
         .into_iter()
         .find(|(s, _, _)| s == stem)
         .map(|(_, a, d)| (a, d));
-    let compiled = match local {
-        Some((aff_path, dic_path)) => load_local(stem, &aff_path, &dic_path),
-        None => EMBEDDED.iter().find(|(s, _, _)| *s == stem).and_then(
+    let embedded = || {
+        EMBEDDED.iter().find(|(s, _, _)| *s == stem).and_then(
             |(s, aff, dic)| match SpellDictionary::compile(s, aff, dic) {
                 Ok(d) => Some(d),
                 Err(e) => {
@@ -332,7 +338,15 @@ pub fn get(stem: &str) -> Option<Arc<SpellDictionary>> {
                     None
                 }
             },
-        ),
+        )
+    };
+    // Prefer the local pair, but fall back to the embedded twin when it
+    // fails to load (CodeRabbit round: a discovered pair can become
+    // unreadable between the scan and the load — the desktop then keeps
+    // its vocabulary instead of silently checking nothing).
+    let compiled = match local {
+        Some((aff_path, dic_path)) => load_local(stem, &aff_path, &dic_path).or_else(embedded),
+        None => embedded(),
     }?;
     let arc = Arc::new(compiled);
     r.loaded.insert(stem.to_string(), arc.clone());
@@ -961,7 +975,7 @@ mod tests {
         assert_eq!(tail.start, 11);
         // The plain-space offsets map back onto the raw through the
         // command's splice-safe mapping — the markers survive.
-        let span = vsdx::text::map_plain_span(raw, tail.start, tail.end);
+        let span = vsdx::text::map_plain_span(raw, tail.start, tail.end).expect("maps");
         let new_raw = format!(
             "{}end{}",
             &raw[..span.head],
@@ -982,6 +996,38 @@ mod tests {
         assert_eq!(first.word, "shpae");
         assert!(c.first_misspelling(raw, first.end).is_none(), "Ignore All holds");
         assert_eq!(c.misspellings(raw).len(), 1);
+    }
+
+    #[test]
+    fn tokenizer_never_merges_across_a_formatting_marker() {
+        // A word stored with an INTERIOR formatting marker is two
+        // tokens — `text_pieces` yields one piece per contiguous
+        // literal run, so a splice can never swallow the marker
+        // (CodeRabbit round: mis<cp IX='1'/>spelled).
+        let raw = "mis<cp IX='1'/>spelled";
+        let toks = words(raw);
+        let got: Vec<&str> = toks.iter().map(|t| t.word.as_str()).collect();
+        assert_eq!(got, vec!["mis", "spelled"]);
+        // Replacing the second token keeps the marker byte-identical.
+        let t = &toks[1];
+        let span = vsdx::text::map_plain_span(raw, t.start, t.end).expect("maps");
+        let new_raw = format!("{}fixed{}", &raw[..span.head], &raw[span.tail..]);
+        assert_eq!(new_raw, "mis<cp IX='1'/>fixed");
+    }
+
+    #[test]
+    fn map_plain_span_refuses_cdata_boundary_crossings() {
+        // text_pieces merges adjacent CDATA and ordinary text into one
+        // piece, so a token CAN span the boundary — checking sees the
+        // merged word, but splicing it would eat the `]]>`: the mapping
+        // refuses (CodeRabbit round).
+        let raw = "<![CDATA[shp]]>ae tail";
+        let toks = words(raw);
+        let shpae = toks.iter().find(|t| t.word == "shpae").expect("merged word checks");
+        assert!(vsdx::text::map_plain_span(raw, shpae.start, shpae.end).is_none());
+        // The following word still splices normally.
+        let tail = toks.iter().find(|t| t.word == "tail").expect("tail");
+        assert!(vsdx::text::map_plain_span(raw, tail.start, tail.end).is_some());
     }
 
     #[test]

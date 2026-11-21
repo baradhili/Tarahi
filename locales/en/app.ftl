@@ -921,6 +921,7 @@ spell-add = Add
 spell-change = Change
 spell-change-all = Change All
 spell-check-complete = Spelling check complete.
+spell-dict-failed = The spelling dictionary failed to load.
 spell-dialog-title = Check Spelling
 spell-ignore = Ignore
 spell-ignore-all = Ignore All
