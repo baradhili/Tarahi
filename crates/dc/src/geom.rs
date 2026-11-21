@@ -446,10 +446,15 @@ pub fn row_cell_value(
 /// (#173/#179): walks the shape's Geometry rows — merging inherited
 /// rows and cells from the master — sampling arcs, and mapping every
 /// point through the full placement frame (rotation + flips).
+/// `strip_stored_jumps` (callers gate on connector-ness) treats
+/// stored jump `ArcTo` rows as straight runs (#294) — the hit
+/// polyline, the crossing set and the rendered ink all agree on the
+/// route without the stale arc.
 pub fn geometry_hit_segments(
     s: &Shape,
     master_root: Option<&Shape>,
     frame: &HitFrame,
+    strip_stored_jumps: bool,
 ) -> Vec<((f64, f64), (f64, f64))> {
     let mut sections: Vec<&Section> = s.sheet.sections_named("Geometry");
     // (owning width/height for Rel rows, x/y scale). The scale only
@@ -559,17 +564,23 @@ pub fn geometry_hit_segments(
                 let a = cell(row, *master, "A").unwrap_or(0.0);
                 if let Some(c0) = cur {
                     let d = (end.0 - c0.0, end.1 - c0.1);
-                    let len = d.0.hypot(d.1).max(1e-9);
-                    let mid = (
-                        (c0.0 + end.0) / 2.0 + d.1 / len * a,
-                        (c0.1 + end.1) / 2.0 - d.0 / len * a,
-                    );
-                    let ctrl = (
-                        2.0 * mid.0 - (c0.0 + end.0) / 2.0,
-                        2.0 * mid.1 - (c0.1 + end.1) / 2.0,
-                    );
-                    for u in [0.25, 0.5, 0.75] {
-                        pts.push(to_page(quad(c0, ctrl, end, u)));
+                    // #294: a stored jump arc straightens — the
+                    // polyline follows the chord, so the crossing set
+                    // never sees the stale bump.
+                    let stored_jump = strip_stored_jumps && is_stored_jump_arc(a, d);
+                    if !stored_jump {
+                        let len = d.0.hypot(d.1).max(1e-9);
+                        let mid = (
+                            (c0.0 + end.0) / 2.0 + d.1 / len * a,
+                            (c0.1 + end.1) / 2.0 - d.0 / len * a,
+                        );
+                        let ctrl = (
+                            2.0 * mid.0 - (c0.0 + end.0) / 2.0,
+                            2.0 * mid.1 - (c0.1 + end.1) / 2.0,
+                        );
+                        for u in [0.25, 0.5, 0.75] {
+                            pts.push(to_page(quad(c0, ctrl, end, u)));
+                        }
                     }
                 }
                 pts.push(to_page(end));
@@ -770,8 +781,39 @@ pub struct Jump {
     pub under_color: (u8, u8, u8),
 }
 
-/// Visio's medium line-jump radius (inches).
-pub const JUMP_RADIUS_IN: f64 = 0.12;
+/// Visio's jump radius (#294): `LineToLineX × LineJumpFactorX / 2`,
+/// both page-layout cells resolved through the page's style
+/// inheritance ([`vsdx::Document::page_line_to_line_x`]/[
+/// `vsdx::Document::page_line_jump_factor`]). The #294 repro pins the
+/// identity: its stored jump `ArcTo` carries `A = −0.04166667` —
+/// exactly 0.125 in × 0.66667 / 2, the "No Style" values Visio
+/// resolves for that page. (The old constant 0.12 was ~3× too large
+/// and ignored the page cells entirely.)
+pub fn jump_radius_in(doc: &vsdx::Document, page: &vsdx::Page) -> f64 {
+    doc.page_line_to_line_x(page) * doc.page_line_jump_factor(page) / 2.0
+}
+
+/// The largest sagitta a stored jump `ArcTo` may carry (inches):
+/// Visio's radius = LineToLineX × LineJumpFactorX / 2, and even a
+/// doubled LineToLineX with factor 2 stays under it.
+const MAX_STORED_JUMP_SAGITTA_IN: f64 = 0.5;
+
+/// A stored line-jump arc (#294): Visio saves a connector's jump as an
+/// `ArcTo` row ON the orthogonal run — the chord lies along one axis
+/// (the run continues into the arc's endpoints) and |A| = the jump
+/// radius. Corner arcs cut ACROSS the run (a diagonal chord), so the
+/// axis test leaves them alone; the callers additionally gate on
+/// connector-ness so artwork arcs never strip. Once stripped, the
+/// route is straight at the old arc and the jump overlay draws the
+/// ONE arc at the current crossing with the page's own radius — a
+/// stored arc stops lingering after a move (#294).
+pub fn is_stored_jump_arc(sagitta: f64, chord: (f64, f64)) -> bool {
+    let len = chord.0.hypot(chord.1);
+    len > 1e-9
+        && sagitta.abs() <= MAX_STORED_JUMP_SAGITTA_IN
+        && chord.0.abs().min(chord.1.abs()) <= len * 0.02
+}
+
 
 /// Proper segment intersection (interior of both).
 pub fn seg_cross(
@@ -794,7 +836,10 @@ pub fn seg_cross(
 
 /// Every crossing hop among the lines (#108): pairwise proper
 /// segment intersections; the more-horizontal segment jumps.
-pub fn line_jumps(lines: &[JumpLine]) -> Vec<Jump> {
+/// `radius` is the page's resolved jump radius (inches —
+/// [`jump_radius_in`]): it sizes the hop arc and bounds what counts
+/// as one crossing REGION (#251) when converging crossings cluster.
+pub fn line_jumps(lines: &[JumpLine], radius: f64) -> Vec<Jump> {
     let mut out = Vec::new();
     for i in 0..lines.len() {
         for j in (i + 1)..lines.len() {
@@ -837,12 +882,13 @@ pub fn line_jumps(lines: &[JumpLine]) -> Vec<Jump> {
                 }
             }
             // Merge the pair's jumps inside a hop radius: the arc's
-            // own reach (2× JUMP_RADIUS_IN) bounds what "one region"
-            // means visually. Distinct crossings beyond it stay.
+            // own reach (2× the page's jump radius) bounds what "one
+            // region" means visually. Distinct crossings beyond it
+            // stay.
             let mut clustered: Vec<Jump> = Vec::new();
             for jmp in pair {
-                let reach = (JUMP_RADIUS_IN * 2.0)
-                    .max((jmp.weight + jmp.under_weight) * 2.0);
+                let reach =
+                    (radius * 2.0).max((jmp.weight + jmp.under_weight) * 2.0);
                 // Compare EVERY existing cluster (#218 review): the
                 // last-only check (under the old x-sort) let a jump
                 // near an earlier cluster open a duplicate instead of
@@ -887,6 +933,9 @@ fn parse_hex_rgb(v: &str) -> Option<(u8, u8, u8)> {
 /// ([`line_jumps`]: the more-horizontal line hops, ties to the later
 /// z). Hidden-layer members and guides skip like the render walk.
 pub fn page_jumps(doc: &vsdx::Document, page: &vsdx::Page, hidden: &[i64]) -> Vec<Jump> {
+    // #294: the hop radius is the page's own LineToLineX ×
+    // LineJumpFactorX / 2, resolved through the style chain.
+    let radius = jump_radius_in(doc, page);
     let mut lines: Vec<JumpLine> = Vec::new();
     for (z, s) in page.shapes.iter().enumerate() {
         if s.sheet
@@ -920,7 +969,10 @@ pub fn page_jumps(doc: &vsdx::Document, page: &vsdx::Page, hidden: &[i64]) -> Ve
         }
         let frame = hit_frame(doc, &chain, s, msize);
         let master_root = chain.get(1).copied();
-        let segs = geometry_hit_segments(s, master_root, &frame);
+        // Everything reaching here is a connector (the gate above), so
+        // stored jump arcs strip from the polyline (#294) — the hop
+        // computes on the straight run, never on a stale arc.
+        let segs = geometry_hit_segments(s, master_root, &frame, true);
         if segs.is_empty() {
             continue;
         }
@@ -955,11 +1007,15 @@ pub fn page_jumps(doc: &vsdx::Document, page: &vsdx::Page, hidden: &[i64]) -> Ve
             pts,
         });
     }
-    line_jumps(&lines)
+    line_jumps(&lines, radius)
 }
 
 #[cfg(test)]
 mod tests {
+    /// The tests' hop radius — Visio's default (0.125 in × 2/3 / 2,
+    /// the #294 identity).
+    const TEST_JUMP_RADIUS: f64 = 0.125 * (2.0 / 3.0) / 2.0;
+
     /// #251: one crossing REGION hops once — a flattened curve's
     /// entry/exit sample windows converge onto the same pixels and
     /// merge to a single arc; distinct crossings beyond the hop
@@ -982,22 +1038,50 @@ mod tests {
             (1.5, 1.04),
             (2.0, 1.0),
         ];
-        let js = line_jumps(&[
-            l(1, 0, &arc),
-            l(2, 1, &[(0.8, 2.0), (1.2, 0.0)]),
-        ]);
+        let js = line_jumps(
+            &[
+                l(1, 0, &arc),
+                l(2, 1, &[(0.8, 2.0), (1.2, 0.0)]),
+            ],
+            TEST_JUMP_RADIUS,
+        );
         assert_eq!(js.len(), 1, "the converging pair merges: {js:?}");
         // Two crossings far apart stay two hops.
-        let js = line_jumps(&[
-            l(1, 0, &[(0.0, 1.0), (1.0, 1.0), (1.0, 3.0), (4.0, 3.0)]),
-            l(2, 1, &[(2.0, 0.0), (2.0, 4.0)]),
-        ]);
+        let js = line_jumps(
+            &[
+                l(1, 0, &[(0.0, 1.0), (1.0, 1.0), (1.0, 3.0), (4.0, 3.0)]),
+                l(2, 1, &[(2.0, 0.0), (2.0, 4.0)]),
+            ],
+            TEST_JUMP_RADIUS,
+        );
         assert_eq!(js.len(), 1, "one real crossing");
-        let js = line_jumps(&[
-            l(1, 0, &[(0.0, 1.0), (3.0, 1.0)]),
-            l(2, 1, &[(1.0, 0.0), (1.0, 2.0), (2.5, 2.0), (2.5, 0.0)]),
-        ]);
+        let js = line_jumps(
+            &[
+                l(1, 0, &[(0.0, 1.0), (3.0, 1.0)]),
+                l(2, 1, &[(1.0, 0.0), (1.0, 2.0), (2.5, 2.0), (2.5, 0.0)]),
+            ],
+            TEST_JUMP_RADIUS,
+        );
         assert_eq!(js.len(), 2, "distinct crossings stay separate: {js:?}");
+    }
+
+    /// #294: the stored-jump detector recognizes Visio's saved jump
+    /// row (the repro's `X 1.4583→1.5417, A −0.0416667` — chord ON the
+    /// run) and leaves corner arcs (diagonal chord) and artwork-sized
+    /// arcs alone.
+    #[test]
+    fn stored_jump_arcs_match_the_repro_row() {
+        assert!(is_stored_jump_arc(
+            -0.041_666_7,
+            (0.083_333_3, 0.0),
+        ));
+        // A corner arc cuts across the run — never a jump.
+        assert!(!is_stored_jump_arc(0.09, (0.5, 0.5)));
+        // Artwork-sized arcs stay.
+        assert!(!is_stored_jump_arc(2.0, (0.0, 4.0)));
+        // Degenerate: zero chord and a zero-sagitta straight row.
+        assert!(!is_stored_jump_arc(0.0, (0.0, 0.0)));
+        assert!(is_stored_jump_arc(0.0, (0.0, 1.0)));
     }
 
     use super::*;
@@ -1069,7 +1153,7 @@ mod tests {
         let doc = vsdx::Document::default();
         let chain = vec![&s];
         let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
-        let segs = geometry_hit_segments(&s, None, &frame);
+        let segs = geometry_hit_segments(&s, None, &frame, false);
         // Segments are page space (the frame is identity here); some
         // sample must sit off the (0,0)→(4,2) chord — the interior
         // points pull the belly above it.

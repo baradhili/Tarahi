@@ -2146,7 +2146,16 @@ impl App {
                         && page_pos.1 >= by0 - threshold
                         && page_pos.1 <= by1 + threshold
                     {
-                        let segs = crate::connectors::geometry_hit_segments(shape, root, &frame);
+                        // #294: connector ink strips stored jump arcs —
+                        // the hit walk agrees with the rendered ink.
+                        let strip_jumps =
+                            crate::connectors::is_connector_in(&ed.doc, &chain, shape);
+                        let segs = crate::connectors::geometry_hit_segments(
+                            shape,
+                            root,
+                            &frame,
+                            strip_jumps,
+                        );
                         for (a, b) in segs {
                             if segment_hit(a, b, page_pos, threshold) {
                                 return Some(shape.id);
@@ -5653,7 +5662,9 @@ impl App {
                 })
                 .unwrap_or((None, (1.0, 1.0)));
             let frame = crate::connectors::hit_frame(&ed.doc, &chain, sh, msize);
-            let segs = crate::connectors::geometry_hit_segments(sh, root, &frame);
+            // The loop gate above guarantees a connector, so stored
+            // jump arcs strip from the polyline (#294).
+            let segs = crate::connectors::geometry_hit_segments(sh, root, &frame, true);
             let mut pts = Vec::with_capacity(segs.len() + 1);
             if let Some((a, _)) = segs.first() {
                 pts.push(*a);
@@ -7398,10 +7409,13 @@ impl App {
                         .ed
                         .as_ref()
                         .map(|ed| {
-                            ed.doc.pages[self.page_idx.min(ed.doc.pages.len() - 1)]
-                                .line_jump_factor()
+                            let page = &ed.doc.pages[self.page_idx.min(ed.doc.pages.len() - 1)];
+                            // #294: the RESOLVED factor — the page
+                            // usually carries no inline cell and rides
+                            // the style chain.
+                            ed.doc.page_line_jump_factor(page)
                         })
-                        .unwrap_or(1.0) as f32;
+                        .unwrap_or(2.0 / 3.0) as f32;
                     let mut jump_factor = self.line_jump_draft.unwrap_or(doc_factor);
                     // #257: mirrored emission under RTL (horizontal).
                     let jump_label = crate::i18n::strs().msg_jump_size();
@@ -10040,17 +10054,19 @@ impl App {
         let underlays = self.build_bg_underlays(ui.ctx());
         // #108: line-jump hops for the frame's connector crossings.
         // The page's Show-Line-Jumps switch gates the overlay (#251);
-        // the jump-size multiplier scales the hops.
-        let jump_factor = {
-            let page = &self.ed.as_ref().unwrap().doc.pages[self.page_idx];
+        // the hop radius is the page's own (#294 — LineToLineX ×
+        // LineJumpFactorX / 2, style-resolved).
+        let jump_radius = {
+            let doc = &self.ed.as_ref().unwrap().doc;
+            let page = &doc.pages[self.page_idx];
             if page.line_jumps_shown() {
-                page.line_jump_factor()
+                crate::connectors::jump_radius_in(doc, page)
             } else {
                 0.0
             }
         };
-        let jump_fx: Vec<canvas::JumpFx> = if jump_factor > 0.0 {
-            crate::connectors::line_jumps(&self.jump_lines())
+        let jump_fx: Vec<canvas::JumpFx> = if jump_radius > 0.0 {
+            crate::connectors::line_jumps(&self.jump_lines(), jump_radius)
                 .into_iter()
                 .map(|j| canvas::JumpFx {
                     at: j.at,
@@ -10064,7 +10080,7 @@ impl App {
                         j.under_color.1,
                         j.under_color.2,
                     ),
-                    factor: jump_factor as f32,
+                    radius_in: jump_radius as f32,
                 })
                 .collect()
         } else {
@@ -17887,7 +17903,7 @@ mod tests {
             lines.len()
         );
         // And the crossing hops: the axis line (flatter) jumps.
-        let jumps = crate::connectors::line_jumps(&lines);
+        let jumps = crate::connectors::line_jumps(&lines, 0.041_666_7);
         assert_eq!(jumps.len(), 1, "one crossing: {jumps:?}");
         assert!(jumps[0].dir.1.abs() < 1e-6, "the axis line hops");
     }

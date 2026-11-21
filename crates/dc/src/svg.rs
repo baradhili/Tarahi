@@ -1180,10 +1180,13 @@ fn render_page_full(
         Vec::new()
     };
     if !jumps.is_empty() {
-        let factor = page.line_jump_factor();
+        // #294: the hop radius is the page's own LineToLineX ×
+        // LineJumpFactorX / 2, resolved through the style chain —
+        // never the old 0.12 constant.
+        let radius = crate::geom::jump_radius_in(doc, page);
         let _ = writeln!(svg, r#"<g data-dc="line-jumps">"#);
         for j in &jumps {
-            append_jump_scaled(&mut svg, h, j, factor);
+            append_jump_scaled(&mut svg, h, j, radius);
         }
         let _ = writeln!(svg, "</g>");
     }
@@ -1200,20 +1203,10 @@ const JUMP_UNDER_EXT_IN: f64 = 1.0 / 96.0;
 /// overlay's three strokes — the white gap across the jumper, the
 /// under line redrawn straight through it, and the hop arc bulging
 /// page-up (`canvas.rs`'s screen-up flip, computed here in page
-/// space so rotated jumpers stay correct).
-#[allow(dead_code)] // the factor-1 form; tests call the scaled one
-fn append_jump(svg: &mut String, page_h: f64, j: &crate::geom::Jump) {
-    append_jump_scaled(svg, page_h, j, 1.0);
-}
-
-/// [`append_jump`] with the page's jump-size multiplier (#251 — the
-/// PageSheet's `LineJumpFactorX`).
-fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::geom::Jump, factor: f64) {
-    let (r, w, uw) = (
-        crate::geom::JUMP_RADIUS_IN * factor,
-        j.weight,
-        j.under_weight,
-    );
+/// space so rotated jumpers stay correct). `radius` is the page's
+/// resolved jump radius (#294 — LineToLineX × LineJumpFactorX / 2).
+fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::geom::Jump, radius: f64) {
+    let (r, w, uw) = (radius, j.weight, j.under_weight);
     let sy = |y: f64| page_h - y;
     let pt = |p: (f64, f64)| format!("{:.5} {:.5}", p.0, sy(p.1));
     let hex = |c: (u8, u8, u8)| format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2);
@@ -3663,6 +3656,10 @@ fn render_all_geometry(
     // #228: both frames below accumulate into ONE shape-level paint —
     // the alternate-fill union flushes under the per-section strokes.
     let mut paint = ShapePaint::default();
+    // #294: a connector's stored jump ArcTo rows straighten — the
+    // jump overlay owns the one arc at the current crossing, and a
+    // stored arc stops lingering after a move.
+    let strip_jumps = crate::geom::is_connector_in(doc, chain, s);
     let own: Vec<&vsdx::Section> = s.sheet.sections_named("Geometry");
     if !own.is_empty() {
         // Row-cell inheritance: inline copies often keep only the Y cells
@@ -3858,6 +3855,7 @@ fn render_all_geometry(
                 (1.0, 1.0),
                 Frame::Instance,
                 &gname,
+                strip_jumps,
                 out,
                 &mut paint,
             );
@@ -3932,6 +3930,7 @@ fn render_all_geometry(
             scale,
             Frame::Master(&mut menv),
             &format!("Geometry{}", i + 1),
+            strip_jumps,
             out,
             &mut paint,
         );
@@ -3962,6 +3961,7 @@ fn render_geometry(
     scale: (f64, f64),
     frame: Frame<'_>,
     gname: &str,
+    strip_jumps: bool,
     out: &mut String,
     paint: &mut ShapePaint,
 ) {
@@ -4186,7 +4186,14 @@ fn render_geometry(
                 let h = row_num(env, row, "A").unwrap_or(0.0);
                 let (sx, sy) = cur;
                 let chord = ((x - sx).powi(2) + (y - sy).powi(2)).sqrt();
-                if h.abs() < 1e-9 || chord < 1e-9 {
+                if strip_jumps && crate::geom::is_stored_jump_arc(h, (x - sx, y - sy)) {
+                    // #294: a stored jump arc straightens — the ink
+                    // follows the run, and the jump overlay draws the
+                    // ONE arc at the current crossing with the page's
+                    // own radius. A stored arc stops lingering after a
+                    // move.
+                    let _ = write!(d, "L {}", emit_pt((x, y)));
+                } else if h.abs() < 1e-9 || chord < 1e-9 {
                     let _ = write!(d, "L {}", emit_pt((x, y)));
                 } else {
                     // On-arc point from the sagitta.
@@ -8090,7 +8097,14 @@ mod tests {
         );
         // The arc bulges page-UP: the apex sits at a SMALLER SVG y
         // than the crossing's (page y 5 → SVG y 6 on an 11in page).
-        let apex = format!("{:.5} {:.5}", 3.0, 6.0 - crate::geom::JUMP_RADIUS_IN);
+        // The radius is the page's resolved LineToLineX × factor / 2
+        // (#294 — the fixture page sets neither cell, so Visio's
+        // defaults apply: 0.125 × 2/3 / 2).
+        let apex = format!(
+            "{:.5} {:.5}",
+            3.0,
+            6.0 - crate::geom::jump_radius_in(&doc, &page)
+        );
         assert!(svg.contains(&apex), "the arc apex is page-up: {apex}");
     }
 
@@ -8151,15 +8165,119 @@ mod tests {
                 "the page set to LineJumpCode {off} draws no jump group"
             );
         }
-        // Shown at 2×: the hop arc's radius doubles.
+        // Shown at 2×: the radius is LineToLineX × factor / 2 (#294) —
+        // the fixture page sets only the factor, so 0.125 × 2 / 2.
         let mut big = doc.clone();
         big.pages[0]
             .sheet_mut()
             .unwrap()
             .set_cell("LineJumpFactorX", Cell::value("2"));
         let svg = render_page(&big, &big.pages[0]).unwrap();
-        let apex = format!("{:.5} {:.5}", 3.0, 6.0 - crate::geom::JUMP_RADIUS_IN * 2.0);
+        let apex = format!(
+            "{:.5} {:.5}",
+            3.0,
+            6.0 - crate::geom::jump_radius_in(&big, &big.pages[0])
+        );
         assert!(svg.contains(&apex), "the 2× arc apex: {apex}");
+    }
+
+    /// #187: a page with NO crossings draws no jump group.
+    /// #294: a connector's stored jump `ArcTo` straightens — the ink
+    /// follows the run (no `A` command) and the overlay draws the ONE
+    /// arc at the current crossing with the page's radius (Visio's
+    /// defaults here: 0.125 × 2/3 / 2 ≈ 0.04167, not the old 0.12).
+    /// A stored arc sitting OFF any crossing simply vanishes.
+    #[test]
+    fn export_straightens_stored_jump_arcs() {
+        let connector =
+            |id: i64, pin: (f64, f64), w: f64, h: f64, stored_jump: Option<(f64, f64)>| {
+                let mut s = shape_at(id, pin, w, h, 0.0);
+                s.sheet.set_cell("ObjType", Cell::value("2"));
+                let line = |ix: i64, x: f64, y: f64| Row {
+                    t: Some("LineTo".into()),
+                    ix,
+                    cells: vec![
+                        ("X".to_string(), Cell::value(format!("{x}"))),
+                        ("Y".to_string(), Cell::value(format!("{y}"))),
+                    ],
+                    ..Row::default()
+                };
+                let mut sec = Section {
+                    name: "Geometry".into(),
+                    ix: 0,
+                    ..Section::default()
+                };
+                let mut rows = vec![Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: vec![
+                        ("X".to_string(), Cell::value("0")),
+                        ("Y".to_string(), Cell::value("0")),
+                    ],
+                    ..Row::default()
+                }];
+                // A stored jump mid-run (the #294 repro's row shape):
+                // chord along the run, |A| = the jump radius.
+                match stored_jump {
+                    Some((mid, half)) => {
+                        rows.push(line(2, mid - half, 0.0));
+                        rows.push(Row {
+                            t: Some("ArcTo".into()),
+                            ix: 3,
+                            cells: vec![
+                                ("X".to_string(), Cell::value(format!("{}", mid + half))),
+                                ("Y".to_string(), Cell::value("0")),
+                                ("A".to_string(), Cell::value(format!("{}", -half))),
+                            ],
+                            ..Row::default()
+                        });
+                        rows.push(line(4, w, h));
+                    }
+                    None => rows.push(line(2, w, h)),
+                }
+                sec.rows = rows;
+                s.sheet.children.push(SheetChild::Section(sec));
+                s
+            };
+        let jump_half = 0.125 * (2.0 / 3.0) / 2.0;
+        // Stored jump centered on the crossing (page x = 3): the ink
+        // is a straight run, one hop at the crossing.
+        let (doc, page) = page_fixture(vec![
+            connector(1, (3.0, 5.0), 4.0, 0.0, Some((2.0, jump_half))),
+            connector(2, (3.0, 5.0), 0.0, 4.0, None),
+        ]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(
+            !svg.contains(" A "),
+            "the stored jump arc renders as a straight run"
+        );
+        assert_eq!(
+            svg.matches(r##"stroke="#ffffff""##).count(),
+            1,
+            "one jump at the crossing"
+        );
+        // The gap spans the crossing ± the page's resolved radius
+        // (prefix match: the gap line writes full-precision floats).
+        assert!(
+            svg.contains(r#"x1="2.95833"#) && svg.contains(r#"x2="3.04166"#),
+            "the gap is LineToLineX × factor / 2 wide"
+        );
+        // The stale case: the stored arc sits at page x = 3 while the
+        // crossing moved to x = 4.5 — the arc vanishes, one hop at the
+        // CURRENT crossing.
+        let (doc, page) = page_fixture(vec![
+            connector(1, (3.0, 5.0), 4.0, 0.0, Some((2.0, jump_half))),
+            connector(2, (4.5, 5.0), 0.0, 4.0, None),
+        ]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(
+            !svg.contains(" A "),
+            "the stale stored arc does not render"
+        );
+        assert!(
+            svg.contains(r#"x1="4.45833"#) && !svg.contains(r#"x1="2.95833"#),
+            "one hop at the current crossing, nothing at the stale arc"
+        );
     }
 
     /// #187: a page with NO crossings draws no jump group.

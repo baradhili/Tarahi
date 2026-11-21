@@ -808,14 +808,16 @@ fn line_jump_settings_persist_through_a_round_trip() {
     ))
     .unwrap();
     assert!(!ed.doc.pages[0].line_jumps_shown());
-    assert!((ed.doc.pages[0].line_jump_factor() - 1.75).abs() < 1e-9);
+    // #294: the resolved factor — the written cell rides on the
+    // PageSheet itself, so resolution finds it directly.
+    assert!((ed.doc.page_line_jump_factor(&ed.doc.pages[0]) - 1.75).abs() < 1e-9);
     // The real round trip: save, re-parse, settings intact.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("jumps.vsdx");
     vsdx::write::save(&ed.doc, &path).unwrap();
     let re = vsdx::parse::parse(&path).unwrap();
     assert!(!re.pages[0].line_jumps_shown(), "off survives the save");
-    assert!((re.pages[0].line_jump_factor() - 1.75).abs() < 1e-9);
+    assert!((re.page_line_jump_factor(&re.pages[0]) - 1.75).abs() < 1e-9);
     // In memory, undoing every write restores the shown default.
     for _ in 0..3 {
         ed.undo().unwrap();
