@@ -4221,24 +4221,55 @@ fn render_geometry(
                 let (sx, sy) = cur;
                 let chord = ((x - sx).powi(2) + (y - sy).powi(2)).sqrt();
                 // Route context (#294 review): the run continues
-                // collinear INTO the arc (the previous row drew it)
-                // and OUT of it (the next row starts at the arc's
-                // end) — Visio writes jumps mid-run; an isolated
-                // authored semicircle stays a curve.
-                let prev_dir = (ri >= 2)
-                    .then(|| evald.get(ri - 1))
-                    .flatten()
-                    .filter(|(_, pt, _)| {
-                        !pt.starts_with("MoveTo") && !pt.starts_with("RelMoveTo")
-                    })
-                    .and_then(|_| evald.get(ri - 2))
-                    .map(|(_, _, p)| (sx - p.0, sy - p.1));
-                let next_dir = evald
-                    .get(ri + 1)
-                    .filter(|(_, nt, _)| {
-                        !nt.starts_with("MoveTo") && !nt.starts_with("RelMoveTo")
-                    })
-                    .map(|(_, _, p)| (p.0 - x, p.1 - y));
+                // collinear INTO the arc and OUT of it — Visio writes
+                // jumps mid-run. Only straight LineTo neighbors count
+                // (curved endpoint chords can lie about the route),
+                // and zero-length degenerate rows are skipped without
+                // crossing a MoveTo; an isolated authored semicircle
+                // stays a curve.
+                let kind_of = |tt: &str| -> u8 {
+                    if tt == "MoveTo" || tt == "RelMoveTo" {
+                        0
+                    } else if tt == "LineTo" || tt == "RelLineTo" {
+                        1
+                    } else {
+                        2
+                    }
+                };
+                let mut prev_dir = None;
+                let mut pi = ri as isize - 1;
+                while pi >= 1 {
+                    let (_, pt, pp) = evald[pi as usize];
+                    if kind_of(pt) != 1 {
+                        break;
+                    }
+                    let (_, _, p0) = evald[pi as usize - 1];
+                    let pd = (pp.0 - p0.0, pp.1 - p0.1);
+                    if pd.0.hypot(pd.1) > 1e-9 {
+                        prev_dir = Some(pd);
+                        break;
+                    }
+                    pi -= 1;
+                }
+                let mut next_dir = None;
+                let mut ni = ri + 1;
+                while ni < evald.len() {
+                    let (_, nt, ne) = evald[ni];
+                    if kind_of(nt) != 1 {
+                        break;
+                    }
+                    let p = if ni == ri + 1 {
+                        (x, y)
+                    } else {
+                        evald[ni - 1].2
+                    };
+                    let nd = (ne.0 - p.0, ne.1 - p.1);
+                    if nd.0.hypot(nd.1) > 1e-9 {
+                        next_dir = Some(nd);
+                        break;
+                    }
+                    ni += 1;
+                }
                 if strip_jumps
                     && crate::geom::is_stored_jump_arc(h, (x - sx, y - sy), prev_dir, next_dir)
                 {

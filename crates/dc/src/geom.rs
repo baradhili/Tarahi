@@ -514,6 +514,10 @@ pub fn geometry_hit_segments(
     };
     let mut pts: Vec<(f64, f64)> = Vec::new();
     let mut cur: Option<(f64, f64)> = None; // shape-local
+    // The same pen in the UNSCALED row frame — stored-jump
+    // classification classifies there, matching the ink path (#294
+    // review).
+    let mut cur_local: Option<(f64, f64)> = None;
                                             // #188: the spline accumulator — SplineStart opens, SplineKnot
                                             // rows extend, anything else flushes; NURBSTo rows evaluate
                                             // standalone. The flattened samples ARE the hit polyline, so
@@ -538,7 +542,11 @@ pub fn geometry_hit_segments(
     // also the route-context lookahead for stored-jump classification
     // (#294 review). The bool: the row is a MoveTo (positions the pen,
     // draws no run).
-    let walk_row_end = |i: usize| -> Option<((f64, f64), bool)> {
+    // Row kind: 0 = MoveTo (positions the pen, draws no run), 1 =
+    // straight LineTo (the only run that counts as jump context —
+    // curved neighbors' endpoint chords can lie about the route,
+    // #294 review), 2 = anything else.
+    let walk_row = |i: usize| -> Option<((f64, f64), u8)> {
         let (r, m) = walk.get(i)?;
         let t = r
             .t
@@ -549,12 +557,14 @@ pub fn geometry_hit_segments(
         let y = cell(r, *m, "Y").unwrap_or(0.0);
         let rel = t.starts_with("Rel");
         let end = if rel { (x * own.0, y * own.1) } else { (x, y) };
-        let end = if scale != (1.0, 1.0) {
-            (end.0 * scale.0, end.1 * scale.1)
+        let kind = if t == "MoveTo" || t == "RelMoveTo" {
+            0u8
+        } else if t == "LineTo" || t == "RelLineTo" {
+            1
         } else {
-            end
+            2
         };
-        Some((end, t == "MoveTo" || t == "RelMoveTo"))
+        Some((end, kind))
     };
     for (k, (row, master)) in walk.iter().take(MAX_ROWS).enumerate() {
         let t = row
@@ -568,57 +578,91 @@ pub fn geometry_hit_segments(
         let x = cell(row, *master, "X").unwrap_or(0.0);
         let y = cell(row, *master, "Y").unwrap_or(0.0);
         let rel = t.starts_with("Rel");
-        let end = if rel { (x * own.0, y * own.1) } else { (x, y) };
+        let end_local = if rel { (x * own.0, y * own.1) } else { (x, y) };
         // Master-section cached literals are in master units.
         let end = if scale != (1.0, 1.0) {
-            (end.0 * scale.0, end.1 * scale.1)
+            (end_local.0 * scale.0, end_local.1 * scale.1)
         } else {
-            end
+            end_local
         };
         match t {
             "MoveTo" | "RelMoveTo" => {
                 cur = Some(end);
+                cur_local = Some(end_local);
                 pts.push(to_page(end));
             }
             "ArcTo" | "RelArcTo" => {
                 // |A| = sagitta, bulging right of travel; the
                 // quadratic control that reproduces the apex.
                 let raw_a = cell(row, *master, "A").unwrap_or(0.0);
-                if let Some(c0) = cur {
+                if let (Some(c0), Some(c0_local)) = (cur, cur_local) {
                     let d = (end.0 - c0.0, end.1 - c0.1);
-                    // #294 review: the whole-master-geometry path
-                    // returns A as an unscaled literal while the chord
-                    // coordinates carry the section scale — classify
-                    // in the SAME frame (the sagitta sits perpendicular
-                    // to the axis-aligned chord).
-                    let a = if scale != (1.0, 1.0) {
-                        raw_a * if d.0.abs() >= d.1.abs() {
-                            scale.1
-                        } else {
-                            scale.0
-                        }
-                    } else {
-                        raw_a
-                    };
+                    // The classification chord in the LOCAL frame (the
+                    // row coordinates before the section scale) — the
+                    // same frame the ink path classifies in.
+                    let d_class = (end_local.0 - c0_local.0, end_local.1 - c0_local.1);
                     // Route context (#294 review): the run continues
                     // collinear INTO the arc and OUT of it — Visio
-                    // writes jumps mid-run; an isolated authored
-                    // semicircle stays a curve.
-                    let prev_dir = (k >= 2)
-                        .then(|| walk_row_end(k - 1))
-                        .flatten()
-                        .filter(|(_, is_move)| !is_move)
-                        .and_then(|_| walk_row_end(k - 2))
-                        .map(|(p, _)| (c0.0 - p.0, c0.1 - p.1));
-                    let next_dir = walk_row_end(k + 1)
-                        .filter(|(_, is_move)| !is_move)
-                        .map(|(p, _)| (p.0 - end.0, p.1 - end.1));
+                    // writes jumps mid-run. Only straight neighbors
+                    // count (curved endpoint chords can lie about the
+                    // route), and zero-length degenerate rows are
+                    // skipped without crossing a MoveTo.
+                    let mut prev_dir = None;
+                    let mut pi = k as isize - 1;
+                    while pi >= 1 {
+                        let Some((pe, kind)) = walk_row(pi as usize) else { break };
+                        if kind != 1 {
+                            break;
+                        }
+                        let Some((pp, _)) = walk_row(pi as usize - 1) else { break };
+                        let pd = (pe.0 - pp.0, pe.1 - pp.1);
+                        if pd.0.hypot(pd.1) > 1e-9 {
+                            prev_dir = Some(pd);
+                            break;
+                        }
+                        pi -= 1;
+                    }
+                    let mut next_dir = None;
+                    let mut ni = k + 1;
+                    while ni < walk.len() {
+                        let Some((ne, kind)) = walk_row(ni) else { break };
+                        if kind != 1 {
+                            break;
+                        }
+                        let p = if ni == k + 1 {
+                            end
+                        } else {
+                            match walk_row(ni - 1) {
+                                Some((q, _)) => q,
+                                None => break,
+                            }
+                        };
+                        let nd = (ne.0 - p.0, ne.1 - p.1);
+                        if nd.0.hypot(nd.1) > 1e-9 {
+                            next_dir = Some(nd);
+                            break;
+                        }
+                        ni += 1;
+                    }
                     // #294: a stored jump arc straightens — the
                     // polyline follows the chord, so the crossing set
-                    // never sees the stale bump.
-                    let stored_jump =
-                        strip_stored_jumps && is_stored_jump_arc(a, d, prev_dir, next_dir);
+                    // never sees the stale bump. Classified in the
+                    // LOCAL frame (unscaled row coordinates), the same
+                    // frame the ink path classifies in — instance
+                    // scaling must not make the walks disagree (#294
+                    // review).
+                    let stored_jump = strip_stored_jumps
+                        && is_stored_jump_arc(raw_a, d_class, prev_dir, next_dir);
                     if !stored_jump {
+                        // The bump is geometry in the scaled frame:
+                        // the local sagitta scales with the local
+                        // chord's perpendicular axis.
+                        let a = raw_a
+                            * if d_class.0.abs() >= d_class.1.abs() {
+                                scale.1
+                            } else {
+                                scale.0
+                            };
                         let len = d.0.hypot(d.1).max(1e-9);
                         let mid = (
                             (c0.0 + end.0) / 2.0 + d.1 / len * a,
@@ -635,6 +679,7 @@ pub fn geometry_hit_segments(
                 }
                 pts.push(to_page(end));
                 cur = Some(end);
+                cur_local = Some(end_local);
             }
             "EllipticalArcTo" | "RelEllipticalArcTo" => {
                 // (A,B) is an ON-curve point → quadratic control.
@@ -659,6 +704,7 @@ pub fn geometry_hit_segments(
                 }
                 pts.push(to_page(end));
                 cur = Some(end);
+                cur_local = Some(end_local);
             }
             "SplineStart" => {
                 // #188: opens a spline (§2.4.2.15) — X/Y is the
@@ -683,15 +729,18 @@ pub fn geometry_hit_segments(
                     cell(row, *master, "D").unwrap_or(3.0),
                 ));
                 cur = Some(end);
+                cur_local = Some(end_local);
             }
             "SplineKnot" => match spline_acc.as_mut() {
                 Some(acc) => {
                     acc.knot(end, cell(row, *master, "A").unwrap_or(0.0));
                     cur = Some(end);
+                cur_local = Some(end_local);
                 }
                 None => {
                     pts.push(to_page(end));
                     cur = Some(end);
+                cur_local = Some(end_local);
                 }
             },
             "NURBSTo" => {
@@ -755,12 +804,14 @@ pub fn geometry_hit_segments(
                             pts.push(to_page(p));
                         }
                         cur = Some(end);
+                cur_local = Some(end_local);
                         drew = true;
                     }
                 }
                 if !drew {
                     pts.push(to_page(end));
                     cur = Some(end);
+                cur_local = Some(end_local);
                 }
             }
             _ if t.ends_with("To") || t.contains("Spline") || t == "InfiniteLine" => {
@@ -777,6 +828,7 @@ pub fn geometry_hit_segments(
                 }
                 pts.push(to_page(end));
                 cur = Some(end);
+                cur_local = Some(end_local);
             }
             _ => {
                 if let Some(acc) = spline_acc.take() {
@@ -926,6 +978,17 @@ fn seg_cross_open(
     Some(((a0.0 + t * r.0, a0.1 + t * r.1), t, u))
 }
 
+/// The two runs at the INTERIOR vertex `vx` sit on the same side of
+/// the other segment's line — the polyline touches it and bounces
+/// back (a tangency), it does not cross (#294 review).
+fn same_side(vx: usize, pts: &[(f64, f64)], other: &[(f64, f64)]) -> bool {
+    let (a, b) = (other[0], other[1]);
+    let dir = (b.0 - a.0, b.1 - a.1);
+    let side = |p: (f64, f64)| dir.0 * (p.1 - a.1) - dir.1 * (p.0 - a.0);
+    let (s1, s2) = (side(pts[vx - 1]), side(pts[vx + 1]));
+    s1 * s2 > 1e-12
+}
+
 /// The polyline index a crossing hugs, when it hugs a segment
 /// endpoint at all (`t` ≈ 0 or 1).
 fn hugged_vertex(t: f64, window_index: usize) -> Option<usize> {
@@ -994,6 +1057,23 @@ pub fn line_jumps(lines: &[JumpLine], radius: f64) -> Vec<Jump> {
                     let at_end_j = hugged_vertex(u, k2)
                         .is_some_and(|ix| ix == 0 || ix == pts[j].len() - 1);
                     if at_end_i || at_end_j {
+                        continue;
+                    }
+                    // An interior-vertex contact is a crossing only
+                    // when the vertex's two runs straddle the other
+                    // segment's line — same-side runs TOUCH the line
+                    // and bounce back (a tangency), never a hop (#294
+                    // review).
+                    if hugged_vertex(t, k1)
+                        .filter(|&ix| ix > 0 && ix + 1 < pts[i].len())
+                        .is_some_and(|ix| same_side(ix, &pts[i], w2))
+                    {
+                        continue;
+                    }
+                    if hugged_vertex(u, k2)
+                        .filter(|&ix| ix > 0 && ix + 1 < pts[j].len())
+                        .is_some_and(|ix| same_side(ix, &pts[j], w1))
+                    {
                         continue;
                     }
                     let unit = |a: (f64, f64), b: (f64, f64)| {
@@ -1309,6 +1389,129 @@ mod tests {
             TEST_JUMP_RADIUS,
         );
         assert_eq!(js.len(), 0, "a glue end never hops: {js:?}");
+        // A V that only TOUCHES the horizontal (both runs on the same
+        // side) is a tangency, not a crossing — no hop (#294 review).
+        let js = line_jumps(
+            &[
+                jline(1, 0, &[(-1.0, 0.0), (3.0, 0.0)]),
+                jline(2, 1, &[(0.0, 1.0), (1.0, 0.0), (2.0, 1.0)]),
+            ],
+            TEST_JUMP_RADIUS,
+        );
+        assert_eq!(js.len(), 0, "a tangency never hops: {js:?}");
+    }
+
+    /// A hit segment: start and end in page space.
+    type Seg = ((f64, f64), (f64, f64));
+
+    /// A minimal 1-section connector shape with the given geometry rows.
+    fn conn_shape(id: i64, w: f64, h: f64, rows: Vec<Row>) -> Shape {
+        let mut s = Shape {
+            id,
+            type_: Some("Shape".into()),
+            ..Shape::default()
+        };
+        s.sheet.set_cell("ObjType", Cell::value("2"));
+        s.sheet.set_cell("Width", Cell::value(fmt_width(w)));
+        s.sheet.set_cell("Height", Cell::value(fmt_width(h)));
+        let sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            rows,
+            ..Section::default()
+        };
+        s.sheet.children.push(SheetChild::Section(sec));
+        s
+    }
+
+    fn fmt_width(v: f64) -> String {
+        format!("{v}")
+    }
+
+    fn mrow(ix: i64, t: &str, cells: &[(&str, f64)]) -> Row {
+        Row {
+            t: Some(t.into()),
+            ix,
+            cells: cells
+                .iter()
+                .map(|(n, v)| (n.to_string(), Cell::value(format!("{v}"))))
+                .collect(),
+            ..Row::default()
+        }
+    }
+
+    /// The stored-jump row set of the #294 repro (cleanroom values):
+    /// MoveTo, a run in, the jump arc, a run out.
+    fn jump_rows() -> Vec<Row> {
+        vec![
+            mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            mrow(2, "LineTo", &[("X", 1.0), ("Y", 0.0)]),
+            mrow(
+                3,
+                "ArcTo",
+                &[("X", 1.083_333_3), ("Y", 0.0), ("A", -0.041_666_7)],
+            ),
+            mrow(4, "LineTo", &[("X", 3.0), ("Y", 0.0)]),
+        ]
+    }
+
+    fn flat(pts: &[Seg]) -> bool {
+        // Every segment horizontal at y = pts[0].0's y: a straight run
+        // (a retained arc would sample off it).
+        let y0 = pts.first().map(|(a, _)| a.1).unwrap_or(0.0);
+        pts.iter()
+            .all(|(a, b)| (a.1 - y0).abs() < 1e-6 && (b.1 - y0).abs() < 1e-6)
+    }
+
+    /// #294 review: a degenerate (zero-length) straight row next to
+    /// the stored jump does not break the run lookup — the arc still
+    /// strips.
+    #[test]
+    fn stored_jumps_survive_degenerate_neighbor_rows() {
+        let mut rows = jump_rows();
+        // A collapsed elbow between the arc and the continuing run.
+        rows.insert(
+            3,
+            mrow(4, "LineTo", &[("X", 1.083_333_3), ("Y", 0.0)]),
+        );
+        rows[4].ix = 5;
+        let s = conn_shape(7, 3.0, 0.25, rows);
+        let doc = vsdx::Document::default();
+        let chain = vec![&s];
+        let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
+        let segs = geometry_hit_segments(&s, None, &frame, true);
+        assert!(!segs.is_empty());
+        assert!(flat(&segs), "the arc strips past the degenerate row");
+    }
+
+    /// #294 review: classification happens in the LOCAL row frame in
+    /// BOTH walks — instance scaling (uniform or stretched) must not
+    /// make the hit walk retain a bump the ink path straightens.
+    #[test]
+    fn stored_jumps_classify_in_the_local_frame_at_any_scale() {
+        for (iw, ih) in [(2.0, 2.0), (2.0, 1.0)] {
+            let root = conn_shape(1, 2.0, 0.5, jump_rows());
+            let mut inst = Shape {
+                id: 2,
+                type_: Some("Shape".into()),
+                master: Some(1),
+                ..Shape::default()
+            };
+            inst.sheet.set_cell("ObjType", Cell::value("2"));
+            inst.sheet
+                .set_cell("Width", Cell::value(format!("{}", 2.0 * iw)));
+            inst.sheet
+                .set_cell("Height", Cell::value(format!("{}", 0.5 * ih)));
+            let doc = vsdx::Document::default();
+            let chain = vec![&inst, &root];
+            let frame = hit_frame(&doc, &chain, &inst, (2.0, 0.5));
+            let segs = geometry_hit_segments(&inst, Some(&root), &frame, true);
+            assert!(!segs.is_empty());
+            assert!(
+                flat(&segs),
+                "the arc strips at instance scale ({iw}, {ih})"
+            );
+        }
     }
 
     use super::*;
