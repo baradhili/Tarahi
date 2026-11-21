@@ -10074,6 +10074,37 @@ mod tests {
         );
     }
 
+    /// #282 ja (CodeRabbit round 2): the emergency splitter never
+    /// leaves a STANDALONE sound mark (ﾞ ﾟ — Lm class, glued only by
+    /// the kinsoku head rule) to open a line of over-long halfwidth
+    /// kana.
+    #[test]
+    fn emergency_split_never_opens_a_line_with_a_sound_mark() {
+        let face = crate::textmetrics::resolve(None, false, false);
+        let lines = wrap_block_text(
+            &face,
+            "ｱｲｶ\u{FF9E}ｸｻ",
+            0.13889,
+            0.05,
+            &face,
+            0.13889,
+            &[],
+            0.0,
+            0.0,
+        );
+        let joined: String = lines.iter().map(|l| l.text.clone()).collect();
+        assert_eq!(joined, "ｱｲｶ\u{FF9E}ｸｻ", "no characters lost");
+        assert!(lines.len() >= 2, "the emergency splitter fired");
+        for l in &lines {
+            let first = l.text.chars().next().expect("lines are non-empty");
+            assert!(
+                !crate::textmetrics::line_head_forbidden(first),
+                "no line opens with a forbidden starter: {:?}",
+                lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>()
+            );
+        }
+    }
+
     /// CRLF and lone CR each break exactly one line (carried over
     /// from the guess era — the normalizer is unchanged).
     #[test]

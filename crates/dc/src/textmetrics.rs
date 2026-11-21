@@ -321,15 +321,18 @@ fn is_cjk_closing(c: char) -> bool {
 }
 
 /// Japanese kinsoku (行頭禁則) starters — the small kana, the
-/// prolonged sound mark, the iteration marks and the halfwidth small
-/// kana a wrapped Japanese line may never BEGIN with (UAX #14's CJ
-/// class, lite). Each stays glueable to its preceding character: a
-/// break may END a line on the preceding char, never leave one of
-/// these to open the next.
+/// prolonged sound mark, the iteration marks, the middle dots, the
+/// STANDALONE sound marks (゛゜ and their halfwidth twins ﾞﾟ — Lm
+/// class, not combining, so only the kinsoku rule keeps them glued
+/// to their base) and the halfwidth small kana a wrapped Japanese
+/// line may never BEGIN with (UAX #14's CJ class, lite). Each stays
+/// glueable to its preceding character: a break may END a line on
+/// the preceding char, never leave one of these to open the next.
 fn is_ja_no_line_start(c: char) -> bool {
     matches!(
         c,
         '\u{3005}'                      // 々
+            | '\u{309B}'..='\u{309C}'   // ゛゜ (standalone sound marks)
             | '\u{309D}'..='\u{309E}'   // ゝゞ
             | '\u{3041}' | '\u{3043}' | '\u{3045}' | '\u{3047}' | '\u{3049}' // ぁぃぅぇぉ
             | '\u{3063}'                // っ
@@ -342,6 +345,7 @@ fn is_ja_no_line_start(c: char) -> bool {
             | '\u{30FD}'..='\u{30FE}'   // ヽヾ
             | '\u{31F0}'..='\u{31FF}'   // small katakana extensions ㇰㇱ…
             | '\u{FF67}'..='\u{FF70}'   // halfwidth small kana + ｰ
+            | '\u{FF9E}'..='\u{FF9F}'   // ﾞﾟ (halfwidth sound marks)
     )
 }
 
@@ -1120,6 +1124,14 @@ mod tests {
         assert!(!brk('カ', 'っ'));
         assert!(!brk('追', '々'));
         assert!(!brk('サ', '・'));
+        // The STANDALONE sound marks (both widths — Lm class, not
+        // combining, so only the kinsoku rule glues them) never start
+        // a line, but grant the break AFTER them (CodeRabbit round 2
+        // on #282: the halfwidth grant range had left ﾞ startable).
+        assert!(!brk('カ', '\u{309B}'));
+        assert!(!brk('ｶ', '\u{FF9E}'));
+        assert!(brk('\u{FF9E}', 'ｸ'));
+        assert!(brk('\u{309B}', 'カ'));
         // The halfwidth closers behave like the fullwidth ones.
         assert!(!brk('サ', '｡'));
         assert!(brk('｡', 'サ'));
@@ -1154,6 +1166,23 @@ mod tests {
             ("".into(), "한글".into()),
             (" ".into(), "문서".into()),
         ]);
+        // Decomposed halfwidth kana wrap like their precomposed
+        // twins: ｶﾞ stays one unit and the break before ｸ survives
+        // (CodeRabbit round 2 on #282).
+        assert_eq!(
+            toks("ｶ\u{FF9E}ｸ"),
+            vec![
+                ("".into(), "ｶ\u{FF9E}".into()),
+                ("".into(), "ｸ".into()),
+            ]
+        );
+        assert_eq!(
+            toks("ﾊ\u{FF9F}ｲ"),
+            vec![
+                ("".into(), "ﾊ\u{FF9F}".into()),
+                ("".into(), "ｲ".into()),
+            ]
+        );
     }
 
     /// #282 zh-Hans: the wrap tokenizer reproduces the space-only
