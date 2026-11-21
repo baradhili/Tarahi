@@ -32,6 +32,18 @@ pdf-writer = "0.15"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # Content/image stream compression.
 flate2 = "1"
+# Spell checking (#121): pure-Rust Hunspell-format checker (`check` +
+# Nuspell-modeled `suggest`), no libhunspell FFI. Maintained under the
+# Helix editor org; codebook and cargo-spellcheck are in-tree users.
+# Pin 0.4 — the upstream README reserves breaking changes past it.
+spellbook = "0.4"
+# Local/system dictionary discovery: Hunspell dictionaries in the wild
+# declare legacy encodings through the aff `SET` line (ISO-8859-x,
+# windows-1256, KOI8-R, TIS-620, …); spellbook requires UTF-8, so
+# non-UTF-8 local dictionaries transcode at load time from their
+# declared encoding. The same crate spellbook's own integration tests
+# use for exactly this.
+encoding_rs = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

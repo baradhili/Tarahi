@@ -9866,3 +9866,126 @@ fn connection_points_reveal_highlight_and_show_glued_sites() {
         pinx - lpx + last_x
     );
 }
+
+// ---------------------------------------------------------------------------
+// Check Spelling (#121): F7 over the page's shape text — the dialog
+// flow, one undo per Change, Ignore All, and the custom dictionary.
+// ---------------------------------------------------------------------------
+
+fn place_shape_with_text(h: &mut Harness<'_, App>, text: &str) -> i64 {
+    h.run();
+    let from = h.state().debug_master_cells()[0].1.center();
+    let to = h.state().debug_canvas_rect().center();
+    click_at(h, from, egui::PointerButton::Primary);
+    click_at(h, to, egui::PointerButton::Primary);
+    let (_, sid) = h.state().debug_sel().expect("placed shape selected");
+    h.state_mut().debug_set_shape_text_for_test(sid, text);
+    h.run();
+    sid
+}
+
+/// F7 flags the typo, the dialog's ranked suggestions carry the fix,
+/// and Change splices it in one undo step (the ReplaceTextRange macro).
+#[test]
+fn spell_dialog_change_fixes_with_one_undo() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness_with_blank();
+    let sid = place_shape_with_text(&mut h, "This is a tset sentence");
+
+    h.key_press(egui::Key::F7);
+    h.run();
+    assert_eq!(
+        h.state().debug_spell_word().as_deref(),
+        Some("tset"),
+        "F7 flags the typo"
+    );
+
+    // The dictionary's ranked suggestions carry the fix (the quality
+    // bar: a common typo's suggestion list contains the intended word).
+    let sugs = h.state().debug_spell_suggestions();
+    assert!(sugs.contains(&"test".to_string()), "the fix is suggested: {sugs:?}");
+
+    // Change applies the SELECTED suggestion (the list preselects the
+    // top rank) in one undo step.
+    h.get_by_label("Change").click();
+    h.run();
+
+    let expected = format!("This is a {} sentence", sugs[0]);
+    assert_eq!(
+        h.state().debug_shape_plain_text(sid).as_deref(),
+        Some(expected.as_str()),
+        "Change spliced the selected suggestion"
+    );
+    assert!(
+        h.state().debug_spell_word().is_none(),
+        "the page is clean — the pass closed"
+    );
+
+    // One undo reverts the whole Change (the macro), dialog already
+    // closed with the completion status.
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(sid).as_deref(),
+        Some("This is a tset sentence")
+    );
+}
+
+/// Ignore All holds for the rest of the pass; Add feeds the app-level
+/// custom dictionary (never the .vsdx — the language.json precedent).
+#[test]
+fn spell_dialog_ignore_all_and_add() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness_with_blank();
+    let _sid = place_shape_with_text(&mut h, "tset agian tset");
+
+    h.key_press(egui::Key::F7);
+    h.run();
+    assert_eq!(h.state().debug_spell_word().as_deref(), Some("tset"));
+
+    h.get_by_label("Ignore All").click();
+    h.run();
+    assert_eq!(
+        h.state().debug_spell_word().as_deref(),
+        Some("agian"),
+        "Ignore All moved past every tset occurrence"
+    );
+
+    h.get_by_label("Ignore All").click();
+    h.run();
+    assert!(
+        h.state().debug_spell_word().is_none(),
+        "the pass completed with both typos ignored"
+    );
+
+    // A fresh pass re-flags (Ignore All is session-scoped) — Add this
+    // time: the word joins the app-level custom dictionary and the
+    // pass skips it.
+    h.key_press(egui::Key::F7);
+    h.run();
+    assert_eq!(h.state().debug_spell_word().as_deref(), Some("tset"));
+    h.get_by_label("Add").click();
+    h.run();
+    assert!(
+        h.state().debug_spell_custom().contains(&"tset".to_string()),
+        "Add fed the custom dictionary"
+    );
+    assert_eq!(
+        h.state().debug_spell_word().as_deref(),
+        Some("agian"),
+        "the custom word no longer flags — the pass walks on"
+    );
+    h.get_by_label("Ignore All").click();
+    h.run();
+    assert!(h.state().debug_spell_word().is_none(), "pass completed");
+
+    // The store round-trips (explicit-path hooks — kittest tests run
+    // parallel in one process and never touch the user's config dir).
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("diagramcraft").join("custom-dictionary.json");
+    dc_ui::spellcheck::save_custom_to_for_test(&path, &["tset".to_string(), "zork".to_string()]);
+    assert_eq!(
+        dc_ui::spellcheck::load_custom_from_for_test(&path),
+        vec!["tset".to_string(), "zork".to_string()]
+    );
+}

@@ -8,6 +8,7 @@ pub mod fields;
 pub mod geom;
 pub mod pdf;
 pub mod raster;
+pub mod spellcheck;
 pub mod svg;
 pub mod textfunc;
 pub mod textmetrics;

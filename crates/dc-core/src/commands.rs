@@ -1163,6 +1163,147 @@ pub enum FieldInsert {
     ReplacePlain { offset: usize, len: usize },
 }
 
+/// Replace one plain-text range of a sheet's text — the spell check's
+/// `Change` (GitHub #121). The plain span `[start, start+len)` (plain
+/// CHARACTERS over the full projection — field cached displays included,
+/// the space [`vsdx::text::plain_to_raw_offset`] maps) is spliced out of
+/// the RAW text and `replacement` spliced in, so every other marker
+/// (`<cp>`/`<pp>`/`<tp>`/`<fld>`) survives byte-identical — unlike
+/// [`SetText`], whose plain-text store would flatten a field-bearing
+/// shape. The spell tokenizer never emits a token that overlaps a field
+/// run, so the range always lands in literal text.
+#[derive(Debug, Clone)]
+pub struct ReplaceTextRange {
+    pub scope: Scope,
+    /// Plain char offset of the span's first character.
+    pub start: usize,
+    /// Plain char count to replace.
+    pub len: usize,
+    pub replacement: String,
+    old: Option<(Option<String>, Option<String>)>, // (text, text_raw)
+}
+
+impl ReplaceTextRange {
+    pub fn new(scope: Scope, start: usize, len: usize, replacement: impl Into<String>) -> Self {
+        ReplaceTextRange {
+            scope,
+            start,
+            len,
+            replacement: replacement.into(),
+            old: None,
+        }
+    }
+}
+
+impl crate::Command for ReplaceTextRange {
+    fn touched(&self, doc: &Document) -> crate::TouchList {
+        match &self.scope {
+            Scope::Shape { page, shape } => {
+                match crate::scope::top_level_ancestor(doc, *page, *shape) {
+                    Some(root) => crate::TouchList {
+                        pages: vec![],
+                        shapes: vec![crate::Touched {
+                            page: *page,
+                            shape: root,
+                            touch: crate::Touch::Ink,
+                            sub: sub_shape(root, *shape),
+                        }],
+                    },
+                    None => crate::TouchList::page(*page),
+                }
+            }
+            _ => crate::TouchList::all_pages(doc),
+        }
+    }
+
+    fn label(&self) -> String {
+        format!(
+            "replace text [{}, +{}) of {}",
+            self.start, self.len, self.scope
+        )
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<()> {
+        let scope = self.scope.clone();
+        let escape = |t: &str| {
+            t.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        };
+        // The immutable pre-pass: the old values plus the raw seed (the
+        // InsertField convention: local raw → escaped local plain → the
+        // master's inherited raw — an instance with no local text
+        // materializes its master's text rather than growing just the
+        // replacement).
+        let pre = match &scope {
+            Scope::Shape { page, shape } => doc
+                .pages
+                .iter()
+                .find(|p| p.id == *page)
+                .and_then(|p| crate::scope::find_shape(&p.shapes, *shape))
+                .map(|sh| {
+                    let inherited = if sh.sheet.text_raw.is_some() || sh.sheet.text.is_some() {
+                        None
+                    } else {
+                        crate::scope::shape_chain(doc, *page, *shape).ok().and_then(|chain| {
+                            let ancestors: Vec<_> =
+                                chain.into_iter().filter(|c| c.id != *shape).collect();
+                            doc.instance_source(sh, &ancestors)
+                                .and_then(|src| src.sheet.text_raw.clone())
+                        })
+                    };
+                    (sh.sheet.text.clone(), sh.sheet.text_raw.clone(), inherited)
+                }),
+            _ => None,
+        };
+        let (old_text, old_raw, inherited) = match pre {
+            Some(t) => t,
+            None => {
+                let s = sheet_mut(doc, &scope)?;
+                (s.text.clone(), s.text_raw.clone(), None)
+            }
+        };
+        self.old = Some((old_text.clone(), old_raw.clone()));
+        let s = sheet_mut(doc, &scope)?;
+        let raw = old_raw
+            .or_else(|| old_text.map(|t| escape(&t)))
+            .or(inherited)
+            .unwrap_or_default();
+        // The splice-safe span mapping: bounds land in the text segment
+        // that contains the target characters — after a zero-plain
+        // marker for the head, before one for the tail (the splice
+        // never swallows a marker between two literal runs), and inside
+        // a CDATA section when the span lives there (where the
+        // replacement is written UNescaped — CDATA content is literal).
+        let span = vsdx::text::map_plain_span(&raw, self.start, self.start + self.len);
+        let replacement = if span.head_is_cdata {
+            self.replacement.clone()
+        } else {
+            escape(&self.replacement)
+        };
+        let mut new_raw = String::with_capacity(raw.len() + replacement.len());
+        new_raw.push_str(&raw[..span.head]);
+        new_raw.push_str(&replacement);
+        new_raw.push_str(&raw[span.tail..]);
+        s.text_raw = Some(new_raw.clone());
+        s.text = Some(
+            vsdx::text::text_pieces(&new_raw)
+                .iter()
+                .map(|p| p.plain())
+                .collect::<String>(),
+        );
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<()> {
+        let s = sheet_mut(doc, &self.scope)?;
+        let (text, raw) = self.old.take().unwrap_or((None, None));
+        s.text = text;
+        s.text_raw = raw;
+        Ok(())
+    }
+}
+
 /// Insert a Field row and its `<fld IX='n'/>` marker in ONE undo step
 /// (GitHub #267): the row carries the corpus's verbatim cell shape —
 /// `Value` (V=""/U=STR/F=formula), `Format` (picture V/U=STR +

@@ -125,6 +125,10 @@ pub struct App {
     last_edit_caret: Option<(i64, i64, usize)>,
     /// The Insert Field dialog's edit state (#267).
     fields_draft: Option<crate::fields_dlg::FieldsDraft>,
+    /// Check Spelling (#121): the session walk, language choice, and
+    /// the app-level custom dictionary (the domain lives in
+    /// `spellcheck.rs`; app.rs keeps only the state field + glue).
+    spell: crate::spellcheck::SpellState,
     /// The Comments popup is open for this shape (#29 rework: the
     /// Visio 2016 thread view — author header, edit/delete/reply).
     comment_target: Option<i64>,
@@ -640,6 +644,14 @@ impl App {
         app.recent = RecentFiles::open();
         app.quick_shapes = crate::quickshapes::QuickShapes::open();
         app.relative_paths = crate::hyperlink::RelativePaths::open();
+        // #121: the persisted custom dictionary, and the user-config
+        // `dictionaries/` drop-point joins the system scan.
+        app.spell = crate::spellcheck::SpellState::prod();
+        dc::spellcheck::register_local_dirs(
+            crate::recent::config_base()
+                .map(|b| vec![b.join("diagramcraft").join("dictionaries")])
+                .unwrap_or_default(),
+        );
         // Production entry only: built-ins open from the extracted
         // My Shapes files (#104) — headless constructors stay on the
         // embedded fallback so they never touch the user's home.
@@ -675,6 +687,10 @@ impl App {
         // Headless constructors pin English so kittest goldens never
         // move with the user's real language (#246).
         crate::i18n::pin_english();
+        // …and pin the embedded dictionaries — local discovery stays
+        // off so kittest never reads the user's installed hunspell
+        // dictionaries (#121, the stencil built-ins' rule).
+        dc::spellcheck::pin_embedded();
         let mut app = App {
             ed: None,
             path: PathBuf::new(),
@@ -688,6 +704,7 @@ impl App {
             tab_scroll_to_active: false,
             reorder_open: false,
             hyperlink_open: None,
+            spell: crate::spellcheck::SpellState::headless(),
             hyperlink_draft: None,
             fields_open: None,
             fields_caret: None,
@@ -3152,6 +3169,12 @@ impl App {
                     }
                 }
             }
+            // F7: Check Spelling (Visio's key) — a page-wide pass,
+            // selection optional. A live text edit commits first
+            // (start_spellcheck's #22 journey).
+            if !kb_owned && i.key_pressed(egui::Key::F7) {
+                self.dispatch(Action::SpellCheck);
+            }
             // Shape clipboard / duplicate / text edit (Visio keys). Not
             // while a text field owns the keyboard.
             if !kb_owned && self.sel.is_some() {
@@ -3596,6 +3619,11 @@ impl App {
         }
         if self.language_dlg_open {
             self.language_dlg_open = false;
+            return true;
+        }
+        // #121: the Check Spelling dialog.
+        if self.spell.session.is_some() {
+            self.spell.session = None;
             return true;
         }
         if self.snap_dlg_open {
@@ -8223,6 +8251,7 @@ impl App {
             }
             Action::SnapGlue => self.snap_dlg_open = !self.snap_dlg_open,
             Action::Language => self.language_dlg_open = true,
+            Action::SpellCheck => self.start_spellcheck(),
             Action::PointerTool => {
                 self.tool = Tool::Pointer;
                 self.connpt_sel = None;
@@ -14226,8 +14255,277 @@ impl App {
         }
     }
 
+    // -------------------------------------------------------------------
+    // Check Spelling (#121) — the domain lives in `spellcheck.rs`; this
+    // is the state field's glue: entry, the dialog frame, and the
+    // outcome commands.
+    // -------------------------------------------------------------------
+
+    /// F7: the dialog-driven pass over the page's shape text. A live
+    /// text edit commits first (#22's click-away semantics — the same
+    /// journey the Insert Field dialog's keyboard path takes), so the
+    /// check sees the committed text.
+    fn start_spellcheck(&mut self) {
+        if self.text_edit.is_some() {
+            self.end_text_edit(true);
+        }
+        let Some(page) = self.page_id() else {
+            return;
+        };
+        let Some(ed) = self.ed.as_ref() else {
+            return;
+        };
+        let found = self.spell.start(&ed.doc, page);
+        if !found {
+            self.status = crate::i18n::strs().msg_spell_check_complete();
+            return;
+        }
+        self.select_spell_shape();
+    }
+
+    /// While the dialog is open the misspelled shape is selected (the
+    /// Visio model: the flagged word is visible on canvas).
+    fn select_spell_shape(&mut self) {
+        let sel = self
+            .spell
+            .session
+            .as_ref()
+            .and_then(|s| s.word.as_ref().map(|w| (s.page, w.shape)));
+        if let Some(sel) = sel {
+            self.set_selection(Some(sel));
+        }
+    }
+
+    /// Advance the pass; completion closes the dialog with the
+    /// status-bar note.
+    fn spell_advance(&mut self) {
+        let Some(ed) = self.ed.as_ref() else {
+            return;
+        };
+        let found = self.spell.advance(&ed.doc);
+        if found {
+            self.select_spell_shape();
+        } else {
+            self.spell.session = None;
+            self.status = crate::i18n::strs().msg_spell_check_complete();
+        }
+    }
+
+    fn spell_window(&mut self, ctx: &egui::Context) {
+        if self.spell.session.is_none() {
+            return;
+        }
+        // Pin to the page the pass opened on (shape IDs collide across
+        // pages and documents — the fields-dialog rule). The document
+        // closing under an open pass ends it.
+        let pass_page = self.spell.session.as_ref().map(|s| s.page);
+        if pass_page != self.page_id() || self.ed.is_none() {
+            self.spell.session = None;
+            return;
+        }
+        let mut open = true;
+        let outcome = crate::spellcheck::window(ctx, &mut open, &mut self.spell);
+        if !open {
+            self.spell.session = None;
+            return;
+        }
+        self.handle_spell_outcome(outcome);
+    }
+
+    fn handle_spell_outcome(&mut self, outcome: crate::spellcheck::SpellOutcome) {
+        use crate::spellcheck::SpellOutcome as O;
+        match outcome {
+            O::Open => {}
+            O::Close => self.spell.session = None,
+            O::Restart => {
+                // The language dropdown changed — restart the pass on
+                // the same page with the new dictionary.
+                let page = self
+                    .spell
+                    .session
+                    .as_ref()
+                    .map(|s| s.page)
+                    .or(self.page_id());
+                if let Some(page) = page {
+                    let Some(ed) = self.ed.as_ref() else {
+                        return;
+                    };
+                    let found = self.spell.start(&ed.doc, page);
+                    if found {
+                        self.select_spell_shape();
+                    } else {
+                        self.spell.session = None;
+                        self.status = crate::i18n::strs().msg_spell_check_complete();
+                    }
+                }
+            }
+            O::Ignore => {
+                // Skip this occurrence: the cursor moves past it.
+                let end = self
+                    .spell
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.word.as_ref())
+                    .map(|w| w.token.end);
+                if let Some(end) = end {
+                    if let Some(session) = self.spell.session.as_mut() {
+                        session.cursor = end;
+                    }
+                }
+                self.spell_advance();
+            }
+            O::IgnoreAll => {
+                let word = self
+                    .spell
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.word.as_ref())
+                    .map(|w| w.token.word.clone());
+                if let Some(word) = word {
+                    if !self.spell.ignore_all.contains(&word) {
+                        self.spell.ignore_all.push(word);
+                    }
+                }
+                self.handle_spell_outcome(O::Ignore);
+            }
+            O::Change { to } => {
+                let edit = self
+                    .spell
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.word.as_ref().map(|w| (s.page, w.shape, w.token.clone())));
+                let Some((page, shape, token)) = edit else {
+                    return;
+                };
+                if to == token.word {
+                    self.handle_spell_outcome(O::Ignore);
+                    return;
+                }
+                let Some(ed) = self.ed.as_ref() else {
+                    return;
+                };
+                let built =
+                    crate::spellcheck::replace_macro(&ed.doc, page, shape, &token, &to);
+                if let Some((mac, cursor)) = built {
+                    self.apply(mac);
+                    if let Some(session) = self.spell.session.as_mut() {
+                        session.cursor = cursor;
+                    }
+                    // The replacement re-checks from its own start: a fix
+                    // that introduces a new typo flags immediately.
+                    self.spell_advance();
+                }
+            }
+            O::ChangeAll { to } => {
+                let run = self.spell.session.as_ref().and_then(|s| {
+                    s.word
+                        .as_ref()
+                        .map(|w| (s.page, w.token.word.clone(), s.shapes.clone()))
+                });
+                let Some((page, word, shapes)) = run else {
+                    return;
+                };
+                if word.eq_ignore_ascii_case(&to) {
+                    self.handle_spell_outcome(O::Ignore);
+                    return;
+                }
+                let Some(ed) = self.ed.as_ref() else {
+                    return;
+                };
+                let lang = self.spell.lang.clone();
+                let built =
+                    crate::spellcheck::change_all_macro(&ed.doc, page, &shapes, &lang, &word, &to);
+                if let Some(mac) = built {
+                    self.apply(mac);
+                }
+                // Whatever Change All fixed, the current shape re-scans
+                // from its start — the Ignore-All list holds, so only
+                // genuinely other typos re-flag.
+                if let Some(session) = self.spell.session.as_mut() {
+                    session.cursor = 0;
+                }
+                self.spell_advance();
+            }
+            O::Add => {
+                let word = self
+                    .spell
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.word.as_ref())
+                    .map(|w| w.token.word.clone());
+                if let Some(word) = word {
+                    if !self.spell.custom.contains(&word) {
+                        self.spell.custom.push(word);
+                        crate::spellcheck::save_custom(&self.spell.custom);
+                    }
+                }
+                self.handle_spell_outcome(O::Ignore);
+            }
+        }
+    }
+
     /// Test/introspection hooks for the kittest interaction tests.
     #[doc(hidden)]
+    /// #121: seed a shape's text for the spell-check tests — the text
+    /// editor's own commit path (one undo step, cache refreshes), so
+    /// the dialog walk sees exactly what a user edit produces.
+    #[doc(hidden)]
+    pub fn debug_set_shape_text_for_test(&mut self, shape: i64, text: &str) {
+        let Some(page) = self.page_id() else {
+            return;
+        };
+        let Some(ed) = self.ed.as_ref() else {
+            return;
+        };
+        let scope = dc_core::Scope::Shape { page, shape };
+        let mac = dc::textfunc::text_edit_macro(&ed.doc, &scope, text);
+        self.apply(mac);
+    }
+
+    /// #121: the word currently flagged by the open spelling pass.
+    #[doc(hidden)]
+    pub fn debug_spell_word(&self) -> Option<String> {
+        self.spell
+            .session
+            .as_ref()
+            .and_then(|s| s.word.as_ref())
+            .map(|w| w.token.word.clone())
+    }
+
+    /// #121: the ranked suggestions for the flagged word.
+    #[doc(hidden)]
+    pub fn debug_spell_suggestions(&self) -> Vec<String> {
+        self.spell
+            .session
+            .as_ref()
+            .map(|s| s.suggestions.clone())
+            .unwrap_or_default()
+    }
+
+    /// #121: the session's walk position (page, shape index, total).
+    #[doc(hidden)]
+    pub fn debug_spell_position(&self) -> Option<(i64, usize, usize)> {
+        self.spell
+            .session
+            .as_ref()
+            .map(|s| (s.page, s.idx, s.total))
+    }
+
+    /// #121: the app-level custom dictionary's words (Add assertions).
+    #[doc(hidden)]
+    pub fn debug_spell_custom(&self) -> &[String] {
+        &self.spell.custom
+    }
+
+    /// #121: a shape's current plain text (the Change assertions).
+    #[doc(hidden)]
+    pub fn debug_shape_plain_text(&self, shape: i64) -> Option<String> {
+        let page = self.page_id()?;
+        let ed = self.ed.as_ref()?;
+        let p = ed.doc.pages.iter().find(|p| p.id == page)?;
+        vsdx::model::find_shape_by_id(&p.shapes, shape).and_then(|s| s.sheet.text.clone())
+    }
+
     pub fn debug_shape_count(&self) -> usize {
         self.ed
             .as_ref()
@@ -15832,6 +16130,7 @@ impl App {
         self.language_window(&ctx);
         self.hyperlink_window(&ctx);
         self.fields_insert_window(&ctx);
+        self.spell_window(&ctx);
         self.comment_window(&ctx);
         self.shape_data_window(&ctx);
         self.color_palette_window(&ctx);

@@ -34,6 +34,7 @@ pub mod recent;
 pub mod ribbon;
 pub mod shapesheet;
 pub mod snap;
+pub mod spellcheck;
 pub mod stencil;
 pub mod svgimg;
 pub mod textedit;

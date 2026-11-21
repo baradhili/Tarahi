@@ -434,6 +434,125 @@ pub fn plain_to_raw_offset(raw: &str, plain_chars: usize) -> usize {
     raw.len()
 }
 
+/// A plain-text span mapped onto the raw `<Text>` inner XML for
+/// SPLICING (GitHub #121 — the spell check's `Change`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlainSpan {
+    /// Raw byte offset of the span's first character.
+    pub head: usize,
+    /// Raw byte offset one past the span's last character.
+    pub tail: usize,
+    /// The head landed inside a CDATA section, whose content is
+    /// literal: the replacement must be written UNescaped there (an
+    /// `&amp;` entity inside CDATA would read as the six characters
+    /// `&amp;`, not `&`).
+    pub head_is_cdata: bool,
+}
+
+/// Map the plain span `[start, end)` (plain CHARACTERS over the full
+/// projection — field cached displays included) onto raw byte offsets,
+/// splice-safe where [`plain_to_raw_offset`] is insert-safe instead:
+///
+/// - A boundary that shares its plain position with a zero-plain
+///   marker (`<fld IX='0'/>`, `<cp/>`) resolves to the text segment
+///   the span's characters live in — AFTER the marker for the head,
+///   BEFORE it for the tail — so the splice never swallows a marker
+///   sitting between two literal runs.
+/// - A target strictly inside a CDATA section maps INTO the content
+///   (the opposite of [`plain_to_raw_offset`]'s snap-past rule: that
+///   one keeps a marker insertion from becoming literal markup, this
+///   one splices actual text, which is the point of CDATA).
+///
+/// A word never spans a marker or a CDATA boundary (`text_pieces`
+/// yields one piece per contiguous literal run), so head and tail
+/// always land in the same region kind.
+pub fn map_plain_span(raw: &str, start: usize, end: usize) -> PlainSpan {
+    let mut count = 0usize; // plain chars consumed so far
+    let mut head: Option<(usize, bool)> = None; // (raw offset, in CDATA)
+    let mut tail: Option<usize> = None;
+    let mut i = 0usize;
+    while i < raw.len() {
+        // Inside a CDATA section the content is literal text up to `]]>`.
+        if raw[i..].starts_with("<![CDATA[") {
+            let cs = i + 9; // "<![CDATA[".len()
+            let (ce, after) = match raw[cs..].find("]]>") {
+                Some(k) => (cs + k, cs + k + 3),
+                None => (raw.len(), raw.len()),
+            };
+            let content = &raw[cs..ce];
+            let n = content.chars().count();
+            if head.is_none() && start >= count && start < count + n {
+                let off = content
+                    .char_indices()
+                    .nth(start - count)
+                    .map(|(b, _)| b)
+                    .unwrap_or(content.len());
+                head = Some((cs + off, true));
+            }
+            if tail.is_none() && end > count && end <= count + n {
+                let off = if end == count + n {
+                    content.len()
+                } else {
+                    content
+                        .char_indices()
+                        .nth(end - count)
+                        .map(|(b, _)| b)
+                        .unwrap_or(content.len())
+                };
+                tail = Some(cs + off);
+            }
+            count += n;
+            i = after;
+            continue;
+        }
+        let c = raw[i..].chars().next().unwrap();
+        match c {
+            '<' => {
+                // A tag contributes no plain characters. A tail that
+                // hasn't landed yet lands HERE (the count already
+                // reached the span's end — the boundary sits before the
+                // tag run, never after it). The head stays unset at a
+                // tag: the span's characters live in the NEXT text
+                // segment.
+                if head.is_some() && tail.is_none() && count >= end {
+                    tail = Some(i);
+                }
+                i = tag_end(raw, i);
+            }
+            '&' => {
+                // An entity resolves to its unescaped characters — an
+                // opaque text unit of `n` plain chars.
+                let semi = raw[i..].find(';').map_or(raw.len(), |k| i + k + 1);
+                let bytes = raw.as_bytes();
+                let n = crate::opc::unescape(&bytes[i..semi]).chars().count();
+                if head.is_none() && start >= count && start < count + n {
+                    head = Some((i, false));
+                }
+                count += n;
+                if head.is_some() && tail.is_none() && count >= end {
+                    tail = Some(semi);
+                }
+                i = semi;
+            }
+            _ => {
+                if head.is_none() && start == count {
+                    head = Some((i, false));
+                }
+                count += 1;
+                if head.is_some() && tail.is_none() && count >= end {
+                    tail = Some(i + c.len_utf8());
+                }
+                i += c.len_utf8();
+            }
+        }
+    }
+    PlainSpan {
+        head: head.map(|(h, _)| h).unwrap_or(raw.len()),
+        tail: tail.unwrap_or(raw.len()),
+        head_is_cdata: head.is_some_and(|(_, cd)| cd),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
