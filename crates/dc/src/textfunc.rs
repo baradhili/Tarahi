@@ -87,7 +87,8 @@ impl SheetTextMeasure {
         f64,
         f64,
     ) {
-        let face = crate::textmetrics::resolve(self.tb.font.as_deref(), self.tb.bold, self.tb.italic);
+        let face =
+            crate::textmetrics::resolve(self.tb.font.as_deref(), self.tb.bold, self.tb.italic);
         let cs_chain = self.tb.cs_font.as_deref().or(self.tb.font.as_deref());
         let cs_face = crate::textmetrics::resolve(cs_chain, self.tb.bold, self.tb.italic);
         let red_l = crate::svg::script_metrics(self.tb.font.as_deref(), self.tb.pos)
@@ -155,15 +156,28 @@ impl SheetTextMeasure {
         // chain's — the same faces and sizes `emit_text` paints with
         // (shared with `text_width` via `paint_metrics`).
         let (face, cs_face, size_l, size_r) = self.paint_metrics();
-        let cs_fallback =
-            crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic);
+        // The per-cluster fallback CHAIN `emit_text` measures the
+        // runs a paragraph's own face cannot cover (#282 zh-Hans grew
+        // the #257 single Vazirmatn fallback to a chain): Vazirmatn
+        // for the Arabic script, then Noto Sans SC for the Han
+        // glyphs — in the order the raster fontdb registers them,
+        // which is the order usvg's per-cluster fallback picks a
+        // face. Unregistered (the dc unit-test binaries), both
+        // resolve like the Latin default and the runs never split.
+        let fallbacks = [
+            crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic),
+            crate::textmetrics::resolve(Some("Noto Sans SC"), self.tb.bold, self.tb.italic),
+        ];
+        let fb_chain: Vec<&crate::textmetrics::ResolvedFace> = fallbacks.iter().collect();
         let usable = (width - self.tb.insets.0 - self.tb.insets.1).max(0.02);
         // The first-line offset the RENDERER lays out (inches): the
         // bullet's tab stop for a bulleted block, max(IndFirst, 0)
         // otherwise — the shared rule in `svg::bullet_stop_offset_in`
         // keeps the measure and the paint on one layout.
         let first_off = if self.tb.bullet.is_some() {
-            crate::svg::bullet_stop_offset_in(&self.tb).unwrap_or(0.0).max(0.0)
+            crate::svg::bullet_stop_offset_in(&self.tb)
+                .unwrap_or(0.0)
+                .max(0.0)
         } else {
             crate::svg::unbulleted_first_offset_in(&self.tb)
         };
@@ -174,7 +188,7 @@ impl SheetTextMeasure {
             usable,
             &cs_face,
             size_r,
-            &cs_fallback,
+            &fb_chain,
             first_off,
             self.tb.ind_left,
         )
@@ -202,31 +216,38 @@ impl TextMeasure for SheetTextMeasure {
         // Each paragraph measures on the face and size it PAINTS
         // with (Greptile PR #284 round 6): LTR on the Latin family,
         // RTL on the complex-script chain — the same per-direction
-        // pair `lines_at` wraps with below. An RTL paragraph also
-        // RUN-SPLITS like the paint (local CodeRabbit round 3): the
-        // renderer measures and rasterizes runs the CS chain can't
-        // cover through the per-cluster fallback (the vendored
-        // Vazirmatn), so TEXTWIDTH composes the same runs and takes
-        // its terminal-run space from the final run's face instead of
-        // missing-glyph estimates.
+        // pair `lines_at` wraps with below. BOTH directions
+        // RUN-SPLIT like the paint (RTL since local CodeRabbit round
+        // 3; LTR too since #282's CJK wave): the renderer measures
+        // and rasterizes runs the paragraph's own chain can't cover
+        // through the per-cluster fallback (the vendored Vazirmatn /
+        // Noto Sans SC), so TEXTWIDTH composes the same runs and
+        // takes its terminal-run space from the final run's face
+        // instead of missing-glyph estimates.
         let text = text.trim_end_matches(TRAILING_TRIM);
         if text.is_empty() {
             return Some(0.0);
         }
         let (face, cs_face, size_l, size_r) = self.paint_metrics();
-        let cs_fallback =
-            crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic);
+        // The same fallback chain `lines_at`/`emit_text` measure with
+        // (see there) — BOTH directions run-split since #282: an LTR
+        // paragraph carrying Han glyphs composes those runs on Noto
+        // Sans SC, the face the raster paints them with.
+        let fallbacks = [
+            crate::textmetrics::resolve(Some("Vazirmatn"), self.tb.bold, self.tb.italic),
+            crate::textmetrics::resolve(Some("Noto Sans SC"), self.tb.bold, self.tb.italic),
+        ];
+        let fb_chain: Vec<&crate::textmetrics::ResolvedFace> = fallbacks.iter().collect();
         let mut best = 0.0;
         for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
             let w = if crate::svg::paragraph_base_rtl(para) {
                 let q = crate::textmetrics::quantize18(size_r);
-                cs_face.composed_width_in_runs(&cs_fallback, para, size_r)
-                    + cs_face
-                        .final_run_face(&cs_fallback, para)
-                        .space_advance_in(q)
+                cs_face.composed_width_in_runs(&fb_chain, para, size_r)
+                    + cs_face.final_run_face(&fb_chain, para).space_advance_in(q)
             } else {
                 let q = crate::textmetrics::quantize18(size_l);
-                face.composed_width_in(para, size_l) + face.space_advance_in(q)
+                face.composed_width_in_runs(&fb_chain, para, size_l)
+                    + face.final_run_face(&fb_chain, para).space_advance_in(q)
             };
             if w > best {
                 best = w;
@@ -284,7 +305,18 @@ const TEXT_DERIVED_CELLS: [&str; 2] = ["TxtWidth", "TxtHeight"];
 /// re-evaluate (rendering stays byte-identical without an edit).
 pub fn text_edit_macro(doc: &Document, scope: &Scope, text: &str) -> Macro {
     let mut cmds: Vec<Box<dyn Command>> = vec![Box::new(SetText::new(scope.clone(), text))];
+    cmds.extend(text_cache_refreshes(doc, scope, text));
+    Macro::new(format!("set text of {scope}"), cmds)
+}
 
+/// The `SetCellCache` refreshes for text-derived block cells
+/// (`TEXTWIDTH`/`TEXTHEIGHT` formulas), measured against `text` —
+/// what the shape will render. Shared by the text-edit macro and the
+/// field-insert path (#267: an inserted field changes the SUBSTITUTED
+/// text, and the measurement must see the same display the renderer
+/// paints — CodeRabbit round 2).
+pub fn text_cache_refreshes(doc: &Document, scope: &Scope, text: &str) -> Vec<Box<dyn Command>> {
+    let mut cmds: Vec<Box<dyn Command>> = Vec::new();
     if let Scope::Shape { page, shape } = scope {
         if let (Some(p), Ok(chain)) = (
             doc.pages.iter().find(|p| p.id == *page),
@@ -339,8 +371,7 @@ pub fn text_edit_macro(doc: &Document, scope: &Scope, text: &str) -> Macro {
             }
         }
     }
-
-    Macro::new(format!("set text of {scope}"), cmds)
+    cmds
 }
 
 #[cfg(test)]
@@ -499,14 +530,17 @@ mod tests {
         // One line of the same block WITHOUT the bullet, for the
         // single-line height reference.
         let mut plain = text_aware_shape();
-        plain.sheet.children.push(SheetChild::Section(vsdx::Section {
-            name: "Paragraph".into(),
-            rows: vec![vsdx::Row {
-                cells: vec![("HorzAlign".to_string(), Cell::value("0"))],
-                ..vsdx::Row::default()
-            }],
-            ..vsdx::Section::default()
-        }));
+        plain
+            .sheet
+            .children
+            .push(SheetChild::Section(vsdx::Section {
+                name: "Paragraph".into(),
+                rows: vec![vsdx::Row {
+                    cells: vec![("HorzAlign".to_string(), Cell::value("0"))],
+                    ..vsdx::Row::default()
+                }],
+                ..vsdx::Section::default()
+            }));
         let mp = SheetTextMeasure::new(&doc, &plain, &[&plain], "");
         let h_plain = mp.text_height(text, 4.0).unwrap();
         assert!(

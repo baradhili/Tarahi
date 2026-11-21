@@ -339,7 +339,7 @@ fn push_reconstructed_open(out: &mut String, e: &quick_xml::events::BytesStart<'
 }
 
 /// Plain text of a raw XML fragment (markup stripped, entities resolved).
-fn plain_text_of(raw: &str) -> String {
+pub(crate) fn plain_text_of(raw: &str) -> String {
     let mut r = quick_xml::Reader::from_str(raw);
     let mut out = String::new();
     let mut buf = Vec::new();

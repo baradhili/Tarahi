@@ -325,6 +325,145 @@ impl SetCell {
     }
 }
 
+/// The touched entries for every field-bearing shape whose Value
+/// formula references the edited row — own Field rows or the
+/// instanced master's. A `Sheet.N!User.X` ref matches from ANY shape;
+/// a BARE `User.X` ref means the shape's own row, so it only matches
+/// the edited shape itself (Visio's bare-name scoping).
+fn field_dependents(
+    doc: &Document,
+    page_id: i64,
+    edited: i64,
+    refs: &str,
+) -> Vec<crate::TouchList> {
+    let Some(page) = doc.pages.iter().find(|p| p.id == page_id) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    // `root` rolls nested field-bearers up to their top-level
+    // ancestor — the TouchList contract's rendering unit.
+    let qualified = format!("Sheet.{edited}!{refs}");
+    #[allow(clippy::too_many_arguments)] // the walk's context, one flat set
+    fn walk<'a>(
+        doc: &'a Document,
+        shapes: &[vsdx::model::Shape],
+        ancestors: &[&'a vsdx::model::Shape],
+        page_id: i64,
+        refs: &str,
+        qualified: &str,
+        edited: i64,
+        root: Option<i64>,
+        out: &mut Vec<crate::TouchList>,
+    ) {
+        for s in shapes {
+            let root = root.or(Some(s.id));
+            // The REAL ancestor chain: a nested member's master
+            // identity lives on its parent group, and the empty chain
+            // misses it (CodeRabbit round 3).
+            let mut chain: Vec<&vsdx::model::Shape> = ancestors.to_vec();
+            chain.push(s);
+            let ancestors_only: Vec<&vsdx::model::Shape> =
+                chain.iter().copied().filter(|c| c.id != s.id).collect();
+            // The shape carries markers locally, or renders them via
+            // master mirroring — an instance with no local text still
+            // paints its master's subtree, whose children keep their
+            // own `<fld>` text (CodeRabbit round 1).
+            let carries_flds = |sh: &vsdx::model::Shape| {
+                fn any_fld(sh: &vsdx::model::Shape) -> bool {
+                    sh.sheet
+                        .text_raw
+                        .as_deref()
+                        .is_some_and(|r| r.contains("<fld"))
+                        || sh.sub_shapes.iter().any(any_fld)
+                }
+                any_fld(sh)
+            };
+            if s.sheet
+                .text_raw
+                .as_deref()
+                .is_some_and(|r| r.contains("<fld"))
+                || doc
+                    .instance_source(s, &ancestors_only)
+                    .is_some_and(carries_flds)
+            {
+                let mut formulas = String::new();
+                // BOTH the Value and the Format formulas reference
+                // data: a Format like `IF(Sheet.1!Prop.Units=1,"0u",`
+                // `"0.00u")` re-renders when that Prop row changes
+                // (Greptile round 1).
+                let mut push_row = |row: &vsdx::model::Row| {
+                    for cell_name in ["Value", "Format"] {
+                        if let Some(f) = row.cell(cell_name).and_then(|c| c.f.as_deref()) {
+                            formulas.push_str(f);
+                            formulas.push('\n');
+                        }
+                    }
+                };
+                for sec in s.sheet.sections_named("Field") {
+                    for row in &sec.rows {
+                        push_row(row);
+                    }
+                }
+                if let Some(src) = doc.instance_source(s, &ancestors_only) {
+                    // The whole RENDERED master subtree: mirrored
+                    // children carry their own Field rows, not just
+                    // the root (CodeRabbit round 4).
+                    fn push_tree(
+                        sh: &vsdx::model::Shape,
+                        push_row: &mut dyn FnMut(&vsdx::model::Row),
+                    ) {
+                        for sec in sh.sheet.sections_named("Field") {
+                            for row in &sec.rows {
+                                push_row(row);
+                            }
+                        }
+                        for sub in &sh.sub_shapes {
+                            push_tree(sub, push_row);
+                        }
+                    }
+                    push_tree(src, &mut push_row);
+                }
+                let hit =
+                    formulas.contains(qualified) || (s.id == edited && formulas.contains(refs));
+                if hit {
+                    out.push(crate::TouchList {
+                        pages: vec![],
+                        shapes: vec![crate::Touched {
+                            page: page_id,
+                            shape: root.unwrap_or(s.id),
+                            touch: crate::Touch::Ink,
+                            sub: None,
+                        }],
+                    });
+                }
+            }
+            walk(
+                doc,
+                &s.sub_shapes,
+                &chain,
+                page_id,
+                refs,
+                qualified,
+                edited,
+                root,
+                out,
+            );
+        }
+    }
+    walk(
+        doc,
+        &page.shapes,
+        &[],
+        page_id,
+        refs,
+        &qualified,
+        edited,
+        None,
+        &mut out,
+    );
+    out
+}
+
 /// #219: the edited shape's own id when it is a nested sub-shape —
 /// the canvas layer store's damage-region key (`Touched::sub`). A
 /// top-level edit renders its whole (single-shape) layer either way,
@@ -651,7 +790,7 @@ impl crate::Command for SetRowCell {
     fn touched(&self, doc: &Document) -> crate::TouchList {
         match &self.scope {
             Scope::Shape { page, shape } => {
-                match crate::scope::top_level_ancestor(doc, *page, *shape) {
+                let mut list = match crate::scope::top_level_ancestor(doc, *page, *shape) {
                     Some(root) => crate::TouchList {
                         pages: vec![],
                         shapes: vec![crate::Touched {
@@ -662,7 +801,61 @@ impl crate::Command for SetRowCell {
                         }],
                     },
                     None => crate::TouchList::page(*page),
+                };
+                // #267 live re-evaluation: a User/Prop row edit feeds
+                // field formulas — every field-bearing shape on the
+                // page whose (own or master) Field rows reference the
+                // edited row re-renders. A substring walk over the
+                // page's shapes; the corpus's `Sheet.5!Prop.*` refs
+                // make a full dependency graph unnecessary (issue
+                // ruling).
+                if matches!(self.section.as_str(), "User" | "Prop") {
+                    // An IX-selected edit changes the same row a named
+                    // edit would — resolve the row's name (including
+                    // the inherited row a first edit materializes
+                    // from) so the dependency walk still fires
+                    // (CodeRabbit PR review).
+                    let row_name = match &self.row {
+                        RowSel::Named(n) => Some(n.clone()),
+                        RowSel::Ix(ix) => (|| {
+                            let page_ref = doc.pages.iter().find(|p| p.id == *page)?;
+                            let sh = crate::scope::find_shape(&page_ref.shapes, *shape)?;
+                            // The local lookup must not short-circuit:
+                            // an edit that MATERIALIZED the local
+                            // section leaves nothing behind on undo,
+                            // and the inherited row the edit came
+                            // from still needs resolving for the
+                            // dependent walk (CodeRabbit agent
+                            // review).
+                            if let Some(r) = sh
+                                .sheet
+                                .section(&self.section, self.section_ix)
+                                .and_then(|sec| sec.row_by_ix(*ix))
+                            {
+                                return r.n.clone();
+                            }
+                            // Not local: the inherited row the edit
+                            // materializes from.
+                            let Ok(chain) = crate::scope::shape_chain(doc, *page, *shape) else {
+                                return None;
+                            };
+                            let ancestors: Vec<_> =
+                                chain.into_iter().filter(|c| c.id != *shape).collect();
+                            let src = doc.instance_source(sh, &ancestors)?;
+                            src.sheet
+                                .section(&self.section, self.section_ix)?
+                                .row_by_ix(*ix)
+                                .and_then(|r| r.n.clone())
+                        })(),
+                    };
+                    if let Some(name) = row_name {
+                        let refs = format!("{}.{}", self.section, name);
+                        for t in field_dependents(doc, *page, *shape, &refs) {
+                            list.merge(t);
+                        }
+                    }
                 }
+                list
             }
             Scope::PageSheet { page } => crate::TouchList::page(*page),
             _ => crate::TouchList::all_pages(doc),
@@ -886,6 +1079,392 @@ impl crate::Command for SetText {
         s.text = text;
         s.text_raw = raw;
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fields (#267)
+// ---------------------------------------------------------------------------
+
+/// Where an inserted field's `<fld/>` marker lands in the raw text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FieldInsert {
+    /// Append after the existing raw content (the no-editor flow:
+    /// existing markers and formatting survive verbatim).
+    End,
+    /// Insert at this byte offset of the raw text.
+    RawOffset(usize),
+    /// Replace the plain-text span `[offset, offset+len)` — the
+    /// field's display value the editor previewed at the caret —
+    /// with the marker (the text-editor caret flow; the plain
+    /// projection is unchanged, so a second insertion's offsets
+    /// stay valid). Offsets are plain CHARACTERS, mapped onto the
+    /// raw through [`vsdx::text::plain_to_raw_offset`].
+    ReplacePlain { offset: usize, len: usize },
+}
+
+/// Insert a Field row and its `<fld IX='n'/>` marker in ONE undo step
+/// (GitHub #267): the row carries the corpus's verbatim cell shape —
+/// `Value` (V=""/U=STR/F=formula), `Format` (picture V/U=STR +
+/// FIELDPICTURE F), `Type`, and the five default cells
+/// UICat/UICod/UIFmt/Calendar/ObjectKind (`V='0' F='No Formula'`) —
+/// so the write is the shape a Visio-authored row arrives in. The
+/// marker is self-closing (no cached display: our renderer
+/// substitutes live, and Visio re-evaluates on open).
+pub struct InsertField {
+    pub scope: Scope,
+    /// The Value formula (`User.Label`, `PAGENUMBER()`, …).
+    pub value_f: String,
+    /// The Format formula; `None` defaults to `FIELDPICTURE(0)`.
+    pub format_f: Option<String>,
+    /// Where the marker goes.
+    pub insert: FieldInsert,
+    /// The display string to cache as the marker's content (the
+    /// corpus's value-carrying form: the plain projection and the
+    /// measurement bridge keep seeing the value; our renderer
+    /// substitutes live anyway). `None` writes the self-closing form.
+    pub display: Option<String>,
+    /// Pre-state: the whole old Field section (when one existed), and
+    /// the old (text, text_raw) pair.
+    old: Option<(Option<vsdx::model::Section>, Option<String>, Option<String>)>,
+}
+
+impl InsertField {
+    pub fn new(scope: Scope, value_f: impl Into<String>, insert: FieldInsert) -> InsertField {
+        InsertField {
+            scope,
+            value_f: value_f.into(),
+            format_f: None,
+            insert,
+            display: None,
+            old: None,
+        }
+    }
+
+    /// Override the Format formula (picture beyond the general one).
+    pub fn with_format(mut self, f: impl Into<String>) -> InsertField {
+        self.format_f = Some(f.into());
+        self
+    }
+
+    /// Cache a display string as the marker's content.
+    pub fn with_display(mut self, display: impl Into<String>) -> InsertField {
+        self.display = Some(display.into());
+        self
+    }
+}
+
+impl crate::Command for InsertField {
+    fn touched(&self, doc: &Document) -> crate::TouchList {
+        match &self.scope {
+            Scope::Shape { page, shape } => {
+                match crate::scope::top_level_ancestor(doc, *page, *shape) {
+                    Some(root) => crate::TouchList {
+                        pages: vec![],
+                        shapes: vec![crate::Touched {
+                            page: *page,
+                            shape: root,
+                            touch: crate::Touch::Ink,
+                            sub: sub_shape(root, *shape),
+                        }],
+                    },
+                    None => crate::TouchList::page(*page),
+                }
+            }
+            _ => crate::TouchList::all_pages(doc),
+        }
+    }
+
+    fn label(&self) -> String {
+        format!("insert field {} into {}", self.value_f, self.scope)
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<()> {
+        let (value_f, format_f) = (self.value_f.clone(), self.format_f.clone());
+        let self_display = self.display.clone();
+        let insert = self.insert;
+        let scope = self.scope.clone();
+        let old_section = {
+            let s = sheet_mut(doc, &scope)?;
+            s.section("Field", 0).cloned()
+        };
+        // The master root's Field-row IXs (resolved before the mutable
+        // borrow): a fresh LOCAL row must not shadow them — markers
+        // already in the text resolve inherited rows by IX, and a
+        // colliding local row would silently re-point them (CodeRabbit
+        // round 1).
+        let (inherited_max, inherited_raw) = (|| -> Option<(i64, Option<String>)> {
+            let Scope::Shape {
+                page: pid,
+                shape: sid,
+            } = &scope
+            else {
+                return None;
+            };
+            let page = doc.pages.iter().find(|p| p.id == *pid)?;
+            let sh = crate::scope::find_shape(&page.shapes, *sid)?;
+            // The REAL ancestor chain: a nested group member's master
+            // identity lives on its parent, and the empty chain misses
+            // it (CodeRabbit round 3).
+            let Ok(chain) = crate::scope::shape_chain(doc, *pid, *sid) else {
+                return None;
+            };
+            // `shape_chain` includes the shape itself as the last
+            // entry — `instance_source` wants the ancestors only.
+            let ancestors: Vec<_> = chain.into_iter().filter(|c| c.id != *sid).collect();
+            let src = doc.instance_source(sh, &ancestors)?;
+            let max_ix = src
+                .sheet
+                .section("Field", 0)
+                .map(|sec| sec.rows.iter().map(|r| r.ix).max().unwrap_or(-1))
+                .unwrap_or(-1);
+            // The inherited raw text (verbatim — markers included): a
+            // shape with no local text materializes its master's text
+            // when a field lands in it, instead of replacing it with
+            // just the new marker (CodeRabbit round 2).
+            Some((max_ix, src.sheet.text_raw.clone()))
+        })()
+        .unwrap_or((-1, None));
+        let s = sheet_mut(doc, &scope)?;
+        self.old = Some((old_section, s.text.clone(), s.text_raw.clone()));
+
+        // The Field section: reuse Field:0, else create it after the
+        // last existing section (the corpus keeps Field among the
+        // trailing format sections).
+        let has_field = s.children.iter().any(|c| {
+            matches!(c, vsdx::model::SheetChild::Section(sec) if sec.name == "Field" && sec.ix == 0)
+        });
+        if !has_field {
+            let at = s
+                .children
+                .iter()
+                .rposition(|c| matches!(c, vsdx::model::SheetChild::Section(_)))
+                .map_or_else(
+                    || {
+                        s.children
+                            .iter()
+                            .rposition(|c| matches!(c, vsdx::model::SheetChild::Cell(_, _)))
+                            .map_or(0, |i| i + 1)
+                    },
+                    |i| i + 1,
+                );
+            s.children.insert(
+                at,
+                vsdx::model::SheetChild::Section(vsdx::model::Section {
+                    name: "Field".into(),
+                    ..vsdx::model::Section::default()
+                }),
+            );
+        }
+        let sec = s
+            .children
+            .iter_mut()
+            .find_map(|c| match c {
+                vsdx::model::SheetChild::Section(sec) if sec.name == "Field" && sec.ix == 0 => {
+                    Some(sec)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let ix = sec
+            .rows
+            .iter()
+            .map(|r| r.ix)
+            .max()
+            .unwrap_or(-1)
+            .max(inherited_max)
+            + 1;
+        let str_cell = |v: &str, f: &str| Cell {
+            v: Some(v.to_string()),
+            u: Some("STR".into()),
+            f: Some(f.to_string()),
+            ..Cell::default()
+        };
+        let format_f = format_f.unwrap_or_else(|| "FIELDPICTURE(0)".to_string());
+        let format_v = evaluate_picture(&format_f);
+        // Three corpus shapes for the Format cell (CodeRabbit round
+        // 4): FIELDPICTURE(...) keeps F+V (V = the table picture); a
+        // LITERAL picture ("0.00u") is not a valid formula and rides
+        // V alone (no F); a non-FIELDPICTURE FORMULA (the unit-switch
+        // IF) keeps F with an EMPTY cached V — it evaluates live at
+        // render and dc-core cannot pre-compute its result.
+        let is_literal_picture = !format_f.trim().contains('(');
+        let format_cell = if is_literal_picture {
+            Cell {
+                v: Some(format_v.clone()),
+                u: Some("STR".into()),
+                ..Cell::default()
+            }
+        } else {
+            str_cell(&format_v, &format_f)
+        };
+        // The percent picture's Value carries U='PER' (the corpus's
+        // esc(3) rows) — without it a `0.25` value renders as a
+        // length (Greptile round 1).
+        let value_cell = if format_f.trim() == "FIELDPICTURE(3)" {
+            Cell {
+                v: Some(String::new()),
+                u: Some("PER".into()),
+                f: Some(value_f.clone()),
+                ..Cell::default()
+            }
+        } else {
+            str_cell("", &value_f)
+        };
+        sec.rows.push(Row {
+            ix,
+            cells: vec![
+                ("Value".to_string(), value_cell),
+                ("Format".to_string(), format_cell),
+                ("Type".to_string(), Cell::value("0")),
+                ("UICat".to_string(), no_formula_cell()),
+                ("UICod".to_string(), no_formula_cell()),
+                ("UIFmt".to_string(), no_formula_cell()),
+                ("Calendar".to_string(), no_formula_cell()),
+                ("ObjectKind".to_string(), no_formula_cell()),
+            ],
+            ..Row::default()
+        });
+
+        // The marker into the raw text; the plain text recomputes from
+        // the pieces (a self-closing marker contributes nothing, a
+        // cached display its own text).
+        let marker = match &self_display {
+            Some(d) => format!(
+                "<fld IX='{ix}'>{}</fld>",
+                d.replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+            ),
+            None => format!("<fld IX='{ix}'/>"),
+        };
+        // The raw-seed chain: local raw → escaped local plain text →
+        // the master's inherited raw (an instance with no local text
+        // materializes its master's text — markers and all — rather
+        // than replacing it with just the new marker) → empty. An
+        // empty raw would DELETE the text at the recomputation below
+        // (CodeRabbit rounds 1–2).
+        let raw = match s.text_raw.clone() {
+            Some(raw) => raw,
+            None => s
+                .text
+                .clone()
+                .map(|t| {
+                    t.replace('&', "&amp;")
+                        .replace('<', "&lt;")
+                        .replace('>', "&gt;")
+                })
+                .or_else(|| inherited_raw.clone())
+                .unwrap_or_default(),
+        };
+        // Normalize a raw byte offset onto a UTF-8 character
+        // boundary BEFORE splicing: `RawOffset(1)` into `中文` splits
+        // a scalar and the slice below panics after the row was
+        // already appended (CodeRabbit PR review).
+        let boundary = |at: usize| -> usize {
+            let mut at = at.min(raw.len());
+            while at > 0 && !raw.is_char_boundary(at) {
+                at -= 1;
+            }
+            at
+        };
+        // The splice BASE: a plain-selection splice runs against the
+        // CDATA-split raw (sections the selection partially covers
+        // are re-wrapped as adjacent sections, so the boundaries map
+        // BETWEEN sections — the range never swallows unselected
+        // content and the marker never lands inside a wrapper,
+        // CodeRabbit round 9; the plain projection is unchanged, so
+        // the plain offsets still map). `split_cdata_at_plain` passes
+        // the raw through untouched when no section is covered.
+        let (base, head, tail) = match insert {
+            FieldInsert::End => (raw.clone(), raw.len(), raw.len()),
+            FieldInsert::RawOffset(at) => (raw.clone(), boundary(at), boundary(at)),
+            FieldInsert::ReplacePlain { offset, len } => {
+                let base = vsdx::text::split_cdata_at_plain(&raw, &[offset, offset + len]);
+                let head = vsdx::text::plain_to_raw_offset(&base, offset);
+                let tail = vsdx::text::plain_to_raw_offset(&base, offset + len);
+                (base, head, tail)
+            }
+        };
+        let mut new_raw = String::with_capacity(base.len() + marker.len());
+        new_raw.push_str(&base[..head]);
+        new_raw.push_str(&marker);
+        new_raw.push_str(&base[tail..]);
+        s.text_raw = Some(new_raw.clone());
+        s.text = Some(
+            vsdx::text::text_pieces(&new_raw)
+                .iter()
+                .map(|p| p.plain())
+                .collect::<String>(),
+        );
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<()> {
+        let Some((old_section, text, raw)) = self.old.take() else {
+            return Ok(());
+        };
+        let s = sheet_mut(doc, &self.scope)?;
+        // Restore the Field section: the pre-state clone when one
+        // existed, else remove the section this command created.
+        match old_section {
+            Some(sec) => {
+                let pos = s.children.iter().position(|c| {
+                    matches!(c, vsdx::model::SheetChild::Section(x) if x.name == "Field" && x.ix == 0)
+                });
+                if let Some(i) = pos {
+                    if let vsdx::model::SheetChild::Section(slot) = &mut s.children[i] {
+                        *slot = sec;
+                    }
+                } else {
+                    s.children.push(vsdx::model::SheetChild::Section(sec));
+                }
+            }
+            None => {
+                s.children.retain(|c| {
+                    !matches!(c, vsdx::model::SheetChild::Section(x) if x.name == "Field" && x.ix == 0)
+                });
+            }
+        }
+        s.text = text;
+        s.text_raw = raw;
+        Ok(())
+    }
+}
+
+/// A `V='0' F='No Formula'` default cell.
+fn no_formula_cell() -> Cell {
+    Cell {
+        v: Some("0".into()),
+        f: Some("No Formula".into()),
+        ..Cell::default()
+    }
+}
+
+/// The cached picture string for a Format formula: a literal
+/// `FIELDPICTURE(n)` maps through the corpus table; anything else
+/// (an IF over unit systems, say) caches the general picture.
+fn evaluate_picture(f: &str) -> String {
+    let t = f.trim();
+    if let Some(rest) = t.strip_prefix("FIELDPICTURE(") {
+        if let Some(n) = rest
+            .strip_suffix(')')
+            .and_then(|n| n.trim().parse::<i64>().ok())
+        {
+            return vsdx::fieldfmt::field_picture(n);
+        }
+    }
+    // A LITERAL picture ("0.00u", "{{MMM yyyy}}") caches itself —
+    // the corpus's bare-F rows carry the picture verbatim; falling
+    // back to esc(0) here made the renderer read the wrong cached V
+    // (CodeRabbit round 4). A non-FIELDPICTURE FORMULA (the corpus's
+    // `IF(User.LUnitsInd=1,"@","0u")` unit switch) evaluates live at
+    // render; its cached V stays empty rather than caching the
+    // formula TEXT as if it were a picture.
+    if t.contains('(') {
+        String::new()
+    } else {
+        t.to_string()
     }
 }
 
@@ -1290,7 +1869,11 @@ impl crate::Command for AddMasterInstance {
             // Width always spans the drop (Begin/End own it); the
             // tracks() test only decides Height's value.
             let width_v = w;
-            let height_v = if tracks(&hf) { h } else { master_v("Height").unwrap_or(h) };
+            let height_v = if tracks(&hf) {
+                h
+            } else {
+                master_v("Height").unwrap_or(h)
+            };
             // LocPinX derives from the width the instance will RESOLVE
             // to after this pose (#218 review): a master that owns
             // Width as a literal INHERITS it (the Box callout's zero

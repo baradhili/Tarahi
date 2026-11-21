@@ -19,7 +19,7 @@ static LANG_LOCK: Mutex<()> = Mutex::new(());
 
 /// The shipped catalogs — every one must satisfy every structural
 /// check. A new language is a folder here plus its `language-name`.
-const LOCALES: &[&str] = &["en", "de", "fa", "es"];
+const LOCALES: &[&str] = &["en", "de", "fa", "es", "zh-Hans"];
 
 /// Panic-safe: restores English even when an assertion fails mid-test,
 /// so a leaked German setting can't flip parallel tests in this binary.
@@ -50,7 +50,9 @@ fn catalog_ids(lang: &str) -> BTreeSet<String> {
         if let Some(eq) = line.find('=') {
             let id = line[..eq].trim();
             if !id.is_empty()
-                && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
                 && id.chars().next().is_some_and(|c| c.is_ascii_lowercase())
             {
                 ids.insert(id.to_string());
@@ -138,9 +140,7 @@ fn brace_depths(text: &str) -> Vec<usize> {
                         // Char literal ('x', '\n', '{') vs lifetime
                         // ('a) — a lifetime never starts a literal.
                         let is_char = matches!(next, Some('\\'))
-                            || next.is_some_and(|n2| {
-                                chars.get(i + 2) == Some(&'\'') && n2 != '\''
-                            });
+                            || next.is_some_and(|n2| chars.get(i + 2) == Some(&'\'') && n2 != '\'');
                         if is_char {
                             mode = Mode::Char;
                         }
@@ -171,9 +171,7 @@ fn brace_depths(text: &str) -> Vec<usize> {
             Mode::Str | Mode::Char => {
                 if c == '\\' {
                     i += 1; // escaped char (incl. \n line continues)
-                } else if (c == '"' && mode == Mode::Str)
-                    || (c == '\'' && mode == Mode::Char)
-                {
+                } else if (c == '"' && mode == Mode::Str) || (c == '\'' && mode == Mode::Char) {
                     mode = Mode::Code;
                 }
             }
@@ -258,7 +256,9 @@ fn litscan_test_module_depth_closes_behind_the_module() {
     }
     assert!(scanned.contains(&"let a = \"kept\";"), "before is scanned");
     assert!(
-        !scanned.iter().any(|l| l.contains("fixture") || l.contains("helper")),
+        !scanned
+            .iter()
+            .any(|l| l.contains("fixture") || l.contains("helper")),
         "the module body is skipped"
     );
     assert!(
@@ -356,7 +356,10 @@ fn no_orphan_messages() {
     // dialog's native names).
     let generator_conventions: BTreeSet<String> =
         ["language-name".to_string()].into_iter().collect();
-    let orphans: Vec<_> = en.difference(&routed).filter(|id| !generator_conventions.contains(*id)).collect();
+    let orphans: Vec<_> = en
+        .difference(&routed)
+        .filter(|id| !generator_conventions.contains(*id))
+        .collect();
     assert!(
         orphans.is_empty(),
         "catalog messages nothing references — delete them or route them: {orphans:?}"
@@ -406,6 +409,9 @@ fn litscan_flags_unrouted_chrome_literals() {
         "My Shapes".to_string(),
         "Width".to_string(),
         "Height".to_string(),
+        // Geometry-section name (#267 added the field-category label
+        // of the same English word).
+        "Geometry".to_string(),
         // Hyperlink-section cell names (#257 added the dialog labels).
         "Address".to_string(),
         "Description".to_string(),
@@ -597,6 +603,35 @@ fn language_switch_renders_spanish_shell() {
     harness.snapshot("i18n_spanish_shell");
 }
 
+/// Same harness, Simplified Chinese catalog (#282's CJK wave): the
+/// Han glyphs render through the vendored Noto Sans SC fallback (the
+/// one drop feeds the egui shell, wrap measurement, and the raster)
+/// while the chrome stays LTR. The golden pins the translated chrome
+/// — tofu boxes or clipped labels fail it.
+#[test]
+fn language_switch_renders_zh_hans_shell() {
+    let _guard = LANG_LOCK.lock().unwrap();
+    let _english = EnglishOnDrop;
+    dc_ui::i18n::pin_english();
+    let mut app = App::with_blank();
+    dc_ui::i18n::set_language_ephemeral(dc_ui::i18n::L10n::ZhHans);
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_ui(move |ui| {
+            dc_ui::theme::install_for(ui.ctx(), egui::ThemePreference::Light);
+            app.draw(ui);
+        });
+    for _ in 0..6 {
+        harness.run(); // let the canvas layer textures settle
+    }
+    // The Chinese catalog's File tab — the chrome must come from the
+    // catalog, not hardcoded English, and the CJK glyphs must come
+    // from the Noto Sans SC shell fallback (not tofu).
+    harness.get_by_label_contains("文件");
+    harness.snapshot("i18n_zh_hans_shell");
+}
+
 /// Same harness, Persian catalog: the Arabic-script glyphs render
 /// through the vendored Vazirmatn fallback (#257 item 2) while the
 /// chrome stays LTR — mirroring is the next #257 item.
@@ -660,11 +695,10 @@ fn rtl_context_menu_mirrors_and_opens_leftward() {
     // the tab/empty context surface? The shape menu needs a shape:
     // the blank page yields none, so assert on the page-tab menu
     // instead (the mirrored `ctx_item` rows render there too).
-    let tab = harness
-        .get_all_by_label_contains("Page-1")
-        .next()
-        .expect("the page tab (its NAME is document vocabulary, never
-        translated — only the surrounding chrome localizes)");
+    let tab = harness.get_all_by_label_contains("Page-1").next().expect(
+        "the page tab (its NAME is document vocabulary, never
+        translated — only the surrounding chrome localizes)",
+    );
     // The mirrored rows render with the accelerator column at the
     // row's LEFT edge (the golden shows the arrangement).
     tab.click_secondary();

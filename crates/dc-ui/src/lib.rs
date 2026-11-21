@@ -9,21 +9,22 @@ pub mod canvas;
 pub mod cmd;
 pub mod connectors;
 pub mod export;
+pub mod fields_dlg;
 pub mod freeform;
 #[doc(hidden)]
 pub mod group_fixture;
 pub mod guides;
 pub mod hyperlink;
-pub mod icontex;
 pub mod i18n;
+pub mod icontex;
 pub mod keytips;
-pub mod mini_toolbar;
 /// Generated fluent-typed accessors (`build.rs` from the project-level
 /// `locales/` catalogs); re-exported through [`i18n`]. #246.
 #[allow(clippy::all)]
 mod l10n;
 mod layers;
 pub mod loading;
+pub mod mini_toolbar;
 pub mod os_theme;
 pub mod perf;
 pub mod props;

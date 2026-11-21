@@ -880,6 +880,11 @@ impl ShapeLayers {
                 .and_then(|c| c.numeric())
                 .is_some_and(|m| hidden.contains(&(m as i64)))
         };
+        // ONE field context for the whole repaint (CodeRabbit agent
+        // review): the shared `Sheet.N!` layer caches per context, so
+        // a per-root context rebuilt the page tree for every
+        // field-bearing shape.
+        let fields = dc::fields::FieldsCtx::for_page(doc, page);
         for shape in &page.shapes {
             if hidden_member(shape) {
                 continue;
@@ -1114,6 +1119,7 @@ impl ShapeLayers {
                             skip_text,
                             Some(ppi_patch),
                             cull_rect,
+                            Some(&fields),
                         ) {
                             Ok((_, svg)) => {
                                 let job = RasterJob::ParseRegion {
@@ -1229,6 +1235,7 @@ impl ShapeLayers {
                                 bbox,
                                 skip_text,
                                 Some(ppi),
+                                Some(&fields),
                             ) {
                                 Ok((sizes, svg)) => {
                                     entry.svg = Some(svg);
@@ -2075,7 +2082,7 @@ mod tests {
         let bounds = dc::svg::shape_ink_bounds(doc, page, root).unwrap();
         let width = (bounds.2 as f32 * 96.0).clamp(1.0, 2048.0);
         let (_, svg) =
-            dc::svg::render_shape_layer_opts(doc, page, root, &[], bounds, None, Some(96.0))
+            dc::svg::render_shape_layer_opts(doc, page, root, &[], bounds, None, Some(96.0), None)
                 .unwrap();
         let kind = crate::perf::Kind::Page;
         let tree = crate::svgimg::parse_svg(&svg, kind).unwrap();
@@ -2153,7 +2160,7 @@ mod tests {
         let width = (bounds.2 as f32 * 96.0).clamp(1.0, 2048.0);
         let kind = crate::perf::Kind::Page;
         let (_, full_svg) =
-            dc::svg::render_shape_layer_opts(&doc, page_ref, 1, &[], bounds, None, Some(96.0))
+            dc::svg::render_shape_layer_opts(&doc, page_ref, 1, &[], bounds, None, Some(96.0), None)
                 .unwrap();
         let full_tree = crate::svgimg::parse_svg(&full_svg, kind).unwrap();
         let full = crate::svgimg::render_tree(&full_tree, width, kind).unwrap();
@@ -2184,6 +2191,7 @@ mod tests {
             None,
             Some(96.0),
             cull,
+            None,
         )
         .unwrap();
         // Text serializes as per-character <tspan>s: "Near" is 4, the

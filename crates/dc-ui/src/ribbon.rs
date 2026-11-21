@@ -82,7 +82,6 @@ pub(crate) fn groups(tab: Tab, ctx: &TabCtx) -> Vec<Group> {
     groups
 }
 
-
 /// The tab layouts under one language's strings (#257): the `groups`
 /// dispatcher reads the current language through it; `anchor_labels`
 /// rebuilds the same tree under ENGLISH so a non-Latin chrome keys its
@@ -189,6 +188,10 @@ pub enum Action {
     /// #252 Insert ▸ Links: open the Hyperlinks dialog (#28/#71) on
     /// the primary selection.
     Hyperlink,
+    /// #267 Insert ▸ Text: open the Insert Field dialog on the
+    /// primary selection (caret-precise when the text editor is
+    /// open).
+    InsertField,
     /// #252 Container Tools ▸ Membership: release the container's
     /// members and delete it (one undo step).
     ContainerDisband,
@@ -771,7 +774,10 @@ impl Icon {
                 p.rect_filled(a, 1.5, blue);
                 p.rect_filled(b, 1.5, lit(Color32::from_rgb(0xe0, 0x7b, 0x1f)));
                 p.line_segment(
-                    [a.center() + Vec2::new(-2.0, 1.5), a.center() + Vec2::new(0.0, -2.5)],
+                    [
+                        a.center() + Vec2::new(-2.0, 1.5),
+                        a.center() + Vec2::new(0.0, -2.5),
+                    ],
                     Stroke::new(1.2, Color32::WHITE),
                 );
             }
@@ -1493,10 +1499,7 @@ impl Icon {
                     (4.5, -4.0, 4.5, -5.5),
                 ];
                 for (x0, y0, x1, y1) in fingers {
-                    p.line_segment(
-                        [c + Vec2::new(x0, y0), c + Vec2::new(x1, y1)],
-                        stroke(blue),
-                    );
+                    p.line_segment([c + Vec2::new(x0, y0), c + Vec2::new(x1, y1)], stroke(blue));
                 }
                 p.rect_filled(
                     Rect::from_min_size(c + Vec2::new(-6.0, -1.0), Vec2::new(12.0, 8.0)),
@@ -1681,7 +1684,11 @@ impl RibbonButton {
 
     /// Visio "hero" button: large icon above the label. `on_rect`
     /// observes the laid-out rect (the #184 keytip badge collector).
-    pub fn show_big(&self, ui: &mut Ui, on_rect: &mut dyn FnMut(&RibbonButton, Rect)) -> ButtonClick {
+    pub fn show_big(
+        &self,
+        ui: &mut Ui,
+        on_rect: &mut dyn FnMut(&RibbonButton, Rect),
+    ) -> ButtonClick {
         let size = Vec2::new(58.0, 72.0);
         let (r, resp) = ui.allocate_exact_size(size, Sense::click());
         on_rect(self, r);
@@ -1712,9 +1719,9 @@ impl RibbonButton {
                 .layout_no_wrap(self.label.clone(), font.clone(), self.label_color(ui));
         while gal.size().x > 54.0 && font.size > 8.0 {
             font.size = (font.size - 0.5).max(8.0);
-            gal = ui
-                .painter()
-                .layout_no_wrap(self.label.clone(), font.clone(), self.label_color(ui));
+            gal =
+                ui.painter()
+                    .layout_no_wrap(self.label.clone(), font.clone(), self.label_color(ui));
         }
         ui.painter().galley(
             Pos2::new(r.center().x - gal.size().x / 2.0, r.bottom() - 15.0),

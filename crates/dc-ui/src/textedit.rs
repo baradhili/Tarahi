@@ -37,6 +37,30 @@ use crate::canvas::{self, PageGeom, View};
 use dc::svg::{text_block, text_block_page_rect};
 use egui::{Color32, FontId, Pos2, Rect, Ui, Vec2};
 
+/// #267: a field insertion parked mid-edit — the display value the
+/// editor shows at `offset` (plain characters from the draft's
+/// start), committed as the `<fld/>` marker when the edit ends.
+/// Anchors shift through per-frame draft diffs (typing before a mark
+/// moves it; typing inside a mark's chunk dissolves it — the field
+/// is atomic, like Visio's).
+///
+/// **Known limitation (CodeRabbit PR review):** egui's BUILT-IN
+/// text-edit undo (Ctrl+Z inside the widget) restores only the text
+/// and cursor — a mark dissolved by a deletion comes back as plain
+/// text without its formula when egui's undo restores the display.
+/// The app-level undo (after commit) is unaffected: it reverts the
+/// whole committed macro. Fixing the in-editor case needs the marks
+/// folded into egui's undo state (`TextEditState`'s undoer is not
+/// extensible from outside in 0.37), so it stands documented rather
+/// than half-wired.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldMark {
+    pub offset: usize,
+    pub display: String,
+    pub value_f: String,
+    pub format_f: Option<String>,
+}
+
 /// One open editing session. Created by the app's entry points;
 /// `prev_view` restores the zoom/pan the user had before the edit.
 pub struct TextEditSession {
@@ -46,6 +70,18 @@ pub struct TextEditSession {
     pub page: i64,
     pub shape: i64,
     pub draft: String,
+    /// #267: the caret's plain-character offset (captured every frame
+    /// after the widget runs — the Insert Field dialog reads it to
+    /// insert at the caret).
+    pub caret: usize,
+    /// #267: field insertions parked for the commit.
+    pub field_marks: Vec<FieldMark>,
+    /// A caret the next frame must push into the WIDGET (a parked
+    /// field advances the caret programmatically; egui's own cursor
+    /// stays at the old position until something syncs it).
+    pub pending_caret: Option<usize>,
+    /// The draft as of the last frame (mark-anchor bookkeeping).
+    last_draft: String,
     /// View state (zoom, pan, fit flags) captured on entry — restored
     /// on exit.
     pub prev_view: View,
@@ -63,11 +99,171 @@ impl TextEditSession {
         TextEditSession {
             page,
             shape,
+            last_draft: draft.clone(),
             draft,
+            caret: 0,
+            field_marks: Vec::new(),
+            pending_caret: None,
             prev_view: view.clone(),
             zoomed_in: false,
             focus_requested: false,
         }
+    }
+
+    /// Park a field insertion at the caret: the display value lands
+    /// in the draft (the editor shows it where Visio would) and the
+    /// mark remembers where the marker goes at commit.
+    pub fn park_field(&mut self, mark: FieldMark) {
+        let mut at = self.caret.min(self.draft.chars().count());
+        let mut prefix = String::new();
+        for c in self.draft.chars().take(at) {
+            prefix.push(c);
+        }
+        let suffix = self.draft.chars().skip(at).collect::<String>();
+        self.draft = format!("{prefix}{}{suffix}", mark.display);
+        at = prefix.chars().count();
+        let inserted = mark.display.chars().count();
+        // Parking STRICTLY INSIDE an existing mark's span dissolves
+        // that field (Visio's atomicity) — a nested mark would overlap
+        // it at commit (CodeRabbit round 2).
+        self.field_marks.retain(|m| {
+            let end = m.offset + m.display.chars().count();
+            at <= m.offset || at >= end
+        });
+        // Existing marks at/after the insertion point shift by the
+        // inserted characters — `last_draft` resets below, so
+        // `sync_frame` will never see this change to do it (CodeRabbit
+        // round 1).
+        for m in &mut self.field_marks {
+            if m.offset >= at {
+                m.offset += inserted;
+            }
+        }
+        self.field_marks.push(FieldMark { offset: at, ..mark });
+        self.last_draft = self.draft.clone();
+        // Park at the end of what was inserted — typing continues
+        // after the field, and the WIDGET cursor must follow (the
+        // next frame pushes `pending_caret` into the editor state).
+        self.caret = at + inserted;
+        self.pending_caret = Some(self.caret);
+    }
+
+    /// Record the frame's caret and shift mark anchors through the
+    /// draft diff (called after the widget ran).
+    pub fn sync_frame(&mut self, caret: Option<usize>) {
+        // The PRE-EDIT caret disambiguates pure insertions: typing the
+        // field's own character right before it yields the same text
+        // as typing after it, and the common-prefix scan cannot tell
+        // them apart — but typing always happens AT the caret
+        // (CodeRabbit round 2).
+        let pre_caret = self.caret;
+        if let Some(c) = caret {
+            self.caret = c;
+        }
+        if self.field_marks.is_empty() || self.last_draft == self.draft {
+            self.last_draft = self.draft.clone();
+            return;
+        }
+        let old: Vec<char> = self.last_draft.chars().collect();
+        let new: Vec<char> = self.draft.chars().collect();
+        let mut p = 0usize;
+        while p < old.len() && p < new.len() && old[p] == new[p] {
+            p += 1;
+        }
+        let mut s = 0usize;
+        while s < old.len() - p
+            && s < new.len() - p
+            && old[old.len() - 1 - s] == new[new.len() - 1 - s]
+        {
+            s += 1;
+        }
+        let mut replaced_old = old.len() - p - s;
+        let delta = new.len() as isize - old.len() as isize;
+        // A minimal diff misreads single-character edits among
+        // REPEATED text as replaces ("ab1c" + X at 2 → "abX1c" reads
+        // as `1`→`X1`), which dissolves a field mark sitting at the
+        // caret. Reinterpret as a PURE INSERTION when the tails
+        // align, anchored at the pre-edit caret — the caret is where
+        // typing happens (CodeRabbit round 3).
+        if delta > 0 {
+            let inserted = delta as usize;
+            let tails_align = new.len() >= p + inserted && new[p + inserted..] == old[p..];
+            if tails_align {
+                replaced_old = 0;
+                let valid = |q: usize| {
+                    q <= old.len()
+                        && q + inserted <= new.len()
+                        && new[..q] == old[..q]
+                        && new[q + inserted..] == old[q..]
+                };
+                p = if valid(pre_caret) { pre_caret } else { p };
+            }
+        }
+        // The deletion twin (CodeRabbit PR review): Backspace on
+        // `"11"` (field display `1` + literal `1`) reports the
+        // deleted char at the WRONG index among repeats. Reinterpret
+        // as a PURE DELETION when the tails align and anchor the
+        // deleted span at the caret: Backspace removes the char
+        // BEFORE the caret, Delete the one AFTER. Among repeats BOTH
+        // anchors fit the text, so the POST-EDIT caret disambiguates
+        // the direction — Backspace pulls it back by the deleted
+        // count, Delete leaves it in place (Greptile round 5: the
+        // fixed Backspace preference dropped the FIELD where a
+        // Delete had eaten the literal).
+        if delta < 0 {
+            let deleted = (-delta) as usize;
+            // A deletion at q == p exists when the tails align:
+            // new[p..] == old[p + deleted..].
+            let tails_align =
+                new.len() >= p && old.len() >= p + deleted && new[p..] == old[p + deleted..];
+            if tails_align {
+                let valid = |q: usize| {
+                    q <= old.len()
+                        && q + deleted <= old.len()
+                        && q <= new.len() + deleted
+                        && new[..q.min(new.len())] == old[..q.min(old.len())]
+                        && new[q.min(new.len())..] == old[(q + deleted).min(old.len())..]
+                };
+                let backspace = pre_caret.saturating_sub(deleted);
+                let delete_key = pre_caret;
+                let q = match caret {
+                    // The caret did not move: Delete removed the
+                    // char AFTER it.
+                    Some(c) if c == pre_caret && valid(delete_key) => delete_key,
+                    // The caret moved back by the deleted count:
+                    // Backspace removed the char BEFORE it.
+                    Some(c) if c + deleted == pre_caret && valid(backspace) => backspace,
+                    // No direction signal (a cut, or the frame
+                    // carried no caret): keep the Backspace
+                    // preference.
+                    _ if valid(backspace) => backspace,
+                    _ if valid(delete_key) => delete_key,
+                    _ => p,
+                };
+                p = q;
+                replaced_old = deleted;
+            }
+        }
+        // An edit that OVERLAPS a mark's span DISSOLVES the field (its
+        // display becomes plain text — Visio's atomicity: editing
+        // inside a field breaks it). Keeping the mark with its full
+        // display length would eat ADJACENT text at commit (CodeRabbit
+        // round 1: delete the display of "aXYZb" → "ab", the retained
+        // mark still replaced 3 chars).
+        let edit_lo = p;
+        let edit_hi = p + replaced_old;
+        self.field_marks.retain(|m| {
+            let end = m.offset + m.display.chars().count();
+            m.offset >= edit_hi || end <= edit_lo
+        });
+        for m in &mut self.field_marks {
+            if m.offset >= p + replaced_old {
+                // Edit landed after the mark: it shifts by the delta.
+                m.offset = (m.offset as isize + delta) as usize;
+            }
+            // Before the edit: unchanged.
+        }
+        self.last_draft = self.draft.clone();
     }
 
     /// Apply the entry zoom once: the text block fills ~half the
@@ -264,9 +460,8 @@ pub fn show_overlay(
                         let ps = galley.pos_from_cursor(range.secondary);
                         // (row, x) lexicographic: primary is the
                         // visually-later endpoint when this is true.
-                        let primary_later =
-                            (pp.min.y, pp.min.x).ge(&(ps.min.y, ps.min.x))
-                                && (pp.min.y, pp.min.x) != (ps.min.y, ps.min.x);
+                        let primary_later = (pp.min.y, pp.min.x).ge(&(ps.min.y, ps.min.x))
+                            && (pp.min.y, pp.min.x) != (ps.min.y, ps.min.x);
                         let take_primary = if right { primary_later } else { !primary_later };
                         (
                             if take_primary {
@@ -304,8 +499,7 @@ pub fn show_overlay(
     // moves nothing. The overlay editor lays every row out at ONE
     // size, so its baseline uses the Latin ascent; the renderer's
     // per-line complex-script slots are its own.
-    let baseline_off_in =
-        dc::svg::text_first_baseline(&tb, n_lines * tb.line_height, tb.font_size);
+    let baseline_off_in = dc::svg::text_first_baseline(&tb, n_lines * tb.line_height, tb.font_size);
     let baseline_page_y_up = (by + bh) - baseline_off_in;
     let baseline_screen = canvas::page_to_screen(bx, baseline_page_y_up, view, geom).y;
     let editor_top = baseline_screen - (ascent_em * font_pts as f64) as f32;
@@ -314,6 +508,21 @@ pub fn show_overlay(
         Pos2::new(screen.left(), editor_top),
         Vec2::new(screen.width(), content_h),
     );
+    // #267: a parked field's programmatic caret lands BEFORE the
+    // widget runs — applying it after `ui.put` let this frame's text
+    // input land at the OLD cursor, ahead of the inserted display
+    // (CodeRabbit round 2).
+    if let Some(c) = session.pending_caret.take() {
+        if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), id) {
+            let cursor = egui::text::CCursor::new(c);
+            state.cursor.set_char_range(Some(egui::text::CCursorRange {
+                primary: cursor,
+                secondary: cursor,
+                h_pos: None,
+            }));
+            state.store(ui.ctx(), id);
+        }
+    }
     let edit = egui::TextEdit::multiline(&mut session.draft)
         .id(id)
         .hint_text(crate::i18n::strs().msg_shape_text())
@@ -332,6 +541,13 @@ pub fn show_overlay(
                 .stroke(egui::Stroke::NONE),
         );
     let resp = ui.put(place, edit);
+
+    // #267: capture the caret (plain-char offset) and shift any
+    // parked field marks through this frame's draft diff.
+    let caret = egui::text_edit::TextEditState::load(ui.ctx(), id)
+        .and_then(|st| st.cursor.char_range())
+        .map(|r| r.primary.index.0);
+    session.sync_frame(caret);
 
     // Esc discards: the shape's text reverts to its pre-edit value
     // (owner review, 2026-10-27).
@@ -630,7 +846,11 @@ mod tests {
         ctx.fonts_mut(|f| f.layout_job(job))
     }
 
-    fn wrapped_galley_of(ctx: &egui::Context, text: &str, wrap: f32) -> std::sync::Arc<egui::Galley> {
+    fn wrapped_galley_of(
+        ctx: &egui::Context,
+        text: &str,
+        wrap: f32,
+    ) -> std::sync::Arc<egui::Galley> {
         let job = egui::text::LayoutJob::simple(
             text.into(),
             egui::FontId::monospace(14.0),
@@ -708,5 +928,157 @@ mod tests {
         // Headless: the pass's texture delta is intentionally dropped
         // (nothing rasterizes it) — clear it so its Drop doesn't panic.
         out.textures_delta.clear();
+    }
+}
+
+#[cfg(test)]
+mod field_mark_tests {
+    use super::{FieldMark, TextEditSession};
+    use crate::canvas::View;
+
+    fn session(draft: &str, caret: usize) -> TextEditSession {
+        let mut s = TextEditSession::new(0, 1, draft.to_string(), &View::default());
+        s.caret = caret;
+        s
+    }
+
+    fn mark(offset: usize, display: &str) -> FieldMark {
+        FieldMark {
+            offset,
+            display: display.to_string(),
+            value_f: "PAGENAME()".to_string(),
+            format_f: None,
+        }
+    }
+
+    /// Typing the field's own first character right BEFORE it shifts
+    /// the mark, not dissolves it (CodeRabbit round 3: "XYZ" + X at
+    /// offset 0 → "XXYZ").
+    #[test]
+    fn typing_a_repeated_char_before_a_field_shifts_it() {
+        let mut s = session("", 0);
+        s.park_field(mark(0, "XYZ")); // parks AT the caret (0)
+        assert_eq!(s.draft, "XYZ");
+        // Caret back to the very start, then type X.
+        s.caret = 0;
+        s.draft = "XXYZ".into();
+        s.sync_frame(Some(1));
+        assert_eq!(
+            s.field_marks,
+            vec![mark(1, "XYZ")],
+            "the mark shifts past the typed char"
+        );
+    }
+
+    /// A normal insertion between mark and text still shifts it.
+    #[test]
+    fn typing_before_a_field_shifts_it() {
+        let mut s = session("abc", 2);
+        s.park_field(mark(0, "1")); // parks at caret 2 → "ab1c"
+        assert_eq!(s.draft, "ab1c");
+        s.caret = 2;
+        s.draft = "abX1c".into();
+        s.sync_frame(Some(3));
+        assert_eq!(s.field_marks, vec![mark(3, "1")]);
+    }
+
+    /// An edit overlapping the display dissolves the field (round 1).
+    #[test]
+    fn editing_inside_the_display_dissolves_it() {
+        let mut s = session("ab", 1);
+        s.park_field(mark(0, "XYZ")); // "aXYZb"
+        assert_eq!(s.draft, "aXYZb");
+        // Delete "YZ" (inside the display).
+        s.draft = "aXb".into();
+        s.sync_frame(Some(2));
+        assert!(s.field_marks.is_empty(), "the field dissolved");
+    }
+
+    /// Parking a second field strictly inside an existing one
+    /// dissolves the container (CodeRabbit round 2).
+    #[test]
+    fn parking_inside_a_field_dissolves_it() {
+        let mut s = session("ab", 1);
+        s.park_field(mark(0, "XYZ")); // "aXYZb", mark @1
+        s.caret = 2; // strictly inside the display
+        s.park_field(mark(0, "Q"));
+        assert_eq!(s.field_marks, vec![mark(2, "Q")]);
+        assert_eq!(s.draft, "aXQYZb");
+    }
+
+    /// Parking an EARLIER field shifts later marks (CodeRabbit
+    /// round 1).
+    #[test]
+    fn parking_before_another_mark_shifts_it() {
+        let mut s = session("abc", 2);
+        s.park_field(mark(0, "1")); // "ab1c", mark @2
+        s.caret = 0;
+        s.park_field(mark(0, "9")); // "9ab1c", mark @0 shifts the first to 3
+        assert_eq!(s.field_marks, vec![mark(3, "1"), mark(0, "9")]);
+        assert_eq!(s.draft, "9ab1c");
+    }
+
+    /// Backspace on repeated text deletes the char BEFORE the caret
+    /// — a field display `1` followed by a literal `1`, backspaced
+    /// from the end, must remove the LITERAL and keep the field
+    /// (CodeRabbit PR review).
+    #[test]
+    fn backspace_on_repeated_text_deletes_before_the_caret() {
+        // Field first: park display "1" at 0, then type a literal "1"
+        // after it (caret lands at 2).
+        let mut s = session("", 0);
+        s.park_field(mark(0, "1")); // "1", mark @0, caret @1
+        s.draft = "11".into(); // typed the literal at 1
+        s.sync_frame(Some(2));
+        assert_eq!(s.field_marks, vec![mark(0, "1")], "typing kept the field");
+        // Backspace from the end removes the LITERAL at [1,2).
+        s.draft = "1".into();
+        s.sync_frame(Some(1));
+        assert_eq!(s.field_marks, vec![mark(0, "1")], "the field survived");
+
+        // The Delete key at offset 0 removes the FIELD display — the
+        // mark dissolves and the trailing literal survives. Distinct
+        // characters so the deletion target is unambiguous.
+        let mut s = session("x", 1);
+        s.caret = 0;
+        s.park_field(mark(0, "1")); // "1x", mark @0
+        assert_eq!(s.draft, "1x");
+        s.caret = 0;
+        s.draft = "x".into(); // Delete removed the display
+        s.sync_frame(Some(0));
+        assert!(s.field_marks.is_empty(), "Delete removed the field");
+    }
+
+    /// Delete vs Backspace among REPEATED text (Greptile round 5):
+    /// a field display `1` followed by a literal `1`, caret between
+    /// them — the POST-EDIT caret disambiguates the direction, so
+    /// Delete eats the LITERAL (caret stays) and Backspace the FIELD
+    /// (caret falls back).
+    #[test]
+    fn delete_between_repeated_text_eats_the_literal() {
+        // Delete: caret parks at 1 between the pair, stays at 1.
+        let mut s = session("", 0);
+        s.park_field(mark(0, "1")); // "1", mark @0, caret @1
+        s.draft = "11".into(); // typed the literal at 1
+        s.sync_frame(Some(2));
+        s.caret = 1; // parked between the pair
+        s.draft = "1".into(); // one of them deleted
+        s.sync_frame(Some(1));
+        assert_eq!(
+            s.field_marks,
+            vec![mark(0, "1")],
+            "Delete ate the literal, the field survived"
+        );
+
+        // Backspace from the same spot: caret falls to 0, the FIELD
+        // display is the deleted span and its mark dissolves.
+        let mut s = session("", 0);
+        s.park_field(mark(0, "1"));
+        s.draft = "11".into();
+        s.sync_frame(Some(2));
+        s.caret = 1;
+        s.draft = "1".into();
+        s.sync_frame(Some(0));
+        assert!(s.field_marks.is_empty(), "Backspace ate the field");
     }
 }

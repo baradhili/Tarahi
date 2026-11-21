@@ -5,24 +5,26 @@
 //! (Design/Data drop them in their own commits). Page Setup's launcher
 //! moves to Design ▸ Page Setup.
 
-use super::{Action, Group, Icon, RibbonButton, TabCtx, big, grid, stack};
+use super::{big, grid, stack, Action, Group, Icon, RibbonButton, TabCtx};
 
 pub(crate) fn groups(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<Group> {
     let has_doc = ctx.has_doc;
     let has_sel = ctx.has_sel;
     vec![
         Group::new(s.msg_insert_pages(), pages_cols(s, has_doc)),
-        Group::new(s.msg_illustrations(), illustrations_cols(s, )),
+        Group::new(s.msg_illustrations(), illustrations_cols(s)),
         Group::new(s.msg_diagram_parts(), diagram_parts_cols(s, ctx)),
         Group::new(
             s.msg_links(),
-            vec![big(
-                RibbonButton::new(Icon::Link, s.msg_hyperlink(), Action::Hyperlink)
-                    .enabled(has_sel)
-                    .tip(s.msg_edit_the_selected_shape_s_hyperl()),
-            )],
+            vec![big(RibbonButton::new(
+                Icon::Link,
+                s.msg_hyperlink(),
+                Action::Hyperlink,
+            )
+            .enabled(has_sel)
+            .tip(s.msg_edit_the_selected_shape_s_hyperl()))],
         ),
-        Group::new(s.msg_text(), text_cols(s, )),
+        Group::new(s.msg_text(), text_cols(s, has_sel)),
     ]
 }
 
@@ -59,12 +61,10 @@ fn illustrations_cols(s: &'static crate::l10n::L10nLanguage) -> Vec<super::Col> 
                     .enabled(false)
                     .tip(s.msg_charts_planned_later_milestone()),
             ],
-            vec![
-                RibbonButton::new(Icon::Shapes, "", Action::Macros)
-                    .alt(s.msg_cad_drawing())
-                    .enabled(false)
-                    .tip(s.msg_cad_drawing_import_planned_later()),
-            ],
+            vec![RibbonButton::new(Icon::Shapes, "", Action::Macros)
+                .alt(s.msg_cad_drawing())
+                .enabled(false)
+                .tip(s.msg_cad_drawing_import_planned_later())],
         ]),
     ]
 }
@@ -103,17 +103,15 @@ fn diagram_parts_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Ve
                     .enabled(false)
                     .tip(s.msg_title_planned()),
             ],
-            vec![
-                RibbonButton::new(Icon::Picture, "", Action::Macros)
-                    .alt(s.msg_border_title())
-                    .enabled(false)
-                    .tip(s.msg_borders_titles_planned()),
-            ],
+            vec![RibbonButton::new(Icon::Picture, "", Action::Macros)
+                .alt(s.msg_border_title())
+                .enabled(false)
+                .tip(s.msg_borders_titles_planned())],
         ]),
     ]
 }
 
-fn text_cols(s: &'static crate::l10n::L10nLanguage) -> Vec<super::Col> {
+fn text_cols(s: &'static crate::l10n::L10nLanguage, has_sel: bool) -> Vec<super::Col> {
     vec![
         big(
             RibbonButton::new(Icon::TextBox, s.msg_text_box(), Action::Macros)
@@ -122,10 +120,10 @@ fn text_cols(s: &'static crate::l10n::L10nLanguage) -> Vec<super::Col> {
         ),
         grid(vec![
             vec![
-                RibbonButton::new(Icon::Field, "", Action::Macros)
+                RibbonButton::new(Icon::Field, "", Action::InsertField)
                     .alt(s.msg_text_field())
-                    .enabled(false)
-                    .tip(s.msg_fields_planned()),
+                    .enabled(has_sel)
+                    .tip(s.msg_insert_a_text_field()),
                 RibbonButton::new(Icon::DateTime, "", Action::Macros)
                     .alt(s.msg_date_time())
                     .enabled(false)

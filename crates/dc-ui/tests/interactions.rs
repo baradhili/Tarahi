@@ -20,8 +20,7 @@ fn strip_bidi(s: &str) -> String {
         .chars()
         .filter(|c| !matches!(c, '\u{2066}'..='\u{2069}'))
         .collect::<String>();
-    real
-        .replace("\\u{2066}", "")
+    real.replace("\\u{2066}", "")
         .replace("\\u{2067}", "")
         .replace("\\u{2068}", "")
         .replace("\\u{2069}", "")
@@ -3410,6 +3409,217 @@ fn context_menu_container_wraps_and_carries_members() {
     assert!(h.state().debug_shape_screen_rect(s1).is_some());
 }
 
+/// GitHub #267: Insert ▸ Text Field opens the dialog on the selection
+/// and OK writes the Field row plus the `<fld>` marker in one undo
+/// step — and while the in-place editor is open, the field lands at
+/// the CARET (typing after it stays after the marker).
+#[test]
+fn insert_field_dialog_writes_row_and_marker_caret_precise() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = dblclick_harness_with_blank();
+    h.run();
+    let from = h.state().debug_master_cells()[0].1.center();
+    let to = h.state().debug_canvas_rect().center();
+    click_at(&mut h, from, egui::PointerButton::Primary);
+    click_at(&mut h, to, egui::PointerButton::Primary);
+    h.run();
+    assert_eq!(h.state().debug_shape_count(), 1);
+    let (_, sid) = h.state().debug_sel().expect("placed shape selected");
+
+    // Open the text editor and type — the field must land at the
+    // caret, not the end of the final text.
+    dbl_click_at(&mut h, to);
+    h.run();
+    assert!(h.state().debug_text_edit().is_some(), "editor open");
+    h.get_by_role(egui::Role::MultilineTextInput)
+        .set_text_value_accesskit("AB");
+    h.run();
+    // Park the caret BETWEEN the A and the B (an end-caret insertion
+    // would pass an append-only implementation — CodeRabbit PR
+    // review): the block centers its text, so the editor's center x
+    // falls between the two glyphs — clicking there puts the cursor
+    // at A|B.
+    let er = h.get_by_role(egui::Role::MultilineTextInput).rect();
+    click_at(
+        &mut h,
+        egui::pos2(er.center().x, er.center().y),
+        egui::PointerButton::Primary,
+    );
+    h.run();
+    // Establish the cursor (the accesskit text set leaves none) and
+    // step it left of the B.
+    h.key_press(egui::Key::ArrowLeft);
+    h.run();
+
+    // Insert ▸ Text ▸ Text Field: switch to the Insert tab, then the
+    // ribbon's icon button (alt label "Text Field"). The click that
+    // opens the dialog also commits the edit (#22's click-away) — the
+    // CARET it captured is where the field lands (#267).
+    h.get_by_label("Insert").click();
+    h.run();
+    assert_eq!(
+        h.state().debug_text_edit(),
+        None,
+        "the tab click committed the edit"
+    );
+    assert_eq!(
+        h.state().debug_shape_text(sid).as_deref(),
+        Some("AB"),
+        "the typed text committed with the click"
+    );
+    h.get_all_by_label_contains("Text Field")
+        .min_by_key(|n| n.rect().height() as i64)
+        .expect("Text Field ribbon button")
+        .click();
+    h.run();
+    // Switch the category to Page Info and pick Page Number (the
+    // blank fixture has no core-xml dates, but its page resolves).
+    use egui_kittest::kittest::By;
+    h.get(By::default().role(egui::Role::ComboBox).label("Category:"))
+        .click();
+    h.run();
+    h.get_by_label("Page Info").click();
+    h.run();
+    // "Page Number" also names a disabled Insert-tab button — take
+    // the entry inside the dialog (the leftmost x).
+    h.get_all_by_label("Page Number")
+        .min_by_key(|n| n.rect().min.x as i64)
+        .expect("Page Number entry in the dialog")
+        .click();
+    h.run();
+    h.get_by_label("OK").click();
+    h.run();
+
+    let (formulas, raw) = h
+        .state()
+        .debug_field_state(sid)
+        .expect("field state resolves");
+    assert_eq!(
+        formulas,
+        vec!["PAGENUMBER()".to_string()],
+        "the Field row carries the page-number formula"
+    );
+    let raw = raw.expect("raw text exists");
+    // Caret-precise: the marker sits right after the committed "AB"
+    // (where the caret was), caching its display like the corpus's
+    // value-carrying markers.
+    assert_eq!(
+        raw, "A<fld IX='0'>1</fld>B",
+        "the marker landed at the captured caret (between A and B) with its display"
+    );
+
+    // The field is its own undo step (the typed text committed
+    // separately, with the dialog-opening click).
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run();
+    let after = h.state().debug_field_state(sid);
+    assert!(
+        after.is_none_or(|(f, _)| f.is_empty()),
+        "undo removed the field row"
+    );
+    assert_eq!(
+        h.state().debug_shape_text(sid).as_deref(),
+        Some("AB"),
+        "the earlier text commit is the previous undo step"
+    );
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_text(sid).as_deref(),
+        None,
+        "the second undo restores the empty text"
+    );
+}
+
+/// Two caret-based insertions keep their ORDER: the retained caret
+/// advances past the first field's display, so the second dialog on
+/// the same shape inserts AFTER the first field — `AXYB`, not `AYXB`
+/// (CodeRabbit/Greptile round 5).
+#[test]
+fn second_field_insertion_lands_after_the_first() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = dblclick_harness_with_blank();
+    h.run();
+    let from = h.state().debug_master_cells()[0].1.center();
+    let to = h.state().debug_canvas_rect().center();
+    click_at(&mut h, from, egui::PointerButton::Primary);
+    click_at(&mut h, to, egui::PointerButton::Primary);
+    h.run();
+    let (_, sid) = h.state().debug_sel().expect("placed shape selected");
+
+    // Editor open, "AB" typed, caret parked between the glyphs (the
+    // same setup as the caret-precise test — where the caret sits is
+    // not what this test varies).
+    dbl_click_at(&mut h, to);
+    h.run();
+    h.get_by_role(egui::Role::MultilineTextInput)
+        .set_text_value_accesskit("AB");
+    h.run();
+    let er = h.get_by_role(egui::Role::MultilineTextInput).rect();
+    click_at(
+        &mut h,
+        egui::pos2(er.center().x, er.center().y),
+        egui::PointerButton::Primary,
+    );
+    h.run();
+    h.key_press(egui::Key::ArrowLeft);
+    h.run();
+
+    // First insertion (the tab click commits the edit; the captured
+    // caret is between A and B).
+    h.get_by_label("Insert").click();
+    h.run();
+    h.get_all_by_label_contains("Text Field")
+        .min_by_key(|n| n.rect().height() as i64)
+        .expect("Text Field ribbon button")
+        .click();
+    h.run();
+    use egui_kittest::kittest::By;
+    h.get(By::default().role(egui::Role::ComboBox).label("Category:"))
+        .click();
+    h.run();
+    h.get_by_label("Page Info").click();
+    h.run();
+    h.get_all_by_label("Page Number")
+        .min_by_key(|n| n.rect().min.x as i64)
+        .expect("Page Number entry in the dialog")
+        .click();
+    h.run();
+    h.get_by_label("OK").click();
+    h.run();
+
+    // Second insertion on the same shape, NO live editor: the
+    // retained caret (advanced past the first display) decides.
+    h.get_all_by_label_contains("Text Field")
+        .min_by_key(|n| n.rect().height() as i64)
+        .expect("Text Field ribbon button")
+        .click();
+    h.run();
+    h.get(By::default().role(egui::Role::ComboBox).label("Category:"))
+        .click();
+    h.run();
+    h.get_by_label("Page Info").click();
+    h.run();
+    h.get_all_by_label("Page Number")
+        .min_by_key(|n| n.rect().min.x as i64)
+        .expect("Page Number entry in the dialog")
+        .click();
+    h.run();
+    h.get_by_label("OK").click();
+    h.run();
+
+    let (_, raw) = h
+        .state()
+        .debug_field_state(sid)
+        .expect("field state resolves");
+    let raw = raw.expect("raw text exists");
+    assert_eq!(
+        raw, "A<fld IX='0'>1</fld><fld IX='1'>1</fld>B",
+        "the second field landed AFTER the first display (the retained \
+         caret advanced), not before it"
+    );
+}
+
 /// GitHub #28: Hyperlink… dialog adds a row through the command layer,
 /// and Ctrl+Click follows a SubAddress to its page.
 #[test]
@@ -4502,7 +4712,10 @@ fn drag_moves_the_shape_live_under_the_cursor() {
     // it showed, the release must land exactly there (#96; #283
     // review: the raw-pixel-delta form drifted when the scrollbar
     // bands moved the fit bucket and the drag's snap aligned).
-    let ghost = h.state().debug_drag_ghost_rect_for_test().expect("ghost rect");
+    let ghost = h
+        .state()
+        .debug_drag_ghost_rect_for_test()
+        .expect("ghost rect");
     ctx_menu_snapshot(&mut h, "dc_ui_drag_live_feedback");
     h.event(b(from + egui::vec2(60.0, -40.0), false));
     h.run();
@@ -7508,13 +7721,18 @@ fn format_painter_copies_formatting() {
             .state()
             .debug_cell(page, b, cell)
             .unwrap_or_else(|| panic!("cell {cell} written onto B"));
-        let v: f64 = bv.parse().unwrap_or_else(|_| panic!("{cell} numeric: {bv}"));
+        let v: f64 = bv
+            .parse()
+            .unwrap_or_else(|_| panic!("{cell} numeric: {bv}"));
         let want: f64 = want.parse().unwrap();
         assert!(
             (v - want).abs() < 1e-9,
             "the painter wrote A's {cell} onto B: {v} != {want}"
         );
-        assert!(bf.is_empty(), "{cell} lands as a literal, not a formula: {bf}");
+        assert!(
+            bf.is_empty(),
+            "{cell} lands as a literal, not a formula: {bf}"
+        );
     }
     assert!(
         h.state().debug_status().contains("formatting cells copied"),

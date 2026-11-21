@@ -950,6 +950,7 @@ dependencies = [
  "ttf-parser",
  "unicode-bidi",
  "vsdx",
+ "zip",
 ]
 
 [[package]]

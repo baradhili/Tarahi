@@ -124,6 +124,7 @@ pub fn render_masters(doc: &Document) -> anyhow::Result<String> {
             svg,
             r#"<g transform="translate({tx:.5},{ty:.5}) scale({k:.5},{k:.5})">"#,
         );
+        let fields = crate::fields::FieldsCtx::for_master(doc, &m.shapes);
         for shape in &m.shapes {
             render_shape(
                 doc,
@@ -134,6 +135,7 @@ pub fn render_masters(doc: &Document) -> anyhow::Result<String> {
                 None,
                 None,
                 None,
+                Some(&fields),
                 &mut svg,
             );
         }
@@ -237,6 +239,7 @@ pub fn render_master(doc: &Document, m: &vsdx::Master) -> anyhow::Result<String>
         svg,
         r#"<g transform="translate({tx:.5},{ty:.5}) scale({k:.5},{k:.5})">"#,
     );
+    let fields = crate::fields::FieldsCtx::for_master(doc, &m.shapes);
     for shape in &m.shapes {
         render_shape(
             doc,
@@ -247,6 +250,7 @@ pub fn render_master(doc: &Document, m: &vsdx::Master) -> anyhow::Result<String>
             None,
             None,
             None,
+            Some(&fields),
             &mut svg,
         );
     }
@@ -455,14 +459,17 @@ fn node_ink_box(
             get("LocPinY", &env).unwrap_or(height / 2.0),
         ))
     } else {
-        Affine::translate(get("PinX", &env).unwrap_or(0.0), -get("PinY", &env).unwrap_or(0.0))
-            .then(&Affine::rotate_deg(
-                -get("Angle", &env).unwrap_or(0.0).to_degrees(),
-            ))
-            .then(&Affine::translate(
-                -get("LocPinX", &env).unwrap_or(width / 2.0),
-                get("LocPinY", &env).unwrap_or(height / 2.0),
-            ))
+        Affine::translate(
+            get("PinX", &env).unwrap_or(0.0),
+            -get("PinY", &env).unwrap_or(0.0),
+        )
+        .then(&Affine::rotate_deg(
+            -get("Angle", &env).unwrap_or(0.0).to_degrees(),
+        ))
+        .then(&Affine::translate(
+            -get("LocPinX", &env).unwrap_or(width / 2.0),
+            get("LocPinY", &env).unwrap_or(height / 2.0),
+        ))
     };
     let a = to_page.then(&local);
     let mut u = Focus {
@@ -556,10 +563,8 @@ fn node_ink_box(
                             let key = match sec_name {
                                 "Scratch" => format!("Scratch.{}{}", name, row.ix + 1),
                                 _ => {
-                                    let rn = row
-                                        .n
-                                        .clone()
-                                        .unwrap_or_else(|| format!("Row_{}", row.ix));
+                                    let rn =
+                                        row.n.clone().unwrap_or_else(|| format!("Row_{}", row.ix));
                                     format!("Controls.{}.{}", rn, name)
                                 }
                             };
@@ -593,11 +598,7 @@ fn node_ink_box(
         let gname = format!("Geometry{}", walk_ix + 1);
         let mut cur = (0.0f64, 0.0f64);
         let mut first_pt: Option<(f64, f64)> = None;
-        fn row_num_in(
-            env: &vsdx::formula::Env,
-            row: &vsdx::Row,
-            n: &str,
-        ) -> f64 {
+        fn row_num_in(env: &vsdx::formula::Env, row: &vsdx::Row, n: &str) -> f64 {
             row.cell(n)
                 .and_then(|c| {
                     c.f.as_deref()
@@ -611,10 +612,7 @@ fn node_ink_box(
         for row in &geo.rows {
             let Some(t) = row.t.as_deref() else { continue };
             let rel = t.starts_with("Rel");
-            let (mut x, mut y) = (
-                row_num_in(genv, row, "X"),
-                row_num_in(genv, row, "Y"),
-            );
+            let (mut x, mut y) = (row_num_in(genv, row, "X"), row_num_in(genv, row, "Y"));
             if rel {
                 // Raw signed dims — rel_adjust (which the renderer
                 // uses) multiplies raw, so the bound must match.
@@ -721,7 +719,9 @@ fn node_ink_box(
         // union a conservative square (the gallery's largest reach) at
         // each end that carries a head. Same gate as the renderer's.
         let arrowed = |arrow: f64| arrow >= 0.5 && !(46.0..=50.5).contains(&arrow);
-        if get("BeginArrow", &text_env).is_some_and(arrowed) || get("EndArrow", &text_env).is_some_and(arrowed) {
+        if get("BeginArrow", &text_env).is_some_and(arrowed)
+            || get("EndArrow", &text_env).is_some_and(arrowed)
+        {
             let weight = get("LineWeight", &text_env).unwrap_or(0.75 / 72.0);
             let pad = |pt: (f64, f64), arrow: Option<f64>, sz: f64, u: &mut Focus| {
                 if !arrow.is_some_and(arrowed) {
@@ -754,12 +754,20 @@ fn node_ink_box(
     }
     // Text can overflow the shape box (TxtWidth/TxtHeight are
     // independent cells); bound it with emit_text's placement math.
+    // The decision uses the RENDERED text: a self-closing `<fld/>`
+    // marker substitutes a nonempty value the plain `text` cell does
+    // not carry — omitting the frame clipped the substituted label
+    // (CodeRabbit PR review).
     let has_text = s
         .sheet
         .text
         .as_deref()
         .map(str::trim)
-        .is_some_and(|t| !t.is_empty());
+        .is_some_and(|t| !t.is_empty())
+        || s.sheet
+            .text_raw
+            .as_deref()
+            .is_some_and(|r| r.contains("<fld"));
     if has_text {
         let tw = get("TxtWidth", &text_env).unwrap_or(width).max(0.02);
         let th = get("TxtHeight", &text_env).unwrap_or(height).max(0.02);
@@ -824,23 +832,9 @@ fn node_ink_box(
             // rotated page coordinates around a shape-local pivot,
             // landing the hull far from the shape (Greptile round 9).
             let a_text = a.then(&text_tf);
-            box_union(
-                x0 - bullet_escape,
-                y0,
-                x0 + tw,
-                y0 + th,
-                &a_text,
-                &mut u,
-            );
+            box_union(x0 - bullet_escape, y0, x0 + tw, y0 + th, &a_text, &mut u);
         } else {
-            box_union(
-                x0 - bullet_escape,
-                y0,
-                x0 + tw,
-                y0 + th,
-                &a,
-                &mut u,
-            );
+            box_union(x0 - bullet_escape, y0, x0 + tw, y0 + th, &a, &mut u);
         }
     }
     (u.acc.unwrap_or((0.0, 0.0, 0.0, 0.0)), a)
@@ -908,7 +902,8 @@ pub fn render_shape_layer(
     hidden: &[i64],
     bounds: (f64, f64, f64, f64),
 ) -> anyhow::Result<String> {
-    render_shape_layer_opts(doc, page, shape_id, hidden, bounds, None, None).map(|(_, svg)| svg)
+    render_shape_layer_opts(doc, page, shape_id, hidden, bounds, None, None, None)
+        .map(|(_, svg)| svg)
 }
 
 /// [`render_shape_layer`] with the canvas-only options (GitHub #22,
@@ -919,6 +914,13 @@ pub fn render_shape_layer(
 /// bars instead of glyphs. Returns the SVG plus every text size the
 /// walk met (inches), the cache's greek profile for deciding whether
 /// a ppi-bucket change re-renders or re-serializes.
+///
+/// `fields` shares one page walk's [`crate::fields::FieldsCtx`]
+/// across roots (its `Sheet.N!` layer caches per CONTEXT — a
+/// per-shape context rebuilds it every call, the quadratic cost the
+/// sharing exists to remove); `None` builds a fresh one for one-shot
+/// renders.
+#[allow(clippy::too_many_arguments)] // the layer's full identity + the shared field walk
 pub fn render_shape_layer_opts(
     doc: &Document,
     page: &vsdx::Page,
@@ -927,9 +929,10 @@ pub fn render_shape_layer_opts(
     bounds: (f64, f64, f64, f64),
     skip_text: Option<i64>,
     greek_ppi: Option<f32>,
+    fields: Option<&crate::fields::FieldsCtx<'_>>,
 ) -> anyhow::Result<(Vec<f64>, String)> {
     render_shape_layer_inner(
-        doc, page, shape_id, hidden, bounds, skip_text, greek_ppi, None,
+        doc, page, shape_id, hidden, bounds, skip_text, greek_ppi, None, fields,
     )
 }
 
@@ -952,6 +955,7 @@ pub fn render_shape_layer_opts_culled(
     skip_text: Option<i64>,
     greek_ppi: Option<f32>,
     cull_rect: (f64, f64, f64, f64),
+    fields: Option<&crate::fields::FieldsCtx<'_>>,
 ) -> anyhow::Result<(Vec<f64>, String)> {
     let boxes = subtree_ink_boxes(doc, page, shape_id)
         .ok_or_else(|| anyhow::anyhow!("shape {shape_id} not found on page {}", page.id))?;
@@ -968,6 +972,7 @@ pub fn render_shape_layer_opts_culled(
         skip_text,
         greek_ppi,
         Some(&cull),
+        fields,
     )
 }
 
@@ -997,7 +1002,7 @@ fn boxes_intersect(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
     a.0 <= b.0 + b.2 && b.0 <= a.0 + a.2 && a.1 <= b.1 + b.3 && b.1 <= a.1 + a.3
 }
 
-#[allow(clippy::too_many_arguments)] // shared body of the plain and culled serializers
+#[allow(clippy::too_many_arguments)] // shared body of the plain and culled serializers + the field walk
 fn render_shape_layer_inner(
     doc: &Document,
     page: &vsdx::Page,
@@ -1007,7 +1012,18 @@ fn render_shape_layer_inner(
     skip_text: Option<i64>,
     greek_ppi: Option<f32>,
     cull: Option<&InkCull>,
+    fields: Option<&crate::fields::FieldsCtx<'_>>,
 ) -> anyhow::Result<(Vec<f64>, String)> {
+    // A caller-supplied context shares the page walk's `Sheet.N!`
+    // layer across roots; a fresh one serves one-shot renders.
+    let owned_fields;
+    let fields = match fields {
+        Some(f) => f,
+        None => {
+            owned_fields = crate::fields::FieldsCtx::for_page(doc, page);
+            &owned_fields
+        }
+    };
     let page_h = num(page.sheet().and_then(|s| s.cell("PageHeight"))).unwrap_or(11.0);
     let Some(shape) = page.shapes.iter().find(|s| s.id == shape_id) else {
         anyhow::bail!("shape {shape_id} not found on page {}", page.id);
@@ -1037,6 +1053,7 @@ fn render_shape_layer_inner(
             skip_text,
             greek.as_ref(),
             cull,
+            Some(fields),
             &mut svg,
         );
     }
@@ -1117,6 +1134,11 @@ fn render_page_full(
             .and_then(|c| c.numeric())
             .is_some_and(|m| hidden.contains(&(m as i64)))
     };
+    // ONE field context for the whole walk (CodeRabbit agent
+    // review): the shared `Sheet.N!` layer caches per CONTEXT, so a
+    // per-shape context rebuilt it for every root — the quadratic
+    // cost the shared layer exists to remove.
+    let fields = crate::fields::FieldsCtx::for_page(doc, page);
     for shape in &page.shapes {
         if hidden_member(shape) {
             continue;
@@ -1141,6 +1163,7 @@ fn render_page_full(
             skip_text,
             None,
             None,
+            Some(&fields),
             &mut svg,
         );
     }
@@ -1185,12 +1208,7 @@ fn append_jump(svg: &mut String, page_h: f64, j: &crate::geom::Jump) {
 
 /// [`append_jump`] with the page's jump-size multiplier (#251 — the
 /// PageSheet's `LineJumpFactorX`).
-fn append_jump_scaled(
-    svg: &mut String,
-    page_h: f64,
-    j: &crate::geom::Jump,
-    factor: f64,
-) {
+fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::geom::Jump, factor: f64) {
     let (r, w, uw) = (
         crate::geom::JUMP_RADIUS_IN * factor,
         j.weight,
@@ -1495,6 +1513,7 @@ fn render_shape<'a>(
     skip_text: Option<i64>,
     greek: Option<&GreekCtx>,
     cull: Option<&InkCull>,
+    fields: Option<&crate::fields::FieldsCtx<'_>>,
     out: &mut String,
 ) {
     let mut chain: Vec<&'a Shape> = chain.to_vec();
@@ -1556,9 +1575,9 @@ fn render_shape<'a>(
         if cull.is_some_and(|c| c.skips(sub.id)) {
             continue;
         }
-        render_shape_local(doc, sub, &chain, part, skip_text, greek, cull, out);
+        render_shape_local(doc, sub, &chain, part, skip_text, greek, cull, fields, out);
     }
-    mirror_master(doc, s, &chain, width, height, greek, out);
+    mirror_master(doc, s, &chain, width, height, greek, fields, out);
 
     emit_text(
         doc,
@@ -1570,6 +1589,7 @@ fn render_shape<'a>(
         sy,
         skip_text == Some(s.id),
         greek,
+        fields,
         out,
     );
     let _ = writeln!(out, "</g>");
@@ -1586,6 +1606,7 @@ fn render_shape_local<'a>(
     skip_text: Option<i64>,
     greek: Option<&GreekCtx>,
     cull: Option<&InkCull>,
+    fields: Option<&crate::fields::FieldsCtx<'_>>,
     out: &mut String,
 ) {
     let mut chain: Vec<&'a Shape> = chain.to_vec();
@@ -1626,9 +1647,9 @@ fn render_shape_local<'a>(
         if cull.is_some_and(|c| c.skips(sub.id)) {
             continue;
         }
-        render_shape_local(doc, sub, &chain, part, skip_text, greek, cull, out);
+        render_shape_local(doc, sub, &chain, part, skip_text, greek, cull, fields, out);
     }
-    mirror_master(doc, s, &chain, width, height, greek, out);
+    mirror_master(doc, s, &chain, width, height, greek, fields, out);
     // Group-local rendering applies no flip scale of its own, so the text
     // needs no flip compensation here.
     emit_text(
@@ -1641,6 +1662,7 @@ fn render_shape_local<'a>(
         1.0,
         skip_text == Some(s.id),
         greek,
+        fields,
         out,
     );
     let _ = writeln!(out, "</g>");
@@ -1669,6 +1691,7 @@ fn multi_root_master(doc: &Document, s: &Shape) -> bool {
 ///   emitting a corrective transform per child. Cells we cannot
 ///   evaluate fall back to the uniform instance/master scale, so masters
 ///   without authored formulas keep their historical rendering.
+#[allow(clippy::too_many_arguments)] // the render walk's context rides one flat set
 fn mirror_master(
     doc: &Document,
     s: &Shape,
@@ -1676,6 +1699,7 @@ fn mirror_master(
     width: f64,
     height: f64,
     greek: Option<&GreekCtx>,
+    fields: Option<&crate::fields::FieldsCtx<'_>>,
     out: &mut String,
 ) {
     if !s.sub_shapes.is_empty() {
@@ -1726,7 +1750,7 @@ fn mirror_master(
             // Master-canvas roots of a multi-root master: the union
             // bbox maps into the instance rect, which the node's own
             // ink box bounds — no cull of their own (#236).
-            render_shape_local(doc, r, &[], mpart, None, greek, None, out);
+            render_shape_local(doc, r, &[], mpart, None, greek, None, fields, out);
         }
         let _ = writeln!(out, "</g>");
     } else if let Some(root) = m.shapes.first() {
@@ -1753,7 +1777,7 @@ fn mirror_master(
             // Mirrored master children map into the instance's local
             // frame, bounded by the node's own ink box — no cull of
             // their own (#236).
-            render_shape_local(doc, sub, chain, mpart, None, greek, None, out);
+            render_shape_local(doc, sub, chain, mpart, None, greek, None, fields, out);
             if wrapper.is_some() {
                 let _ = writeln!(out, "</g>");
             }
@@ -2318,80 +2342,77 @@ pub(crate) fn resolve_text_block(
 
     // #231 bullet machinery: a Bullet cell 1–7 (Word's round set) or a
     // non-numeric string (custom bullet) arms it; 0/empty stays off.
-    let bullet = para_cell("Bullet")
-        .and_then(|b| {
-            let v = b.v.as_deref().unwrap_or("").trim().to_string();
-            if v.is_empty() || v == "0" {
-                return None;
+    let bullet = para_cell("Bullet").and_then(|b| {
+        let v = b.v.as_deref().unwrap_or("").trim().to_string();
+        if v.is_empty() || v == "0" {
+            return None;
+        }
+        // A custom BulletString takes PRECEDENCE over the numeric
+        // style ([MS-VSDX], PR #284 review round 3): the string
+        // can ride along a nonzero numeric Bullet, and the round
+        // set must not swallow it.
+        let custom = para_cell("BulletString")
+            .and_then(|c| c.v.clone())
+            .map(|st| st.trim().to_string())
+            .filter(|st| !st.is_empty());
+        // Numeric forms classify BEFORE the custom-string
+        // fallback (CodeRabbit local review): "256" overflows u8
+        // and "1.0"/"0.0" fail an integer parse — either way the
+        // old path painted the literal as a custom bullet.
+        // Integral 1–7 → the round set; any other NUMERIC value
+        // (final CodeRabbit pass: including negatives like "-1"
+        // and fractionals like "1.5" — a number that failed the
+        // style filter is an unsupported style, not custom text)
+        // → no bullet; genuinely non-numeric text → a custom
+        // bullet.
+        let parsed = v.parse::<f64>().ok();
+        let glyph = match (custom, parsed) {
+            (Some(st), _) => BulletGlyph::Str(st),
+            (None, Some(n)) if n.fract() == 0.0 && (1.0..=7.0).contains(&n) => {
+                BulletGlyph::Round(n as u8)
             }
-            // A custom BulletString takes PRECEDENCE over the numeric
-            // style ([MS-VSDX], PR #284 review round 3): the string
-            // can ride along a nonzero numeric Bullet, and the round
-            // set must not swallow it.
-            let custom = para_cell("BulletString")
-                .and_then(|c| c.v.clone())
-                .map(|st| st.trim().to_string())
-                .filter(|st| !st.is_empty());
-            // Numeric forms classify BEFORE the custom-string
-            // fallback (CodeRabbit local review): "256" overflows u8
-            // and "1.0"/"0.0" fail an integer parse — either way the
-            // old path painted the literal as a custom bullet.
-            // Integral 1–7 → the round set; any other NUMERIC value
-            // (final CodeRabbit pass: including negatives like "-1"
-            // and fractionals like "1.5" — a number that failed the
-            // style filter is an unsupported style, not custom text)
-            // → no bullet; genuinely non-numeric text → a custom
-            // bullet.
-            let parsed = v.parse::<f64>().ok();
-            let glyph = match (custom, parsed) {
-                (Some(st), _) => BulletGlyph::Str(st),
-                (None, Some(n))
-                    if n.fract() == 0.0 && (1.0..=7.0).contains(&n) =>
-                {
-                    BulletGlyph::Round(n as u8)
-                }
-                (None, Some(_)) => return None, // unsupported numerics: no bullet
-                (None, None) => BulletGlyph::Str(v),
-            };
-            // BulletFont: a family name, else inherit the paragraph
-            // font (numeric legacy indexes and 0 both inherit).
-            let font = para_cell("BulletFont")
-                .and_then(|c| c.v.clone())
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty() && v.parse::<f64>().is_err());
-            // BulletFontSize: negative = percent of the text size
-            // (default −100 %), ≥ 0 = absolute inches.
-            let pct = para_cell("BulletFontSize")
-                .and_then(|c| c.numeric())
-                .unwrap_or(-100.0);
-            let size = if pct < 0.0 {
-                pct.abs() / 100.0 * font_size
-            } else if pct == 0.0 {
-                // 0 = the size of the first character after the bullet
-                // ([MS-VSDX] BulletFontSize — PR #284 review round 3):
-                // the paragraph's own size, not a 0.02 in sliver.
-                font_size
-            } else {
-                pct.max(0.02)
-            };
-            let pos_after = para_cell("TextPosAfterBullet")
-                .and_then(|c| c.numeric())
-                .unwrap_or(0.0);
-            // The tab-stop grid lives on the document sheet.
-            let tab_stop = doc
-                .sheet
-                .cell("DefaultTabStop")
-                .and_then(|c| c.numeric())
-                .unwrap_or(0.5)
-                .max(0.01);
-            Some(BulletSpec {
-                glyph,
-                font,
-                size,
-                pos_after,
-                tab_stop,
-            })
-        });
+            (None, Some(_)) => return None, // unsupported numerics: no bullet
+            (None, None) => BulletGlyph::Str(v),
+        };
+        // BulletFont: a family name, else inherit the paragraph
+        // font (numeric legacy indexes and 0 both inherit).
+        let font = para_cell("BulletFont")
+            .and_then(|c| c.v.clone())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty() && v.parse::<f64>().is_err());
+        // BulletFontSize: negative = percent of the text size
+        // (default −100 %), ≥ 0 = absolute inches.
+        let pct = para_cell("BulletFontSize")
+            .and_then(|c| c.numeric())
+            .unwrap_or(-100.0);
+        let size = if pct < 0.0 {
+            pct.abs() / 100.0 * font_size
+        } else if pct == 0.0 {
+            // 0 = the size of the first character after the bullet
+            // ([MS-VSDX] BulletFontSize — PR #284 review round 3):
+            // the paragraph's own size, not a 0.02 in sliver.
+            font_size
+        } else {
+            pct.max(0.02)
+        };
+        let pos_after = para_cell("TextPosAfterBullet")
+            .and_then(|c| c.numeric())
+            .unwrap_or(0.0);
+        // The tab-stop grid lives on the document sheet.
+        let tab_stop = doc
+            .sheet
+            .cell("DefaultTabStop")
+            .and_then(|c| c.numeric())
+            .unwrap_or(0.5)
+            .max(0.01);
+        Some(BulletSpec {
+            glyph,
+            font,
+            size,
+            pos_after,
+            tab_stop,
+        })
+    });
 
     // #229 TextBkgnd: 0 and 255 paint nothing; 1–24 select palette
     // entries 0–23; larger values index the document palette through
@@ -2530,7 +2551,7 @@ pub fn paragraph_base_rtl(para: &str) -> bool {
     // Leading explicit embedding marks decide outright.
     while let Some(&c) = chars.peek() {
         match c {
-            '\u{202B}' => return true, // RLE
+            '\u{202B}' => return true,  // RLE
             '\u{202A}' => return false, // LRE
             '\u{200E}' | '\u{200F}' | '\u{202C}' => {
                 chars.next();
@@ -2564,13 +2585,25 @@ pub fn paragraph_base_rtl(para: &str) -> bool {
 /// line. `started` distinguishes "no words consumed yet" from "an
 /// empty word consumed" (a pending leading space): a bare
 /// `cur.is_empty()` test cannot tell them apart, which is how the
-/// leading run used to vanish.
-///
-/// #257: `width_in` measures ONE paragraph with the face/size that
+/// leading run used to vanish. Since #282 the "words" are
+/// `textmetrics::wrap_tokens` tokens — the same space-separated
+/// words plus CJK break opportunities (see `wrap_block_text`).
+/// One wrapped line plus its paragraph's base direction (#257
 /// paragraph paints with — an RTL-base paragraph resolves the
 /// complex-script cells (`cs_face`/`cs_size`, the Latin pair when
 /// absent), so the wrap decision and the raster agree by construction
 /// per paragraph, not just per block.
+///
+/// #282 zh-Hans: BOTH directions measure run-by-run through
+/// `fb_chain` — usvg's per-cluster fallback paints a run the primary
+/// face lacks with the first chain face covering it (Vazirmatn for
+/// the Arabic script, Noto Sans SC for Han), so an LTR paragraph
+/// carrying CJK must measure those runs with the same advances or
+/// the wrap and the raster disagree. Latin the primary face covers
+/// never splits (the chain fast path keeps those widths
+/// byte-identical). The wrap itself tokenizes through
+/// `textmetrics::wrap_tokens` — spaces as before, plus break
+/// opportunities between ideographs under the kinsoku rules.
 ///
 /// #231 paragraph indents: a paragraph's FIRST line wraps at
 /// `usable_w − first_off` (the after-bullet tab offset for bulleted
@@ -2579,7 +2612,7 @@ pub fn paragraph_base_rtl(para: &str) -> bool {
 /// trailing no-break space never wraps its word — the overflow checks
 /// measure the line without the terminal NBSP's advance while the
 /// NBSP stays in the line's character-exact content.
-#[allow(clippy::too_many_arguments)] // the pair faces/sizes + the two indent offsets
+#[allow(clippy::too_many_arguments)] // the pair faces/sizes + the chain + the two indent offsets
 pub(crate) fn wrap_block_text(
     face: &crate::textmetrics::ResolvedFace,
     text: &str,
@@ -2587,26 +2620,24 @@ pub(crate) fn wrap_block_text(
     usable_w: f64,
     cs_face: &crate::textmetrics::ResolvedFace,
     cs_size: f64,
-    cs_fallback: &crate::textmetrics::ResolvedFace,
+    fb_chain: &[&crate::textmetrics::ResolvedFace],
     first_off: f64,
     left_off: f64,
 ) -> Vec<WrapLine> {
     let mut lines: Vec<WrapLine> = Vec::new();
     for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
         let rtl = paragraph_base_rtl(para);
-        // An RTL paragraph measures RUN BY RUN with the faces the
-        // raster paints it with (PR #269 review): the resolved CS
-        // face, and the vendored Vazirmatn for runs it lacks — usvg's
-        // per-cluster fallback draws those clusters with the fallback
-        // face, so the wrap's advances must agree or line breaks and
-        // start-aligned edges drift. A pure-script paragraph (Latin
-        // text merely MARKED rtl, or straight Arabic) measures as one
-        // run through the same single-face path as before.
+        // Run-by-run measurement with the faces the raster paints
+        // with (PR #269 review for RTL; #282 extended it to LTR for
+        // the CJK runs): the paragraph's own face/size pair over the
+        // shared fallback chain. A pure-script paragraph the primary
+        // face covers measures as one run through the same single-
+        // face path as before.
         let width_in = |s: &str| {
             if rtl {
-                cs_face.width_in_runs(cs_fallback, s, cs_size)
+                cs_face.width_in_runs(fb_chain, s, cs_size)
             } else {
-                face.width_in(s, size)
+                face.width_in_runs(fb_chain, s, size)
             }
         };
         // #235: the hang measure — a terminal no-break space's
@@ -2622,11 +2653,17 @@ pub(crate) fn wrap_block_text(
         let line_usable = |wrapped: bool| usable_w - if wrapped { left_off } else { first_off };
         let mut cur = String::new();
         let mut started = false;
-        for word in para.split(' ') {
+        // #282 kinsoku: the emergency splitter can emit a whole
+        // token as its own (overflowing) line, leaving `cur` empty —
+        // the paragraph's closing push must not then add a phantom
+        // EMPTY line (it would inflate TEXTHEIGHT by a slot). An
+        // empty paragraph still emits its one empty line (below).
+        let mut para_has_lines = false;
+        for token in crate::textmetrics::wrap_tokens(para) {
             let candidate = if started {
-                format!("{cur} {word}")
+                format!("{cur}{}{}", token.sep, token.tok)
             } else {
-                word.to_string()
+                token.tok.to_string()
             };
             let usable = line_usable(wrapped);
             if started && width_in(hang_trim(&candidate)) > usable {
@@ -2635,28 +2672,42 @@ pub(crate) fn wrap_block_text(
                     // authored space run or a leading indent too wide
                     // to share a line with the word): the space is
                     // content (#144 review) — it becomes a line of its
-                    // own, never an empty line, never dropped.
-                    lines.push(WrapLine {
-                        text: " ".to_string(),
-                        rtl,
-                        first_of_para: !wrapped,
-                    });
+                    // own, never an empty line, never dropped. An
+                    // EMPTY separator (a CJK boundary) follows a token
+                    // the hard split below already emitted whole —
+                    // pushing it would add a phantom empty line
+                    // (`图，`, ``, `上`, `色。`) (CodeRabbit PR
+                    // review).
+                    if !token.sep.is_empty() {
+                        lines.push(WrapLine {
+                            text: token.sep.to_string(),
+                            rtl,
+                            first_of_para: !wrapped,
+                        });
+                        para_has_lines = true;
+                    }
                 } else {
                     lines.push(WrapLine {
                         text: std::mem::take(&mut cur),
                         rtl,
                         first_of_para: !wrapped,
                     });
+                    para_has_lines = true;
                 }
-                cur = word.to_string();
+                cur = token.tok.to_string();
                 wrapped = true;
             } else {
                 cur = candidate;
             }
             started = true;
-            // A single word wider than the line: hard-split at the
+            // A single token wider than the line: hard-split at the
             // longest character prefix that fits (always ≥1 char, so
-            // the loop makes progress).
+            // the loop makes progress). #282 kinsoku: the split never
+            // leaves a line-head-forbidden char to OPEN the rest —
+            // the kept prefix extends over consecutive forbidden
+            // chars (oikomi-style; the token may then overflow its
+            // band rather than break before 。，）… and a token that
+            // is all forbidden-headed tail emits whole).
             let mut usable = line_usable(wrapped);
             while width_in(hang_trim(&cur)) > usable && cur.chars().count() > 1 {
                 let mut split_at = cur
@@ -2671,26 +2722,86 @@ pub(crate) fn wrap_block_text(
                         break;
                     }
                 }
+                // The boundary rules run to a FIXPOINT, not in a
+                // fixed order: glue (U+00A0 and friends — a boundary
+                // adjacent to glue is never a grapheme edge, keeping
+                // `图⍽表` intact even when the joined token then
+                // overflows its line, CodeRabbit PR review) can move
+                // the split PAST the position the forbidden-head
+                // pass already cleared, stranding a closer at the
+                // head of the rest (`表⍽，！` must not open with `！`,
+                // CodeRabbit/Greptile round 5). A combining mark at
+                // the boundary attaches to the kept prefix — the
+                // emergency splitter never splits `カ` from its
+                // dakuten (CodeRabbit round 5) — WITHOUT consuming
+                // the following base, so a normal break before `ク`
+                // stays available.
+                loop {
+                    let mut moved = false;
+                    while split_at < cur.len() {
+                        match cur[split_at..].chars().next() {
+                            Some(c) if crate::textmetrics::line_head_forbidden(c) => {
+                                split_at += c.len_utf8();
+                                moved = true;
+                            }
+                            _ => break,
+                        }
+                    }
+                    if split_at < cur.len() {
+                        let prev_is_glue = cur[..split_at]
+                            .chars()
+                            .next_back()
+                            .is_some_and(crate::textmetrics::is_glue_pub);
+                        let next_is_glue = cur[split_at..]
+                            .chars()
+                            .next()
+                            .is_some_and(crate::textmetrics::is_glue_pub);
+                        if prev_is_glue || next_is_glue {
+                            split_at += cur[split_at..]
+                                .chars()
+                                .next()
+                                .map_or(1, char::len_utf8);
+                            moved = true;
+                        }
+                        if cur[split_at..]
+                            .chars()
+                            .next()
+                            .is_some_and(crate::textmetrics::is_combining_pub)
+                        {
+                            split_at += cur[split_at..]
+                                .chars()
+                                .next()
+                                .map_or(1, char::len_utf8);
+                            moved = true;
+                        }
+                    }
+                    if !moved {
+                        break;
+                    }
+                }
                 let rest = cur.split_off(split_at);
                 lines.push(WrapLine {
                     text: std::mem::replace(&mut cur, rest),
                     rtl,
                     first_of_para: !wrapped,
                 });
+                para_has_lines = true;
                 wrapped = true;
                 usable = line_usable(wrapped);
             }
         }
-        lines.push(WrapLine {
-            text: cur,
-            rtl,
-            first_of_para: !wrapped,
-        });
+        if !cur.is_empty() || !para_has_lines {
+            lines.push(WrapLine {
+                text: cur,
+                rtl,
+                first_of_para: !wrapped,
+            });
+        }
     }
     lines
 }
 
-#[allow(clippy::too_many_arguments)] // placement + flip axes + the #22 skip + #124 greek ctx
+#[allow(clippy::too_many_arguments)] // placement + flip axes + the #22 skip + #124 greek ctx + #267 fields
 fn emit_text(
     doc: &Document,
     s: &Shape,
@@ -2701,6 +2812,7 @@ fn emit_text(
     sy: f64,
     skip: bool,
     greek: Option<&GreekCtx>,
+    fields: Option<&crate::fields::FieldsCtx<'_>>,
     out: &mut String,
 ) {
     if skip {
@@ -2721,10 +2833,14 @@ fn emit_text(
     // hangs past the margin in Visio, so the blanket `str::trim_end`
     // (whose whitespace set includes U+00A0) must not eat it.
     const TRAILING_TRIM: [char; 4] = ['\r', '\n', ' ', '\t'];
-    let Some(text) = s
-        .sheet
-        .text
+    // #267: a `<fld>`-bearing text renders its SUBSTITUTED string —
+    // evaluated, picture-formatted, laid out. The fast path returns
+    // None for the marker-free shape, keeping its plain text (and
+    // the marker-free packages) byte-identical.
+    let substituted = crate::fields::substituted_text(doc, s, chain, fields);
+    let Some(text) = substituted
         .as_deref()
+        .or(s.sheet.text.as_deref())
         .map(|t| t.trim_end_matches(TRAILING_TRIM))
         .filter(|t| !t.is_empty())
     else {
@@ -2791,10 +2907,19 @@ fn emit_text(
     // document names no CS face.
     let cs_chain = tb.cs_font.as_deref().or(tb.font.as_deref());
     let cs_face = crate::textmetrics::resolve(cs_chain, tb.bold, tb.italic);
-    // The per-cluster fallback face (the vendored Vazirmatn — see the
-    // wrap's probe note); unregistered, it resolves like the Latin
-    // default and the probe never fires.
-    let cs_fallback = crate::textmetrics::resolve(Some("Vazirmatn"), tb.bold, tb.italic);
+    // The per-cluster fallback CHAIN (#282 zh-Hans grew the #257 pair
+    // face to a chain): the vendored Vazirmatn for the Arabic script,
+    // then the vendored Noto Sans SC for the Han glyphs the Latin and
+    // Arabic faces lack — the order `dc::register_complex_script_faces`
+    // loads them into the raster fontdb, which is the order usvg's
+    // per-cluster fallback picks a face (see the wrap's probe note).
+    // Unregistered (the dc unit-test binaries), both resolve like the
+    // Latin default and the probe never fires.
+    let fallback_faces = [
+        crate::textmetrics::resolve(Some("Vazirmatn"), tb.bold, tb.italic),
+        crate::textmetrics::resolve(Some("Noto Sans SC"), tb.bold, tb.italic),
+    ];
+    let fb_chain: Vec<&crate::textmetrics::ResolvedFace> = fallback_faces.iter().collect();
     let cs_size = tb.cs_size.unwrap_or(size);
     let script_cs = script_metrics(cs_chain, tb.pos);
     let script_r = script_cs;
@@ -2859,7 +2984,7 @@ fn emit_text(
     let (lines, bar_widths) = if greeked {
         let mut bars = Vec::new();
         for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
-            let w = face.width_in(para, size);
+            let w = face.width_in_runs(&fb_chain, para, size);
             if w <= usable_w {
                 bars.push(w.max(usable_w * 0.2));
             } else {
@@ -2883,7 +3008,7 @@ fn emit_text(
                 usable_w,
                 &cs_face,
                 cs_paint_size,
-                &cs_fallback,
+                &fb_chain,
                 first_off,
                 left_off,
             ),
@@ -2993,8 +3118,7 @@ fn emit_text(
             // element-level attrs stay Latin. (Bullets and paragraph
             // indents stay unwitnessed on RTL lines — #231 open
             // questions — so RTL keeps the plain band placement.)
-            let lw = cs_face
-                .width_in_runs(&cs_fallback, &line.text, cs_paint_size);
+            let lw = cs_face.width_in_runs(&fb_chain, &line.text, cs_paint_size);
             let content = format!("\u{2067}{}\u{2069}", line.text);
             let vx = match halign {
                 0 | 3 => right_x - lw, // start (reading order) = visual right edge
@@ -3026,8 +3150,7 @@ fn emit_text(
                 }
             );
             let line_size = effective_cs_size(&tb);
-            let y = top + line_size * 0.8
-                - script_r.map_or(0.0, |(_, shift)| shift * line_size);
+            let y = top + line_size * 0.8 - script_r.map_or(0.0, |(_, shift)| shift * line_size);
             // The RTL line's laid-out extent joins the #229 background
             // union too (PR review, wave 4) — an all-RTL block must
             // still paint its text background. The extent follows the
@@ -3055,8 +3178,7 @@ fn emit_text(
             // the reduced glyph em, so the shift base is the line's
             // NOMINAL size.
             let line_size = size;
-            let y = top + line_size * 0.8
-                - script_l.map_or(0.0, |(_, shift)| shift * line_size);
+            let y = top + line_size * 0.8 - script_l.map_or(0.0, |(_, shift)| shift * line_size);
             // LTR line placement: every line lays out in an indented
             // band — a bulleted paragraph's first line carries
             // bullet+gap+text as ONE unit anchored at the tab stop
@@ -3067,7 +3189,14 @@ fn emit_text(
             // Under the inherited `end` anchor a tspan's x is where
             // the glyphs END — halign 2 keeps the anchor and derives
             // the left edge from the line width.
-            let line_w = face.width_in(&line.text, paint_size);
+            // Measure through the same fallback chain the LTR wrap
+            // used: the primary face gives a missing-glyph estimate
+            // for CJK spans it lacks, mis-placing centered/right
+            // lines, bullet units, and TextBkgnd spans (CodeRabbit
+            // PR review). Latin-only lines keep their width — the
+            // chain falls back to `width_in` when the face covers
+            // the whole line.
+            let line_w = face.width_in_runs(&fb_chain, &line.text, paint_size);
             let bulleted = line.first_of_para && bullet_layout.is_some();
             let band_off = if bulleted {
                 // The unit math below places the line outright.
@@ -3127,7 +3256,11 @@ fn emit_text(
                     // Paths go outside <text> (see `bullet_paths`).
                     BulletGlyph::Round(kind) => {
                         bullet_paths.push_str(&bullet_glyph_svg(
-                            *kind, bullet_x, by, bl.spec.size, &color,
+                            *kind,
+                            bullet_x,
+                            by,
+                            bl.spec.size,
+                            &color,
                         ));
                         String::new()
                     }
@@ -3228,11 +3361,7 @@ fn emit_text(
     // viewers that honor the attribute (usvg ignores it) so the
     // visual-left start anchor reads the same everywhere. LTR-only
     // blocks keep the pre-#257 byte form.
-    let dir_attr = if any_rtl {
-        r#" direction="ltr""#
-    } else {
-        ""
-    };
+    let dir_attr = if any_rtl { r#" direction="ltr""# } else { "" };
     // #229 text background: ONE rectangle spanning the logical line
     // extents (widest laid-out line × the union of line heights),
     // margins position the text but add no padding. It uses the text
@@ -3383,10 +3512,12 @@ fn bullet_glyph_svg(kind: u8, x: f64, y: f64, size: f64, color: &str) -> String 
         // Wingdings q)
         4 => "M-0.15 -0.15h0.30v0.30h-0.30ZM-0.08 -0.08h0.16v0.16h-0.16Z",
         // 5 ❖ four-diamond star
-        5 => "M0 -0.26l0.10 0.12l-0.10 0.12l-0.10 -0.12Z\
+        5 => {
+            "M0 -0.26l0.10 0.12l-0.10 0.12l-0.10 -0.12Z\
               M0 0.02l0.10 0.12l-0.10 0.12l-0.10 -0.12Z\
               M-0.19 -0.12l0.10 0.12l-0.10 0.12l-0.10 -0.12Z\
-              M0.19 -0.12l0.10 0.12l-0.10 0.12l-0.10 -0.12Z",
+              M0.19 -0.12l0.10 0.12l-0.10 0.12l-0.10 -0.12Z"
+        }
         // 6 ➢ concave arrowhead pointing right
         6 => "M-0.14 -0.15l0.29 0.15l-0.29 0.15l0.09 -0.15Z",
         // 7 ✓ a stroked check
@@ -3719,7 +3850,17 @@ fn render_all_geometry(
             // Instance frame: formulas and cached values are both in
             // instance units.
             let gname = format!("Geometry{}", i + 1);
-            render_geometry(doc, s, chain, geo, (1.0, 1.0), Frame::Instance, &gname, out, &mut paint);
+            render_geometry(
+                doc,
+                s,
+                chain,
+                geo,
+                (1.0, 1.0),
+                Frame::Instance,
+                &gname,
+                out,
+                &mut paint,
+            );
         }
         flush_shape_paint(&mut paint, out);
         return;
@@ -3760,10 +3901,7 @@ fn render_all_geometry(
                     let key = match sec_name {
                         "Scratch" => format!("Scratch.{}{}", name, row.ix + 1),
                         _ => {
-                            let rn = row
-                                .n
-                                .clone()
-                                .unwrap_or_else(|| format!("Row_{}", row.ix));
+                            let rn = row.n.clone().unwrap_or_else(|| format!("Row_{}", row.ix));
                             format!("Controls.{}.{}", rn, name)
                         }
                     };
@@ -3786,7 +3924,17 @@ fn render_all_geometry(
         // Master frame: rows are master-local; their formulas reference
         // the MASTER's dims and must not be re-evaluated in instance
         // units (that skews rectangles into triangles).
-        render_geometry(doc, s, chain, geo, scale, Frame::Master(&mut menv), &format!("Geometry{}", i + 1), out, &mut paint);
+        render_geometry(
+            doc,
+            s,
+            chain,
+            geo,
+            scale,
+            Frame::Master(&mut menv),
+            &format!("Geometry{}", i + 1),
+            out,
+            &mut paint,
+        );
     }
     flush_shape_paint(&mut paint, out);
 }
@@ -4396,10 +4544,26 @@ fn render_geometry(
         // CLOSED walk gets no frames — and so no heads — at all.
         if let Some((begin, end)) = path_frames(&d) {
             if let Some(k) = kind(begin_arrow) {
-                emit_arrow_head(&mut paint.strokes, k, bsz, head_weight, &line_color, begin.0, begin.1);
+                emit_arrow_head(
+                    &mut paint.strokes,
+                    k,
+                    bsz,
+                    head_weight,
+                    &line_color,
+                    begin.0,
+                    begin.1,
+                );
             }
             if let Some(k) = kind(end_arrow) {
-                emit_arrow_head(&mut paint.strokes, k, esz, head_weight, &line_color, end.0, end.1);
+                emit_arrow_head(
+                    &mut paint.strokes,
+                    k,
+                    esz,
+                    head_weight,
+                    &line_color,
+                    end.0,
+                    end.1,
+                );
             }
         }
     }
@@ -5853,13 +6017,19 @@ fn is_stock_visio_font(name: &str) -> bool {
 
 /// The measurement/paint infrastructure faces (#232): families THIS
 /// app names itself (the vendored deterministic floor, the #257 RTL
-/// fallback) resolve as themselves — they never appear in Visio files,
-/// so exempting them has no parity cost, and the RTL fallback would
-/// regress to Carlito if the stock rule swallowed them.
+/// fallback, the #282 CJK fallback) resolve as themselves — they never
+/// appear in Visio files, so exempting them has no parity cost, and
+/// the RTL fallback would regress to Carlito if the stock rule
+/// swallowed them.
 fn is_app_font(name: &str) -> bool {
     matches!(
         name.trim().to_ascii_lowercase().as_str(),
-        "carlito" | "liberation sans" | "liberation serif" | "liberation mono" | "vazirmatn"
+        "carlito"
+            | "liberation sans"
+            | "liberation serif"
+            | "liberation mono"
+            | "vazirmatn"
+            | "noto sans sc"
     )
 }
 
@@ -6028,8 +6198,38 @@ pub fn shape_env(doc: &Document, s: &Shape, chain: &[&Shape]) -> vsdx::formula::
     for sheet in user_sheets {
         for user in sheet.sections_named("User") {
             for row in user.rows.iter().filter(|r| r.n.is_some()) {
-                if let Some(v) = row.cell("Value").and_then(|c| c.numeric()) {
-                    env.insert(format!("User.{}", row.n.as_deref().unwrap_or("")), v);
+                let key = format!("User.{}", row.n.as_deref().unwrap_or(""));
+                let inh = row
+                    .cell("Value")
+                    .and_then(|c| c.f.as_deref())
+                    .is_some_and(|f| f == "Inh");
+                match row.cell("Value").and_then(|c| c.numeric()) {
+                    // The master sheet seeds first; an Inh-marked
+                    // local row's numeric cache is the STALE snapshot
+                    // and must not override it (CodeRabbit agent
+                    // review — the string-side twin of the round-5
+                    // render_field rule).
+                    Some(v) => {
+                        if inh && env.contains_key(&key) {
+                            continue;
+                        }
+                        env.insert(key, v);
+                    }
+                    // A row whose Value cache is EXPLICITLY emptied
+                    // (V='') clears the inherited number: the string
+                    // env seeds the empty binding, but the numeric
+                    // layer kept the master's 42 for the evaluator to
+                    // read FIRST (CodeRabbit PR review). An Inh-marked
+                    // EMPTY cache inherits instead of clearing. No
+                    // cache at all (a sparse F-only row) still
+                    // inherits.
+                    None if row
+                        .cell("Value")
+                        .is_some_and(|c| c.v.is_some() && c.f.as_deref() != Some("Inh")) =>
+                    {
+                        env.remove(&key);
+                    }
+                    None => {}
                 }
             }
         }
@@ -6047,20 +6247,14 @@ pub fn shape_env(doc: &Document, s: &Shape, chain: &[&Shape]) -> vsdx::formula::
                     if let Some(v) = cell.numeric() {
                         // Visio's Scratch references are 1-BASED
                         // (`Scratch.X1` is the first row's X).
-                        env.insert(
-                            format!("Scratch.{}{}", name, row.ix + 1),
-                            v,
-                        );
+                        env.insert(format!("Scratch.{}{}", name, row.ix + 1), v);
                     }
                 }
             }
         }
         for controls in sheet.sections_named("Controls") {
             for row in &controls.rows {
-                let rn = row
-                    .n
-                    .clone()
-                    .unwrap_or_else(|| format!("Row_{}", row.ix));
+                let rn = row.n.clone().unwrap_or_else(|| format!("Row_{}", row.ix));
                 for (name, cell) in &row.cells {
                     if let Some(v) = cell.numeric() {
                         env.insert(format!("Controls.{}.{}", rn, name), v);
@@ -6336,6 +6530,145 @@ mod tests {
         assert!((v - (5.528301723437821 - 0.2362204724409449 / 2.0)).abs() < 1e-9);
     }
 
+    /// A locally CLEARED User row (`V=''`) shadows the master's
+    /// numeric binding — the string env seeds the empty value, and
+    /// the numeric env must not keep the master's 42 for the
+    /// evaluator to read first (CodeRabbit round 5). A restated
+    /// local value still overrides, and no local row still inherits.
+    #[test]
+    fn cleared_user_row_shadows_the_master_number() {
+        let user_sheet = |v: Option<&str>| {
+            let mut sheet = Sheet::default();
+            sheet.children.push(vsdx::model::SheetChild::Section(
+                vsdx::model::Section {
+                    name: "User".into(),
+                    rows: vec![vsdx::model::Row {
+                        n: Some("Label".into()),
+                        cells: vec![(
+                            "Value".to_string(),
+                            Cell {
+                                v: v.map(str::to_string),
+                                ..Cell::default()
+                            },
+                        )],
+                        ..vsdx::model::Row::default()
+                    }],
+                    ..vsdx::model::Section::default()
+                },
+            ));
+            sheet
+        };
+        let mut doc = Document::default();
+        doc.masters.push(vsdx::model::Master {
+            id: 7,
+            shapes: vec![Shape {
+                id: 1,
+                sheet: user_sheet(Some("42")),
+                ..Shape::default()
+            }],
+            ..vsdx::model::Master::default()
+        });
+        // No local row: the master's 42 inherits.
+        let inherit = Shape {
+            id: 1,
+            master: Some(7),
+            ..Shape::default()
+        };
+        let chain = [&inherit];
+        assert_eq!(
+            shape_env(&doc, &inherit, &chain).get("User.Label").copied(),
+            Some(42.0),
+            "no local row inherits the master's number"
+        );
+        // A cleared local row removes the binding.
+        let cleared = Shape {
+            id: 1,
+            master: Some(7),
+            sheet: user_sheet(Some("")),
+            ..Shape::default()
+        };
+        let chain = [&cleared];
+        assert_eq!(
+            shape_env(&doc, &cleared, &chain).get("User.Label"),
+            None,
+            "a cleared row shadows the master's number"
+        );
+        // A restated local value overrides.
+        let local = Shape {
+            id: 1,
+            master: Some(7),
+            sheet: user_sheet(Some("7")),
+            ..Shape::default()
+        };
+        let chain = [&local];
+        assert_eq!(
+            shape_env(&doc, &local, &chain).get("User.Label").copied(),
+            Some(7.0),
+            "a local value overrides the master's"
+        );
+
+        // An Inh-marked row inherits instead of overriding — its
+        // numeric cache is the stale snapshot; and an Inh-marked
+        // EMPTY cache inherits rather than clearing (CodeRabbit
+        // agent review).
+        let with_row = |f: Option<&str>, v: Option<&str>| {
+            let mut sheet = vsdx::model::Sheet::default();
+            sheet.children.push(vsdx::model::SheetChild::Section(
+                vsdx::model::Section {
+                    name: "User".into(),
+                    rows: vec![vsdx::model::Row {
+                        n: Some("Label".into()),
+                        cells: vec![(
+                            "Value".to_string(),
+                            vsdx::model::Cell {
+                                v: v.map(str::to_string),
+                                f: f.map(str::to_string),
+                                ..vsdx::model::Cell::default()
+                            },
+                        )],
+                        ..vsdx::model::Row::default()
+                    }],
+                    ..vsdx::model::Section::default()
+                },
+            ));
+            sheet
+        };
+        let mut doc2 = Document::default();
+        doc2.masters.push(vsdx::model::Master {
+            id: 8,
+            shapes: vec![Shape {
+                id: 1,
+                sheet: user_sheet(Some("42")),
+                ..Shape::default()
+            }],
+            ..vsdx::model::Master::default()
+        });
+        let stale = Shape {
+            id: 1,
+            master: Some(8),
+            sheet: with_row(Some("Inh"), Some("41")),
+            ..Shape::default()
+        };
+        let chain = [&stale];
+        assert_eq!(
+            shape_env(&doc2, &stale, &chain).get("User.Label").copied(),
+            Some(42.0),
+            "an Inh row's stale cache does not override the master"
+        );
+        let inh_empty = Shape {
+            id: 1,
+            master: Some(8),
+            sheet: with_row(Some("Inh"), Some("")),
+            ..Shape::default()
+        };
+        let chain = [&inh_empty];
+        assert_eq!(
+            shape_env(&doc2, &inh_empty, &chain).get("User.Label").copied(),
+            Some(42.0),
+            "an Inh row's empty cache inherits, it does not clear"
+        );
+    }
+
     #[test]
     fn line_pattern_dasharrays_scale_with_weight() {
         // #171 measured the INK (the owner-authored lines.vsdx fixture
@@ -6352,7 +6685,10 @@ mod tests {
         let arr = |p: f64| line_dasharray(p, w);
         assert_eq!(arr(2.0).as_deref(), Some("0.14000 0.10000")); // canonical 7/5
         assert_eq!(arr(3.0).as_deref(), Some("0.0000020000 0.10000"));
-        assert_eq!(arr(4.0).as_deref(), Some("0.14000 0.10000 0.0000020000 0.10000"));
+        assert_eq!(
+            arr(4.0).as_deref(),
+            Some("0.14000 0.10000 0.0000020000 0.10000")
+        );
         assert_eq!(
             arr(5.0).as_deref(),
             Some("0.14000 0.10000 0.0000020000 0.10000 0.0000020000 0.10000")
@@ -6495,9 +6831,7 @@ mod tests {
                         (
                             "E".into(),
                             Cell {
-                                v: Some(
-                                    "NURBS(3, 1, 0, 0, 0.5,0.5,1,1, 0.75,0.5,2,1)".into(),
-                                ),
+                                v: Some("NURBS(3, 1, 0, 0, 0.5,0.5,1,1, 0.75,0.5,2,1)".into()),
                                 ..Cell::default()
                             },
                         ),
@@ -6533,7 +6867,9 @@ mod tests {
         }
         let chain: Vec<&Shape> = Vec::new();
         let mut out = String::new();
-        render_shape(&doc, &inst, 8.5, &chain, "", None, None, None, &mut out);
+        render_shape(
+            &doc, &inst, 8.5, &chain, "", None, None, None, None, &mut out,
+        );
         // The controls land at gx·W: 0.5 → 2.0 and 0.75 → 3.0; the y
         // fraction 0.5 of H=2 → 1.0 (emitted negated). The old
         // double-scale put them at 4.0 and 6.0.
@@ -6545,7 +6881,10 @@ mod tests {
             out.contains("3.00000 -1.00000"),
             "control 2 (0.75·W) missing: {out}"
         );
-        assert!(!out.contains("6.00000"), "double-scaled control leaked: {out}");
+        assert!(
+            !out.contains("6.00000"),
+            "double-scaled control leaked: {out}"
+        );
     }
 
     #[test]
@@ -6583,7 +6922,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
             out
         };
         // 0 = no head at all.
@@ -6741,7 +7080,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
             out
         };
         // A closed rectangle walk (returns to its start) with both
@@ -6772,7 +7111,10 @@ mod tests {
             ],
             &[("EndArrow", "5")],
         );
-        assert!(open.contains("dc-ah"), "the open line keeps its head: {open}");
+        assert!(
+            open.contains("dc-ah"),
+            "the open line keeps its head: {open}"
+        );
         // A MULTI-subpath walk takes no heads either — Visio gives
         // them none (the trim_path evidence note; CodeRabbit flagged
         // the last-subpath-closed case, #278).
@@ -6812,14 +7154,21 @@ mod tests {
                     w3_row(
                         2,
                         "EllipticalArcTo",
-                        &[("X", "1"), ("Y", "0"), ("A", "0.5"), ("B", "1"), ("C", "0"), ("D", d)],
+                        &[
+                            ("X", "1"),
+                            ("Y", "0"),
+                            ("A", "0.5"),
+                            ("B", "1"),
+                            ("C", "0"),
+                            ("D", d),
+                        ],
                     ),
                 ],
                 ..Section::default()
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
             out
         };
         let flat = render("0");
@@ -6828,9 +7177,15 @@ mod tests {
             "D=0 draws the endpoint chord: {flat}"
         );
         assert!(!flat.contains("Q "), "no doubled-back quadratic: {flat}");
-        assert!(!flat.contains(" A "), "no solved arc for a zero-width row: {flat}");
+        assert!(
+            !flat.contains(" A "),
+            "no solved arc for a zero-width row: {flat}"
+        );
         let arc = render("0.5");
-        assert!(arc.contains(" A "), "a positive width still solves an arc: {arc}");
+        assert!(
+            arc.contains(" A "),
+            "a positive width still solves an arc: {arc}"
+        );
     }
 
     /// #235: an explicit-zero LineWeight keeps zero — SVG paints
@@ -6852,7 +7207,7 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
         assert!(
             out.contains(r#"stroke-width="0.00000""#),
             "an explicit zero stays zero: {out}"
@@ -6925,7 +7280,7 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, &mut out);
+        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
         // ONE even-odd fill element, first among the paths (under the
         // ink), carrying exactly the three fill-eligible subpaths.
         assert_eq!(
@@ -6979,7 +7334,9 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(
+                &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+            );
             out
         };
         let hex = emit("#ED7D31");
@@ -7002,7 +7359,9 @@ mod tests {
         s.sheet.set_cell("TxtWidth", Cell::value("2.0"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert!(
             out.contains(r##"fill="#000000""##),
             "default text is black: {out}"
@@ -7116,7 +7475,9 @@ mod tests {
         s.sheet.text = Some("hello".into());
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert!(
             out.contains(r#"font-family="Arial, 'Liberation Sans', Carlito, sans-serif""#),
             "emitted text element: {out}"
@@ -7161,6 +7522,7 @@ mod tests {
             1.0,
             false,
             Some(&ctx),
+            None,
             &mut out,
         );
         assert!(
@@ -7187,6 +7549,7 @@ mod tests {
             1.0,
             false,
             Some(&ctx),
+            None,
             &mut out,
         );
         assert!(out.contains("tiny text"), "glyph path unchanged: {out}");
@@ -7205,7 +7568,9 @@ mod tests {
         let s = tiny("0.02");
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert!(out.contains("tiny text"), "export never greeks: {out}");
     }
 
@@ -7261,7 +7626,9 @@ mod tests {
         let s = shape_with_pinned_text(txt_angle_deg);
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, sx, sy, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, sx, sy, false, None, None, &mut out,
+        );
         let t = out
             .split("transform=\"")
             .nth(1)?
@@ -7791,11 +8158,7 @@ mod tests {
             .unwrap()
             .set_cell("LineJumpFactorX", Cell::value("2"));
         let svg = render_page(&big, &big.pages[0]).unwrap();
-        let apex = format!(
-            "{:.5} {:.5}",
-            3.0,
-            6.0 - crate::geom::JUMP_RADIUS_IN * 2.0
-        );
+        let apex = format!("{:.5} {:.5}", 3.0, 6.0 - crate::geom::JUMP_RADIUS_IN * 2.0);
         assert!(svg.contains(&apex), "the 2× arc apex: {apex}");
     }
 
@@ -8256,8 +8619,7 @@ mod tests {
         let chain = [&s];
         let tb = resolve_text_block(&doc, &s, &chain, 2.0, 1.0);
         let b = tb.bullet.as_ref().expect("the block is bulleted");
-        let want_left =
-            3.0 + (tb.insets.0 + tb.ind_first) - bullet_advance_in(&tb, b) - PAD;
+        let want_left = 3.0 + (tb.insets.0 + tb.ind_first) - bullet_advance_in(&tb, b) - PAD;
         assert!(
             (x - want_left).abs() < 1e-9,
             "left edge covers the outdented bullet: {x} vs {want_left}"
@@ -8312,12 +8674,7 @@ mod tests {
         // (1, −0.5): (dx, dy) → (dy, −dx). Shape-local → page: the
         // pin line (local y = 0) maps to page y 6.5, x = 3 + local.
         let pivot = (1.0, -0.5);
-        let corners = [
-            (-e, -1.0),
-            (2.0, -1.0),
-            (2.0, 0.0),
-            (-e, 0.0),
-        ];
+        let corners = [(-e, -1.0), (2.0, -1.0), (2.0, 0.0), (-e, 0.0)];
         let mut pts = Vec::new();
         for (cx, cy) in corners {
             let (dx, dy) = (cx - pivot.0, cy - pivot.1);
@@ -8331,12 +8688,24 @@ mod tests {
         // shape-local pivot that contained everything; Greptile
         // round 9).
         let hull_x = (
-            pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min).min(3.0),
-            pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max).max(5.0),
+            pts.iter()
+                .map(|p| p.0)
+                .fold(f64::INFINITY, f64::min)
+                .min(3.0),
+            pts.iter()
+                .map(|p| p.0)
+                .fold(f64::NEG_INFINITY, f64::max)
+                .max(5.0),
         );
         let hull_y = (
-            pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min).min(5.5),
-            pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max).max(6.5),
+            pts.iter()
+                .map(|p| p.1)
+                .fold(f64::INFINITY, f64::min)
+                .min(5.5),
+            pts.iter()
+                .map(|p| p.1)
+                .fold(f64::NEG_INFINITY, f64::max)
+                .max(6.5),
         );
         assert!(
             (bx - (hull_x.0 - PAD)).abs() < 1e-9
@@ -8559,7 +8928,8 @@ mod tests {
         // leaves share their y range, so x does the separating).
         let cull = (bounds.0, bounds.1, 1.4, bounds.3);
         let (_, culled) =
-            render_shape_layer_opts_culled(&doc, &page, 1, &[], bounds, None, None, cull).unwrap();
+            render_shape_layer_opts_culled(&doc, &page, 1, &[], bounds, None, None, cull, None)
+                .unwrap();
         assert!(
             culled.contains("#ff2200"),
             "the covered leaf stays in the patch: {culled}"
@@ -8569,7 +8939,8 @@ mod tests {
             "the far leaf is omitted from the patch serialization: {culled}"
         );
         // The full serialization keeps both.
-        let (_, full) = render_shape_layer_opts(&doc, &page, 1, &[], bounds, None, None).unwrap();
+        let (_, full) =
+            render_shape_layer_opts(&doc, &page, 1, &[], bounds, None, None, None).unwrap();
         assert!(full.contains("#ff2200") && full.contains("#22cc00"));
     }
 
@@ -8739,7 +9110,9 @@ mod tests {
         let s = shape_1065();
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         let lines = text_lines(&out);
         assert_eq!(
             lines,
@@ -8763,7 +9136,9 @@ mod tests {
         {
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(
+                &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+            );
             assert!(out.is_empty(), "no text, no text element: {out}");
         }
 
@@ -8774,7 +9149,9 @@ mod tests {
         s.sheet.text = Some("  opened\r\na  b\n   \n\nend ".into());
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert_eq!(
             text_lines(&out),
             vec!["  opened", "a  b", "   ", "", "end"],
@@ -8792,37 +9169,45 @@ mod tests {
     #[test]
     fn paragraph_base_follows_marks_then_first_strong() {
         assert!(!paragraph_base_rtl("hello world"), "latin → LTR");
-        assert!(paragraph_base_rtl("\u{0633}\u{0644}\u{0627}"), "arabic → RTL");
+        assert!(
+            paragraph_base_rtl("\u{0633}\u{0644}\u{0627}"),
+            "arabic → RTL"
+        );
         assert!(paragraph_base_rtl("\u{202B}hello"), "RLE override → RTL");
-        assert!(!paragraph_base_rtl("\u{202A}\u{0633}\u{0644}\u{0627}"), "LRE overrides arabic");
-        assert!(!paragraph_base_rtl("123 (x)"), "numbers+neutrals → LTR default");
+        assert!(
+            !paragraph_base_rtl("\u{202A}\u{0633}\u{0644}\u{0627}"),
+            "LRE overrides arabic"
+        );
+        assert!(
+            !paragraph_base_rtl("123 (x)"),
+            "numbers+neutrals → LTR default"
+        );
         assert!(!paragraph_base_rtl("   "), "all-neutral → LTR default");
     }
 
     /// PR #269 review: RTL paragraphs measure with the RUN-PAIRED
     /// faces (see textmetrics::split_runs) — in this test binary the
-    /// vendored fallback is deliberately unregistered (deterministic
+    /// vendored fallbacks are deliberately unregistered (deterministic
     /// pins), so every paragraph measures as ONE run through the same
     /// single-face path as before: the wrap's output for pure-Latin
-    /// and pure-Persian paragraphs is unchanged.
+    /// and pure-Persian paragraphs is unchanged. (#282 grew the
+    /// fallback to the Vazirmatn→Noto chain; the assertion covers the
+    /// whole chain at once.)
     #[test]
     fn rtl_wrap_stays_single_face_without_a_registered_fallback() {
         let latin = crate::textmetrics::resolve(None, false, false);
         let fallback = crate::textmetrics::resolve(Some("Vazirmatn"), false, false);
+        let noto = crate::textmetrics::resolve(Some("Noto Sans SC"), false, false);
         let alef = '\u{0627}';
-        assert!(!fallback.covers(alef), "unregistered vazirmatn covers nothing");
+        assert!(
+            !fallback.covers(alef),
+            "unregistered vazirmatn covers nothing"
+        );
+        let chain: Vec<&crate::textmetrics::ResolvedFace> = vec![&fallback, &noto];
         let fa = "\u{0633}\u{0644}\u{0627}\u{0645}";
         for para in [format!("\u{202B}{fa}"), format!("\u{202B}abc {fa}")] {
             let lines = wrap_block_text(
-                &latin,
-                &para,
-                0.13889,
-                2.0,
-                &latin,
-                0.13889,
-                &fallback,
-                0.0,
-                0.0,
+                &latin, &para, 0.13889, 2.0, &latin, 0.13889, &chain, 0.0, 0.0,
             );
             assert_eq!(lines.len(), 1);
             assert!(lines[0].rtl, "the base is rtl");
@@ -8830,7 +9215,7 @@ mod tests {
             // single-face measurement the wrap always used.
             let w = lines[0].text.clone();
             let expect = latin.width_in(&w, 0.13889);
-            let got = latin.width_in_runs(&fallback, &w, 0.13889);
+            let got = latin.width_in_runs(&chain, &w, 0.13889);
             assert!(
                 (expect - got).abs() < 1e-9,
                 "single-run text keeps byte-identical widths: {expect} vs {got}"
@@ -8897,15 +9282,28 @@ mod tests {
             }],
             ..Section::default()
         }));
-        s.sheet.text = Some("\u{0633}\u{0644}\u{0627}\u{0645} \u{0639}\u{0644}\u{06CC}\u{06A9}\u{0645}".into());
+        s.sheet.text = Some(
+            "\u{0633}\u{0644}\u{0627}\u{0645} \u{0639}\u{0644}\u{06CC}\u{06A9}\u{0645}".into(),
+        );
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 3.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 3.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         // The isolate pair wraps the line content.
-        assert!(out.contains('\u{2067}'), "the RTL line carries an RLI: {out}");
-        assert!(out.contains('\u{2069}'), "the RTL line carries a PDI: {out}");
+        assert!(
+            out.contains('\u{2067}'),
+            "the RTL line carries an RLI: {out}"
+        );
+        assert!(
+            out.contains('\u{2069}'),
+            "the RTL line carries a PDI: {out}"
+        );
         // direction=ltr pins the element base for attribute-honoring viewers.
-        assert!(out.contains(r#"direction="ltr""#), "element base pinned: {out}");
+        assert!(
+            out.contains(r#"direction="ltr""#),
+            "element base pinned: {out}"
+        );
         // Start alignment under an RTL base puts the line's visual
         // left edge at (right edge - shaped width), NOT at left_x —
         // the tspan x must sit right of the block's left inset edge.
@@ -8926,7 +9324,9 @@ mod tests {
         }
         let chain = [&s];
         let mut out2 = String::new();
-        emit_text(&doc, &s, &chain, 3.0, 1.0, 1.0, 1.0, false, None, &mut out2);
+        emit_text(
+            &doc, &s, &chain, 3.0, 1.0, 1.0, 1.0, false, None, None, &mut out2,
+        );
         let x2: f64 = out2
             .split(r#"<tspan x=""#)
             .nth(1)
@@ -8981,7 +9381,9 @@ mod tests {
         s.sheet.text = Some(format!("{fa}\r\n{fa}"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 3.0, 1.2, 1.5, 0.6, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 3.0, 1.2, 1.5, 0.6, false, None, None, &mut out,
+        );
         let ys: Vec<f64> = out
             .split(r#" y=""#)
             .skip(1)
@@ -9043,7 +9445,9 @@ mod tests {
         s.sheet.text = Some(format!("one\r\n\u{202B}{fa}"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 3.0, 1.4, 1.5, 0.7, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 3.0, 1.4, 1.5, 0.7, false, None, None, &mut out,
+        );
         let ys: Vec<f64> = out
             .split(r#" y=""#)
             .skip(1)
@@ -9073,7 +9477,9 @@ mod tests {
         s.sheet.text = Some("plain latin".into());
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert!(!out.contains("direction="), "no direction attr: {out}");
         assert!(!out.contains('\u{2067}'), "no isolates: {out}");
     }
@@ -9125,11 +9531,7 @@ mod tests {
             let chain = [&s];
             resolve_text_block(&doc, &s, &chain, 3.0, 1.0).cs_size
         };
-        assert_eq!(
-            size,
-            Some(1.5 * size0),
-            "negative → |v|·Size/100"
-        );
+        assert_eq!(size, Some(1.5 * size0), "negative → |v|·Size/100");
     }
 
     /// #144 review: when a block is too narrow for `"a "` and `" b"`,
@@ -9151,7 +9553,9 @@ mod tests {
         s.sheet.set_cell("RightMargin", Cell::value("0"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert_eq!(
             text_lines(&out),
             vec!["a", " ", "b"],
@@ -9171,7 +9575,9 @@ mod tests {
         s.sheet.set_cell("TxtWidth", Cell::value("0.8"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         let lines = text_lines(&out);
         assert!(lines.len() > 1, "must wrap: {lines:?}");
         // The greedy invariant: every line except the last is full —
@@ -9200,7 +9606,9 @@ mod tests {
         s.sheet.set_cell("TxtWidth", Cell::value("0.5"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         let lines = text_lines(&out);
         assert!(
             lines.len() > 1,
@@ -9214,6 +9622,65 @@ mod tests {
         assert_eq!(joined, "aaaaaaaaaaaaaaaaaaaaaaaaaa", "no characters lost");
     }
 
+    /// The emergency hard-split's boundary rules run to a FIXPOINT:
+    /// glue (U+00A0) may move the split past the position the
+    /// forbidden-head pass already cleared, which used to strand a
+    /// closer at the head of the rest — `图⍽，！色` must never open a
+    /// line with `，` or `！` (CodeRabbit/Greptile round 5).
+    #[test]
+    fn emergency_split_never_opens_a_line_with_a_closer() {
+        let face = crate::textmetrics::resolve(None, false, false);
+        // Narrower than any glyph: every token takes the emergency
+        // path.
+        let lines = wrap_block_text(
+            &face,
+            "图\u{00A0}，！色",
+            0.13889,
+            0.05,
+            &face,
+            0.13889,
+            &[],
+            0.0,
+            0.0,
+        );
+        let joined: String = lines.iter().map(|l| l.text.clone()).collect();
+        assert_eq!(joined, "图\u{00A0}，！色", "no characters lost");
+        assert!(lines.len() >= 2, "the emergency splitter fired");
+        for l in &lines {
+            let first = l.text.chars().next().expect("lines are non-empty");
+            assert!(
+                !crate::textmetrics::line_head_forbidden(first),
+                "no line opens with a forbidden closer: {:?}",
+                lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// The emergency splitter keeps a combining mark with its base:
+    /// `カ` + U+3099 never splits between them, without consuming
+    /// the following `ク` (CodeRabbit round 5).
+    #[test]
+    fn emergency_split_keeps_combining_marks_with_their_base() {
+        let face = crate::textmetrics::resolve(None, false, false);
+        let lines = wrap_block_text(
+            &face,
+            "カ\u{3099}ク",
+            0.13889,
+            0.05,
+            &face,
+            0.13889,
+            &[],
+            0.0,
+            0.0,
+        );
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["カ\u{3099}", "ク"],
+            "the dakuten stays on its base; the break before ク survives"
+        );
+    }
+
     /// CRLF and lone CR each break exactly one line (carried over
     /// from the guess era — the normalizer is unchanged).
     #[test]
@@ -9225,7 +9692,9 @@ mod tests {
         s.sheet.set_cell("TxtWidth", Cell::value("8.0"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 8.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 8.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert_eq!(
             text_lines(&out),
             vec!["one", "two", "three"],
@@ -9246,9 +9715,7 @@ mod tests {
         let total = 2.0 * 0.16667;
         let ascent = 0.13889 * 0.8;
         tb.valign = 1; // top
-        assert!(
-            (text_first_baseline(&tb, total, tb.font_size) - (0.0555 + ascent)).abs() < 1e-9
-        );
+        assert!((text_first_baseline(&tb, total, tb.font_size) - (0.0555 + ascent)).abs() < 1e-9);
         tb.valign = 2; // middle (default)
         assert!(
             (text_first_baseline(&tb, total, tb.font_size) - ((1.0 - total) / 2.0 + ascent)).abs()
@@ -9256,9 +9723,7 @@ mod tests {
         );
         tb.valign = 3; // bottom
         assert!(
-            (text_first_baseline(&tb, total, tb.font_size)
-                - (1.0 - 0.0555 - total + ascent))
-                .abs()
+            (text_first_baseline(&tb, total, tb.font_size) - (1.0 - 0.0555 - total + ascent)).abs()
                 < 1e-9
         );
         // More wrapped lines raise the first line in the middle band.
@@ -9273,7 +9738,11 @@ mod tests {
         let eff = effective_cs_size(&tb);
         assert_eq!(eff, tb.font_size * 2.0);
         assert_eq!(line_slot_height(&tb, true), tb.line_height * 2.0);
-        assert_eq!(line_slot_height(&tb, false), tb.line_height, "ltr keeps the latin slot");
+        assert_eq!(
+            line_slot_height(&tb, false),
+            tb.line_height,
+            "ltr keeps the latin slot"
+        );
         // A SMALLER complex-script size never shrinks the slot.
         tb.cs_size = Some(tb.font_size * 0.5);
         assert_eq!(line_slot_height(&tb, true), tb.line_height);
@@ -9324,10 +9793,7 @@ mod tests {
         // a gap — the earlier "filled" read was the low-res gallery's);
         // its dot stays filled, like 34's ring stays open.
         let d38 = arrow_spec(38).unwrap();
-        assert!(
-            d38[0].circle.is_some() && d38[0].filled,
-            "38's dot fills"
-        );
+        assert!(d38[0].circle.is_some() && d38[0].filled, "38's dot fills");
         assert!(
             !d38[1].filled && d38[1].circle.is_none(),
             "38's diamond strokes open"
@@ -9562,7 +10028,13 @@ mod tests {
     /// infrastructure faces stay themselves.
     #[test]
     fn non_stock_fonts_resolve_the_calibri_chain() {
-        for name in ["Roboto", "Helvetica", "Futura", "Fira Mono", "Certainly Not Installed"] {
+        for name in [
+            "Roboto",
+            "Helvetica",
+            "Futura",
+            "Fira Mono",
+            "Certainly Not Installed",
+        ] {
             let chain = family_chain(Some(name));
             assert_eq!(
                 chain,
@@ -9584,7 +10056,10 @@ mod tests {
         // The app infrastructure faces stay named (#232 exemption) —
         // the RTL fallback must never regress to Calibri.
         assert_eq!(family_chain(Some("Vazirmatn"))[0], "Vazirmatn");
-        assert_eq!(family_chain(Some("Liberation Serif"))[0], "Liberation Serif");
+        assert_eq!(
+            family_chain(Some("Liberation Serif"))[0],
+            "Liberation Serif"
+        );
         // No Font cell: Visio's default family is Calibri anyway.
         assert_eq!(family_chain(None)[0], "Calibri");
     }
@@ -9605,7 +10080,12 @@ mod tests {
                 name: "Character".into(),
                 rows: vec![Row {
                     cells: font
-                        .map(|f| vec![("Pos".to_string(), Cell::value(pos.to_string())), ("Font".to_string(), Cell::value(f))])
+                        .map(|f| {
+                            vec![
+                                ("Pos".to_string(), Cell::value(pos.to_string())),
+                                ("Font".to_string(), Cell::value(f)),
+                            ]
+                        })
                         .unwrap_or_else(|| vec![("Pos".to_string(), Cell::value(pos.to_string()))]),
                     ..Row::default()
                 }],
@@ -9613,12 +10093,17 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(
+                &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+            );
             out
         };
         // Baseline: no Pos cell → nominal draw, no shift.
         let plain = emit_pos(0, None);
-        assert!(plain.contains(r#"font-size="0.1389""#), "nominal size: {plain}");
+        assert!(
+            plain.contains(r#"font-size="0.1389""#),
+            "nominal size: {plain}"
+        );
         // Superscript on the default (Calibri) family: 2/3 em draw,
         // baseline raised 0.3 em from the nominal baseline.
         let sup = emit_pos(1, None);
@@ -9693,7 +10178,9 @@ mod tests {
             }
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(
+                &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+            );
             out
         };
         // 0 and 255 paint nothing.
@@ -9732,7 +10219,9 @@ mod tests {
         );
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert!(
             out.contains(r##"fill="#ffffff""##),
             "the theme-default label paints its cached white: {out}"
@@ -9750,8 +10239,14 @@ mod tests {
         // starts at 0.829 — the background sits BEHIND the text, not
         // at the left margin.
         let rect = &out[rect_at..text_at];
-        assert!(rect.contains(r#"x="0.8290""#), "rect behind the centered text: {rect}");
-        assert!(rect.contains(r#"y="-0.5833""#), "rect at the first line slot: {rect}");
+        assert!(
+            rect.contains(r#"x="0.8290""#),
+            "rect behind the centered text: {rect}"
+        );
+        assert!(
+            rect.contains(r#"y="-0.5833""#),
+            "rect at the first line slot: {rect}"
+        );
         let rect_w: f64 = rect
             .split(r#"width=""#)
             .nth(1)
@@ -9770,7 +10265,9 @@ mod tests {
         s.sheet.set_cell("TextBkgnd", Cell::value("1"));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         assert!(
             out.contains(r##"fill="#000000""##) && out.contains("<rect"),
             "an all-RTL block paints its text background: {out}"
@@ -9813,13 +10310,18 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(
+                &doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+            );
             out
         };
         // Built-in style 1 draws a PATH dot (never a text glyph), at
         // the line start (bullet offset 0 with zero margins).
         let out = emit_bullet("1", &[]);
-        assert!(out.contains(r#"<path transform="translate(0.0000,"#), "path bullet: {out}");
+        assert!(
+            out.contains(r#"<path transform="translate(0.0000,"#),
+            "path bullet: {out}"
+        );
         // The path is a SIBLING of <text>, not a child (PR #284
         // review: SVG's text content model has no place for shapes —
         // usvg drops a <path> inside <text>, and the bullet would
@@ -9849,23 +10351,26 @@ mod tests {
         // tab stop (0.5) wins; Visio does not add TPAB to IndFirst
         // (that would read 0.35). TextPosAfterBullet 0.6 past the
         // bullet's start wins outright.
-        let early: f64 = emit_bullet(
-            "1",
-            &[("IndFirst", "0.25"), ("TextPosAfterBullet", "0.1")],
-        )
+        let early: f64 = emit_bullet("1", &[("IndFirst", "0.25"), ("TextPosAfterBullet", "0.1")])
             .split(r#"<tspan x=""#)
             .nth(1)
             .and_then(|rest| rest.split('"').next())
             .and_then(|v| v.parse().ok())
             .expect("a tspan x");
-        assert!((early - 0.5).abs() < 1e-3, "0.1 < the stop → tab wins: {early}");
+        assert!(
+            (early - 0.5).abs() < 1e-3,
+            "0.1 < the stop → tab wins: {early}"
+        );
         let late: f64 = emit_bullet("1", &[("TextPosAfterBullet", "0.6")])
             .split(r#"<tspan x=""#)
             .nth(1)
             .and_then(|rest| rest.split('"').next())
             .and_then(|v| v.parse().ok())
             .expect("a tspan x");
-        assert!((late - 0.6).abs() < 1e-3, "0.6 past the stop → wins: {late}");
+        assert!(
+            (late - 0.6).abs() < 1e-3,
+            "0.6 past the stop → wins: {late}"
+        );
         // A custom bullet string stays TEXT in its own face.
         let custom = emit_bullet("–", &[]);
         assert!(
@@ -9896,7 +10401,9 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &mut out);
+        emit_text(
+            &doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
         // The element anchor is middle; only the bullet tspan pins
         // "start" (the main text tspan's override carries no
         // font-size, so this substring matches the bullet alone).
@@ -9932,7 +10439,9 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            emit_text(&doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, &mut out);
+            emit_text(
+                &doc, &s, &chain, 4.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+            );
             out
         };
         for v in ["-1", "1.5", "256", "0.0"] {
@@ -9978,6 +10487,7 @@ mod tests {
             latin.width_in(&word, 0.13889) <= 0.5,
             "fixture: the word alone fits the margin"
         );
+        let chain: Vec<&crate::textmetrics::ResolvedFace> = vec![&fallback];
         let solo = wrap_block_text(
             &latin,
             &format!("{word}\u{a0}"),
@@ -9985,7 +10495,7 @@ mod tests {
             0.5,
             &latin,
             0.13889,
-            &fallback,
+            &chain,
             0.0,
             0.0,
         );
@@ -9995,7 +10505,11 @@ mod tests {
             "word+NBSP never hard-splits on the hanging advance: {:?}",
             solo.iter().map(|l| &l.text).collect::<Vec<_>>()
         );
-        assert_eq!(solo[0].text, format!("{word}\u{a0}"), "the NBSP stays content");
+        assert_eq!(
+            solo[0].text,
+            format!("{word}\u{a0}"),
+            "the NBSP stays content"
+        );
         let lines = wrap_block_text(
             &latin,
             &format!("{word}\u{a0} next"),
@@ -10003,7 +10517,7 @@ mod tests {
             0.5,
             &latin,
             0.13889,
-            &fallback,
+            &chain,
             0.0,
             0.0,
         );
@@ -10020,13 +10534,86 @@ mod tests {
             0.5,
             &latin,
             0.13889,
-            &fallback,
+            &chain,
             0.0,
             0.0,
         );
         assert_eq!(
             lines_plain[0].text, word,
             "the control: a plain trailing space wraps"
+        );
+    }
+
+    /// #282 zh-Hans: CJK paragraphs wrap between ideographs under the
+    /// kinsoku rules — no spaces needed — and a closing punct never
+    /// STARTS a line. The measurement face is irrelevant to the break
+    /// STRUCTURE (Carlito's missing-glyph advances are uniform here);
+    /// the tokenizer owns the opportunities, so the unregistered test
+    /// world pins them fine.
+    #[test]
+    fn cjk_paragraph_wraps_between_ideographs_with_kinsoku() {
+        let latin = crate::textmetrics::resolve(None, false, false);
+        let fallback = crate::textmetrics::resolve(Some("Vazirmatn"), false, false);
+        let chain: Vec<&crate::textmetrics::ResolvedFace> = vec![&fallback];
+        let size = 0.13889;
+        let w1 = latin.width_in("图", size);
+        assert!(w1 > 0.0);
+        // A width fitting two ideographs: the paragraph breaks every
+        // two glyphs — between ideographs, never inside one.
+        let lines = wrap_block_text(
+            &latin,
+            "图表形状",
+            size,
+            w1 * 2.5,
+            &latin,
+            size,
+            &chain,
+            0.0,
+            0.0,
+        );
+        assert_eq!(
+            lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
+            vec!["图表", "形状"],
+            "ideograph boundaries are the break opportunities"
+        );
+        // Kinsoku across widths: the sentence enders stay glued to
+        // the token they close and never open a line.
+        for usable in [w1 * 1.2, w1 * 1.8, w1 * 2.5] {
+            let lines = wrap_block_text(
+                &latin,
+                "画图，上色。",
+                size,
+                usable,
+                &latin,
+                size,
+                &chain,
+                0.0,
+                0.0,
+            );
+            for l in &lines {
+                assert!(
+                    !l.text.starts_with(['，', '。']),
+                    "a closing punct never starts a line: {:?}",
+                    l.text
+                );
+            }
+        }
+        // The Latin path is untouched: the same engine, pure spaces.
+        let lines = wrap_block_text(
+            &latin,
+            "ab cd",
+            size,
+            latin.width_in("ab", size) * 1.2,
+            &latin,
+            size,
+            &chain,
+            0.0,
+            0.0,
+        );
+        assert_eq!(
+            lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
+            vec!["ab", "cd"],
+            "Latin keeps the space-driven breaks"
         );
     }
 
@@ -10051,6 +10638,200 @@ mod tests {
         assert!(
             (sp * 262_144.0 - (sp * 262_144.0).round()).abs() < 1e-9,
             "the terminal space is a grid step"
+        );
+    }
+
+    // ---- #267 field substitution ----
+
+    /// The corpus's common shape: a master-root Field row referenced
+    /// by a self-closing marker on an instanced shape, with the
+    /// User row the Value formula reads living on the SAME sheet.
+    #[test]
+    fn field_marker_renders_the_substituted_value() {
+        let mut doc = Document::default();
+        let mut m = vsdx::Master {
+            id: 2,
+            name_u: Some("Card".into()),
+            ..vsdx::Master::default()
+        };
+        let mut root = Shape {
+            id: 1,
+            ..Shape::default()
+        };
+        root.sheet.set_cell("Width", Cell::value("2.0"));
+        root.sheet.set_cell("Height", Cell::value("1.0"));
+        root.sheet.children.push(SheetChild::Section(Section {
+            name: "User".into(),
+            rows: vec![Row {
+                n: Some("Label".into()),
+                cells: vec![("Value".to_string(), Cell::value("Hello"))],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        // The Field row, in the corpus's verbatim cell shape.
+        root.sheet.children.push(SheetChild::Section(Section {
+            name: "Field".into(),
+            rows: vec![Row {
+                ix: 0,
+                cells: vec![
+                    (
+                        "Value".to_string(),
+                        Cell {
+                            v: Some(String::new()),
+                            u: Some("STR".into()),
+                            f: Some("User.Label".into()),
+                            ..Cell::default()
+                        },
+                    ),
+                    (
+                        "Format".to_string(),
+                        Cell {
+                            v: Some("esc(0)".into()),
+                            u: Some("STR".into()),
+                            f: Some("FIELDPICTURE(0)".into()),
+                            ..Cell::default()
+                        },
+                    ),
+                ],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        root.sheet.text_raw = Some("<fld IX='0'/>".into());
+        root.sheet.text = Some(String::new());
+        m.shapes.push(root);
+        doc.masters.push(m);
+
+        // An instance of the master carrying the marker's text.
+        let mut inst = Shape {
+            id: 5,
+            master: Some(2),
+            ..Shape::default()
+        };
+        inst.sheet.set_cell("Width", Cell::value("2.0"));
+        inst.sheet.set_cell("Height", Cell::value("1.0"));
+        inst.sheet.text_raw = Some("due <fld IX='0'/>".into());
+        inst.sheet.text = Some("due ".into());
+        let page_sheet = |w: &str, h: &str| {
+            let mut sheet = Sheet::default();
+            sheet.set_cell("PageWidth", Cell::value(w));
+            sheet.set_cell("PageHeight", Cell::value(h));
+            sheet
+        };
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "Page-1".into(),
+            ..vsdx::Page::default()
+        };
+        page.children.push(IndexChild::Sheet {
+            tag: "PageSheet".into(),
+            sheet: page_sheet("8.5", "11.0"),
+        });
+        page.shapes.push(inst);
+        doc.pages.push(page);
+
+        let svg = render_page(&doc, &doc.pages[0]).unwrap();
+        assert!(
+            svg.contains("due Hello"),
+            "the marker substitutes the evaluated field: {svg}"
+        );
+    }
+
+    /// Unresolvable fields fall back marker content → cached V →
+    /// empty, never erroring the render.
+    #[test]
+    fn field_marker_falls_back_to_the_cached_display() {
+        let doc = Document::default();
+        let mut s = Shape::default();
+        s.sheet.set_cell("Width", Cell::value("2.0"));
+        s.sheet.set_cell("Height", Cell::value("1.0"));
+        // A Value formula that cannot evaluate (unknown cell), no
+        // cached V: the marker's own content serves.
+        s.sheet.children.push(SheetChild::Section(Section {
+            name: "Field".into(),
+            rows: vec![Row {
+                ix: 0,
+                cells: vec![(
+                    "Value".to_string(),
+                    Cell {
+                        u: Some("STR".into()),
+                        f: Some("User.Missing".into()),
+                        ..Cell::default()
+                    },
+                )],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        s.sheet.text_raw = Some("value: <fld IX='0'>4/17</fld>".into());
+        s.sheet.text = Some("value: 4/17".into());
+        let chain = [&s];
+        let mut out = String::new();
+        emit_text(
+            &doc, &s, &chain, 2.0, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
+        assert!(
+            out.contains("value: 4/17"),
+            "unresolvable field serves its cached display: {out}"
+        );
+    }
+
+    /// Page facts thread through the walk: PAGENUMBER()/PAGENAME()
+    /// evaluate live.
+    #[test]
+    fn field_page_number_renders_live() {
+        let mut doc = Document::default();
+        let mut s = Shape {
+            id: 1,
+            ..Shape::default()
+        };
+        s.sheet.set_cell("Width", Cell::value("2.0"));
+        s.sheet.set_cell("Height", Cell::value("1.0"));
+        s.sheet.children.push(SheetChild::Section(Section {
+            name: "Field".into(),
+            rows: vec![Row {
+                ix: 0,
+                cells: vec![(
+                    "Value".to_string(),
+                    Cell {
+                        u: Some("STR".into()),
+                        f: Some("PAGENUMBER()".into()),
+                        ..Cell::default()
+                    },
+                )],
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        s.sheet.text_raw = Some("<fld IX='0'/>".into());
+        s.sheet.text = Some(String::new());
+        let mut sheet = Sheet::default();
+        sheet.set_cell("PageWidth", Cell::value("8.5"));
+        sheet.set_cell("PageHeight", Cell::value("11.0"));
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "Flowchart".into(),
+            ..vsdx::Page::default()
+        };
+        page.children.push(IndexChild::Sheet {
+            tag: "PageSheet".into(),
+            sheet,
+        });
+        page.shapes.push(s);
+        doc.pages.push(page);
+        // A second page so the first is page 1 of 2 — PAGENUMBER is
+        // the 1-based position.
+        doc.pages.push(vsdx::Page {
+            id: 1,
+            name: "Page-2".into(),
+            ..vsdx::Page::default()
+        });
+
+        let svg = render_page(&doc, &doc.pages[0]).unwrap();
+        assert!(
+            svg.contains(">1<"),
+            "PAGENUMBER renders the 1-based position: {svg}"
         );
     }
 }
