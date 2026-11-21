@@ -534,7 +534,29 @@ pub fn geometry_hit_segments(
         }
     }
     walk.sort_by_key(|(row, _)| row.ix);
-    for (row, master) in walk.iter().take(MAX_ROWS) {
+    // A row's evaluated endpoint in the same frame the walk uses —
+    // also the route-context lookahead for stored-jump classification
+    // (#294 review). The bool: the row is a MoveTo (positions the pen,
+    // draws no run).
+    let walk_row_end = |i: usize| -> Option<((f64, f64), bool)> {
+        let (r, m) = walk.get(i)?;
+        let t = r
+            .t
+            .as_deref()
+            .or(m.and_then(|mm| mm.t.as_deref()))
+            .unwrap_or("");
+        let x = cell(r, *m, "X").unwrap_or(0.0);
+        let y = cell(r, *m, "Y").unwrap_or(0.0);
+        let rel = t.starts_with("Rel");
+        let end = if rel { (x * own.0, y * own.1) } else { (x, y) };
+        let end = if scale != (1.0, 1.0) {
+            (end.0 * scale.0, end.1 * scale.1)
+        } else {
+            end
+        };
+        Some((end, t == "MoveTo" || t == "RelMoveTo"))
+    };
+    for (k, (row, master)) in walk.iter().take(MAX_ROWS).enumerate() {
         let t = row
             .t
             .as_deref()
@@ -561,13 +583,41 @@ pub fn geometry_hit_segments(
             "ArcTo" | "RelArcTo" => {
                 // |A| = sagitta, bulging right of travel; the
                 // quadratic control that reproduces the apex.
-                let a = cell(row, *master, "A").unwrap_or(0.0);
+                let raw_a = cell(row, *master, "A").unwrap_or(0.0);
                 if let Some(c0) = cur {
                     let d = (end.0 - c0.0, end.1 - c0.1);
+                    // #294 review: the whole-master-geometry path
+                    // returns A as an unscaled literal while the chord
+                    // coordinates carry the section scale — classify
+                    // in the SAME frame (the sagitta sits perpendicular
+                    // to the axis-aligned chord).
+                    let a = if scale != (1.0, 1.0) {
+                        raw_a * if d.0.abs() >= d.1.abs() {
+                            scale.1
+                        } else {
+                            scale.0
+                        }
+                    } else {
+                        raw_a
+                    };
+                    // Route context (#294 review): the run continues
+                    // collinear INTO the arc and OUT of it — Visio
+                    // writes jumps mid-run; an isolated authored
+                    // semicircle stays a curve.
+                    let prev_dir = (k >= 2)
+                        .then(|| walk_row_end(k - 1))
+                        .flatten()
+                        .filter(|(_, is_move)| !is_move)
+                        .and_then(|_| walk_row_end(k - 2))
+                        .map(|(p, _)| (c0.0 - p.0, c0.1 - p.1));
+                    let next_dir = walk_row_end(k + 1)
+                        .filter(|(_, is_move)| !is_move)
+                        .map(|(p, _)| (p.0 - end.0, p.1 - end.1));
                     // #294: a stored jump arc straightens — the
                     // polyline follows the chord, so the crossing set
                     // never sees the stale bump.
-                    let stored_jump = strip_stored_jumps && is_stored_jump_arc(a, d);
+                    let stored_jump =
+                        strip_stored_jumps && is_stored_jump_arc(a, d, prev_dir, next_dir);
                     if !stored_jump {
                         let len = d.0.hypot(d.1).max(1e-9);
                         let mid = (
@@ -798,19 +848,41 @@ pub fn jump_radius_in(doc: &vsdx::Document, page: &vsdx::Page) -> f64 {
 /// doubled LineToLineX with factor 2 stays under it.
 const MAX_STORED_JUMP_SAGITTA_IN: f64 = 0.5;
 
+/// The run continues along the chord: the neighboring segment exists,
+/// is collinear with it, and points the same way (Visio writes jumps
+/// MID-RUN — an isolated authored semicircle has no such context and
+/// stays a curve, #294 review).
+fn run_continues(dir: Option<(f64, f64)>, chord: (f64, f64)) -> bool {
+    let Some(d) = dir else {
+        return false;
+    };
+    let dl = d.0.hypot(d.1);
+    let cl = chord.0.hypot(chord.1);
+    dl > 1e-9
+        && (d.0 * chord.1 - d.1 * chord.0).abs() <= 0.02 * cl * dl
+        && d.0 * chord.0 + d.1 * chord.1 > 0.0
+}
+
 /// A stored line-jump arc (#294): Visio saves a connector's jump as an
-/// `ArcTo` row ON the orthogonal run — the chord lies along one axis
-/// (the run continues into the arc's endpoints) and the arc is a
-/// SEMICIRCLE over the gap: `|A| = radius = chord / 2` exactly (the
-/// #294 repro's row: chord 0.0833, A −0.0416667; the band admits
-/// writer rounding). Corner arcs cut ACROSS the run (a diagonal
-/// chord) and authored shallow bumps fall far below the band, so both
-/// stay curves; the callers additionally gate on connector-ness so
+/// `ArcTo` row ON the orthogonal run — the chord lies along one axis,
+/// the arc is a SEMICIRCLE over the gap (`|A| = radius = chord / 2`
+/// exactly; the #294 repro's row: chord 0.0833, A −0.0416667 — the
+/// band admits writer rounding), and the route continues collinear on
+/// both sides (`prev_dir`/`next_dir`: the neighboring segments'
+/// directions; `None` = no such run). Corner arcs cut ACROSS the run
+/// (a diagonal chord), authored shallow bumps fall far below the
+/// band, and whole-route semicircles have no continuing runs — all
+/// stay curves. The callers additionally gate on connector-ness so
 /// artwork arcs never strip. Once stripped, the route is straight at
 /// the old arc and the jump overlay draws the ONE arc at the current
 /// crossing with the page's own radius — a stored arc stops lingering
 /// after a move (#294).
-pub fn is_stored_jump_arc(sagitta: f64, chord: (f64, f64)) -> bool {
+pub fn is_stored_jump_arc(
+    sagitta: f64,
+    chord: (f64, f64),
+    prev_dir: Option<(f64, f64)>,
+    next_dir: Option<(f64, f64)>,
+) -> bool {
     let len = chord.0.hypot(chord.1);
     let a = sagitta.abs();
     len > 1e-9
@@ -818,6 +890,8 @@ pub fn is_stored_jump_arc(sagitta: f64, chord: (f64, f64)) -> bool {
         && a >= 0.4 * len
         && a <= 0.6 * len
         && chord.0.abs().min(chord.1.abs()) <= len * 0.02
+        && run_continues(prev_dir, chord)
+        && run_continues(next_dir, chord)
 }
 
 
@@ -870,6 +944,22 @@ fn hugged_vertex(t: f64, window_index: usize) -> Option<usize> {
 /// [`jump_radius_in`]): it sizes the hop arc and bounds what counts
 /// as one crossing REGION (#251) when converging crossings cluster.
 pub fn line_jumps(lines: &[JumpLine], radius: f64) -> Vec<Jump> {
+    // Degenerate rows (a straight route's elbow LineTos collapse onto
+    // the end) repeat points; the endpoint classification below reads
+    // indices, so normalize first or the connector's geometric END
+    // looks like an interior vertex (#294 review).
+    let pts: Vec<Vec<(f64, f64)>> = lines
+        .iter()
+        .map(|l| {
+            let mut v: Vec<(f64, f64)> = Vec::with_capacity(l.pts.len());
+            for p in &l.pts {
+                if v.last().is_none_or(|q| (q.0 - p.0).hypot(q.1 - p.1) > 1e-9) {
+                    v.push(*p);
+                }
+            }
+            v
+        })
+        .collect();
     let mut out = Vec::new();
     for i in 0..lines.len() {
         for j in (i + 1)..lines.len() {
@@ -879,8 +969,8 @@ pub fn line_jumps(lines: &[JumpLine], radius: f64) -> Vec<Jump> {
             // drew overlapping arcs on one intersection (the #238
             // screenshot). Clusters within the hop radius merge.
             let mut pair: Vec<Jump> = Vec::new();
-            for (k1, w1) in lines[i].pts.windows(2).enumerate() {
-                for (k2, w2) in lines[j].pts.windows(2).enumerate() {
+            for (k1, w1) in pts[i].windows(2).enumerate() {
+                for (k2, w2) in pts[j].windows(2).enumerate() {
                     // #294 review: a crossing ON an interior vertex of
                     // either polyline (an elbow corner exactly on the
                     // other line) is a real crossing — the strict-
@@ -900,9 +990,9 @@ pub fn line_jumps(lines: &[JumpLine], radius: f64) -> Vec<Jump> {
                         continue;
                     }
                     let at_end_i = hugged_vertex(t, k1)
-                        .is_some_and(|ix| ix == 0 || ix == lines[i].pts.len() - 1);
+                        .is_some_and(|ix| ix == 0 || ix == pts[i].len() - 1);
                     let at_end_j = hugged_vertex(u, k2)
-                        .is_some_and(|ix| ix == 0 || ix == lines[j].pts.len() - 1);
+                        .is_some_and(|ix| ix == 0 || ix == pts[j].len() - 1);
                     if at_end_i || at_end_j {
                         continue;
                     }
@@ -1134,21 +1224,60 @@ mod tests {
     /// bumps and artwork-sized arcs alone.
     #[test]
     fn stored_jump_arcs_match_the_repro_row() {
+        // Mid-run with collinear continuation on both sides (the run).
         assert!(is_stored_jump_arc(
             -0.041_666_7,
             (0.083_333_3, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
         ));
         // A corner arc cuts across the run — never a jump.
-        assert!(!is_stored_jump_arc(0.09, (0.5, 0.5)));
+        assert!(!is_stored_jump_arc(
+            0.09,
+            (0.5, 0.5),
+            Some((1.0, 0.0)),
+            Some((0.0, 1.0)),
+        ));
         // An authored shallow bump (the #294 review's control) is a
         // curve: |A| ≪ the semicircle band.
-        assert!(!is_stored_jump_arc(0.25, (4.0, 0.0)));
+        assert!(!is_stored_jump_arc(
+            0.25,
+            (4.0, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+        ));
         // Artwork-sized arcs stay.
-        assert!(!is_stored_jump_arc(2.0, (0.0, 4.0)));
+        assert!(!is_stored_jump_arc(
+            2.0,
+            (0.0, 4.0),
+            Some((0.0, 1.0)),
+            Some((0.0, 1.0)),
+        ));
         // Degenerate: zero chord and a zero-sagitta straight row
         // (which the ink path already emits as a line).
-        assert!(!is_stored_jump_arc(0.0, (0.0, 0.0)));
-        assert!(!is_stored_jump_arc(0.0, (0.0, 1.0)));
+        assert!(!is_stored_jump_arc(
+            0.0,
+            (0.0, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+        ));
+        assert!(!is_stored_jump_arc(
+            0.0,
+            (0.0, 1.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+        ));
+        // An authored whole-route semicircle (#294 review) has no
+        // continuing runs — it stays a curve.
+        assert!(!is_stored_jump_arc(0.25, (0.5, 0.0), None, None));
+        // Mid-run geometry but a run that stops at the arc (an
+        // authored end-arc) is not a jump either.
+        assert!(!is_stored_jump_arc(
+            -0.041_666_7,
+            (0.083_333_3, 0.0),
+            Some((1.0, 0.0)),
+            None,
+        ));
     }
 
     /// #294 review: a crossing exactly ON an interior vertex of the

@@ -136,6 +136,9 @@ pub fn render_masters(doc: &Document) -> anyhow::Result<String> {
                 None,
                 None,
                 Some(&fields),
+                // Masters render on contact sheets — the jump overlay
+                // covers page renders only (#294 review).
+                false,
                 &mut svg,
             );
         }
@@ -251,6 +254,9 @@ pub fn render_master(doc: &Document, m: &vsdx::Master) -> anyhow::Result<String>
             None,
             None,
             Some(&fields),
+            // Masters render on contact sheets — the jump overlay
+            // covers page renders only (#294 review).
+            false,
             &mut svg,
         );
     }
@@ -1054,6 +1060,9 @@ fn render_shape_layer_inner(
             greek.as_ref(),
             cull,
             Some(fields),
+            // The canvas jump overlay draws exactly this walk's
+            // top-level connectors (#294 review).
+            true,
             &mut svg,
         );
     }
@@ -1164,6 +1173,9 @@ fn render_page_full(
             None,
             None,
             Some(&fields),
+            // The overlay covers a full-page render only; scoped
+            // (`only`) renders draw no jump group (#251, #294 review).
+            only.is_none(),
             &mut svg,
         );
     }
@@ -1509,6 +1521,7 @@ fn render_shape<'a>(
     greek: Option<&GreekCtx>,
     cull: Option<&InkCull>,
     fields: Option<&crate::fields::FieldsCtx<'_>>,
+    strip_jumps: bool,
     out: &mut String,
 ) {
     let mut chain: Vec<&'a Shape> = chain.to_vec();
@@ -1550,7 +1563,7 @@ fn render_shape<'a>(
     // the first root.
     let multi_root = multi_root_master(doc, s);
     if !multi_root {
-        render_all_geometry(doc, s, &chain, width, height, out);
+        render_all_geometry(doc, s, &chain, width, height, strip_jumps, out);
         // Embedded image (ForeignData → media part via this part's rels).
         if let Some(uri) = foreign_image_uri(doc, part, s) {
             let _ = writeln!(
@@ -1625,7 +1638,10 @@ fn render_shape_local<'a>(
     let _ = writeln!(out, r#"<g transform="{}">"#, escape_attr(&transform));
     let multi_root = multi_root_master(doc, s);
     if !multi_root {
-        render_all_geometry(doc, s, &chain, width, height, out);
+        // Group children aren't in the jump overlay's crossing set
+        // (page_jumps collects top-level connectors only, #294
+        // review): their stored jump arcs keep rendering as ink.
+        render_all_geometry(doc, s, &chain, width, height, false, out);
         if let Some(uri) = foreign_image_uri(doc, part, s) {
             let _ = writeln!(
                 out,
@@ -3648,6 +3664,7 @@ fn render_all_geometry(
     chain: &[&Shape],
     width: f64,
     height: f64,
+    strip_jumps: bool,
     out: &mut String,
 ) {
     // Groups usually don't self-draw (children + the master drawing
@@ -3660,8 +3677,11 @@ fn render_all_geometry(
     let mut paint = ShapePaint::default();
     // #294: a connector's stored jump ArcTo rows straighten — the
     // jump overlay owns the one arc at the current crossing, and a
-    // stored arc stops lingering after a move.
-    let strip_jumps = crate::geom::is_connector_in(doc, chain, s);
+    // stored arc stops lingering after a move. `strip_jumps` arrives
+    // from the caller (the overlay covers exactly the top-level
+    // shapes of a full-page render — #294 review); connector-ness
+    // gates the shape kind.
+    let strip_jumps = strip_jumps && crate::geom::is_connector_in(doc, chain, s);
     let own: Vec<&vsdx::Section> = s.sheet.sections_named("Geometry");
     if !own.is_empty() {
         // Row-cell inheritance: inline copies often keep only the Y cells
@@ -4149,28 +4169,40 @@ fn render_geometry(
         };
     }
 
-    for row in rows.iter().filter(|r| r.t.is_some()) {
-        let Some(t) = row.t.as_deref() else { continue };
+    // Pre-evaluate every typed row's endpoint ONCE, in row order (the
+    // env feeds keep their order — #249), so the stored-jump
+    // classification can see the route's neighboring runs (#294
+    // review).
+    let evald: Vec<(&vsdx::Row, &str, (f64, f64))> = rows
+        .iter()
+        .filter(|r| r.t.is_some())
+        .map(|row| {
+            let t = row.t.as_deref().unwrap_or("");
+            let (mx, my) = (
+                row_num(env, row, "X").unwrap_or(0.0),
+                row_num(env, row, "Y").unwrap_or(0.0),
+            );
+            let (x, y) = rel_adjust(t, mx, my, width, height);
+            // Feed the evaluated coordinates back into the env (#249):
+            // later rows reference earlier ones section-qualified
+            // (`Geometry1.X2`), and the stale cached V would keep the
+            // whole chain at the authored pose.
+            env.insert(format!("{}.X{}", gname, row.ix), x);
+            env.insert(format!("{}.Y{}", gname, row.ix), y);
+            (row, t, (x, y))
+        })
+        .collect();
+    for (ri, (row, t, xy)) in evald.iter().enumerate() {
+        let (x, y) = *xy;
         // Any row type except SplineKnot ends an open spline (#188,
         // #185 review): flush the accumulated curve BEFORE the row's
         // own command so the path keeps its drawn order — a LineTo
         // after a knot used to land in `d` first, jumping the pen
         // back when the spline finally flushed.
-        if t != "SplineKnot" {
+        if *t != "SplineKnot" {
             flush_spline!();
         }
-        let (mx, my) = (
-            row_num(env, row, "X").unwrap_or(0.0),
-            row_num(env, row, "Y").unwrap_or(0.0),
-        );
-        let (x, y) = rel_adjust(t, mx, my, width, height);
-        // Feed the evaluated coordinates back into the env (#249):
-        // later rows reference earlier ones section-qualified
-        // (`Geometry1.X2`), and the stale cached V would keep the
-        // whole chain at the authored pose.
-        env.insert(format!("{}.X{}", gname, row.ix), x);
-        env.insert(format!("{}.Y{}", gname, row.ix), y);
-        match t {
+        match *t {
             "MoveTo" | "RelMoveTo" => {
                 let _ = write!(d, "M {}", emit_pt((x, y)));
                 cur = (x, y);
@@ -4188,7 +4220,28 @@ fn render_geometry(
                 let h = row_num(env, row, "A").unwrap_or(0.0);
                 let (sx, sy) = cur;
                 let chord = ((x - sx).powi(2) + (y - sy).powi(2)).sqrt();
-                if strip_jumps && crate::geom::is_stored_jump_arc(h, (x - sx, y - sy)) {
+                // Route context (#294 review): the run continues
+                // collinear INTO the arc (the previous row drew it)
+                // and OUT of it (the next row starts at the arc's
+                // end) — Visio writes jumps mid-run; an isolated
+                // authored semicircle stays a curve.
+                let prev_dir = (ri >= 2)
+                    .then(|| evald.get(ri - 1))
+                    .flatten()
+                    .filter(|(_, pt, _)| {
+                        !pt.starts_with("MoveTo") && !pt.starts_with("RelMoveTo")
+                    })
+                    .and_then(|_| evald.get(ri - 2))
+                    .map(|(_, _, p)| (sx - p.0, sy - p.1));
+                let next_dir = evald
+                    .get(ri + 1)
+                    .filter(|(_, nt, _)| {
+                        !nt.starts_with("MoveTo") && !nt.starts_with("RelMoveTo")
+                    })
+                    .map(|(_, _, p)| (p.0 - x, p.1 - y));
+                if strip_jumps
+                    && crate::geom::is_stored_jump_arc(h, (x - sx, y - sy), prev_dir, next_dir)
+                {
                     // #294: a stored jump arc straightens — the ink
                     // follows the run, and the jump overlay draws the
                     // ONE arc at the current crossing with the page's
@@ -6877,7 +6930,7 @@ mod tests {
         let chain: Vec<&Shape> = Vec::new();
         let mut out = String::new();
         render_shape(
-            &doc, &inst, 8.5, &chain, "", None, None, None, None, &mut out,
+            &doc, &inst, 8.5, &chain, "", None, None, None, None, false, &mut out,
         );
         // The controls land at gx·W: 0.5 → 2.0 and 0.75 → 3.0; the y
         // fraction 0.5 of H=2 → 1.0 (emitted negated). The old
@@ -6931,7 +6984,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, false, &mut out);
             out
         };
         // 0 = no head at all.
@@ -7089,7 +7142,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, false, &mut out);
             out
         };
         // A closed rectangle walk (returns to its start) with both
@@ -7177,7 +7230,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, false, &mut out);
             out
         };
         let flat = render("0");
@@ -7216,7 +7269,7 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
+        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, false, &mut out);
         assert!(
             out.contains(r#"stroke-width="0.00000""#),
             "an explicit zero stays zero: {out}"
@@ -7289,7 +7342,7 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, &mut out);
+        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, false, &mut out);
         // ONE even-odd fill element, first among the paths (under the
         // ink), carrying exactly the three fill-eligible subpaths.
         assert_eq!(
@@ -7859,7 +7912,7 @@ mod tests {
             ..Document::default()
         };
         let mut out = String::new();
-        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, &mut out);
+        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, false, &mut out);
         assert!(
             !out.contains("<path"),
             "NoShow'd section must not draw: {out}"
@@ -7872,7 +7925,7 @@ mod tests {
             ..Document::default()
         };
         let mut out = String::new();
-        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, &mut out);
+        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, false, &mut out);
         assert!(
             out.contains("<path"),
             "formula must beat the stale cache: {out}"
@@ -7888,7 +7941,7 @@ mod tests {
             ..Document::default()
         };
         let mut out = String::new();
-        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, &mut out);
+        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, false, &mut out);
         assert!(!out.contains("<path"), "cached NoShow must hide: {out}");
     }
 
