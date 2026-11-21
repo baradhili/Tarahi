@@ -315,9 +315,17 @@ mod tests {
         // The boundary strips them and keeps every other character.
         assert_eq!(to_native_surface(&drawing1), "Drawing1");
         // A full title composes clean in EVERY shipped catalog (fa's
-        // whole-chrome isolation is the sharpest case; es and zh-Hans
-        // join the set with #282).
-        for lang in [L10n::En, L10n::De, L10n::Fa, L10n::Es, L10n::ZhHans] {
+        // whole-chrome isolation is the sharpest case; es, zh-Hans,
+        // and the ja/ko wave join the set with #282).
+        for lang in [
+            L10n::En,
+            L10n::De,
+            L10n::Fa,
+            L10n::Es,
+            L10n::ZhHans,
+            L10n::Ja,
+            L10n::Ko,
+        ] {
             let name = strs_for(lang).msg_drawing_n(1);
             let title = to_native_surface(&format!("{name} - Tarahi"));
             assert!(
@@ -351,6 +359,15 @@ mod tests {
         assert_eq!(parse_locale("zh_TW.UTF-8"), None);
         assert_eq!(parse_locale("zh_HK.UTF-8"), None);
         assert_eq!(parse_locale("zh_Hant_TW.UTF-8"), None);
+        // #282 ja/ko: single-script languages — the code before the
+        // `_`/`.` split is the whole story, so the POSIX territories
+        // resolve without a mapping table (unlike zh's script split).
+        assert_eq!(parse_locale("ja"), Some(L10n::Ja));
+        assert_eq!(parse_locale("ja_JP.UTF-8"), Some(L10n::Ja));
+        assert_eq!(parse_locale("ja_JP.eucJP"), Some(L10n::Ja));
+        assert_eq!(parse_locale("ko"), Some(L10n::Ko));
+        assert_eq!(parse_locale("ko_KR.UTF-8"), Some(L10n::Ko));
+        assert_eq!(parse_locale("ko_KR.eucKR"), Some(L10n::Ko));
     }
 
     // Test seam: persistence against an explicit path (the real

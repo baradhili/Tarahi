@@ -2938,16 +2938,19 @@ fn emit_text(
     let cs_face = crate::textmetrics::resolve(cs_chain, tb.bold, tb.italic);
     // The per-cluster fallback CHAIN (#282 zh-Hans grew the #257 pair
     // face to a chain): the vendored Vazirmatn for the Arabic script,
-    // then the vendored Noto Sans SC for the Han glyphs the Latin and
-    // Arabic faces lack — the order `dc::register_complex_script_faces`
-    // loads them into the raster fontdb, which is the order usvg's
-    // per-cluster fallback picks a face (see the wrap's probe note).
-    // Unregistered (the dc unit-test binaries), both resolve like the
-    // Latin default and the probe never fires.
-    let fallback_faces = [
-        crate::textmetrics::resolve(Some("Vazirmatn"), tb.bold, tb.italic),
-        crate::textmetrics::resolve(Some("Noto Sans SC"), tb.bold, tb.italic),
-    ];
+    // then the vendored CJK faces in `dc::CJK_FACE_ORDER` — SC for the
+    // Han glyphs the Latin and Arabic faces lack, JP for the kana/JIS
+    // Kanji the SC subset lacks, KR for Hangul — the same order
+    // `dc::register_complex_script_faces` loads them into the raster
+    // fontdb, which is the order usvg's per-cluster fallback picks a
+    // face (see the wrap's probe note). Unregistered (the dc unit-test
+    // binaries), every entry resolves like the Latin default and the
+    // probe never fires.
+    let mut fallback_faces = Vec::new();
+    fallback_faces.push(crate::textmetrics::resolve(Some("Vazirmatn"), tb.bold, tb.italic));
+    for family in crate::CJK_FACE_ORDER {
+        fallback_faces.push(crate::textmetrics::resolve(Some(family), tb.bold, tb.italic));
+    }
     let fb_chain: Vec<&crate::textmetrics::ResolvedFace> = fallback_faces.iter().collect();
     let cs_size = tb.cs_size.unwrap_or(size);
     let script_cs = script_metrics(cs_chain, tb.pos);
@@ -6170,6 +6173,8 @@ fn is_app_font(name: &str) -> bool {
             | "liberation mono"
             | "vazirmatn"
             | "noto sans sc"
+            | "noto sans jp"
+            | "noto sans kr"
     )
 }
 

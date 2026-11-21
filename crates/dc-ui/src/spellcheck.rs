@@ -111,8 +111,10 @@ impl SpellState {
             crate::l10n::L10n::De => "de",
             crate::l10n::L10n::Fa => "fa",
             crate::l10n::L10n::Es => "es",
-            // No CJK hunspell path (#298): the zh UI checks English.
+            // No CJK hunspell path (#298): the CJK UIs check English.
             crate::l10n::L10n::ZhHans => "en",
+            crate::l10n::L10n::Ja => "en",
+            crate::l10n::L10n::Ko => "en",
         };
         spellcheck::available()
             .into_iter()

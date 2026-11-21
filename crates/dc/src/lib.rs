@@ -34,16 +34,47 @@ pub const NOTO_SANS_SC_REGULAR: &[u8] =
 /// The bold weight of [`NOTO_SANS_SC_REGULAR`].
 pub const NOTO_SANS_SC_BOLD: &[u8] = include_bytes!("../assets/fonts/noto-sc/NotoSansSC-Bold.otf");
 
+/// The vendored Japanese face (#282 ja/ko wave — Noto Sans JP subset
+/// OTFs, OFL; provenance and license beside the files in
+/// `assets/fonts/noto-jp/`). Kana + JIS kanji in the JP regional
+/// forms; no Hangul. Same one-drop contract as the SC drop.
+pub const NOTO_SANS_JP_REGULAR: &[u8] =
+    include_bytes!("../assets/fonts/noto-jp/NotoSansJP-Regular.otf");
+/// The bold weight of [`NOTO_SANS_JP_REGULAR`].
+pub const NOTO_SANS_JP_BOLD: &[u8] = include_bytes!("../assets/fonts/noto-jp/NotoSansJP-Bold.otf");
+
+/// The vendored Korean face (#282 ja/ko wave — Noto Sans KR subset
+/// OTFs, OFL; provenance and license beside the files in
+/// `assets/fonts/noto-kr/`). Hangul syllables + KS X 1001 Hanja in
+/// the KR regional forms. Same one-drop contract as the SC drop.
+pub const NOTO_SANS_KR_REGULAR: &[u8] =
+    include_bytes!("../assets/fonts/noto-kr/NotoSansKR-Regular.otf");
+/// The bold weight of [`NOTO_SANS_KR_REGULAR`].
+pub const NOTO_SANS_KR_BOLD: &[u8] = include_bytes!("../assets/fonts/noto-kr/NotoSansKR-Bold.otf");
+
+/// The CJK face order BOTH the registration below and the measurement
+/// chain (`svg.rs`'s fallback chain, which must copy the raster db's
+/// per-cluster order) resolve runs through: the family each face
+/// answers to in `textmetrics::resolve`. SC leads — the zh-Hans wave's
+/// drop — so shared Han codepoints resolve to Simplified forms
+/// everywhere and the shipped zh rendering never moves; JP follows for
+/// Japanese documents' kana/Kanji the SC subset lacks, KR last for
+/// Hangul (only the KR face covers it). The egui shell is the one
+/// place the order varies — per-context, it follows the UI language's
+/// regional face (`theme::install_fonts`), with no wrap/raster
+/// agreement to preserve.
+pub const CJK_FACE_ORDER: &[&str] = &["Noto Sans SC", "Noto Sans JP", "Noto Sans KR"];
+
 /// Register the non-Latin fallback faces into BOTH font databases —
 /// `textmetrics` (wrap measurement) and `raster` (the usvg fontdb) —
 /// so RTL and CJK shape text measures and rasterizes with the vendored
 /// faces instead of falling off at the Latin chain. Registration ORDER
 /// is the raster's per-cluster fallback order (usvg walks the database
-/// as loaded): Vazirmatn ahead of Noto Sans SC, matching how the
-/// measurement chain resolves runs. Idempotent per process (the
-/// pending lists are consumed at each database's one lazy build;
-/// repeated constructors must not stack copies). Call before the
-/// first measurement or raster: `main` does it for the CLI,
+/// as loaded): Vazirmatn ahead of the CJK faces in [`CJK_FACE_ORDER`],
+/// matching how the measurement chain resolves runs. Idempotent per
+/// process (the pending lists are consumed at each database's one lazy
+/// build; repeated constructors must not stack copies). Call before
+/// the first measurement or raster: `main` does it for the CLI,
 /// `theme::install_fonts` for every dc-ui context.
 pub fn register_complex_script_faces() {
     static DONE: std::sync::Once = std::sync::Once::new();
@@ -53,6 +84,10 @@ pub fn register_complex_script_faces() {
             VAZIRMATN_BOLD,
             NOTO_SANS_SC_REGULAR,
             NOTO_SANS_SC_BOLD,
+            NOTO_SANS_JP_REGULAR,
+            NOTO_SANS_JP_BOLD,
+            NOTO_SANS_KR_REGULAR,
+            NOTO_SANS_KR_BOLD,
         ] {
             textmetrics::register_face_bytes(bytes.to_vec());
             raster::register_face_bytes(bytes.to_vec());

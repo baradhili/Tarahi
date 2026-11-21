@@ -347,7 +347,9 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
     // Latin and Arabic faces lack — the Chinese UI falls through to it
     // last. Same one-drop contract (provenance in
     // dc/assets/fonts/noto-sc/README.md); egui has no weight axis, so
-    // the bold entry only serves glyphs Regular lacks.
+    // the bold entry only serves glyphs Regular lacks. The ja/ko wave
+    // (#282) adds the JP and KR regional faces on the same contract
+    // (provenance in dc/assets/fonts/noto-jp/ and noto-kr/).
     fonts.font_data.insert(
         "noto-sc".into(),
         egui::FontData::from_static(dc::NOTO_SANS_SC_REGULAR).into(),
@@ -356,6 +358,51 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
         "noto-sc-bold".into(),
         egui::FontData::from_static(dc::NOTO_SANS_SC_BOLD).into(),
     );
+    fonts.font_data.insert(
+        "noto-jp".into(),
+        egui::FontData::from_static(dc::NOTO_SANS_JP_REGULAR).into(),
+    );
+    fonts.font_data.insert(
+        "noto-jp-bold".into(),
+        egui::FontData::from_static(dc::NOTO_SANS_JP_BOLD).into(),
+    );
+    fonts.font_data.insert(
+        "noto-kr".into(),
+        egui::FontData::from_static(dc::NOTO_SANS_KR_REGULAR).into(),
+    );
+    fonts.font_data.insert(
+        "noto-kr-bold".into(),
+        egui::FontData::from_static(dc::NOTO_SANS_KR_BOLD).into(),
+    );
+    // The CJK fallback ORDER follows the current language's regional
+    // face — a Japanese shell paints Japanese glyph forms, a Chinese
+    // one keeps the SC forms its golden pins. egui walks the family
+    // list per glyph, and this list is per-CONTEXT (install_fonts is
+    // once-per-context and the language is known by the first frame:
+    // the production ctor runs `init_from_disk` first, the headless
+    // ctors pin English, the golden tests switch before building) —
+    // so the order never races. The canvas stack keeps the fixed
+    // `dc::CJK_FACE_ORDER`, which is what the wrap/raster agreement
+    // pins. A mid-session Language-dialog switch re-renders from the
+    // catalog with every face loaded (no tofu); the regional order
+    // stays the startup one until restart.
+    let cjk_family: &[(&str, &str)] = match crate::i18n::current() {
+        crate::i18n::L10n::Ja => &[
+            ("noto-jp", "noto-jp-bold"),
+            ("noto-sc", "noto-sc-bold"),
+            ("noto-kr", "noto-kr-bold"),
+        ],
+        crate::i18n::L10n::Ko => &[
+            ("noto-kr", "noto-kr-bold"),
+            ("noto-sc", "noto-sc-bold"),
+            ("noto-jp", "noto-jp-bold"),
+        ],
+        _ => &[
+            ("noto-sc", "noto-sc-bold"),
+            ("noto-jp", "noto-jp-bold"),
+            ("noto-kr", "noto-kr-bold"),
+        ],
+    };
     let prop = fonts
         .families
         .get_mut(&egui::FontFamily::Proportional)
@@ -364,11 +411,15 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
     prop.insert(1, "opensans-semibold".into());
     prop.push("vazirmatn".into());
     prop.push("vazirmatn-bold".into());
-    prop.push("noto-sc".into());
-    prop.push("noto-sc-bold".into());
+    for (reg, bold) in cjk_family {
+        prop.push((*reg).into());
+        prop.push((*bold).into());
+    }
     if let Some(mono) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
         mono.push("vazirmatn".into());
-        mono.push("noto-sc".into());
+        for (reg, _) in cjk_family {
+            mono.push((*reg).into());
+        }
     }
     ctx.set_fonts(fonts);
     // #257 text-direction coordination: the SAME Vazirmatn drop feeds

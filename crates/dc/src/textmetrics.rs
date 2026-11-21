@@ -289,41 +289,76 @@ pub(crate) fn split_runs(text: &str, covers: &[&dyn Fn(char) -> bool]) -> Vec<(u
 // — at any character, ignoring the kinsoku rules. The classes below
 // give the wrap break opportunities BETWEEN ideographs (UAX #14
 // lite), with the two prohibition families Chinese typography
-// requires.
+// requires. The ja wave (#282) extends both ends of the classes to
+// Japanese: halfwidth kana join the grant class, and the Japanese
+// kinsoku starters (small kana, prolonged mark, iteration marks,
+// middle dots) join the line-head prohibitions.
 
-/// The "break between any two" class: CJK ideographs and kana.
-/// Hangul is deliberately absent — Korean text is space-separated
-/// and needs no intra-word breaks (a future `ko` rides this wave's
-/// fonts but not these classes).
+/// The "break between any two" class: CJK ideographs and kana, both
+/// full- and half-width. Hangul is deliberately absent — Korean text
+/// is space-separated and needs no intra-word breaks (`ko` rides the
+/// wave's fonts, not these classes).
 fn is_cjk_ideographic(c: char) -> bool {
     matches!(
         c,
-        '\u{3400}'..='\u{4DBF}'     // CJK Extension A
+        '\u{3005}'..='\u{3007}'     // 々〆〇 (iteration/closing/zero)
+            | '\u{3400}'..='\u{4DBF}'     // CJK Extension A
             | '\u{4E00}'..='\u{9FFF}' // CJK Unified Ideographs (the zh workhorse)
             | '\u{F900}'..='\u{FAFF}' // CJK Compatibility Ideographs
             | '\u{3040}'..='\u{30FF}' // Hiragana + Katakana (ja rides the same classes)
             | '\u{31F0}'..='\u{31FF}' // Katakana Phonetic Extensions
+            | '\u{FF66}'..='\u{FF9F}' // halfwidth kana (legacy Japanese Visio text)
     )
 }
 
 /// Full-width CJK closing punctuation (kinsoku 禁則): grants the
-/// break AFTER it (sentence enders) and never starts a line.
+/// break AFTER it (sentence enders) and never starts a line. The
+/// Japanese additions at the tail — the middle dots and the halfwidth
+/// closers — behave the same way.
 fn is_cjk_closing(c: char) -> bool {
-    const CLOSING: &str = "。，、；：！？）］｝〉》」』】〕”’…—～·％￥";
+    const CLOSING: &str = "。，、；：！？）］｝〉》」』】〕”’…—～·％￥・｡｣､･";
     CLOSING.contains(c)
 }
 
-/// Chars a line may never START with: the CJK closers plus the ASCII
-/// closers riding along, so a Han char before an ASCII `.`, `)`, …
-/// stays glued the same way. ASCII closers SUPPRESS only — they never
-/// GRANT a boundary (CodeRabbit on #282: letting them grant split
-/// `x.y` into `x.`|`y`), so Latin-internal tokenization stays
-/// space-driven. Opening punct needs no set of its own — it grants no
-/// break (see [`cjk_break_between`]), so a line never ends right
-/// after （ 「 『. Public to the wrap's emergency splitter, which must
-/// never leave a forbidden char to OPEN a line either.
+/// Japanese kinsoku (行頭禁則) starters — the small kana, the
+/// prolonged sound mark, the iteration marks and the halfwidth small
+/// kana a wrapped Japanese line may never BEGIN with (UAX #14's CJ
+/// class, lite). Each stays glueable to its preceding character: a
+/// break may END a line on the preceding char, never leave one of
+/// these to open the next.
+fn is_ja_no_line_start(c: char) -> bool {
+    matches!(
+        c,
+        '\u{3005}'                      // 々
+            | '\u{309D}'..='\u{309E}'   // ゝゞ
+            | '\u{3041}' | '\u{3043}' | '\u{3045}' | '\u{3047}' | '\u{3049}' // ぁぃぅぇぉ
+            | '\u{3063}'                // っ
+            | '\u{3083}' | '\u{3085}' | '\u{3087}' | '\u{308E}' // ゃゅょゎ
+            | '\u{30A1}' | '\u{30A3}' | '\u{30A5}' | '\u{30A7}' | '\u{30A9}' // ァィゥェォ
+            | '\u{30C3}'                // ッ
+            | '\u{30E3}' | '\u{30E5}' | '\u{30E7}' | '\u{30EE}' // ャュョヮ
+            | '\u{30F5}' | '\u{30F6}'   // ヵヶ
+            | '\u{30FC}'                // ー
+            | '\u{30FD}'..='\u{30FE}'   // ヽヾ
+            | '\u{31F0}'..='\u{31FF}'   // small katakana extensions ㇰㇱ…
+            | '\u{FF67}'..='\u{FF70}'   // halfwidth small kana + ｰ
+    )
+}
+
+/// Chars a line may never START with: the CJK closers, the ASCII
+/// closers riding along, and the Japanese kinsoku starters, so a Han
+/// char before an ASCII `.`, `)`, … or a kana before `ー` stays glued
+/// the same way. ASCII closers SUPPRESS only — they never GRANT a
+/// boundary (CodeRabbit on #282: letting them grant split `x.y` into
+/// `x.`|`y`), so Latin-internal tokenization stays space-driven.
+/// Opening punct needs no set of its own — it grants no break (see
+/// [`cjk_break_between`]), so a line never ends right after （ 「 『.
+/// Public to the wrap's emergency splitter, which must never leave a
+/// forbidden char to OPEN a line either.
 pub(crate) fn line_head_forbidden(c: char) -> bool {
-    is_cjk_closing(c) || matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '%')
+    is_cjk_closing(c)
+        || is_ja_no_line_start(c)
+        || matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '%')
 }
 
 /// Explicit non-breaking controls (UAX #14 class GL and friends): no
@@ -1024,7 +1059,10 @@ mod tests {
         use super::cjk_break_between as brk;
         // Between two ideographs: the workhorse opportunity.
         assert!(brk('图', '表'));
-        assert!(brk('フ', 'ォ'));
+        assert!(brk('フ', 'ロ'));
+        // フォ stays glued (the ja wave's kinsoku: small kana never
+        // start a line — see ja_kinsoku_extends_the_cjk_classes).
+        assert!(!brk('フ', 'ォ'));
         // Closing punctuation never STARTS a line, and grants the
         // break that FOLLOWS it (sentence enders).
         assert!(!brk('图', '。'));
@@ -1057,6 +1095,65 @@ mod tests {
         // (CodeRabbit PR review).
         assert!(!brk('カ', '\u{3099}'));
         assert!(brk('\u{3099}', 'ク'));
+    }
+
+    /// #282 ja: the Japanese kinsoku extensions — halfwidth kana join
+    /// the grant class, and the Japanese starters (small kana, the
+    /// prolonged mark, iteration marks, the middle dots and the
+    /// halfwidth closers) never open a line but grant the break after
+    /// themselves. Korean stays outside the grant classes entirely
+    /// (Hangul is space-separated; `ko` rides the wave's fonts only).
+    #[test]
+    fn ja_kinsoku_extends_the_cjk_classes() {
+        use super::cjk_break_between as brk;
+        // Halfwidth kana split like their fullwidth twins…
+        assert!(brk('ｱ', 'ｲ'));
+        // …and the prolonged mark grants the break AFTER it but never
+        // starts a line, full- or halfwidth.
+        assert!(brk('ー', 'ア'));
+        assert!(!brk('ア', 'ー'));
+        assert!(brk('ｰ', 'ｱ'));
+        assert!(!brk('ｱ', 'ｰ'));
+        // Small kana, iteration marks and middle dots stay glued to
+        // their predecessor.
+        assert!(!brk('ア', 'ィ'));
+        assert!(!brk('カ', 'っ'));
+        assert!(!brk('追', '々'));
+        assert!(!brk('サ', '・'));
+        // The halfwidth closers behave like the fullwidth ones.
+        assert!(!brk('サ', '｡'));
+        assert!(brk('｡', 'サ'));
+        assert!(!brk('サ', '､'));
+        assert!(brk('､', 'サ'));
+        // The wrap tokenizer agrees: ハロー wraps as ハ / ロー (the
+        // prolonged mark glued), サン・ハイツ drops the dot onto the
+        // first line and breaks after it.
+        let toks = |s: &str| {
+            wrap_tokens(s)
+                .into_iter()
+                .map(|t| (t.sep.to_string(), t.tok.to_string()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            toks("ハロー"),
+            vec![("".into(), "ハ".into()), ("".into(), "ロー".into())]
+        );
+        assert_eq!(
+            toks("サン・ハイツ"),
+            vec![
+                ("".into(), "サ".into()),
+                ("".into(), "ン・".into()),
+                ("".into(), "ハ".into()),
+                ("".into(), "イ".into()),
+                ("".into(), "ツ".into()),
+            ]
+        );
+        // Korean: no intra-word opportunities — 한글 measures as one
+        // space-driven word.
+        assert_eq!(toks("한글 문서"), vec![
+            ("".into(), "한글".into()),
+            (" ".into(), "문서".into()),
+        ]);
     }
 
     /// #282 zh-Hans: the wrap tokenizer reproduces the space-only

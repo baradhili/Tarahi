@@ -6660,12 +6660,14 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
 ];
 #[allow(dead_code)]
-static ALL_LANGS: [L10n; 5] = [
+static ALL_LANGS: [L10n; 7] = [
     // languages as an array
     L10n::De,
     L10n::En,
     L10n::Es,
     L10n::Fa,
+    L10n::Ja,
+    L10n::Ko,
     L10n::ZhHans,
 ];
 
@@ -6676,6 +6678,8 @@ pub enum L10n {
     En,
     Es,
     Fa,
+    Ja,
+    Ko,
     ZhHans,
 }
 
@@ -6694,6 +6698,8 @@ impl FromStr for L10n {
             "en" => Ok(Self::En),
             "es" => Ok(Self::Es),
             "fa" => Ok(Self::Fa),
+            "ja" => Ok(Self::Ja),
+            "ko" => Ok(Self::Ko),
             "zh-Hans" => Ok(Self::ZhHans),
             _ => Err(format!("Unknown language: {}", s)),
         }
@@ -6708,6 +6714,8 @@ impl Deref for L10n {
             Self::En => "en",
             Self::Es => "es",
             Self::Fa => "fa",
+            Self::Ja => "ja",
+            Self::Ko => "ko",
             Self::ZhHans => "zh-Hans",
         }
     }
@@ -6741,6 +6749,8 @@ impl L10n {
             Self::En => "English",
             Self::Es => "Español",
             Self::Fa => "فارسی",
+            Self::Ja => "日本語",
+            Self::Ko => "한국어",
             Self::ZhHans => "简体中文",
         }
     }
@@ -6751,7 +6761,9 @@ impl L10n {
             Self::En => 47149..92840,
             Self::Es => 92840..143054,
             Self::Fa => 143054..202770,
-            Self::ZhHans => 202770..243510,
+            Self::Ja => 202770..253220,
+            Self::Ko => 253220..299805,
+            Self::ZhHans => 299805..340545,
         }
     }
     /// Load a L10nLanguage from the embedded data.
