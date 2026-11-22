@@ -5559,7 +5559,11 @@ impl App {
         // route rows (stored hops add rows) — the style rewrite covers
         // rows 2..=4 only, so any row beyond 4 is stale after the
         // change and is removed here, before the reconcile re-adds
-        // what the new route actually needs.
+        // what the new route actually needs. `sections_named` returns
+        // IX-sorted sections, so `.first()` IS the IX-0 section the
+        // rewrite targets (a #303-batch review worried about
+        // sheet-child enumeration order; the sort in vsdx's model
+        // makes that unreachable).
         if let Some(geo) = sh.sheet.sections_named("Geometry").first() {
             for ix in geo.rows.iter().map(|r| r.ix).collect::<Vec<_>>() {
                 if ix > 4 {
