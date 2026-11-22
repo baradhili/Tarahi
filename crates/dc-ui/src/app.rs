@@ -134,6 +134,11 @@ pub struct App {
     /// glue — the decomposition direction).
     options_open: bool,
     options_draft: Option<crate::options::Draft>,
+    /// Set for the single frame the Options dialog opened on
+    /// (CodeRabbit round): the Enter that ACTIVATED the backstage
+    /// button is still in that frame's input, so the dialog's own
+    /// key checks must skip it once.
+    options_opened_this_frame: bool,
     /// The app-level options store (#268): user name/initials (the
     /// Comments author field) and the Save page's AutoRecover
     /// settings. Production opens the persisted copy; headless ctors
@@ -723,6 +728,7 @@ impl App {
             spell: crate::spellcheck::SpellState::headless(),
             options_open: false,
             options_draft: None,
+            options_opened_this_frame: false,
             options_store: crate::options::Options::ephemeral(),
             hyperlink_draft: None,
             fields_open: None,
@@ -16756,18 +16762,20 @@ impl App {
             crate::options::LangChoice::Concrete(crate::i18n::current())
         };
         self.options_open = true;
+        self.options_opened_this_frame = true;
         self.options_draft = Some(crate::options::Draft::capture(&self.options_store, lang));
     }
 
     /// #268: the Options dialog over the backstage. Rendered inside
-    /// the backstage branch (the backstage early-returns); the dialog
+    /// the backstage branch (the backstage early-returns); the modal
     /// manages its own Esc, so nothing here touches the key handling.
     fn options_window(&mut self, ctx: &egui::Context) {
         if !self.options_open {
             return;
         }
+        let freshly_opened = std::mem::take(&mut self.options_opened_this_frame);
         let outcome = match self.options_draft.as_mut() {
-            Some(draft) => crate::options::window(ctx, &mut self.options_open, draft),
+            Some(draft) => crate::options::window(ctx, draft, freshly_opened),
             None => crate::options::Outcome::Cancel,
         };
         match outcome {

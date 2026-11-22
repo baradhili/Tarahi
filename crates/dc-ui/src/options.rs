@@ -15,9 +15,11 @@
 //! app-level — nothing here writes into the `.vsdx`.
 //!
 //! The dialog contract is the Hyperlinks dialog's (#71): Enter = OK,
-//! Apply commits without closing, Cancel / Esc / the title ✕ discard
-//! the draft and close. The dialog manages its own Esc (#110 audit) —
-//! the backstage's Esc guard skips while it is up.
+//! Apply commits without closing, Cancel / Esc discard the draft and
+//! close. It is a true MODAL (the #166 `egui::Modal` pattern) — the
+//! backdrop blocks the backstage behind it, and a backdrop click is
+//! ignored (it never discards edits). The dialog manages its own Esc
+//! (#110 audit) — the backstage's Esc guard skips while it is up.
 
 use std::path::{Path, PathBuf};
 
@@ -271,57 +273,61 @@ pub(crate) enum Outcome {
 // Dialog window
 // ---------------------------------------------------------------------------
 
-/// Render the Options dialog. `open` is the title-✕ flag (flipping it
-/// false reports [`Outcome::Cancel`] — the ✕ never commits); the
-/// returned outcome drives app.rs's commit/discard glue.
-pub(crate) fn window(ctx: &Context, open: &mut bool, draft: &mut Draft) -> Outcome {
+/// Render the Options dialog. `freshly_opened` is true on the frame
+/// the dialog opened — the Enter that ACTIVATED the backstage button
+/// is still in the input then, so the key checks skip it once (the
+/// CodeRabbit round); the returned outcome drives app.rs's
+/// commit/discard glue.
+pub(crate) fn window(ctx: &Context, draft: &mut Draft, freshly_opened: bool) -> Outcome {
     let mut outcome = Outcome::None;
-    egui::Window::new(i18n::strs().msg_options())
-        .open(open)
-        .collapsible(false)
-        .resizable(false)
-        .default_width(620.0)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
-            // #71 contract: the dialog manages its own Esc — Esc
-            // discards the draft and closes (Windows dialog semantics;
-            // the backstage's Esc guard skips while this dialog is
-            // up). #110 audit: Enter is the dialog's OK.
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                outcome = Outcome::Cancel;
-            } else if ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)
-            {
-                outcome = Outcome::Ok;
-            }
-            ui.with_layout(crate::app::dialog_dir(), |ui| {
-                ui.horizontal(|ui| {
-                    nav(ui, draft);
-                    ui.separator();
-                    ui.vertical(|ui| {
-                        ui.set_min_width(400.0);
-                        match draft.page {
-                            Page::General => general_page(ui, draft),
-                            Page::Save => save_page(ui, draft),
-                            Page::Language => language_page(ui, draft),
-                        }
-                    });
-                });
-                ui.add_space(10.0);
-                crate::app::row_rev(ui, |ui| {
-                    if ui.button(i18n::strs().msg_ok()).clicked() {
-                        outcome = Outcome::Ok;
-                    }
-                    if ui.button(i18n::strs().msg_apply()).clicked() {
-                        outcome = Outcome::Apply;
-                    }
-                    if ui.button(i18n::strs().msg_cancel()).clicked() {
-                        outcome = Outcome::Cancel;
+    // MODAL (#166 precedent; the CodeRabbit round): the backdrop
+    // blocks input to the backstage behind the dialog — a Back/rail/
+    // page-content click behind it must never strand the draft (the
+    // dialog renders only in the backstage branch). The title rides
+    // inside the frame (a modal has no title bar); Windows-dialog
+    // semantics: a backdrop click is IGNORED — it never discards
+    // edits — and Esc cancels.
+    egui::Modal::new(egui::Id::unique("dc-options")).show(ctx, |ui| {
+        ui.with_layout(crate::app::dialog_dir(), |ui| {
+            ui.strong(i18n::strs().msg_options());
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                nav(ui, draft);
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.set_min_width(400.0);
+                    match draft.page {
+                        Page::General => general_page(ui, draft),
+                        Page::Save => save_page(ui, draft),
+                        Page::Language => language_page(ui, draft),
                     }
                 });
             });
+            ui.add_space(10.0);
+            crate::app::row_rev(ui, |ui| {
+                if ui.button(i18n::strs().msg_ok()).clicked() {
+                    outcome = Outcome::Ok;
+                }
+                if ui.button(i18n::strs().msg_apply()).clicked() {
+                    outcome = Outcome::Apply;
+                }
+                if ui.button(i18n::strs().msg_cancel()).clicked() {
+                    outcome = Outcome::Cancel;
+                }
+            });
         });
-    if !*open {
+    });
+    // #71 contract: the dialog manages its own Esc — Esc discards the
+    // draft and closes (the backstage's Esc guard skips while this
+    // dialog is up). #110 audit: Enter is the dialog's OK. Both skip
+    // the opening frame (see `freshly_opened`).
+    if freshly_opened {
+        return outcome;
+    }
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         outcome = Outcome::Cancel;
+    } else if ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) {
+        outcome = Outcome::Ok;
     }
     outcome
 }

@@ -10183,3 +10183,47 @@ fn options_general_user_name_feeds_the_comment_author() {
         ann[0].1
     );
 }
+
+#[test]
+fn options_dialog_survives_the_activating_enter() {
+    let mut h = harness_with_blank();
+    h.run();
+    h.get_by_label("File").click();
+    h.run();
+    // The keyboard path: focus the rail's Options entry and activate
+    // it with Enter — the SAME Enter must not read as the dialog's OK
+    // (CodeRabbit round).
+    h.get_by_label("Options").focus();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(
+        h.state().debug_options_open(),
+        "the dialog stays open after the activating Enter"
+    );
+    assert!(h.state().backstage);
+}
+
+#[test]
+fn options_modal_blocks_backstage_navigation() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    // The modal backdrop blocks the rail: Back neither closes the
+    // backstage nor strands the dialog (CodeRabbit round).
+    h.get_by_label("<  Back").click();
+    h.run();
+    assert!(
+        h.state().backstage,
+        "Back is blocked while Options is up"
+    );
+    assert!(h.state().debug_options_open(), "the dialog stays up");
+    // Cancel closes the dialog, and Back works again.
+    h.get_by_label("Cancel").click();
+    h.run();
+    assert!(!h.state().debug_options_open());
+    h.get_by_label("<  Back").click();
+    h.run();
+    assert!(
+        !h.state().backstage,
+        "Back closes the backstage once Options is closed"
+    );
+}
