@@ -1193,15 +1193,23 @@ pub fn plan_connector_frame(
             let sec_ix = geo.map_or(0, |g| g.ix);
             // Row 1 keeps its attrs (the corpus MoveTo marker), reset
             // to the begin corner; rows 2..=4 are fresh typed LineTos
-            // with the route values.
+            // with the route values. The origin clones only a LIVE
+            // IX-1 row — a Del="1" shadow would drag its marker into
+            // the rebuilt route and delete the origin — and its type
+            // is forced to an absolute MoveTo (the reconcile's row-1
+            // hardening: route_owned_rows admits a LineTo/RelLineTo
+            // IX 1, which never positions the pen, and a kept
+            // RelMoveTo scales by the frame on the next walk; review
+            // on the #303 batch).
             let mut first = geo
-                .and_then(|g| g.rows.iter().find(|r| r.ix == 1))
+                .and_then(|g| g.rows.iter().find(|r| r.ix == 1 && !r.is_deleted()))
                 .cloned()
                 .unwrap_or_else(|| vsdx::model::Row {
                     t: Some("MoveTo".into()),
                     ix: 1,
                     ..Default::default()
                 });
+            first.t = Some("MoveTo".into());
             for (name, v) in [("X", 0.0), ("Y", 0.0)] {
                 let cell = Cell::value(format!("{v:.6}"));
                 if let Some(pos) = first.cells.iter().position(|(n, _)| n == name) {
@@ -3093,6 +3101,77 @@ mod reroute_master_tests {
         let geo = conn.sheet.sections_named("Geometry").remove(0);
         assert_eq!(geo.rows.len(), 3, "undo restores the three-row pose");
         assert!(geo.rows.iter().all(|r| r.ix != 4), "row 4 gone");
+    }
+
+    /// Review on the #303 batch: the replace cloned whatever IX-1 row
+    /// the section carried — a `Del="1"` shadow dragged its marker
+    /// into the rebuilt route (deleting the origin), and a non-MoveTo
+    /// IX 1 (gate-admissible: route_owned_rows only checks
+    /// straight-ness) never positioned the pen. The origin clones only
+    /// LIVE IX-1 rows and its type is forced to an absolute MoveTo.
+    #[test]
+    fn reroute_replace_origin_is_a_live_move_to() {
+        for shadow in [true, false] {
+            let (mut ed, page_id) = doc_with_master_connector(100, false);
+            {
+                let conn = ed
+                    .doc
+                    .pages[0]
+                    .shapes
+                    .iter_mut()
+                    .find(|s| s.id == 11)
+                    .unwrap();
+                for c in conn.sheet.children.iter_mut() {
+                    if let vsdx::model::SheetChild::Section(sec) = c {
+                        if sec.name == "Geometry" {
+                            for r in sec.rows.iter_mut() {
+                                if r.ix == 1 {
+                                    if shadow {
+                                        r.attrs.push(("Del".into(), "1".into()));
+                                    } else {
+                                        r.t = Some("LineTo".into());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // The Z-growth move: the route needs all four rows.
+            for sh in ed.doc.pages[0].shapes.iter_mut() {
+                if sh.id == 10 {
+                    sh.sheet.set_cell("PinX", VCell::value("3.5"));
+                    sh.sheet.set_cell("PinY", VCell::value("3.5"));
+                }
+            }
+            RerouteConnectors::new(page_id, vec![10])
+                .apply(&mut ed.doc)
+                .unwrap();
+            let conn = ed.doc.pages[0].shapes.iter().find(|s| s.id == 11).unwrap();
+            let geo = conn.sheet.sections_named("Geometry").remove(0);
+            assert_eq!(
+                geo.rows.len(),
+                4,
+                "shadow={shadow}: the route grew the missing row"
+            );
+            let first = &geo.rows[0];
+            assert_eq!(first.ix, 1);
+            assert!(
+                !first.is_deleted(),
+                "shadow={shadow}: the origin carries no Del marker: {first:?}"
+            );
+            assert_eq!(
+                first.t.as_deref(),
+                Some("MoveTo"),
+                "shadow={shadow}: the origin is an absolute MoveTo"
+            );
+            for (name, want) in [("X", 0.0), ("Y", 0.0)] {
+                assert!(
+                    (first.cell(name).and_then(|c| c.numeric()).unwrap() - want).abs() < 1e-9,
+                    "shadow={shadow}: origin {name} = {want}"
+                );
+            }
+        }
     }
 
     /// #303's conservative half: a connector whose frame does NOT
