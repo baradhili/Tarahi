@@ -25,6 +25,7 @@ mod l10n;
 mod layers;
 pub mod loading;
 pub mod mini_toolbar;
+pub mod options;
 pub mod os_theme;
 pub mod perf;
 pub mod props;

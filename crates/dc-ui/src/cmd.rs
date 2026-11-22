@@ -607,7 +607,11 @@ fn curved_control_caches(
     env.insert("Height".to_string(), h_new);
     for g in conn.sheet.sections_named("Geometry") {
         for r in &g.rows {
-            if r.t.as_deref() != Some("CubicBezTo") {
+            // Deleted rows stay deleted (PR #305 review): a cache
+            // write planned here lands AFTER a rows_replace on the
+            // commit path and SetRowCell would recreate the row; the
+            // preview discards it — the two paths would diverge.
+            if r.is_deleted() || r.t.as_deref() != Some("CubicBezTo") {
                 continue;
             }
             for name in ["A", "B", "C", "D"] {
@@ -769,22 +773,41 @@ pub struct FramePlan {
     pub cells: Vec<(String, f64, Option<String>)>,
     /// Literal route-row rewrites: (row ix, x, y).
     pub rows: Vec<(i64, f64, f64)>,
+    /// #303 GROWTH: a wholesale replacement for the connector's route
+    /// rows (a fresh `MoveTo(0,0)` + the route's `LineTo`s,
+    /// renumbered 1..=n) in the connector's own Geometry section
+    /// (section IX carried — a section with IX≠0 must not be missed
+    /// or a second one created, CodeRabbit on the #303 batch). `Some`
+    /// on the grow path — the connector's live rows are all straight
+    /// runs or RECOGNIZED stored jumps, so the route owns them: the
+    /// new route replaces the set (growing a 3-row instance to
+    /// Visio's four-row Z, or normalizing a reconciled hop-carrying
+    /// row set back to the bare route — the tail
+    /// `ReconcileLineJumps` re-adds hops at the new crossings).
+    /// `None` keeps the per-row `rows` path.
+    pub rows_replace: Option<(i64, Vec<vsdx::model::Row>)>,
     /// Curve-control and inherited-row cache refreshes:
     /// (section ix, row ix, cell name, cell).
     pub row_cells: Vec<(i64, i64, String, Cell)>,
 }
 
 /// Plan [`FramePlan`] for one connector at `beg`→`endp` (post-move
-/// page-space endpoints).
+/// page-space endpoints). `pre` is the PRE-drag pose
+/// ((begin, end)) — the #218 literal-row translation delta — and
+/// `jump_radii` is the page's resolved hop radii
+/// (`dc::geom::jump_radii_in`): the grow path's stored-jump allowance
+/// classifies `ArcTo` rows at the same evidence the renderer strips
+/// with.
 pub fn plan_connector_frame(
     doc: &Document,
     conn: &vsdx::model::Shape,
     chain: &[&vsdx::model::Shape],
     beg: (f64, f64),
     endp: (f64, f64),
-    pre_end: (f64, f64),
-    pre_beg: (f64, f64),
+    pre: ((f64, f64), (f64, f64)),
+    jump_radii: (f64, f64),
 ) -> FramePlan {
+    let (pre_beg, pre_end) = pre;
     let get = |n: &str| doc.resolve_cell(conn, chain, n).and_then(|v| v.numeric());
     let mut cells: Vec<(String, f64, Option<String>)> = Vec::new();
 
@@ -825,16 +848,31 @@ pub fn plan_connector_frame(
     // whenever the endpoints differ in y. Curves keep the
     // #175 translation — rewriting an arc's rows to the
     // route polyline would destroy the curve.
+    // The master's first-geometry rows — the chain half of the
+    // line-geometry and route-ownership tests below.
+    let master_rows: Vec<vsdx::model::Row> = conn
+        .master
+        .and_then(|mid| doc.master(mid))
+        .and_then(|m| m.shapes.first())
+        .and_then(|root| {
+            root.sheet
+                .sections_named("Geometry")
+                .into_iter()
+                .next()
+                .map(|g| g.rows.clone())
+        })
+        .unwrap_or_default();
+    // A LINE-geometry master connector — every live row a straight
+    // run or a RECOGNIZED stored jump (route_owned_rows: after the
+    // reconcile stores hops on a master-based line connector, its
+    // ArcTo rows must not push it onto the curve-translate path —
+    // CodeRabbit on the #303 batch).
     let line_frame = conn.master.is_some()
         && conn
             .sheet
             .sections_named("Geometry")
             .first()
-            .is_some_and(|g| {
-                g.rows.iter().all(|r| {
-                    matches!(r.t.as_deref(), None | Some("MoveTo") | Some("LineTo"))
-                })
-            });
+            .is_some_and(|g| route_owned_rows(g, &master_rows, jump_radii));
     // #226 (MisterDiagram parity evidence): the CHORD-frame
     // masters — a master-based curve connector whose
     // inherited geometry rows derive their coordinates from
@@ -998,10 +1036,17 @@ pub fn plan_connector_frame(
             None => {}
         }
     }
-    // #174/#175: only rewrite route rows the connector
-    // ALREADY has — SetRowCell materializes missing rows,
-    // which would grow a 2-row arc master (MoveTo +
-    // EllipticalArcTo) into a 4-row elbow polyline.
+    // #174/#175: the route plan fills rows the connector
+    // ALREADY has — the arc/curve masters below never see
+    // route rows, so a 2-row arc master (MoveTo +
+    // EllipticalArcTo) can't grow into a 4-row elbow
+    // polyline. The one growth exception is the #303
+    // LINE-geometry rule in the route-frame branch: a
+    // straight connector whose frame spans the endpoints
+    // plans the full Z and apply materializes the missing
+    // rows through InsertSectionRow (with a proper row
+    // type — SetRowCell's chain-seeded default row would
+    // serialize typeless).
     let existing: Vec<i64> = {
         let mut v: Vec<i64> = conn
             .sheet
@@ -1012,7 +1057,7 @@ pub fn plan_connector_frame(
         v.sort_unstable();
         v
     };
-    let planned_rows: Vec<(i64, f64, f64)> = if conn.master.is_some() && !line_frame {
+    let planned_rows = if conn.master.is_some() && !line_frame {
         // #175: a MASTER-based CURVE connector's rows are
         // its own frame (an arc's EllipticalArcTo) —
         // translating the EXISTING literal coordinates by
@@ -1061,7 +1106,8 @@ pub fn plan_connector_frame(
                 Some(_) => None,
             }
         };
-        conn.sheet
+        let translated = conn
+            .sheet
             .sections_named("Geometry")
             .first()
             .map(|g| {
@@ -1079,7 +1125,9 @@ pub fn plan_connector_frame(
                     })
                     .collect::<Vec<_>>()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // A curve keeps its rows — no wholesale replace on this path.
+        (translated, None)
     } else {
         // The begin-corner corpus frame: the planned route,
         // filtered to rows the connector has; a connector
@@ -1089,6 +1137,41 @@ pub fn plan_connector_frame(
         // band snapshot rows must be rewritten to span the
         // new endpoints, with the MoveTo reset to (0,0) so
         // the frame's origin is the begin point.
+        //
+        // #303: when the route OWNS the row set (every live row
+        // a straight run or a RECOGNIZED stored jump) and the
+        // frame SPANS the new endpoints, the plan REPLACES the
+        // rows wholesale — growing a three-row instance to
+        // Visio's four-row Z instead of bending the last row
+        // into a diagonal, and normalizing a reconciled
+        // hop-carrying set (whose row count can exceed four)
+        // back to the bare route; the tail ReconcileLineJumps
+        // re-adds hops at the new crossings. Authored curves
+        // and formula-driven rows keep the per-row path.
+        let dim_landed = |n: &str, v: f64| {
+            cells
+                .iter()
+                .find(|(cn, _, _)| cn == n)
+                .map(|(_, cv, _)| (cv - v).abs() < 1e-9)
+                .unwrap_or(false)
+        };
+        let frame_spans = dim_landed("Width", w_new) && dim_landed("Height", h_new);
+        let route4 = crate::connectors::route(&style, beg, endp).len() == 4;
+        let overgrown = existing.iter().any(|ix| *ix > 4);
+        // line_frame's route_owned_rows call already decided this
+        // (a master-based line connector is route-owned by
+        // definition); a synthetic connector is owned when its rows
+        // are straight-or-stored-jump.
+        let rows_owned = line_frame
+            || conn
+                .sheet
+                .sections_named("Geometry")
+                .first()
+                .is_some_and(|g| route_owned_rows(g, &master_rows, jump_radii));
+        let grow = (route4 || overgrown)
+            && !existing.is_empty()
+            && rows_owned
+            && frame_spans;
         let mut planned: Vec<(i64, f64, f64)> = rows
             .iter()
             .enumerate()
@@ -1108,8 +1191,75 @@ pub fn plan_connector_frame(
         if line_frame && existing.contains(&1) {
             planned.insert(0, (1, 0.0, 0.0));
         }
-        planned
+        let rows_replace = grow.then(|| {
+            let geos = conn.sheet.sections_named("Geometry");
+            let geo = geos.first();
+            let sec_ix = geo.map_or(0, |g| g.ix);
+            // Row 1 keeps its attrs (the corpus MoveTo marker), reset
+            // to the begin corner; rows 2..=4 are fresh typed LineTos
+            // with the route values. The origin clones only a LIVE
+            // IX-1 row — a Del="1" shadow would drag its marker into
+            // the rebuilt route and delete the origin — and its type
+            // is forced to an absolute MoveTo (the reconcile's row-1
+            // hardening: route_owned_rows admits a LineTo/RelLineTo
+            // IX 1, which never positions the pen, and a kept
+            // RelMoveTo scales by the frame on the next walk; review
+            // on the #303 batch).
+            let mut first = geo
+                .and_then(|g| g.rows.iter().find(|r| r.ix == 1 && !r.is_deleted()))
+                .cloned()
+                .unwrap_or_else(|| vsdx::model::Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    ..Default::default()
+                });
+            first.t = Some("MoveTo".into());
+            for (name, v) in [("X", 0.0), ("Y", 0.0)] {
+                let cell = Cell::value(format!("{v:.6}"));
+                if let Some(pos) = first.cells.iter().position(|(n, _)| n == name) {
+                    first.cells[pos].1 = cell;
+                } else {
+                    first.cells.push((name.to_string(), cell));
+                }
+            }
+            let mut rep = vec![first];
+            for (i, (x, y)) in rows.iter().enumerate() {
+                rep.push(vsdx::model::Row {
+                    t: Some("LineTo".into()),
+                    ix: (i + 2) as i64,
+                    cells: vec![
+                        ("X".to_string(), Cell::value(format!("{x:.6}"))),
+                        ("Y".to_string(), Cell::value(format!("{y:.6}"))),
+                    ],
+                    ..Default::default()
+                });
+            }
+            // LIVE master rows the new route does not cover would come
+            // back as MASTER-ONLY rows through the walk — the replace
+            // drops the instance rows that shadowed them (live
+            // overrides or Del markers), resurrecting a stale tail and
+            // knocking the connector out of the reconcile's coverage
+            // gate. Keep them suppressed with #293 deleted overrides,
+            // the reconcile's (K) block exactly — including when the
+            // instance GROWS: what matters is the MASTER's row set,
+            // not the old instance's (review on the #303 batch).
+            let have: Vec<i64> = rep.iter().map(|r| r.ix).collect();
+            for m in &master_rows {
+                if !m.is_deleted() && !have.contains(&m.ix) {
+                    rep.push(vsdx::model::Row {
+                        t: m.t.clone(),
+                        ix: m.ix,
+                        attrs: vec![("Del".to_string(), "1".to_string())],
+                        ..Default::default()
+                    });
+                }
+            }
+            (sec_ix, rep)
+        });
+        let planned = if grow { Vec::new() } else { planned };
+        (planned, rows_replace)
     };
+    let (planned_rows, rows_replace) = planned_rows;
     // The post-write frame the row-cache refreshes evaluate
     // against: the planned value when the frame loop
     // rewrote the dim, the current effective value when it
@@ -1137,8 +1287,147 @@ pub fn plan_connector_frame(
     FramePlan {
         cells,
         rows: planned_rows,
+        rows_replace,
         row_cells,
     }
+}
+
+/// The #303 grow gate: may the ROUTE own this connector's live
+/// geometry rows wholesale? True when every live row is a straight
+/// run, or an `ArcTo` that classifies as a STORED JUMP at `radii` —
+/// the same evidence the renderer's strip uses
+/// (`dc::geom::is_stored_jump_arc`). Straight rows are replaceable
+/// wherever their literals live (the per-row path rewrites them
+/// equally — the corpus instances carry PARTIAL rows with per-cell
+/// inheritance, e.g. a MoveTo with only X local); an `ArcTo` reads
+/// its A/X/Y through the instance-or-master chain and must be
+/// literal (formula-driven arcs take the conservative path). Authored
+/// curves (`EllipticalArcTo`, splines) and an authored semicircle
+/// answer false: a wholesale route replace would destroy them.
+fn route_owned_rows(
+    g: &vsdx::model::Section,
+    master_rows: &[vsdx::model::Row],
+    radii: (f64, f64),
+) -> bool {
+    let live: Vec<&vsdx::model::Row> = g.rows.iter().filter(|r| !r.is_deleted()).collect();
+    if live.is_empty() {
+        return false;
+    }
+    // A literal cell through the chain: the instance's own cell, else
+    // the master row's — a value with no formula, or an inherited
+    // cache (`F="Inh"`/`No Formula`) whose V carries the literal. An
+    // inherited cache counts ONLY when its master source carries no
+    // effective formula — a formula-driven master cell (the Line-arc
+    // `Width*1`) is derived tracking, and freezing its stale cached V
+    // as a literal would destroy the authored row (#226's rule, the
+    // planner's inherited_geo_formula; review on the #303 batch).
+    let master_row = |ix: i64| master_rows.iter().find(|r| r.ix == ix);
+    let lit = |r: &vsdx::model::Row, n: &str| -> Option<f64> {
+        let own = r.cell(n);
+        let cell = own.or_else(|| master_row(r.ix).and_then(|m| m.cell(n)))?;
+        if matches!(cell.f.as_deref(), Some("Inh") | Some("No Formula")) && own.is_some() {
+            let derived = master_row(r.ix)
+                .and_then(|m| m.cell(n))
+                .and_then(|c| c.f.as_deref())
+                .is_some_and(|f| f != "Inh" && f != "No Formula");
+            if derived {
+                return None;
+            }
+        }
+        match cell.f.as_deref() {
+            None | Some("Inh") | Some("No Formula") => cell.numeric(),
+            _ => None,
+        }
+    };
+    // The EFFECTIVE type: a typeless local row inherits its master
+    // row's type (a None-`T` override over a master `CubicBezTo` is a
+    // curve, not a straight run — CodeRabbit on the #303 batch).
+    fn eff_t<'a>(
+        r: &'a vsdx::model::Row,
+        master_rows: &'a [vsdx::model::Row],
+    ) -> Option<&'a str> {
+        r.t.as_deref().or_else(|| {
+            master_rows
+                .iter()
+                .find(|m| m.ix == r.ix)
+                .and_then(|m| m.t.as_deref())
+        })
+    }
+    let straight = |t: Option<&str>| {
+        matches!(
+            t,
+            Some("MoveTo") | Some("RelMoveTo") | Some("LineTo") | Some("RelLineTo")
+        )
+    };
+    let pt =
+        |r: &vsdx::model::Row| -> Option<(f64, f64)> { Some((lit(r, "X")?, lit(r, "Y")?)) };
+    for (i, r) in live.iter().enumerate() {
+        let t = eff_t(r, master_rows);
+        if straight(t) {
+            // A straight run is replaceable only where its
+            // coordinates are LITERALS through the chain — a formula
+            // (`X=Width`) is authored tracking and must survive
+            // (CodeRabbit on the #303 batch).
+            if lit(r, "X").is_none() || lit(r, "Y").is_none() {
+                return false;
+            }
+            continue;
+        }
+        if t != Some("ArcTo") {
+            return false;
+        }
+        // A stored jump: literal A + endpoint, a semicircle on a run
+        // that continues on both sides, at the page-radius evidence.
+        let (Some(a), Some(end)) = (lit(r, "A"), pt(r)) else {
+            return false;
+        };
+        let Some(start) = i.checked_sub(1).and_then(|p| pt(live[p])) else {
+            return false;
+        };
+        let mut prev_dir = None;
+        let mut p = i;
+        while p > 0 {
+            p -= 1;
+            if !straight(eff_t(live[p], master_rows)) {
+                break; // a curve neighbor ends the run
+            }
+            let Some(q) = pt(live[p]) else {
+                return false;
+            };
+            let d = (start.0 - q.0, start.1 - q.1);
+            if d.0.hypot(d.1) > 1e-9 {
+                prev_dir = Some(d);
+                break;
+            }
+        }
+        let mut next_dir = None;
+        let mut n = i + 1;
+        while n < live.len() {
+            if !straight(eff_t(live[n], master_rows)) {
+                break;
+            }
+            let Some(q) = pt(live[n]) else {
+                return false;
+            };
+            let d = (q.0 - end.0, q.1 - end.1);
+            if d.0.hypot(d.1) > 1e-9 {
+                next_dir = Some(d);
+                break;
+            }
+            n += 1;
+        }
+        if !dc::geom::is_stored_jump_arc(
+            a,
+            (end.0 - start.0, end.1 - start.1),
+            prev_dir,
+            next_dir,
+            radii.0,
+            radii.1,
+        ) {
+            return false;
+        }
+    }
+    true
 }
 
 impl Command for RerouteConnectors {
@@ -1194,6 +1483,9 @@ impl Command for RerouteConnectors {
             conn_id: i64,
             cells: Vec<(String, f64, Option<String>)>,
             rows: Vec<(i64, f64, f64)>,
+            /// #303: the wholesale route-row replacement (the grow
+            /// path) — one SetSectionRows replaces the row set.
+            rows_replace: Option<(i64, Vec<vsdx::model::Row>)>,
             /// #202: CubicBezTo control-cache refreshes — (section
             /// ix, row ix, cell name, new cell). The curved route's
             /// controls are
@@ -1229,14 +1521,14 @@ impl Command for RerouteConnectors {
             };
             // A stale page id (a queued/replayed reroute after the
             // page's deletion) is a no-op, not a panic (#218 review).
-            let Some(page_shapes) = doc
-                .pages
-                .iter()
-                .find(|p| p.id == self.page)
-                .map(|p| &p.shapes)
-            else {
+            let Some(page_ref) = doc.pages.iter().find(|p| p.id == self.page) else {
                 return Ok(());
             };
+            let page_shapes = &page_ref.shapes;
+            // #303: the grow gate's stored-jump evidence — the page's
+            // resolved hop radii, the same values the renderer strips
+            // with.
+            let jump_radii = dc::geom::jump_radii_in(doc, page_ref);
             for (conn_id, recs) in candidates {
                 let Some(conn) = vsdx::model::find_shape_by_id(page_shapes, conn_id) else {
                     continue;
@@ -1320,13 +1612,16 @@ impl Command for RerouteConnectors {
                     .get(&conn.id)
                     .copied()
                     .unwrap_or(((bx, by), (ex, ey)));
-                let plan = plan_connector_frame(doc, conn, &chain, beg, endp, pre_end, pre_beg);
+                let plan = plan_connector_frame(
+                    doc, conn, &chain, beg, endp, (pre_beg, pre_end), jump_radii,
+                );
                 let mut cells = end_cells;
                 cells.extend(plan.cells);
                 plans.push(Plan {
                     conn_id: conn.id,
                     cells,
                     rows: plan.rows,
+                    rows_replace: plan.rows_replace,
                     row_cells: plan.row_cells,
                 });
             }
@@ -1366,6 +1661,15 @@ impl Command for RerouteConnectors {
                 c.apply(doc)?;
                 self.inner.push(c);
             }
+            // #303: the grow path replaces the route rows wholesale —
+            // growing a three-row instance to the four-row Z, or
+            // normalizing a reconciled hop-carrying set — in ONE
+            // undoable SetSectionRows.
+            if let Some((sec_ix, rep)) = plan.rows_replace {
+                let mut c = dc_core::SetSectionRows::new(scope.clone(), "Geometry", sec_ix, rep);
+                c.apply(doc)?;
+                self.inner.push(Box::new(c));
+            }
             for (ix, x, y) in plan.rows {
                 for (cell, v) in [("X", x), ("Y", y)] {
                     let mut c = dc_core::SetRowCell::new(
@@ -1396,6 +1700,14 @@ impl Command for RerouteConnectors {
                 self.inner.push(Box::new(c));
             }
         }
+        // #303: the reroute moved routes — the page's stored jumps may
+        // sit at stale crossings now (the #303 repro's crossed A→B
+        // keeps its old bump while nothing crosses there any more).
+        // Reconcile them in the SAME undo step, after every connector
+        // landed.
+        let mut rec = ReconcileLineJumps::new(self.page);
+        rec.apply(doc)?;
+        self.inner.push(Box::new(rec));
         // #178: capture the merged touch list while `inner` still
         // holds the spent commands — `undo` clears it, but the
         // history asks `touched()` after undo.
@@ -1404,6 +1716,620 @@ impl Command for RerouteConnectors {
             all.merge(c.touched(doc));
         }
         self.touched_cache = all;
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> anyhow::Result<()> {
+        for c in self.inner.iter_mut().rev() {
+            c.undo(doc)?;
+        }
+        self.inner.clear();
+        Ok(())
+    }
+}
+
+/// #303: reconcile the page's stored jump `ArcTo` rows with the
+/// CURRENT crossings — the file-level twin of the #294 render-time
+/// strip. Tarahi straightens a stored arc when RENDERING; other
+/// readers (Visio included) draw what the rows say, so a move that
+/// changes the crossings must rewrite them: stale arcs drop, and hops
+/// land at the current crossings as stored `ArcTo` rows
+/// (`A = −radius`, the corpus-pinned form) — Visio opening a saved
+/// file sees the same hops Tarahi's overlay draws. #301's twin rides
+/// the same pass with `with_strip`: a jump-size edit classifies at
+/// the PRE-edit radius (so stored arcs stay recognized) and rewrites
+/// at the NEW radius — the decoration tracks the setting, like
+/// Visio's own re-layout.
+///
+/// Scope guard (authored geometry is never touched): a connector
+/// reconciles only when its first Geometry section is fully
+/// route-owned — every live row a straight run or an `ArcTo` the
+/// renderer itself strips (`geometry_hit_segments`, the exact same
+/// walk), all row coordinates literal, no master-only rows. Curves,
+/// splines, formula-driven rows and `FixedRoute` connectors keep
+/// their rows verbatim.
+pub struct ReconcileLineJumps {
+    page: i64,
+    /// Classification radius override (#301): `Some(pre_edit)` when a
+    /// jump-size edit just moved the page radius.
+    strip: Option<(f64, f64)>,
+    inner: Vec<Box<dyn Command>>,
+    touched_cache: dc_core::TouchList,
+    /// Whether apply has run — a completed NO-OP (empty cache) must
+    /// not fall back to candidate discovery and dirty every
+    /// connector's layer (CodeRabbit on the #303 batch).
+    applied: bool,
+}
+
+impl ReconcileLineJumps {
+    pub fn new(page: i64) -> ReconcileLineJumps {
+        ReconcileLineJumps {
+            page,
+            strip: None,
+            inner: Vec::new(),
+            touched_cache: dc_core::TouchList::default(),
+            applied: false,
+        }
+    }
+
+    /// Classify stored jumps at `strip` (the PRE-edit radius), rewrite
+    /// at the page's current radius (#301's normalize-on-edit).
+    pub fn with_strip(page: i64, strip: (f64, f64)) -> ReconcileLineJumps {
+        ReconcileLineJumps {
+            strip: Some(strip),
+            ..ReconcileLineJumps::new(page)
+        }
+    }
+}
+
+/// One connector's reconciliation target: the row-local route rows.
+fn reconciled_rows(
+    radii: (f64, f64),
+    shown: bool,
+    frame: &dc::geom::HitFrame,
+    pts: &[(f64, f64)],
+    hops: &[dc::geom::Jump],
+    first_row: Option<&vsdx::model::Row>,
+) -> Vec<vsdx::model::Row> {
+    let to_local = |p: (f64, f64)| frame.to_local(p);
+    let point_cells = |p: (f64, f64)| -> Vec<(String, Cell)> {
+        vec![
+            ("X".to_string(), Cell::value(format!("{:.6}", p.0))),
+            ("Y".to_string(), Cell::value(format!("{:.6}", p.1))),
+        ]
+    };
+    // Collapse collinear skeleton points first: a stripped arc leaves
+    // its chord stubs, and a straight route's degenerate elbows
+    // repeat — the hop split re-introduces its own endpoints, so the
+    // merged skeleton is the minimal true route. A middle point
+    // survives only when it TURNS the route: look ahead (the point
+    // after it through the last kept), since the first candidate has
+    // no prior direction.
+    let mut skel: Vec<(f64, f64)> = vec![pts[0]];
+    for (i, p) in pts[1..pts.len() - 1].iter().enumerate() {
+        let q = pts[i + 2];
+        let keep = match skel.last().copied() {
+            Some(a) => {
+                let (d1, d2) = ((p.0 - a.0, p.1 - a.1), (q.0 - p.0, q.1 - p.1));
+                let (l1, l2) = (d1.0.hypot(d1.1), d2.0.hypot(d2.1));
+                // Collinear AND same-direction: a reversal (an
+                // excursion out and back) is a real route feature and
+                // survives (CodeRabbit on the #303 batch).
+                let removable = l1 < 1e-9
+                    || (l2 >= 1e-9
+                        && (d1.0 * d2.1 - d1.1 * d2.0).abs() <= 1e-6 * l1 * l2
+                        && d1.0 * d2.0 + d1.1 * d2.1 > 0.0);
+                !removable
+            }
+            None => true,
+        };
+        if keep {
+            skel.push(*p);
+        }
+    }
+    let last = pts[pts.len() - 1];
+    if skel
+        .last()
+        .is_none_or(|a| (a.0 - last.0).hypot(a.1 - last.1) >= 1e-9)
+    {
+        skel.push(last);
+    }
+    let pts = &skel[..];
+    // Row 1 keeps its attrs (the corpus MoveTo marker) at the
+    // skeleton's start — but its TYPE becomes an absolute `MoveTo`:
+    // the written X/Y are absolute locals, and a kept `RelMoveTo`
+    // would scale them by the frame on the next walk (CodeRabbit on
+    // the #303 batch).
+    let mut first = first_row
+        .cloned()
+        .unwrap_or_else(|| vsdx::model::Row {
+            t: Some("MoveTo".into()),
+            ix: 1,
+            ..Default::default()
+        });
+    first.t = Some("MoveTo".into());
+    let start = to_local(pts[0]);
+    for (name, v) in [("X", start.0), ("Y", start.1)] {
+        let cell = Cell::value(format!("{v:.6}"));
+        if let Some(pos) = first.cells.iter().position(|(n, _)| n == name) {
+            first.cells[pos].1 = cell;
+        } else {
+            first.cells.push((name.to_string(), cell));
+        }
+    }
+    let mut rows = vec![first];
+    let push_line = |rows: &mut Vec<vsdx::model::Row>, p: (f64, f64)| {
+        let ix = rows.len() as i64 + 1;
+        rows.push(vsdx::model::Row {
+            t: Some("LineTo".into()),
+            ix,
+            cells: point_cells(p),
+            ..Default::default()
+        });
+    };
+    for (si, w) in pts.windows(2).enumerate() {
+        let (a, b) = (w[0], w[1]);
+        let seg = (b.0 - a.0, b.1 - a.1);
+        let len = seg.0.hypot(seg.1);
+        if len < 1e-9 {
+            continue;
+        }
+        let dir = (seg.0 / len, seg.1 / len);
+        // (F) The arc's axis picks the radius in the ROW-LOCAL frame
+        // — the frame's rotation can turn a page-horizontal run into
+        // a local-vertical one, and the classifier re-reads the arc
+        // through the local chord; picking the axis in page space
+        // could write |A| at the OTHER axis's radius and fail the 5%
+        // band on the next walk (CodeRabbit on the #303 batch). The
+        // frame transform is rigid, so page and local distances
+        // agree and the same r places the split points.
+        let ldir = {
+            let e = to_local(b);
+            let s0 = to_local(a);
+            (e.0 - s0.0, e.1 - s0.1)
+        };
+        let r = if ldir.0.abs() >= ldir.1.abs() {
+            radii.0
+        } else {
+            radii.1
+        };
+        // The hops on THIS segment, ordered along the run.
+        let mut here: Vec<f64> = hops
+            .iter()
+            .filter(|j| {
+                let d = (j.at.0 - a.0, j.at.1 - a.1);
+                let t = d.0 * dir.0 + d.1 * dir.1;
+                let perp = (d.0 * dir.1 - d.1 * dir.0).abs();
+                t > 1e-9 && t < len - 1e-9 && perp < 1e-6
+            })
+            .map(|j| (j.at.0 - a.0) * dir.0 + (j.at.1 - a.1) * dir.1)
+            .collect::<Vec<_>>();
+        here.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+        // The classifier strips only an axis-ALIGNED local chord
+        // (`is_stored_jump_arc`) — an arc stored on a diagonal run
+        // could never be recognized again, so a diagonal crossing
+        // stays plain in the file (the overlay still draws the hop;
+        // PR #305 review).
+        let axis_aligned = {
+            let alen = ldir.0.hypot(ldir.1);
+            alen > 1e-9 && ldir.0.abs().min(ldir.1.abs()) <= alen * 0.02
+        };
+        let arcs = shown && r > 0.0 && axis_aligned;
+        // (C) Two hops closer than 2r would emit an arc starting
+        // before the previous one ends — a backwards segment. Walk a
+        // cursor: a hop that does not clear the last arc's end is
+        // left as a plain crossing.
+        let mut cursor = 0.0f64;
+        for t in here {
+            // (D) The geometry walks cap at 64 rows: an arc pair
+            // must leave room for every remaining route point (the
+            // segment-end lines) and the caller's master shadows —
+            // reserve, don't just cap (PR #305 review). Remaining
+            // hops render through the overlay instead.
+            if rows.len() + 2 + (pts.len() - (si + 1)) > 60 {
+                break;
+            }
+            // The 2e-6 margin keeps the gap between adjacent arcs
+            // nonzero after six-decimal row formatting — a zero-length
+            // LineTo between arcs breaks the classifier's neighbor
+            // walk and both arcs would stop being stored jumps (PR
+            // #305 review).
+            if !arcs || t - r <= cursor + 2e-6 || t + r >= len - 1e-9 {
+                continue; // overlapping or no room — a plain crossing
+            }
+            cursor = t + r;
+            let p0 = (a.0 + dir.0 * (t - r), a.1 + dir.1 * (t - r));
+            let p1 = (a.0 + dir.0 * (t + r), a.1 + dir.1 * (t + r));
+            push_line(&mut rows, to_local(p0));
+            let ix = rows.len() as i64 + 1;
+            let end = to_local(p1);
+            rows.push(vsdx::model::Row {
+                t: Some("ArcTo".into()),
+                ix,
+                cells: vec![
+                    ("X".to_string(), Cell::value(format!("{:.6}", end.0))),
+                    ("Y".to_string(), Cell::value(format!("{:.6}", end.1))),
+                    // The corpus form: A = −radius (#294's pinned row).
+                    ("A".to_string(), Cell::value(format!("{:.6}", -r))),
+                ],
+                ..Default::default()
+            });
+        }
+        push_line(&mut rows, to_local(b));
+    }
+    rows
+}
+
+impl Command for ReconcileLineJumps {
+    fn touched(&self, doc: &Document) -> dc_core::TouchList {
+        // #178's pattern: post-apply the cache names what changed;
+        // pre-apply (a queued/replayed command, a Macro's pre-damage
+        // harvest) discover the candidate connectors read-only. After
+        // a completed apply, the cache is the answer even when EMPTY
+        // — a no-op touched nothing (falling through to discovery
+        // would Ink every connector and waste their layer rasters).
+        if self.applied {
+            return self.touched_cache.clone();
+        }
+        let Some(page) = doc.pages.iter().find(|p| p.id == self.page) else {
+            return dc_core::TouchList::default();
+        };
+        let mut list = dc_core::TouchList::default();
+        for s in &page.shapes {
+            if s.type_.as_deref() == Some("Guide") {
+                continue;
+            }
+            let mut chain = vec![s];
+            if let Some(mid) = s.master {
+                if let Some(root) = doc.master(mid).and_then(|m| m.shapes.first()) {
+                    chain.push(root);
+                }
+            }
+            if dc::geom::is_connector_in(doc, &chain, s) {
+                list.shapes.push(dc_core::Touched {
+                    page: self.page,
+                    shape: s.id,
+                    touch: dc_core::Touch::Ink,
+                    sub: None,
+                });
+            }
+        }
+        // No connectors → no candidates → nothing changes: an EMPTY
+        // touch list, never a page touch (a no-op reconcile must not
+        // dirty the page and clobber bounded damage regions).
+        list
+    }
+
+    fn label(&self) -> String {
+        "reconcile line jumps".into()
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> anyhow::Result<()> {
+        let Some(page) = doc.pages.iter().find(|p| p.id == self.page) else {
+            return Ok(());
+        };
+        let radii = dc::geom::jump_radii_in(doc, page);
+        let strip = self.strip.unwrap_or(radii);
+        let shown = page.line_jumps_shown();
+        // The hops compute at the CURRENT radius with the override's
+        // classification (#301): page_jumps_stripping is exactly the
+        // render overlay's crossing walk. Hidden jumps never consume
+        // hops (reconciled_rows writes no arcs), so the page-wide
+        // crossing discovery is skipped and the hop list is empty —
+        // which also keeps the no-op fast path honest: a connector
+        // with no stored arcs is not rewritten (collapsing degenerate
+        // elbows) just because INVISIBLE crossings exist. The
+        // per-connector strip pass below is untouched: stored arcs
+        // fail plain==stripped on their own, so Hide Line Jumps still
+        // straightens them (review on the #303 batch).
+        let hops = if shown {
+            dc::geom::page_jumps_stripping(doc, page, &[], self.strip)
+        } else {
+            Vec::new()
+        };
+        // Snapshot the candidates' data read-only, then write.
+        struct Cand {
+            id: i64,
+            geo_ix: i64,
+            rows: Vec<vsdx::model::Row>,
+        }
+        let mut cands: Vec<Cand> = Vec::new();
+        for s in &page.shapes {
+            if s.type_.as_deref() == Some("Guide") {
+                continue;
+            }
+            // Hidden layers: nothing persists layer hiding in the
+            // model (only AddLayer seeds Visible=1), so the file's
+            // own visibility set is what other readers see — no
+            // hidden filter here.
+            let mut chain = vec![s];
+            let msize = s
+                .master
+                .and_then(|mid| doc.master(mid))
+                .and_then(|m| m.shapes.first())
+                .map(|root| {
+                    chain.push(root);
+                    let g = |n: &str| {
+                        doc.resolve_cell(root, &[root], n)
+                            .and_then(|c| c.numeric())
+                            .unwrap_or(1.0)
+                    };
+                    (g("Width"), g("Height"))
+                })
+                .unwrap_or((1.0, 1.0));
+            if !dc::geom::is_connector_in(doc, &chain, s) {
+                continue;
+            }
+            let weight = doc
+                .resolve_cell(s, &chain, "LineWeight")
+                .and_then(|c| c.numeric())
+                .unwrap_or(0.01);
+            if weight == 0.0 {
+                continue;
+            }
+            if doc
+                .resolve_cell(s, &chain, "FixedRoute")
+                .and_then(|c| c.numeric())
+                .is_some_and(|v| v == 1.0)
+            {
+                continue;
+            }
+            // One OWN geometry section, fully route-owned: all live
+            // rows straight-or-stored-jump with literal coordinates,
+            // and no live master-only rows the replace would orphan.
+            let geos = s.sheet.sections_named("Geometry");
+            if geos.len() != 1 {
+                continue;
+            }
+            let geo = &geos[0];
+            // The section's own IX — the replace targets it, never a
+            // hardcoded 0 (CodeRabbit on the #303 batch).
+            let geo_ix = geo.ix;
+            // The walk reads at most MAX_WALK_ROWS rows — a longer
+            // section's tail is invisible to it, and a replace built
+            // from the walk would ERASE those rows from the file
+            // (review on the #303 batch). Leave such connectors
+            // verbatim, like other authored geometry; the overlay
+            // still draws hops render-time for the crossings it sees.
+            if geo.rows.len() > dc::geom::MAX_WALK_ROWS {
+                continue;
+            }
+            let live: Vec<&vsdx::model::Row> =
+                geo.rows.iter().filter(|r| !r.is_deleted()).collect();
+            if live.len() < 2 {
+                continue;
+            }
+            // Literal through the chain (the corpus instances carry
+            // PARTIAL rows — a MoveTo with only X local, the rest
+            // inherited per-cell): instance cell first, else the
+            // master root's row. Straight rows need no check at all
+            // (the rewrite replaces them wherever their values live);
+            // an ArcTo must read A/X/Y as literals somewhere.
+            let master_geo_rows: Vec<i64> = chain
+                .get(1)
+                .and_then(|root| {
+                    root.sheet
+                        .sections_named("Geometry")
+                        .into_iter()
+                        .next()
+                        .map(|g| g.rows.iter().filter(|r| !r.is_deleted()).map(|r| r.ix).collect::<Vec<_>>())
+                })
+                .unwrap_or_default();
+            let master_row = |ix: i64| -> Option<&vsdx::model::Row> {
+                chain.get(1).and_then(|root| {
+                    root.sheet
+                        .sections_named("Geometry")
+                        .into_iter()
+                        .next()
+                        .and_then(|g| g.rows.iter().find(|r| r.ix == ix))
+                })
+            };
+            // An inherited cache (`F="Inh"`/`No Formula`) counts as a
+            // literal only when its master source carries no effective
+            // formula — the planner's #226 rule (see route_owned_rows)
+            // applied to the reconcile walk (review on the #303 batch).
+            let lit = |r: &vsdx::model::Row, n: &str| -> Option<f64> {
+                let own = r.cell(n);
+                let cell = own.or_else(|| master_row(r.ix).and_then(|m| m.cell(n)))?;
+                if matches!(cell.f.as_deref(), Some("Inh") | Some("No Formula"))
+                    && own.is_some()
+                {
+                    let derived = master_row(r.ix)
+                        .and_then(|m| m.cell(n))
+                        .and_then(|c| c.f.as_deref())
+                        .is_some_and(|f| f != "Inh" && f != "No Formula");
+                    if derived {
+                        return None;
+                    }
+                }
+                match cell.f.as_deref() {
+                    None | Some("Inh") | Some("No Formula") => cell.numeric(),
+                    _ => None,
+                }
+            };
+            let mut arctos = 0usize;
+            let mut movetos = 0usize;
+            let mut owned = true;
+            for r in &live {
+                // The EFFECTIVE type (a typeless local row inherits
+                // its master row's type — a None-`T` override over a
+                // master `CubicBezTo` is a curve, CodeRabbit on the
+                // #303 batch).
+                let t = r
+                    .t
+                    .as_deref()
+                    .or_else(|| master_row(r.ix).and_then(|m| m.t.as_deref()));
+                match t {
+                    Some("MoveTo") | Some("RelMoveTo") => {
+                        movetos += 1;
+                        // Straight rows must read literal coordinates
+                        // through the chain — a formula (`X=Width`) is
+                        // authored tracking and must survive the
+                        // rewrite.
+                        if lit(r, "X").is_none() || lit(r, "Y").is_none() {
+                            owned = false;
+                            break;
+                        }
+                    }
+                    Some("LineTo") | Some("RelLineTo") => {
+                        if lit(r, "X").is_none() || lit(r, "Y").is_none() {
+                            owned = false;
+                            break;
+                        }
+                    }
+                    Some("ArcTo") => {
+                        arctos += 1;
+                        if lit(r, "A").is_none()
+                            || lit(r, "X").is_none()
+                            || lit(r, "Y").is_none()
+                        {
+                            owned = false;
+                            break;
+                        }
+                    }
+                    _ => {
+                        owned = false;
+                        break;
+                    }
+                }
+            }
+            if !owned {
+                continue;
+            }
+            // Multi-stroke sections stay verbatim: the walk emits one
+            // disjoint segment run per stroke and the rewrite flattens
+            // them into a single polyline — welding the strokes with
+            // LineTos across gaps the original never drew (review on
+            // the #303 batch).
+            if movetos > 1 {
+                continue;
+            }
+            // No live master-only rows: they render through
+            // inheritance and would survive a row replace untouched.
+            // A deleted shadow row (#293) is NOT master-only — the
+            // instance owns its master row as a delete, and the walk
+            // filters it — so it counts as coverage. Building `have`
+            // from live rows alone would strand a once-shortened
+            // connector out of eligibility forever (hide → show never
+            // restores the saved arcs; review on the #303 batch).
+            let have: Vec<i64> = geo.rows.iter().map(|r| r.ix).collect();
+            if master_geo_rows.iter().any(|ix| !have.contains(ix)) {
+                continue;
+            }
+            let master_root = chain.get(1).copied();
+            let frame = dc::geom::hit_frame(doc, &chain, s, msize);
+            // The renderer's own walk, twice: the divergence between
+            // the plain and stripped polylines counts STRIPPED arcs —
+            // eligible only when every ArcTo strips (an authored arc
+            // keeps its geometry verbatim).
+            let plain = dc::geom::geometry_hit_segments(s, master_root, &frame, None);
+            let stripped =
+                dc::geom::geometry_hit_segments(s, master_root, &frame, Some(strip));
+            if plain.len() != stripped.len() + 3 * arctos {
+                continue;
+            }
+            // No-op fast path: nothing strips (no stored arcs) and no
+            // hops land on this connector — the rows are already the
+            // truth, and rewriting them would only churn the file
+            // (collapsing a straight route's degenerate elbows).
+            let my_hops: Vec<dc::geom::Jump> =
+                hops.iter().filter(|j| j.jumper == s.id).copied().collect();
+            if plain.len() == stripped.len() && my_hops.is_empty() {
+                continue;
+            }
+            let mut pts: Vec<(f64, f64)> = Vec::with_capacity(stripped.len() + 1);
+            if let Some(first) = stripped.first() {
+                pts.push(first.0);
+            }
+            for (_, b) in &stripped {
+                pts.push(*b);
+            }
+            if pts.len() < 2 {
+                continue;
+            }
+            let mut target = reconciled_rows(
+                radii,
+                shown,
+                &frame,
+                &pts,
+                &my_hops,
+                live.first().copied(),
+            );
+            // (K) A shorter target would UN-cover master rows the
+            // instance's overrides used to shadow — the walk would
+            // re-add them as master-only rows and resurrect a stale
+            // tail (CodeRabbit on the #303 batch). Keep them shadowed
+            // with the #293 deleted-marker form.
+            let have_t: Vec<i64> = target.iter().map(|r| r.ix).collect();
+            for ix in &master_geo_rows {
+                if !have_t.contains(ix) {
+                    target.push(vsdx::model::Row {
+                        t: master_row(*ix).and_then(|m| m.t.clone()),
+                        ix: *ix,
+                        attrs: vec![("Del".to_string(), "1".to_string())],
+                        ..Default::default()
+                    });
+                }
+            }
+            // Idempotence: write only on a real change — compare the
+            // TARGET against the section's FULL row vector (the
+            // #293 deleted shadow rows included), value-wise.
+            let all_rows = &geo.rows;
+            let same = target.len() == all_rows.len()
+                && target.iter().zip(all_rows.iter()).all(|(t, r)| {
+                    t.t == r.t
+                        && t.is_deleted() == r.is_deleted()
+                        && match (lit(r, "X"), lit(r, "Y")) {
+                            (Some(x), Some(y)) => {
+                                let (tx, ty) = (
+                                    t.cell("X").and_then(|c| c.numeric()).unwrap_or(f64::NAN),
+                                    t.cell("Y").and_then(|c| c.numeric()).unwrap_or(f64::NAN),
+                                );
+                                (tx - x).abs() < 1e-6 && (ty - y).abs() < 1e-6
+                            }
+                            // A deleted shadow row carries no values —
+                            // type + Del marker are the comparison.
+                            _ => t.is_deleted() && r.is_deleted(),
+                        }
+                        && match (t.t.as_deref(), r.cell("A").and_then(|c| c.numeric())) {
+                            (Some("ArcTo"), Some(a)) => {
+                                (t.cell("A").and_then(|c| c.numeric()).unwrap_or(f64::NAN) - a)
+                                    .abs()
+                                    < 1e-6
+                            }
+                            (Some("ArcTo"), None) => false,
+                            _ => true,
+                        }
+                });
+            if same {
+                continue;
+            }
+            cands.push(Cand {
+                id: s.id,
+                geo_ix,
+                rows: target,
+            });
+        }
+        // Pass 2: one wholesale row replace per changed connector.
+        for c in cands {
+            let mut cmd = dc_core::SetSectionRows::new(
+                Scope::Shape {
+                    page: self.page,
+                    shape: c.id,
+                },
+                "Geometry",
+                c.geo_ix,
+                c.rows,
+            );
+            cmd.apply(doc)?;
+            self.inner.push(Box::new(cmd));
+        }
+        let mut all = dc_core::TouchList::default();
+        for c in &self.inner {
+            all.merge(c.touched(doc));
+        }
+        self.touched_cache = all;
+        self.applied = true;
         Ok(())
     }
 
@@ -1891,7 +2817,11 @@ mod reroute_master_tests {
         cmd.apply(&mut ed.doc).unwrap();
         let conn = ed.doc.pages[0].shapes.iter().find(|s| s.id == 11).unwrap();
         let geo = conn.sheet.sections_named("Geometry").remove(0);
-        assert_eq!(geo.rows.len(), 3, "no row materializes: {rows:?}", rows = geo.rows.len());
+        // #303: the route now GROWS the instance to the full Z (Visio
+        // writes four rows for this pose class) — the reused deleted
+        // row un-deletes as before, and the missing tail row
+        // materializes typed.
+        assert_eq!(geo.rows.len(), 4, "the route grows the tail row: {rows:?}", rows = geo.rows.len());
         let r3 = geo.rows.iter().find(|r| r.ix == 3).unwrap();
         assert!(
             !r3.is_deleted(),
@@ -1902,6 +2832,23 @@ mod reroute_master_tests {
             r3.cell("Y").and_then(|c| c.numeric()).is_some_and(|y| y.abs() > 1e-6),
             "row 3 carries route values: {:?}",
             r3.cells
+        );
+        let r4 = geo.rows.iter().find(|r| r.ix == 4).unwrap();
+        assert!(
+            r4.t.as_deref() == Some("LineTo"),
+            "the grown row is a typed LineTo: {:?}",
+            r4.t
+        );
+        // Undo restores the deleted three-row pose exactly.
+        cmd.undo(&mut ed.doc).unwrap();
+        let conn = ed.doc.pages[0].shapes.iter().find(|s| s.id == 11).unwrap();
+        let geo = conn.sheet.sections_named("Geometry").remove(0);
+        assert_eq!(geo.rows.len(), 3, "undo restores the three-row pose");
+        let r3 = geo.rows.iter().find(|r| r.ix == 3).unwrap();
+        assert!(
+            r3.is_deleted() && r3.cells.is_empty(),
+            "undo restores the Del marker and the empty cells: {:?}",
+            (r3.attrs.clone(), r3.cells.clone())
         );
     }
 
@@ -2150,6 +3097,454 @@ mod reroute_master_tests {
             (r2.cell("X").and_then(|c| c.numeric()).unwrap() - 1.0).abs() < 1e-9
                 && r2.cell("Y").and_then(|c| c.numeric()).unwrap().abs() < 1e-9,
             "undo restores the original row snapshot (1.0, 0.0)"
+        );
+    }
+
+    // ---- #303: a reroute grows the connector's Geometry to the route ----
+
+    /// #303 item 1: a three-row line-geometry instance (the #303
+    /// repro's saved C→D: MoveTo + two LineTo) rerouted to a
+    /// dy-dominant pose grows to the full four-row Z — the values
+    /// Visio 2021 writes for the same move (the issue's measured
+    /// rows) — instead of bending the last row into a diagonal.
+    #[test]
+    fn reroute_grows_a_three_row_connector_to_the_full_z() {
+        let (mut ed, page_id) = doc_with_master_connector(100, false);
+        // Drop row 4: the three-row instance.
+        dc_core::commands::RemoveSectionRow::new(
+            dc_core::Scope::Shape {
+                page: page_id,
+                shape: 11,
+            },
+            "Geometry",
+            0,
+            dc_core::commands::RowSel::Ix(4),
+        )
+        .apply(&mut ed.doc)
+        .unwrap();
+        // Move the target DOWN-RIGHT so the route's dy dominates: the
+        // connection point (PinX−1, PinY) lands at (2.5, 3.5); begin
+        // stays (1, 6) → dx = 1.5, dy = −2.5, mid-y = 4.75.
+        for sh in ed.doc.pages[0].shapes.iter_mut() {
+            if sh.id == 10 {
+                sh.sheet.set_cell("PinX", VCell::value("3.5"));
+                sh.sheet.set_cell("PinY", VCell::value("3.5"));
+            }
+        }
+        let mut cmd = RerouteConnectors::new(page_id, vec![10]);
+        cmd.apply(&mut ed.doc).unwrap();
+        let conn = ed.doc.pages[0].shapes.iter().find(|s| s.id == 11).unwrap();
+        let geo = conn.sheet.sections_named("Geometry").remove(0);
+        assert_eq!(geo.rows.len(), 4, "the route grew the missing row");
+        let rows: Vec<(i64, &str, f64, f64)> = geo
+            .rows
+            .iter()
+            .map(|r| {
+                (
+                    r.ix,
+                    r.t.as_deref().unwrap_or(""),
+                    r.cell("X").and_then(|c| c.numeric()).unwrap(),
+                    r.cell("Y").and_then(|c| c.numeric()).unwrap(),
+                )
+            })
+            .collect();
+        // Visio's Z: begin-corner MoveTo, then elbow, elbow, end.
+        let want = [
+            (1, "MoveTo", 0.0, 0.0),
+            (2, "LineTo", 0.0, -1.25),
+            (3, "LineTo", 1.5, -1.25),
+            (4, "LineTo", 1.5, -2.5),
+        ];
+        for (got, w) in rows.iter().zip(want.iter()) {
+            assert_eq!(got.0, w.0, "row ix");
+            assert_eq!(got.1, w.1, "row {} type", w.0);
+            assert!(
+                (got.2 - w.2).abs() < 1e-6 && (got.3 - w.3).abs() < 1e-6,
+                "row {} = ({}, {}), got ({}, {})",
+                w.0,
+                w.2,
+                w.3,
+                got.2,
+                got.3
+            );
+        }
+        // The appended row carries a TYPE (SetRowCell's chain-seeded
+        // default would serialize typeless).
+        assert!(
+            geo.rows[3].t.as_deref() == Some("LineTo"),
+            "the grown row is a typed LineTo"
+        );
+        // Undo returns the three-row pose (and un-deletes nothing).
+        cmd.undo(&mut ed.doc).unwrap();
+        let conn = ed.doc.pages[0].shapes.iter().find(|s| s.id == 11).unwrap();
+        let geo = conn.sheet.sections_named("Geometry").remove(0);
+        assert_eq!(geo.rows.len(), 3, "undo restores the three-row pose");
+        assert!(geo.rows.iter().all(|r| r.ix != 4), "row 4 gone");
+    }
+
+    /// Review on the #303 batch: the replace cloned whatever IX-1 row
+    /// the section carried — a `Del="1"` shadow dragged its marker
+    /// into the rebuilt route (deleting the origin), and a non-MoveTo
+    /// IX 1 (gate-admissible: route_owned_rows only checks
+    /// straight-ness) never positioned the pen. The origin clones only
+    /// LIVE IX-1 rows and its type is forced to an absolute MoveTo.
+    #[test]
+    fn reroute_replace_origin_is_a_live_move_to() {
+        for shadow in [true, false] {
+            let (mut ed, page_id) = doc_with_master_connector(100, false);
+            {
+                let conn = ed
+                    .doc
+                    .pages[0]
+                    .shapes
+                    .iter_mut()
+                    .find(|s| s.id == 11)
+                    .unwrap();
+                for c in conn.sheet.children.iter_mut() {
+                    if let vsdx::model::SheetChild::Section(sec) = c {
+                        if sec.name == "Geometry" {
+                            for r in sec.rows.iter_mut() {
+                                if r.ix == 1 {
+                                    if shadow {
+                                        r.attrs.push(("Del".into(), "1".into()));
+                                    } else {
+                                        r.t = Some("LineTo".into());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // The Z-growth move: the route needs all four rows.
+            for sh in ed.doc.pages[0].shapes.iter_mut() {
+                if sh.id == 10 {
+                    sh.sheet.set_cell("PinX", VCell::value("3.5"));
+                    sh.sheet.set_cell("PinY", VCell::value("3.5"));
+                }
+            }
+            RerouteConnectors::new(page_id, vec![10])
+                .apply(&mut ed.doc)
+                .unwrap();
+            let conn = ed.doc.pages[0].shapes.iter().find(|s| s.id == 11).unwrap();
+            let geo = conn.sheet.sections_named("Geometry").remove(0);
+            assert_eq!(
+                geo.rows.len(),
+                4,
+                "shadow={shadow}: the route grew the missing row"
+            );
+            let first = &geo.rows[0];
+            assert_eq!(first.ix, 1);
+            assert!(
+                !first.is_deleted(),
+                "shadow={shadow}: the origin carries no Del marker: {first:?}"
+            );
+            assert_eq!(
+                first.t.as_deref(),
+                Some("MoveTo"),
+                "shadow={shadow}: the origin is an absolute MoveTo"
+            );
+            for (name, want) in [("X", 0.0), ("Y", 0.0)] {
+                assert!(
+                    (first.cell(name).and_then(|c| c.numeric()).unwrap() - want).abs() < 1e-9,
+                    "shadow={shadow}: origin {name} = {want}"
+                );
+            }
+        }
+    }
+
+    /// Review on the #303 batch: the wholesale replace dropped every
+    /// instance mention of master rows the new route does not cover —
+    /// live overrides AND Del markers — so the walk re-appended those
+    /// master rows as master-only rows (a resurrected stale tail) and
+    /// the connector fell out of the reconcile's coverage gate. The
+    /// replace keeps uncovered LIVE master rows suppressed with #293
+    /// deleted overrides — the reconcile's (K) block, applied to the
+    /// planner. Here the instance GROWS (3 rows → the 4-row Z) and the
+    /// master's row 5 still needs its shadow.
+    #[test]
+    fn reroute_replace_shadows_master_rows_the_route_no_longer_covers() {
+        let (mut ed, page_id) = doc_with_master_connector(100, false);
+        // The master carries FIVE live geometry rows; the instance
+        // covers only the first three. (Find the master BY ID — the
+        // blank template's built-in stencil masters precede the
+        // fixture's id-0 master in `doc.masters`.)
+        {
+            let m0 = ed
+                .doc
+                .masters
+                .iter_mut()
+                .find(|m| m.id == 0)
+                .expect("the fixture master (id 0)");
+            let root = m0.shapes.first_mut().unwrap();
+            let mut mg = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            for (ix, t, x, y) in [
+                (1, "MoveTo", 0.0, 0.0),
+                (2, "LineTo", 1.0, 0.0),
+                (3, "LineTo", 1.0, 1.0),
+                (4, "LineTo", 2.0, 1.0),
+                (5, "LineTo", 2.0, 2.0),
+            ] {
+                mg.rows.push(Row {
+                    t: Some(t.into()),
+                    ix,
+                    cells: vec![vc("X", &format!("{x}")), vc("Y", &format!("{y}"))],
+                    ..Row::default()
+                });
+            }
+            root.sheet.children.push(SheetChild::Section(mg));
+        }
+        {
+            let conn = ed
+                .doc
+                .pages[0]
+                .shapes
+                .iter_mut()
+                .find(|s| s.id == 11)
+                .unwrap();
+            for c in conn.sheet.children.iter_mut() {
+                if let vsdx::model::SheetChild::Section(sec) = c {
+                    if sec.name == "Geometry" {
+                        sec.rows.truncate(3);
+                    }
+                }
+            }
+        }
+        // The Z-growth move.
+        for sh in ed.doc.pages[0].shapes.iter_mut() {
+            if sh.id == 10 {
+                sh.sheet.set_cell("PinX", VCell::value("3.5"));
+                sh.sheet.set_cell("PinY", VCell::value("3.5"));
+            }
+        }
+        RerouteConnectors::new(page_id, vec![10])
+            .apply(&mut ed.doc)
+            .unwrap();
+        let conn = ed.doc.pages[0].shapes.iter().find(|s| s.id == 11).unwrap();
+        let geo = conn.sheet.sections_named("Geometry").remove(0);
+        let live: Vec<&Row> = geo.rows.iter().filter(|r| !r.is_deleted()).collect();
+        assert_eq!(live.len(), 4, "the four-row Z route: {geo:?}");
+        assert_eq!(live[0].t.as_deref(), Some("MoveTo"));
+        assert!(
+            live.iter().skip(1).all(|r| r.t.as_deref() == Some("LineTo")),
+            "the route rows are typed LineTo"
+        );
+        // Master row 5 keeps its suppression — without the shadow the
+        // walk would re-append it as a master-only stale tail.
+        let shadows: Vec<&Row> = geo.rows.iter().filter(|r| r.is_deleted()).collect();
+        assert_eq!(
+            shadows.len(),
+            1,
+            "exactly the uncovered master row is shadowed: {geo:?}"
+        );
+        assert_eq!(shadows[0].ix, 5);
+        assert_eq!(shadows[0].t.as_deref(), Some("LineTo"));
+    }
+
+    /// Review on the #303 batch: `lit` accepted an instance `F="Inh"`
+    /// cache as a literal without checking its master source — a
+    /// formula-driven master cell (the Line-arc `Width*1` pattern) is
+    /// DERIVED tracking, and the wholesale replace would freeze its
+    /// stale cached V as a literal. #226's rule (the planner's
+    /// inherited_geo_formula) now rides route_owned_rows: derived
+    /// caches keep the connector off the replace; caches over LITERAL
+    /// master cells still admit it.
+    #[test]
+    fn reroute_keeps_a_formula_backed_inh_cache_out_of_the_replace() {
+        for derived in [true, false] {
+            let (mut ed, page_id) = doc_with_master_connector(100, false);
+            // Master geometry: straight rows; row 2's X is a formula
+            // (derived) or a plain literal (the control).
+            {
+                let m0 = ed
+                    .doc
+                    .masters
+                    .iter_mut()
+                    .find(|m| m.id == 0)
+                    .expect("the fixture master (id 0)");
+                let root = m0.shapes.first_mut().unwrap();
+                let mut mg = Section {
+                    name: "Geometry".into(),
+                    ix: 0,
+                    ..Section::default()
+                };
+                for (ix, t, x, y) in [
+                    (1, "MoveTo", 0.0, 0.0),
+                    (2, "LineTo", 1.0, 0.0),
+                    (3, "LineTo", 1.0, 1.0),
+                    (4, "LineTo", 2.0, 1.0),
+                ] {
+                    let mut cells = vec![vc("Y", &format!("{y}"))];
+                    cells.push((
+                        "X".to_string(),
+                        if ix == 2 && derived {
+                            VCell {
+                                v: Some("1.0".into()),
+                                f: Some("Width*1".into()),
+                                ..VCell::default()
+                            }
+                        } else {
+                            VCell::value(format!("{x}"))
+                        },
+                    ));
+                    mg.rows.push(Row {
+                        t: Some(t.into()),
+                        ix,
+                        cells,
+                        ..Row::default()
+                    });
+                }
+                root.sheet.children.push(SheetChild::Section(mg));
+            }
+            // The instance: three rows, row 2's X an Inh cache.
+            {
+                let conn = ed
+                    .doc
+                    .pages[0]
+                    .shapes
+                    .iter_mut()
+                    .find(|s| s.id == 11)
+                    .unwrap();
+                for c in conn.sheet.children.iter_mut() {
+                    if let vsdx::model::SheetChild::Section(sec) = c {
+                        if sec.name == "Geometry" {
+                            sec.rows.truncate(3);
+                            for r in sec.rows.iter_mut() {
+                                if r.ix == 2 {
+                                    r.cells.retain(|(n, _)| n != "X");
+                                    r.cells.push((
+                                        "X".to_string(),
+                                        VCell {
+                                            v: Some("1.0".into()),
+                                            f: Some("Inh".into()),
+                                            ..VCell::default()
+                                        },
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // The Z-growth move.
+            for sh in ed.doc.pages[0].shapes.iter_mut() {
+                if sh.id == 10 {
+                    sh.sheet.set_cell("PinX", VCell::value("3.5"));
+                    sh.sheet.set_cell("PinY", VCell::value("3.5"));
+                }
+            }
+            RerouteConnectors::new(page_id, vec![10])
+                .apply(&mut ed.doc)
+                .unwrap();
+            let conn = ed.doc.pages[0].shapes.iter().find(|s| s.id == 11).unwrap();
+            let geo = conn.sheet.sections_named("Geometry").remove(0);
+            if derived {
+                assert_eq!(
+                    geo.rows.len(),
+                    3,
+                    "derived={derived}: no wholesale replace on formula-backed rows"
+                );
+                let x2 = geo.rows[1].cell("X").unwrap();
+                assert_eq!(
+                    x2.f.as_deref(),
+                    Some("Inh"),
+                    "derived={derived}: the cache is not frozen into a literal"
+                );
+            } else {
+                assert_eq!(
+                    geo.rows.len(),
+                    4,
+                    "derived={derived}: a cache over a LITERAL master cell still grows the Z"
+                );
+            }
+        }
+    }
+
+    /// #303's conservative half: a connector whose frame does NOT
+    /// span the endpoints (a non-master connector's own constant
+    /// `GUARD` Height — the dim write is skipped) keeps the
+    /// endpoint-on-last-row clamp; growing rows under a frame that
+    /// cannot span would write rows outside the frame.
+    #[test]
+    fn reroute_keeps_the_endpoint_clamp_for_a_guarded_frame() {
+        let (mut ed, page_id) = doc_with_curved_connector();
+        // Straighten the pose first is overkill — instead reuse the
+        // curved fixture's shapes but rebuild the connector as a
+        // straight three-row one with an OWN guarded Height.
+        let mut conn = crate::connectors::connector_shape(11, (3.0, 4.0), (7.0, 4.5));
+        conn.sheet.set_cell("ShapeRouteStyle", VCell::value("1"));
+        conn.sheet.set_cell(
+            "Height",
+            VCell {
+                v: Some("0.3".into()),
+                f: Some("GUARD(0.3DL)".into()),
+                ..VCell::default()
+            },
+        );
+        {
+            let geo = conn
+                .sheet
+                .children
+                .iter_mut()
+                .find_map(|c| match c {
+                    SheetChild::Section(sec) if sec.name == "Geometry" => Some(sec),
+                    _ => None,
+                })
+                .unwrap();
+            geo.rows.truncate(2); // MoveTo + one LineTo — three rows total is
+            // impossible on the synthetic builder (4 rows); two rows
+            // still exercise the clamp (max ix 2 < 4).
+        }
+        crate::connectors::bake_end(
+            &mut conn,
+            crate::connectors::End::Begin,
+            (3.0, 4.0),
+            &crate::connectors::static_glue_formula(10, 1),
+        );
+        ed.doc.pages[0].shapes.retain(|s| s.id != 11);
+        ed.doc.pages[0].shapes.push(conn);
+        let mut list = ed.doc.pages[0].connects();
+        list.list.push(dc_core::connects::Connect::new(
+            11,
+            "BeginX",
+            crate::connectors::PART_BEGIN_X,
+            10,
+            "Connections.X1",
+            101,
+        ));
+        ed.doc.pages[0].set_connects(&list);
+        // Move the target down-right so the route wants a Z (both axes
+        // differ) but the guarded Height skips the frame write.
+        for sh in ed.doc.pages[0].shapes.iter_mut() {
+            if sh.id == 10 {
+                sh.sheet.set_cell("PinX", VCell::value("3.5"));
+                sh.sheet.set_cell("PinY", VCell::value("4.0"));
+            }
+        }
+        let mut cmd = RerouteConnectors::new(page_id, vec![10]);
+        cmd.apply(&mut ed.doc).unwrap();
+        let conn = ed.doc.pages[0].shapes.iter().find(|s| s.id == 11).unwrap();
+        let geo = conn.sheet.sections_named("Geometry").remove(0);
+        assert_eq!(geo.rows.len(), 2, "no growth under a non-spanning frame");
+        let last = geo.rows.last().unwrap();
+        let lx = last.cell("X").and_then(|c| c.numeric()).unwrap();
+        let ly = last.cell("Y").and_then(|c| c.numeric()).unwrap();
+        // The clamp lands the ENDPOINT on the last row (dx = 4-3 = 1
+        // after the move... begin walks to (3.5+0.5-0.5, 4.0) hmm —
+        // the connection row (local (1,0.5)) on the moved target lands
+        // at (4.5, 4.5)); assert the last row IS the end point, not a
+        // Z elbow.
+        let bx = conn.sheet.cell("BeginX").and_then(|c| c.numeric()).unwrap();
+        let by = conn.sheet.cell("BeginY").and_then(|c| c.numeric()).unwrap();
+        let ex = conn.sheet.cell("EndX").and_then(|c| c.numeric()).unwrap();
+        let ey = conn.sheet.cell("EndY").and_then(|c| c.numeric()).unwrap();
+        assert!(
+            ((bx + lx) - ex).abs() < 1e-6 && ((by + ly) - ey).abs() < 1e-6,
+            "last row = the end point: begin ({bx},{by}) + ({lx},{ly}) vs end ({ex},{ey})"
         );
     }
 
@@ -3032,5 +4427,846 @@ mod reroute_master_tests {
         assert!((angle.numeric().unwrap() - 0.5f64.atan2(2.3)).abs() < 1e-6);
         // The inherited master Height stays inherited.
         assert!(conn.sheet.cell("Height").is_none());
+    }
+}
+
+#[cfg(test)]
+mod reconcile_jump_tests {
+    use super::*;
+    use vsdx::model::{Cell as VCell, Row, SheetChild};
+
+    /// The page-default jump radius (No-Style 0.125 × 2/3 / 2).
+    const R: f64 = 0.125 * (2.0 / 3.0) / 2.0;
+
+    fn xy(x: f64, y: f64) -> Vec<(String, VCell)> {
+        vec![
+            ("X".to_string(), VCell::value(format!("{x:.7}"))),
+            ("Y".to_string(), VCell::value(format!("{y:.7}"))),
+        ]
+    }
+
+    fn lineto(ix: i64, x: f64, y: f64) -> Row {
+        Row {
+            t: Some("LineTo".into()),
+            ix,
+            cells: xy(x, y),
+            ..Row::default()
+        }
+    }
+
+    fn set_geo_rows(s: &mut vsdx::model::Shape, rows: Vec<Row>) {
+        for c in s.sheet.children.iter_mut() {
+            if let SheetChild::Section(sec) = c {
+                if sec.name == "Geometry" {
+                    sec.rows = rows;
+                    return;
+                }
+            }
+        }
+        panic!("no geometry section");
+    }
+
+    /// The #303 miniature: H (1,4)→(5,4) horizontal carrying a stored
+    /// jump at PAGE x=2.5 (STALE — authored at an old crossing) and V
+    /// (3,2)→(3,6) vertical, the real crossing at page x=3 (H-local
+    /// x=2). The more-horizontal H hops.
+    fn crossing_doc() -> (dc_core::Editor, i64) {
+        let mut ed = dc_core::Editor::new_blank();
+        let page_id = ed.doc.pages[0].id;
+        let mut h = crate::connectors::connector_shape(5, (1.0, 4.0), (5.0, 4.0));
+        set_geo_rows(
+            &mut h,
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.0, 0.0),
+                    ..Row::default()
+                },
+                lineto(2, 1.5 - R, 0.0),
+                Row {
+                    t: Some("ArcTo".into()),
+                    ix: 3,
+                    cells: {
+                        let mut c = xy(1.5 + R, 0.0);
+                        c.push(("A".to_string(), VCell::value(format!("{}", -R))));
+                        c
+                    },
+                    ..Row::default()
+                },
+                lineto(4, 4.0, 0.0),
+            ],
+        );
+        let v = crate::connectors::connector_shape(6, (3.0, 2.0), (3.0, 6.0));
+        ed.doc.pages[0].shapes.push(h);
+        ed.doc.pages[0].shapes.push(v);
+        (ed, page_id)
+    }
+
+    fn rows_of(ed: &dc_core::Editor, id: i64) -> Vec<Row> {
+        let s = vsdx::model::find_shape_by_id(&ed.doc.pages[0].shapes, id).unwrap();
+        s.sheet
+            .sections_named("Geometry")
+            .into_iter()
+            .next()
+            .unwrap()
+            .rows
+            .clone()
+    }
+
+    fn cell(r: &Row, n: &str) -> f64 {
+        r.cell(n).and_then(|c| c.numeric()).unwrap_or(f64::NAN)
+    }
+
+    /// #303 item 2: the stale stored arc drops and the hop lands at
+    /// the CURRENT crossing — Visio opening the saved file draws what
+    /// Tarahi's overlay draws.
+    #[test]
+    fn reconcile_rewrites_a_stale_jump_to_the_current_crossing() {
+        let (mut ed, page_id) = crossing_doc();
+        let mut cmd = ReconcileLineJumps::new(page_id);
+        cmd.apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows.len(), 4, "one hop row set: {rows:?}");
+        assert_eq!(rows[0].t.as_deref(), Some("MoveTo"));
+        assert_eq!(rows[1].t.as_deref(), Some("LineTo"));
+        assert!((cell(&rows[1], "X") - (2.0 - R)).abs() < 1e-5);
+        assert_eq!(rows[2].t.as_deref(), Some("ArcTo"));
+        assert!((cell(&rows[2], "X") - (2.0 + R)).abs() < 1e-5);
+        // The corpus form: A = −radius.
+        assert!((cell(&rows[2], "A") - (-R)).abs() < 1e-5);
+        assert_eq!(rows[3].t.as_deref(), Some("LineTo"));
+        assert!((cell(&rows[3], "X") - 4.0).abs() < 1e-6);
+        // The UNDER connector is a no-op (nothing strips, no hops).
+        let v = rows_of(&ed, 6);
+        assert_eq!(v.len(), 4, "V keeps its authored rows");
+        // Undo restores the stale arc verbatim.
+        cmd.undo(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows[2].t.as_deref(), Some("ArcTo"));
+        assert!((cell(&rows[2], "X") - (1.5 + R)).abs() < 1e-6);
+        assert!((cell(&rows[2], "A") - (-R)).abs() < 1e-6);
+    }
+
+    /// No crossing any more: the stale arc straightens away — nothing
+    /// bumps where nothing crosses (#294's render rule, now in the
+    /// file), and the collinear stubs collapse.
+    #[test]
+    fn reconcile_straightens_a_stale_jump_with_no_crossing() {
+        let (mut ed, page_id) = crossing_doc();
+        // Remove V — nothing crosses H.
+        ed.doc.pages[0].shapes.retain(|s| s.id != 6);
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert!(
+            rows.iter().all(|r| r.t.as_deref() != Some("ArcTo")),
+            "the stale arc is gone: {rows:?}"
+        );
+        assert_eq!(rows.len(), 2, "the straight skeleton collapsed: {rows:?}");
+        assert!((cell(&rows[1], "X") - 4.0).abs() < 1e-6);
+    }
+
+    /// #301: a jump-size edit normalizes — stored arcs stay recognized
+    /// at the PRE-edit radius and rewrite at the NEW one, so the rows
+    /// and the overlay agree after the change.
+    #[test]
+    fn reconcile_tracks_a_jump_factor_edit() {
+        let (mut ed, page_id) = crossing_doc();
+        // Factor 2/3 → 2: the radius doubles to 0.125.
+        SetCellNew::apply_factor(&mut ed, page_id, 2.0);
+        ReconcileLineJumps::with_strip(page_id, (R, R))
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows[2].t.as_deref(), Some("ArcTo"));
+        let big = 0.125 * 2.0 / 2.0;
+        assert!((cell(&rows[1], "X") - (2.0 - big)).abs() < 1e-5);
+        assert!((cell(&rows[2], "X") - (2.0 + big)).abs() < 1e-5);
+        assert!((cell(&rows[2], "A") - (-big)).abs() < 1e-5);
+    }
+
+    /// #301's zero case: factor 0 draws no hops — recognized at the
+    /// pre-edit radius, the stored arc straightens away instead of
+    /// bumping.
+    #[test]
+    fn reconcile_factor_zero_straightens_stored_jumps() {
+        let (mut ed, page_id) = crossing_doc();
+        SetCellNew::apply_factor(&mut ed, page_id, 0.0);
+        ReconcileLineJumps::with_strip(page_id, (R, R))
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert!(
+            rows.iter().all(|r| r.t.as_deref() != Some("ArcTo")),
+            "no bump at factor 0: {rows:?}"
+        );
+        assert_eq!(rows.len(), 2);
+        assert!((cell(&rows[1], "X") - 4.0).abs() < 1e-6);
+    }
+
+    /// Hidden jumps (LineJumpCode 0) straighten the stored arcs — the
+    /// render already draws them straight (#294); the file agrees.
+    #[test]
+    fn reconcile_hides_jumps_straightens_stored_arcs() {
+        let (mut ed, page_id) = crossing_doc();
+        SetCell::new(
+            Scope::PageSheet { page: page_id },
+            "LineJumpCode",
+            VCell::value("0"),
+        )
+        .apply(&mut ed.doc)
+        .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert!(
+            rows.iter().all(|r| r.t.as_deref() != Some("ArcTo")),
+            "hidden jumps carry no arcs: {rows:?}"
+        );
+    }
+
+    /// An AUTHORED semicircle (not at the page radius) is preserved
+    /// verbatim — the radius evidence is what separates stored jumps
+    /// from authored curves (#294's constraint).
+    #[test]
+    fn reconcile_leaves_an_authored_semicircle_alone() {
+        let (mut ed, page_id) = crossing_doc();
+        // Grow the arc into an authored 1-inch semicircle mid-run.
+        let h = ed
+            .doc
+            .pages[0]
+            .shapes
+            .iter_mut()
+            .find(|s| s.id == 5)
+            .unwrap();
+        set_geo_rows(
+            h,
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.0, 0.0),
+                    ..Row::default()
+                },
+                lineto(2, 1.5, 0.0),
+                Row {
+                    t: Some("ArcTo".into()),
+                    ix: 3,
+                    cells: {
+                        let mut c = xy(2.5, 0.0);
+                        c.push(("A".to_string(), VCell::value("-0.5")));
+                        c
+                    },
+                    ..Row::default()
+                },
+                lineto(4, 4.0, 0.0),
+            ],
+        );
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows.len(), 4, "the authored rows are untouched");
+        assert_eq!(rows[2].t.as_deref(), Some("ArcTo"));
+        assert!((cell(&rows[2], "A") - (-0.5)).abs() < 1e-9);
+        assert!((cell(&rows[2], "X") - 2.5).abs() < 1e-9);
+    }
+
+    /// The reroute tail carries the reconcile: a reroute with no
+    /// glued candidates still reconciles the page, and ONE undo
+    /// restores everything.
+    #[test]
+    fn reroute_tail_reconciles_in_the_same_undo_step() {
+        let (mut ed, page_id) = crossing_doc();
+        let mut cmd = RerouteConnectors::new(page_id, vec![]);
+        cmd.apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows[2].t.as_deref(), Some("ArcTo"));
+        assert!((cell(&rows[2], "X") - (2.0 + R)).abs() < 1e-5, "hop at the crossing");
+        cmd.undo(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert!((cell(&rows[2], "X") - (1.5 + R)).abs() < 1e-6, "undo restores the stale arc");
+    }
+
+    /// Second application is a no-op — the rewritten rows are the
+    /// fixed point (idempotence keeps later edits' history clean).
+    #[test]
+    fn reconcile_is_idempotent() {
+        let (mut ed, page_id) = crossing_doc();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let first = rows_of(&ed, 5);
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let second = rows_of(&ed, 5);
+        assert_eq!(first.len(), second.len());
+        for (a, b) in first.iter().zip(second.iter()) {
+            assert_eq!(a.t, b.t);
+            assert!((cell(a, "X") - cell(b, "X")).abs() < 1e-9);
+            assert!((cell(a, "Y") - cell(b, "Y")).abs() < 1e-9);
+        }
+    }
+
+    /// CodeRabbit on the #303 batch: two crossings closer than 2r on
+    /// one run must not emit overlapping arcs (the second would start
+    /// before the first ends — a backwards segment that the next
+    /// reconciliation would reject as authored geometry).
+    #[test]
+    fn reconcile_skips_an_overlapping_second_hop() {
+        let (mut ed, page_id) = crossing_doc();
+        // A second vertical 0.04in from V (2r = 0.0833): both cross H.
+        let v2 = crate::connectors::connector_shape(7, (3.04, 2.0), (3.04, 6.0));
+        ed.doc.pages[0].shapes.push(v2);
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        let arcs: Vec<&Row> = rows
+            .iter()
+            .filter(|r| r.t.as_deref() == Some("ArcTo"))
+            .collect();
+        assert_eq!(arcs.len(), 1, "one arc, the second hop is a plain crossing");
+        // The row X values stay monotonic along the run.
+        let xs: Vec<f64> = rows.iter().map(|r| cell(r, "X")).collect();
+        assert!(
+            xs.windows(2).all(|w| w[1] >= w[0] - 1e-9),
+            "no backwards segment: {xs:?}"
+        );
+    }
+
+    /// CodeRabbit on the #303 batch: straightening a MASTER-based
+    /// connector whose route shrinks must keep the master's rows
+    /// shadowed — deleted-marker overrides, or the walk re-adds them
+    /// as master-only rows and resurrects a stale tail.
+    #[test]
+    fn reconcile_shadows_master_rows_the_target_no_longer_covers() {
+        let mut ed = dc_core::Editor::new_blank();
+        let page_id = ed.doc.pages[0].id;
+        // The kreuzung-shaped master: ObjType=2 + three geometry rows.
+        let mut root = vsdx::model::Shape {
+            id: 1,
+            type_: Some("Shape".into()),
+            ..vsdx::model::Shape::default()
+        };
+        root.sheet.set_cell("ObjType", VCell::value("2"));
+        let mut mg = vsdx::model::Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Default::default()
+        };
+        for (ix, t, x, y) in [(1, "MoveTo", 0.0, 0.0), (2, "LineTo", 0.0, -1.0), (3, "LineTo", 1.0, -1.0)] {
+            mg.rows.push(Row {
+                t: Some(t.into()),
+                ix,
+                cells: xy(x, y),
+                ..Row::default()
+            });
+        }
+        root.sheet.children.push(SheetChild::Section(mg));
+        let mut m = vsdx::Master::default();
+        m.shapes.push(root);
+        ed.doc.masters.push(m);
+        // The instance: a stored jump on a straight run (local
+        // 1.5±R), four rows covering the master's three.
+        let mut h = crate::connectors::connector_shape(5, (1.0, 4.0), (4.0, 4.0));
+        h.master = Some(0);
+        set_geo_rows(
+            &mut h,
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.0, 0.0),
+                    ..Row::default()
+                },
+                lineto(2, 1.5 - R, 0.0),
+                Row {
+                    t: Some("ArcTo".into()),
+                    ix: 3,
+                    cells: {
+                        let mut c = xy(1.5 + R, 0.0);
+                        c.push(("A".to_string(), VCell::value(format!("{}", -R))));
+                        c
+                    },
+                    ..Row::default()
+                },
+                lineto(4, 3.0, 0.0),
+            ],
+        );
+        ed.doc.pages[0].shapes.push(h);
+        // No crossing on the page — the stale arc straightens away and
+        // the route collapses to two rows; master row 3 must be
+        // shadowed, not resurrected.
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows.len(), 3, "two route rows + one shadow: {rows:?}");
+        assert!((cell(&rows[1], "X") - 3.0).abs() < 1e-6);
+        let shadow = &rows[2];
+        assert_eq!(shadow.ix, 3);
+        assert!(shadow.is_deleted(), "the master row stays shadowed");
+        assert!(
+            rows.iter().take(2).all(|r| r.t.as_deref() != Some("ArcTo")),
+            "the stale arc is gone"
+        );
+    }
+
+    /// Review on the #303 batch: a deleted shadow is coverage, not a
+    /// master-only row — a master-based connector that once shrank
+    /// (hidden jumps) carries `Del="1"` shadows, and the eligibility
+    /// gate must keep admitting it or the NEXT pass can never restore
+    /// the saved arcs: hide → show left the file without the hop the
+    /// overlay draws. The full cycle on the kreuzung shape.
+    #[test]
+    fn reconcile_hide_show_cycle_restores_arcs_on_a_master_connector() {
+        let mut ed = dc_core::Editor::new_blank();
+        let page_id = ed.doc.pages[0].id;
+        // The kreuzung-shaped master: ObjType=2 + three geometry rows.
+        let mut root = vsdx::model::Shape {
+            id: 1,
+            type_: Some("Shape".into()),
+            ..vsdx::model::Shape::default()
+        };
+        root.sheet.set_cell("ObjType", VCell::value("2"));
+        let mut mg = vsdx::model::Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Default::default()
+        };
+        for (ix, t, x, y) in [(1, "MoveTo", 0.0, 0.0), (2, "LineTo", 0.0, -1.0), (3, "LineTo", 1.0, -1.0)] {
+            mg.rows.push(Row {
+                t: Some(t.into()),
+                ix,
+                cells: xy(x, y),
+                ..Row::default()
+            });
+        }
+        root.sheet.children.push(SheetChild::Section(mg));
+        let mut m = vsdx::Master::default();
+        m.shapes.push(root);
+        ed.doc.masters.push(m);
+        // The instance: a stored jump mid-run (local 1.5±R), four rows
+        // covering the master's three.
+        let mut h = crate::connectors::connector_shape(5, (1.0, 4.0), (4.0, 4.0));
+        h.master = Some(0);
+        set_geo_rows(
+            &mut h,
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.0, 0.0),
+                    ..Row::default()
+                },
+                lineto(2, 1.5 - R, 0.0),
+                Row {
+                    t: Some("ArcTo".into()),
+                    ix: 3,
+                    cells: {
+                        let mut c = xy(1.5 + R, 0.0);
+                        c.push(("A".to_string(), VCell::value(format!("{}", -R))));
+                        c
+                    },
+                    ..Row::default()
+                },
+                lineto(4, 3.0, 0.0),
+            ],
+        );
+        ed.doc.pages[0].shapes.push(h);
+        // The real crossing: V at page x=3 — H-local x=2, where the
+        // restored hop must land.
+        let v = crate::connectors::connector_shape(6, (3.0, 2.0), (3.0, 6.0));
+        ed.doc.pages[0].shapes.push(v);
+        // HIDE: the stored arc straightens and the shrunken route
+        // shadows master row 3 — the state the old gate stranded.
+        SetCell::new(
+            Scope::PageSheet { page: page_id },
+            "LineJumpCode",
+            VCell::value("0"),
+        )
+        .apply(&mut ed.doc)
+        .unwrap();
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows.len(), 3, "two route rows + one shadow: {rows:?}");
+        assert!(rows[2].is_deleted(), "master row 3 stays shadowed");
+        // SHOW: still eligible — the shadow counts as coverage — and
+        // the hop returns at the CURRENT crossing, the shadow row
+        // re-covered by the grown target.
+        SetCell::new(
+            Scope::PageSheet { page: page_id },
+            "LineJumpCode",
+            VCell::value("1"),
+        )
+        .apply(&mut ed.doc)
+        .unwrap();
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows.len(), 4, "the hop rows are back: {rows:?}");
+        assert!(
+            rows.iter().all(|r| !r.is_deleted()),
+            "the grown target re-covers the master rows: {rows:?}"
+        );
+        assert_eq!(rows[2].t.as_deref(), Some("ArcTo"));
+        assert!((cell(&rows[1], "X") - (2.0 - R)).abs() < 1e-5);
+        assert!((cell(&rows[2], "X") - (2.0 + R)).abs() < 1e-5);
+        assert!((cell(&rows[2], "A") - (-R)).abs() < 1e-5);
+        assert_eq!(rows[3].t.as_deref(), Some("LineTo"));
+        assert!((cell(&rows[3], "X") - 3.0).abs() < 1e-6);
+    }
+
+    /// Review on the #303 batch: the renderer's walk reads at most
+    /// MAX_WALK_ROWS rows, and the reconcile replaces the section from
+    /// that walk — a connector longer than the budget would have every
+    /// row past the cap ERASED from the file. Such connectors stay
+    /// verbatim (the crossing sits well inside the cap, so the buggy
+    /// path would rewrite — and truncate).
+    #[test]
+    fn reconcile_leaves_a_connector_beyond_the_walk_row_cap_alone() {
+        let (mut ed, page_id) = crossing_doc();
+        // H grows past the walk's row budget with literal straight rows
+        // (collinear — the row COUNT is the point, not the shape).
+        let n = dc::geom::MAX_WALK_ROWS + 6;
+        let mut grown = vec![Row {
+            t: Some("MoveTo".into()),
+            ix: 1,
+            cells: xy(0.0, 0.0),
+            ..Row::default()
+        }];
+        for i in 2..=n {
+            let x = (i - 1) as f64 * 4.0 / (n - 1) as f64;
+            grown.push(lineto(i as i64, x, 0.0));
+        }
+        let h = ed
+            .doc
+            .pages[0]
+            .shapes
+            .iter_mut()
+            .find(|s| s.id == 5)
+            .unwrap();
+        set_geo_rows(h, grown);
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(
+            rows.len(),
+            n,
+            "the tail beyond the walk cap survives: {} rows",
+            rows.len()
+        );
+        assert!(
+            (cell(&rows[n - 1], "X") - 4.0).abs() < 1e-6,
+            "the terminal row is intact: {rows:?}"
+        );
+        assert!(
+            rows.iter().all(|r| r.t.as_deref() != Some("ArcTo")),
+            "the connector was left verbatim: {rows:?}"
+        );
+    }
+
+    /// Review on the #303 batch: the walk emits one disjoint segment
+    /// run per stroke (a MoveTo positions the pen and draws nothing),
+    /// and the reconcile flattens them into a single polyline — a
+    /// multi-stroke connector would come back WELDED, with LineTos
+    /// across the gaps the original never drew. Multi-stroke sections
+    /// stay verbatim (the crossing sits on the second stroke, so the
+    /// buggy path would rewrite — and weld).
+    #[test]
+    fn reconcile_leaves_a_multi_stroke_connector_alone() {
+        let (mut ed, page_id) = crossing_doc();
+        // Two strokes on H: a short one, then a gap, then the long one
+        // carrying the crossing (page x=3 — H-local x=2, mid-stroke).
+        let h = ed
+            .doc
+            .pages[0]
+            .shapes
+            .iter_mut()
+            .find(|s| s.id == 5)
+            .unwrap();
+        set_geo_rows(
+            h,
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.5, 0.0),
+                    ..Row::default()
+                },
+                lineto(2, 0.8, 0.0),
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 3,
+                    cells: xy(1.0, 0.0),
+                    ..Row::default()
+                },
+                lineto(4, 4.0, 0.0),
+            ],
+        );
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows.len(), 4, "the section is untouched: {rows:?}");
+        assert_eq!(
+            rows[0].t.as_deref(),
+            Some("MoveTo"),
+            "stroke 1 keeps its start"
+        );
+        assert_eq!(
+            rows[2].t.as_deref(),
+            Some("MoveTo"),
+            "the stroke break survives — no weld across the gap: {rows:?}"
+        );
+        assert!(
+            rows.iter().all(|r| r.t.as_deref() != Some("ArcTo")),
+            "nothing was rewritten: {rows:?}"
+        );
+        assert!((cell(&rows[1], "X") - 0.8).abs() < 1e-9);
+        assert!((cell(&rows[3], "X") - 4.0).abs() < 1e-9);
+    }
+
+    /// Review on the #303 batch (the reconcile's half of the Inh rule):
+    /// an instance `F="Inh"` cache over a FORMULA-driven master cell is
+    /// derived tracking — the owned walk must not classify the
+    /// connector as route-owned and rewrite it, freezing the stale
+    /// cached V as a literal (#226's rule; the coverage shadow keeps
+    /// the gate honest so the OWNED walk is what skips).
+    #[test]
+    fn reconcile_leaves_formula_backed_inh_cache_rows_alone() {
+        let mut ed = dc_core::Editor::new_blank();
+        let page_id = ed.doc.pages[0].id;
+        // The master: three straight rows, row 2's X a formula.
+        let mut root = vsdx::model::Shape {
+            id: 1,
+            type_: Some("Shape".into()),
+            ..vsdx::model::Shape::default()
+        };
+        root.sheet.set_cell("ObjType", VCell::value("2"));
+        let mut mg = vsdx::model::Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Default::default()
+        };
+        mg.rows.push(Row {
+            t: Some("MoveTo".into()),
+            ix: 1,
+            cells: xy(0.0, 0.0),
+            ..Row::default()
+        });
+        mg.rows.push(Row {
+            t: Some("LineTo".into()),
+            ix: 2,
+            cells: vec![
+                (
+                    "X".to_string(),
+                    VCell {
+                        v: Some("3.0".into()),
+                        f: Some("Width*1".into()),
+                        ..VCell::default()
+                    },
+                ),
+                ("Y".to_string(), VCell::value("0")),
+            ],
+            ..Row::default()
+        });
+        mg.rows.push(Row {
+            t: Some("LineTo".into()),
+            ix: 3,
+            cells: xy(1.0, -1.0),
+            ..Row::default()
+        });
+        root.sheet.children.push(SheetChild::Section(mg));
+        let mut m = vsdx::Master::default();
+        m.shapes.push(root);
+        ed.doc.masters.push(m);
+        // The instance: row 2's X is an Inh CACHE over the formula;
+        // master row 3 stays mentioned (a shadow) so the coverage gate
+        // passes and the owned walk is the only skip.
+        let mut h = crate::connectors::connector_shape(5, (1.0, 4.0), (4.0, 4.0));
+        h.master = Some(0);
+        set_geo_rows(
+            &mut h,
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.0, 0.0),
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 2,
+                    cells: vec![
+                        (
+                            "X".to_string(),
+                            VCell {
+                                v: Some("3.0".into()),
+                                f: Some("Inh".into()),
+                                ..VCell::default()
+                            },
+                        ),
+                        ("Y".to_string(), VCell::value("0")),
+                    ],
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 3,
+                    attrs: vec![("Del".to_string(), "1".to_string())],
+                    ..Row::default()
+                },
+            ],
+        );
+        ed.doc.pages[0].shapes.push(h);
+        // The crossing sits on the run (page x=3 — H-local x=2).
+        let v = crate::connectors::connector_shape(6, (3.0, 2.0), (3.0, 6.0));
+        ed.doc.pages[0].shapes.push(v);
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows.len(), 3, "no rewrite: {rows:?}");
+        assert!(
+            rows.iter().all(|r| r.t.as_deref() != Some("ArcTo")),
+            "no hop landed on derived-tracking rows: {rows:?}"
+        );
+        assert_eq!(
+            rows[1].cell("X").unwrap().f.as_deref(),
+            Some("Inh"),
+            "the cache is not frozen into a literal: {rows:?}"
+        );
+        assert!(rows[2].is_deleted(), "the coverage shadow stays");
+    }
+
+    /// Review on the #303 batch: with jumps HIDDEN, the crossing
+    /// discovery fed `my_hops` for crossings nobody draws — the no-op
+    /// fast path then skipped nothing, and a connector with NO stored
+    /// arcs got rewritten anyway (its degenerate collinear elbows
+    /// collapsed). Hidden jumps use an empty hop list: nothing to do
+    /// means nothing written; the strip pass (stored arcs) is a
+    /// separate gate and keeps working
+    /// (reconcile_hides_jumps_straightens_stored_arcs).
+    #[test]
+    fn reconcile_hidden_jumps_leave_stored_arc_free_connectors_alone() {
+        let (mut ed, page_id) = crossing_doc();
+        // H with NO stored arc — just degenerate collinear elbows on
+        // the run; V still crosses it at H-local x=2.
+        let h = ed
+            .doc
+            .pages[0]
+            .shapes
+            .iter_mut()
+            .find(|s| s.id == 5)
+            .unwrap();
+        set_geo_rows(
+            h,
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.0, 0.0),
+                    ..Row::default()
+                },
+                lineto(2, 1.0, 0.0),
+                lineto(3, 2.0, 0.0),
+                lineto(4, 4.0, 0.0),
+            ],
+        );
+        SetCell::new(
+            Scope::PageSheet { page: page_id },
+            "LineJumpCode",
+            VCell::value("0"),
+        )
+        .apply(&mut ed.doc)
+        .unwrap();
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(
+            rows.len(),
+            4,
+            "no elbow collapse for a jump-less connector under hidden jumps: {rows:?}"
+        );
+        assert!((cell(&rows[1], "X") - 1.0).abs() < 1e-9);
+        assert!((cell(&rows[3], "X") - 4.0).abs() < 1e-9);
+    }
+
+    /// CodeRabbit on the #303 batch: the collinear merge keeps a
+    /// route REVERSAL (an out-and-back excursion) — collinear points
+    /// in OPPOSITE directions are real route features.
+    #[test]
+    fn reconcile_keeps_a_route_reversal() {
+        let (mut ed, page_id) = crossing_doc();
+        // H runs out to 4, back to 2, then up — with the stale arc on
+        // the FIRST run.
+        let h = ed
+            .doc
+            .pages[0]
+            .shapes
+            .iter_mut()
+            .find(|s| s.id == 5)
+            .unwrap();
+        set_geo_rows(
+            h,
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.0, 0.0),
+                    ..Row::default()
+                },
+                lineto(2, 1.5 - R, 0.0),
+                Row {
+                    t: Some("ArcTo".into()),
+                    ix: 3,
+                    cells: {
+                        let mut c = xy(1.5 + R, 0.0);
+                        c.push(("A".to_string(), VCell::value(format!("{}", -R))));
+                        c
+                    },
+                    ..Row::default()
+                },
+                lineto(4, 4.0, 0.0),
+                lineto(5, 2.0, 0.0),
+                lineto(6, 2.0, 2.0),
+            ],
+        );
+        // Remove V — no crossings; the straightened route keeps the
+        // excursion to (4,0).
+        ed.doc.pages[0].shapes.retain(|s| s.id != 6);
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        let xs: Vec<(f64, f64)> = rows
+            .iter()
+            .map(|r| (cell(r, "X"), cell(r, "Y")))
+            .collect();
+        assert!(
+            xs.contains(&(4.0, 0.0)),
+            "the reversal apex survives the merge: {xs:?}"
+        );
+        assert!(
+            rows.iter().all(|r| r.t.as_deref() != Some("ArcTo")),
+            "the stale arc straightened away"
+        );
+    }
+
+    /// A tiny helper: the factor edit as the GUI hook issues it.
+    struct SetCellNew;
+    impl SetCellNew {
+        fn apply_factor(ed: &mut dc_core::Editor, page: i64, factor: f64) {
+            SetCell::new(
+                Scope::PageSheet { page },
+                "LineJumpFactorX",
+                VCell::value(format!("{factor:.6}")),
+            )
+            .apply(&mut ed.doc)
+            .unwrap();
+        }
     }
 }

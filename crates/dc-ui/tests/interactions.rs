@@ -9989,3 +9989,433 @@ fn spell_dialog_ignore_all_and_add() {
         vec!["tset".to_string(), "zork".to_string()]
     );
 }
+
+// ---------------------------------------------------------------------------
+// File ▸ Options (#268)
+// ---------------------------------------------------------------------------
+
+/// Click one Options-dialog nav row. The dialog is CENTER-anchored in
+/// the fixed 1280-wide harness, so its nav rows sit right of x=300 —
+/// the backstage rail's own rows (a "Save" collision) stay far left.
+fn options_nav(h: &mut Harness<'static, App>, label: &str) {
+    h.get_all_by_label(label)
+        .find(|n| n.rect().center().x > 300.0)
+        .expect("the nav row")
+        .click();
+}
+
+/// Open the Options dialog from the real path: File tab → backstage →
+/// the rail footer's Options entry (#268).
+fn open_options(h: &mut Harness<'static, App>) {
+    h.run();
+    h.get_by_label("File").click();
+    h.run();
+    assert!(h.state().backstage, "the File tab opens the backstage");
+    h.get_by_label("Options").click();
+    h.run();
+    assert!(
+        h.state().debug_options_open(),
+        "the rail's Options entry opens the dialog"
+    );
+}
+
+#[test]
+fn options_dialog_opens_from_the_backstage_rail() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    // General first (Visio's landing page), with the backstage still
+    // underneath — the dialog paints inside the backstage branch.
+    assert!(
+        h.query_by_role_and_label(egui::Role::TextInput, "User name:")
+            .is_some(),
+        "the dialog opens on General"
+    );
+    assert!(h.state().backstage, "the backstage stays under the dialog");
+}
+
+#[test]
+fn options_dialog_general_round_trips_through_ok() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Bret Watson");
+    h.get_by_role_and_label(egui::Role::TextInput, "Initials:")
+        .set_text_value_accesskit("BW");
+    h.run();
+    // Enter is the dialog's OK (#71 contract): commit + close.
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(!h.state().debug_options_open(), "OK closes the dialog");
+    assert_eq!(h.state().debug_options().user_name, "Bret Watson");
+    assert_eq!(h.state().debug_options().user_initials, "BW");
+    // Reopening captures the committed store values into the draft.
+    h.get_by_label("Options").click();
+    h.run();
+    assert_eq!(
+        h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+            .value()
+            .as_deref(),
+        Some("Bret Watson"),
+        "the reopened draft shows the committed values"
+    );
+}
+
+#[test]
+fn options_dialog_apply_commits_without_closing() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Bret");
+    h.run();
+    h.get_by_label("Apply").click();
+    h.run();
+    assert!(
+        h.state().debug_options_open(),
+        "Apply commits without closing"
+    );
+    assert_eq!(h.state().debug_options().user_name, "Bret");
+    // Further edits stay draft-only: Esc after the Apply discards the
+    // uncommitted value, never the committed one.
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Bret Two");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert_eq!(h.state().debug_options().user_name, "Bret");
+}
+
+#[test]
+fn options_dialog_cancel_and_esc_discard() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Nobody");
+    h.run();
+    h.get_by_label("Cancel").click();
+    h.run();
+    assert!(!h.state().debug_options_open(), "Cancel closes the dialog");
+    assert_eq!(h.state().debug_options().user_name, "", "Cancel discards");
+    // Esc discards too — and it must NOT close the backstage under the
+    // dialog; the second Esc returns to the document.
+    h.get_by_label("Options").click();
+    h.run();
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Nobody");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().debug_options_open());
+    assert!(
+        h.state().backstage,
+        "the dialog's Esc leaves the backstage open"
+    );
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().backstage, "the second Esc closes the backstage");
+}
+
+#[test]
+fn options_dialog_save_page_round_trips() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    options_nav(&mut h, "Save");
+    h.run();
+    h.get_by_role_and_label(
+        egui::Role::TextInput,
+        "Save AutoRecover information every:",
+    )
+    .set_text_value_accesskit("15");
+    h.get_by_role_and_label(egui::Role::TextInput, "AutoRecover file location:")
+        .set_text_value_accesskit("/tmp/autorecover");
+    h.run();
+    h.get_by_label("OK").click();
+    h.run();
+    let o = h.state().debug_options();
+    assert_eq!(o.autorecover_minutes, 15);
+    assert_eq!(o.autorecover_dir, "/tmp/autorecover");
+    assert!(o.autorecover, "the checkbox defaults on");
+}
+
+/// #304: the Options dialog is MODAL for the keyboard too — Ctrl+Z
+/// while it is up (even focused in its own User name field) must undo
+/// TEXT in the field, never fire the application's do_undo.
+#[test]
+fn options_blocks_application_shortcuts() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("typed while modal");
+    h.run();
+    // With no history, an unblocked Ctrl+Z would land the
+    // "Nothing to undo" status — the proof the handler ran.
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run();
+    assert!(
+        !h.state().debug_status().contains("undo"),
+        "the shortcut never fired: {}",
+        h.state().debug_status()
+    );
+    assert!(h.state().debug_options_open(), "the dialog stays up");
+    // And the field kept its text (the undo did not touch the doc).
+    assert_eq!(
+        h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+            .value()
+            .as_deref(),
+        Some("typed while modal")
+    );
+}
+
+/// #304: the close confirmation OWNS Escape while it is up — the
+/// Options draft under it survives the frame (the old layering
+/// discarded the draft AND canceled the close).
+#[test]
+fn close_confirmation_owns_escape_over_the_options_draft() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("precious draft");
+    h.run();
+    // A dirty document + the OS close request: the confirm modal
+    // opens OVER the dialog.
+    h.state_mut().mark_dirty_for_test();
+    h.state_mut().request_close_for_test();
+    h.run();
+    assert!(h.state().debug_close_prompt(), "the confirm modal is up");
+    assert!(h.state().debug_options_open());
+    // ENTER is the confirm's too (PR #305 review): while it is up,
+    // the Options Enter-as-OK fallback must not commit the draft and
+    // close the dialog under the pending close decision.
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().debug_close_prompt(), "the confirm still owns the frame");
+    assert!(
+        h.state().debug_options_open(),
+        "Enter did not commit-and-close Options under the confirm"
+    );
+    assert_eq!(
+        h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+            .value()
+            .as_deref(),
+        Some("precious draft"),
+        "the draft was not committed by Enter under the confirm"
+    );
+    // Escape cancels the CLOSE only — the draft keeps its edit.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().debug_close_prompt(), "the close canceled");
+    assert!(
+        h.state().debug_options_open(),
+        "the Options dialog survived the Esc"
+    );
+    assert_eq!(
+        h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+            .value()
+            .as_deref(),
+        Some("precious draft"),
+        "the draft survived the confirm's Esc"
+    );
+    // With the confirm gone, the next Esc is Options' own — it
+    // discards and closes (the #71 contract, still intact).
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().debug_options_open());
+    assert_eq!(h.state().debug_options().user_name, "", "discarded");
+}
+
+/// #305 review: a failed `options.json` save warns in the dialog and
+/// keeps it open on OK (the retry leg lands the file) — the settings
+/// twin of the language-write failure path.
+#[test]
+fn options_settings_save_failure_warns_and_a_retry_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    let mut h = harness_with_blank();
+    // A PERSISTING store whose options.json sits under a regular FILE
+    // — the write fails while the in-memory apply succeeds.
+    h.state_mut().set_options_store_for_test(
+        dc_ui::options::Options::persisting_for_test(blocker.join("options.json")),
+    );
+    open_options(&mut h);
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Bret Watson");
+    h.run();
+    h.get_by_label("OK").click();
+    h.run();
+    assert!(
+        h.state().debug_options_open(),
+        "OK keeps the dialog open after a failed settings save"
+    );
+    assert!(
+        h.query_by_label_contains("Couldn't save your settings").is_some(),
+        "the in-dialog warning is up"
+    );
+    assert!(!blocker.join("options.json").exists());
+
+    // The retry: a writable store, OK again — closes and lands.
+    h.state_mut().set_options_store_for_test(
+        dc_ui::options::Options::persisting_for_test(dir.path().join("options.json")),
+    );
+    h.get_by_label("OK").click();
+    h.run();
+    assert!(
+        !h.state().debug_options_open(),
+        "OK closes the dialog once the save succeeded"
+    );
+    assert_eq!(h.state().debug_options().user_name, "Bret Watson");
+    let text = std::fs::read_to_string(dir.path().join("options.json")).unwrap();
+    assert!(text.contains("Bret Watson"), "the settings landed: {text}");
+}
+
+/// #304: the comment-avatar initials FIT the 16pt circle — a long
+/// configured string truncates until its laid-out width clears it.
+#[test]
+fn comment_avatar_initials_fit_the_circle() {
+    // A minimal harness that only installs the production fonts and
+    // hands the Context out (the fit measures through its fonts).
+    let ctx_cell = std::rc::Rc::new(std::cell::RefCell::new(
+        Option::<egui::Context>::None,
+    ));
+    let cell = ctx_cell.clone();
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(200.0, 100.0))
+        .build_ui(move |ui| {
+            dc_ui::theme::install_for(ui.ctx(), egui::ThemePreference::Light);
+            *cell.borrow_mut() = Some(ui.ctx().clone());
+        });
+    h.run();
+    let ctx = ctx_cell.borrow().clone().expect("a frame ran");
+    let (fitted, size) = App::debug_fit_initials_for_test(&ctx, "WWWWWWWW");
+    assert!(
+        fitted.chars().count() <= 2,
+        "eight Ws truncate hard: {fitted}"
+    );
+    assert!(size <= 8.0 + f32::EPSILON, "the truncation tier is the floor font");
+    // A normal configured pair survives whole — shrunk, not dropped.
+    let (pair, _) = App::debug_fit_initials_for_test(&ctx, "BW");
+    assert_eq!(pair, "BW");
+    // A pathological paste is bounded (PR #305 review): the candidate
+    // caps at eight glyphs before any truncation work.
+    let huge = "W".repeat(100_000);
+    let (few, _) = App::debug_fit_initials_for_test(&ctx, &huge);
+    assert!(few.chars().count() <= 2, "bounded: {few}");
+}
+
+#[test]
+fn options_general_user_name_feeds_the_comment_author() {
+    let mut h = harness_with_blank();
+    h.run();
+    // Set the General page's user name through the real dialog path.
+    h.get_by_label("File").click();
+    h.run();
+    h.get_by_label("Options").click();
+    h.run();
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Bret Watson");
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert_eq!(h.state().debug_options().user_name, "Bret Watson");
+    // Leave the backstage (the dialog's OK closed it only) for the
+    // canvas, then author a comment the Visio way: right-click →
+    // Add Comment.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    let from = h.state().debug_master_cells()[0].1.center();
+    let to = h.state().debug_canvas_rect().center();
+    click_at(&mut h, from, egui::PointerButton::Primary);
+    click_at(&mut h, to, egui::PointerButton::Primary);
+    click_at(&mut h, to, egui::PointerButton::Secondary);
+    h.run();
+    h.get_all_by_label_contains("Add Comment")
+        .filter(|n| n.rect().height() < 30.0)
+        .find(|n| n.rect().min.y > 250.0)
+        .expect("Add Comment row")
+        .click();
+    h.run();
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("New comment"),
+    )
+    .set_text_value_accesskit("needs review");
+    h.run();
+    h.get_by_label("OK").click();
+    h.run();
+    let ann = h.state().debug_annotations_for_test();
+    assert_eq!(ann.len(), 1, "one annotation on the Annotation layer");
+    assert!(
+        ann[0].1.starts_with("Bret Watson — "),
+        "the General page's user name authors the comment (the \
+         pre-#268 behavior read the environment): {:?}",
+        ann[0].1
+    );
+}
+
+#[test]
+fn options_dialog_survives_the_activating_enter() {
+    let mut h = harness_with_blank();
+    h.run();
+    h.get_by_label("File").click();
+    h.run();
+    // The keyboard path: focus the rail's Options entry and activate
+    // it with Enter — the SAME Enter must not read as the dialog's OK
+    // (CodeRabbit round).
+    h.get_by_label("Options").focus();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(
+        h.state().debug_options_open(),
+        "the dialog stays open after the activating Enter"
+    );
+    assert!(h.state().backstage);
+}
+
+/// Review on the #268 dialog keys: Enter on a KEYBOARD-FOCUSED Cancel
+/// must cancel — the button handler and the dialog-level Enter-to-OK
+/// see the SAME key press, and the dialog-level check used to
+/// overwrite the button's outcome (a focused Cancel committed the
+/// draft instead of discarding it). Enter-to-OK still applies when no
+/// button claimed the frame (options_dialog_general_round_trips_
+/// through_ok).
+#[test]
+fn options_dialog_enter_on_a_focused_cancel_cancels() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Nobody");
+    h.run();
+    // Keyboard-focus the Cancel button and activate it with Enter.
+    h.get_by_label("Cancel").focus();
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(!h.state().debug_options_open(), "the dialog closed");
+    assert_eq!(
+        h.state().debug_options().user_name,
+        "",
+        "Cancel won — Enter-to-OK did not clobber the button's outcome"
+    );
+}
+
+#[test]
+fn options_modal_blocks_backstage_navigation() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    // The modal backdrop blocks the rail: Back neither closes the
+    // backstage nor strands the dialog (CodeRabbit round).
+    h.get_by_label("<  Back").click();
+    h.run();
+    assert!(
+        h.state().backstage,
+        "Back is blocked while Options is up"
+    );
+    assert!(h.state().debug_options_open(), "the dialog stays up");
+    // Cancel closes the dialog, and Back works again.
+    h.get_by_label("Cancel").click();
+    h.run();
+    assert!(!h.state().debug_options_open());
+    h.get_by_label("<  Back").click();
+    h.run();
+    assert!(
+        !h.state().backstage,
+        "Back closes the backstage once Options is closed"
+    );
+}

@@ -2344,6 +2344,125 @@ impl crate::Command for RemoveSectionRow {
     }
 }
 
+/// Replace ALL rows of one sheet section in one undoable step (the
+/// #303 connector work: growing a rerouted connector's Geometry to
+/// the full route — Visio adds the row rather than bending the last
+/// one into a diagonal — and rewriting a connector's rows with hops
+/// at the current crossings, or straightening stale ones; both change
+/// the row COUNT, so per-cell writes cannot express them). Undo
+/// restores the previous row vector as a whole.
+#[derive(Debug, Clone)]
+pub struct SetSectionRows {
+    pub scope: Scope,
+    pub section: String,
+    pub section_ix: i64,
+    pub rows: Vec<vsdx::model::Row>,
+    previous: Option<Vec<vsdx::model::Row>>,
+}
+
+impl SetSectionRows {
+    pub fn new(
+        scope: Scope,
+        section: impl Into<String>,
+        section_ix: i64,
+        rows: Vec<vsdx::model::Row>,
+    ) -> SetSectionRows {
+        SetSectionRows {
+            scope,
+            section: section.into(),
+            section_ix,
+            rows,
+            previous: None,
+        }
+    }
+}
+
+impl crate::Command for SetSectionRows {
+    fn touched(&self, doc: &Document) -> crate::TouchList {
+        match &self.scope {
+            Scope::Shape { page, shape } => {
+                match crate::scope::top_level_ancestor(doc, *page, *shape) {
+                    Some(root) => crate::TouchList {
+                        pages: vec![],
+                        shapes: vec![crate::Touched {
+                            page: *page,
+                            shape: root,
+                            touch: crate::Touch::Ink,
+                            sub: sub_shape(root, *shape),
+                        }],
+                    },
+                    None => crate::TouchList::page(*page),
+                }
+            }
+            Scope::PageSheet { page } => crate::TouchList::page(*page),
+            _ => crate::TouchList::all_pages(doc),
+        }
+    }
+
+    fn label(&self) -> String {
+        format!(
+            "set {} rows ({} rows) on {}",
+            self.section,
+            self.rows.len(),
+            self.scope
+        )
+    }
+    fn apply(&mut self, doc: &mut Document) -> Result<()> {
+        let s = sheet_mut(doc, &self.scope)?;
+        let sec = s
+            .children
+            .iter_mut()
+            .find_map(|c| match c {
+                vsdx::model::SheetChild::Section(sec)
+                    if sec.name == self.section && sec.ix == self.section_ix =>
+                {
+                    Some(sec)
+                }
+                _ => None,
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!("section {}:{} not found", self.section, self.section_ix)
+            })?;
+        // Keep the FIRST pre-state until undo succeeds (CodeRabbit on
+        // the #303 batch): a re-apply must not overwrite the snapshot
+        // undo restores — the original rows, not the intermediate
+        // ones. A redo after undo re-captures the restored set.
+        if self.previous.is_none() {
+            self.previous = Some(std::mem::replace(&mut sec.rows, self.rows.clone()));
+        } else {
+            sec.rows = self.rows.clone();
+        }
+        Ok(())
+    }
+    fn undo(&mut self, doc: &mut Document) -> Result<()> {
+        // Resolve the target FIRST and consume the snapshot only once
+        // it exists (review on the #303 batch): a failed undo that
+        // changed nothing must keep `previous` — a holder that retries
+        // after the section is restored still gets the original rows,
+        // where `take()` before resolution burned the pre-state and
+        // the retry hit "not yet applied".
+        let s = sheet_mut(doc, &self.scope)?;
+        let sec = s
+            .children
+            .iter_mut()
+            .find_map(|c| match c {
+                vsdx::model::SheetChild::Section(sec)
+                    if sec.name == self.section && sec.ix == self.section_ix =>
+                {
+                    Some(sec)
+                }
+                _ => None,
+            })
+            .ok_or_else(|| anyhow::anyhow!("section vanished before undo"))?;
+        let prev = self
+            .previous
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("not yet applied"))?;
+        sec.rows = prev;
+        Ok(())
+    }
+}
+
 /// Change one section row's TYPE (`Row.t`), keeping its cells —
 /// #108's curved routing turns a route's `LineTo` row into a
 /// `CubicBezTo` (and back). Undo restores the prior type.

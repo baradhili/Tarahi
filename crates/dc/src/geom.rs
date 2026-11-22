@@ -474,6 +474,14 @@ type EvaldRow<'a> = (
     Option<f64>,
 );
 
+/// The geometry walk's row budget: [`geometry_hit_segments`] reads at
+/// most this many rows per section — a render-time horizon. Rows past
+/// it are invisible to the walk (and to the jump overlay, which rides
+/// the same walk), so a document edit that REPLACES rows from the
+/// walk's output must skip longer sections or it erases their tails
+/// (review on the #303 batch).
+pub const MAX_WALK_ROWS: usize = 64;
+
 /// The connector hit segments of a shape's geometry in PAGE space
 /// (#173/#179): walks the shape's Geometry rows — merging inherited
 /// rows and cells from the master — sampling arcs, and mapping every
@@ -573,7 +581,6 @@ pub fn geometry_hit_segments(
                                             // standalone. The flattened samples ARE the hit polyline, so
                                             // hit-testing agrees with the rendered ink (crate::curve::flatten).
     let mut spline_acc: Option<crate::curve::SplineAcc> = None;
-    const MAX_ROWS: usize = 64;
     // The ordered walk: the instance's rows, then master-only rows
     // (by ix) the instance never overrode. Each row carries its
     // section-qualified feed name (`Geometry1.X2`) — the ink path's
@@ -583,11 +590,11 @@ pub fn geometry_hit_segments(
         .collect();
     let mut walk: Vec<(&Row, Option<&Row>, &str)> = Vec::new();
     for (si, geo) in sections.iter().enumerate() {
-        for row in geo.rows.iter().take(MAX_ROWS) {
+        for row in geo.rows.iter().take(MAX_WALK_ROWS) {
             walk.push((row, master_row(row.ix), &gnames[si]));
         }
     }
-    for r in master_rows.iter().take(MAX_ROWS) {
+    for r in master_rows.iter().take(MAX_WALK_ROWS) {
         if !walk.iter().any(|(row, _, _)| row.ix == r.ix) {
             walk.push((r, None, "Geometry1"));
         }
@@ -623,7 +630,7 @@ pub fn geometry_hit_segments(
     // fed the env, the hit walk didn't, and a resized route stripped
     // in one walk but not the other).
     let mut evald: Vec<EvaldRow> = Vec::new();
-    for (row, master, gname) in walk.iter().take(MAX_ROWS) {
+    for (row, master, gname) in walk.iter().take(MAX_WALK_ROWS) {
         let t = row
             .t
             .as_deref()
@@ -661,7 +668,7 @@ pub fn geometry_hit_segments(
     // second pass makes is the captured per-row value (the round-3
     // review — a post-pass env read would sample later rows' feeds).
     for (k, (row, _master, _gname, t, end_local, end, ca, cb, cc, cd)) in
-        evald.iter().take(MAX_ROWS).enumerate()
+        evald.iter().take(MAX_WALK_ROWS).enumerate()
     {
         let t = t.as_str();
         let end_local = *end_local;
@@ -970,6 +977,9 @@ pub struct Jump {
     pub dir: (f64, f64),
     /// Unit vector along the under line.
     pub under: (f64, f64),
+    /// The JUMPING line's shape id (the stored-jump reconciliation,
+    /// #303: hops are written into the jumper's own Geometry rows).
+    pub jumper: i64,
     pub weight: f64,
     pub under_weight: f64,
     pub color: (u8, u8, u8),
@@ -1263,6 +1273,7 @@ pub fn line_jumps(lines: &[JumpLine], (radius, radius_y): (f64, f64)) -> Vec<Jum
                         at,
                         dir: d,
                         under: du,
+                        jumper: jmp.id,
                         weight: jmp.weight,
                         under_weight: und.weight,
                         color: jmp.color,
@@ -1329,12 +1340,28 @@ fn parse_hex_rgb(v: &str) -> Option<(u8, u8, u8)> {
 /// ([`line_jumps`]: the more-horizontal line hops, ties to the later
 /// z). Hidden-layer members and guides skip like the render walk.
 pub fn page_jumps(doc: &vsdx::Document, page: &vsdx::Page, hidden: &[i64]) -> Vec<Jump> {
+    page_jumps_stripping(doc, page, hidden, None)
+}
+
+/// [`page_jumps`] with an explicit STRIP-radius override (the #303
+/// reconciliation): the stored-jump classification runs at `strip` —
+/// the PRE-edit radius when a jump-size edit just moved the page
+/// radius (#301) — while the hops themselves still compute at the
+/// page's CURRENT radius. `None` strips at the current radius, the
+/// plain [`page_jumps`] behavior.
+pub fn page_jumps_stripping(
+    doc: &vsdx::Document,
+    page: &vsdx::Page,
+    hidden: &[i64],
+    strip: Option<(f64, f64)>,
+) -> Vec<Jump> {
     // #294: the hop radii are the page's own LineToLineX/Y ×
     // LineJumpFactorX/Y / 2, resolved through the style chain — the
     // X pair for a horizontal hop, the Y pair for a vertical one
     // (PR #299 review).
     let radius = jump_radius_in(doc, page);
     let radius_y = jump_radius_y_in(doc, page);
+    let (strip_r, strip_ry) = strip.unwrap_or((radius, radius_y));
     let mut lines: Vec<JumpLine> = Vec::new();
     for (z, s) in page.shapes.iter().enumerate() {
         if s.sheet
@@ -1372,8 +1399,9 @@ pub fn page_jumps(doc: &vsdx::Document, page: &vsdx::Page, hidden: &[i64]) -> Ve
         // stored jump arcs strip from the polyline (#294) — the hop
         // computes on the straight run, never on a stale arc. The
         // evidence is THIS page's resolved radius (the same value the
-        // hop draws with).
-        let segs = geometry_hit_segments(s, master_root, &frame, Some((radius, radius_y)));
+        // hop draws with) — or the caller's override, the #301
+        // pre-edit radius when a jump-size edit just landed.
+        let segs = geometry_hit_segments(s, master_root, &frame, Some((strip_r, strip_ry)));
         if segs.is_empty() {
             continue;
         }

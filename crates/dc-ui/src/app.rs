@@ -129,6 +129,28 @@ pub struct App {
     /// the app-level custom dictionary (the domain lives in
     /// `spellcheck.rs`; app.rs keeps only the state field + glue).
     spell: crate::spellcheck::SpellState,
+    /// File ▸ Options (#268): the dialog's open flag and draft (the
+    /// domain lives in `options.rs`; app.rs keeps the state fields +
+    /// glue — the decomposition direction).
+    options_open: bool,
+    /// #304: the last language commit failed to persist — the Options
+    /// dialog warns and the next Apply retries even though the
+    /// in-memory language already matches the draft.
+    lang_write_failed: bool,
+    /// #305 review: the last `options.json` commit failed to persist
+    /// — same contract: warn in the dialog, retry on Apply/OK.
+    settings_write_failed: bool,
+    options_draft: Option<crate::options::Draft>,
+    /// Set for the single frame the Options dialog opened on
+    /// (CodeRabbit round): the Enter that ACTIVATED the backstage
+    /// button is still in that frame's input, so the dialog's own
+    /// key checks must skip it once.
+    options_opened_this_frame: bool,
+    /// The app-level options store (#268): user name/initials (the
+    /// Comments author field) and the Save page's AutoRecover
+    /// settings. Production opens the persisted copy; headless ctors
+    /// stay ephemeral.
+    options_store: crate::options::Options,
     /// The Comments popup is open for this shape (#29 rework: the
     /// Visio 2016 thread view — author header, edit/delete/reply).
     comment_target: Option<i64>,
@@ -214,7 +236,6 @@ pub struct App {
     /// The Snap & Glue dialog is open (View ▸ Visual Aids, #109).
     snap_dlg_open: bool,
     /// #246: the Language dialog is open.
-    language_dlg_open: bool,
     /// #218 review: the Jump-size drag's draft — a DragValue commit
     /// per frame flooded history; the draft edits locally and commits
     /// once, when the drag stops (typed input commits immediately).
@@ -649,6 +670,9 @@ impl App {
         // re-enables with the user-config `dictionaries/` drop-point
         // joining the system scan.
         app.spell = crate::spellcheck::SpellState::prod();
+        // #268: the persisted options (user name/initials, the Save
+        // page's AutoRecover settings) — headless ctors stay ephemeral.
+        app.options_store = crate::options::Options::open();
         dc::spellcheck::enable_local_discovery();
         dc::spellcheck::register_local_dirs(
             crate::recent::config_base()
@@ -708,6 +732,12 @@ impl App {
             reorder_open: false,
             hyperlink_open: None,
             spell: crate::spellcheck::SpellState::headless(),
+            options_open: false,
+            lang_write_failed: false,
+            settings_write_failed: false,
+            options_draft: None,
+            options_opened_this_frame: false,
+            options_store: crate::options::Options::ephemeral(),
             hyperlink_draft: None,
             fields_open: None,
             fields_caret: None,
@@ -747,7 +777,6 @@ impl App {
             pending_activate: None,
             snap: crate::snap::SnapSettings::default(),
             snap_dlg_open: false,
-            language_dlg_open: false,
             line_jump_draft: None,
             snap_live: Vec::new(),
             conn_fx_last: crate::connectors::ConnPointFx::default(),
@@ -935,6 +964,21 @@ impl App {
     #[doc(hidden)]
     pub fn debug_open_doc_count(&self) -> usize {
         self.docs.len() + self.ed.is_some() as usize
+    }
+    /// kittest (#304): swap the Options store (the language-save
+    /// failure tests install a PERSISTING store at a tempdir).
+    #[doc(hidden)]
+    pub fn set_options_store_for_test(&mut self, o: crate::options::Options) {
+        self.options_store = o;
+    }
+    /// kittest (#304): the avatar-initials fit — (text, font size);
+    /// a long configured string must truncate into the 16pt circle.
+    #[doc(hidden)]
+    pub fn debug_fit_initials_for_test(
+        ctx: &egui::Context,
+        initials: &str,
+    ) -> (String, f32) {
+        fit_initials_to_avatar(ctx, initials)
     }
     /// kittest: what every editing command does — dirty + version bump
     /// (the Info thumbnail's cache key, #58).
@@ -3065,6 +3109,15 @@ impl App {
     // -- interaction ------------------------------------------------------
 
     fn handle_shortcuts(&mut self, ctx: &Context) {
+        // #304: the Options dialog is MODAL — while it is up the
+        // application shortcuts (Ctrl+Z/N/S…) never fire and keytips
+        // stand down; the dialog's own fields own the keyboard (a
+        // Ctrl+Z in the User name field must undo TEXT, not the
+        // drawing).
+        if self.options_open {
+            self.keytips.disarm();
+            return;
+        }
         // #184 keytips own the keyboard FIRST: while Alt-armed (or on
         // an Alt+letter combo) the letter never reaches a widget.
         self.keytip_input(ctx);
@@ -3246,7 +3299,7 @@ impl App {
     /// so no text field ever types them.
     fn keytip_input(&mut self, ctx: &Context) {
         // Office shows no ribbon keytips on the File screen.
-        if self.backstage || self.language_dlg_open {
+        if self.backstage {
             self.keytips.disarm();
             return;
         }
@@ -3446,6 +3499,7 @@ impl App {
         self.selby_open
             || self.snap_dlg_open
             || self.pagesetup_open
+            || self.options_open
             || self.copypic_open
             || self.contgal_open
             || self.backgrounds_open
@@ -3632,10 +3686,6 @@ impl App {
     fn close_front_dialog(&mut self) -> bool {
         if self.selby_open {
             self.selby_open = false;
-            return true;
-        }
-        if self.language_dlg_open {
-            self.language_dlg_open = false;
             return true;
         }
         // #121: the Check Spelling dialog.
@@ -5532,6 +5582,27 @@ impl App {
                 t,
             )));
         }
+        // #303: a reconciled connector can carry MORE than the four
+        // route rows (stored hops add rows) — the style rewrite covers
+        // rows 2..=4 only, so any row beyond 4 is stale after the
+        // change and is removed here, before the reconcile re-adds
+        // what the new route actually needs. `sections_named` returns
+        // IX-sorted sections, so `.first()` IS the IX-0 section the
+        // rewrite targets (a #303-batch review worried about
+        // sheet-child enumeration order; the sort in vsdx's model
+        // makes that unreachable).
+        if let Some(geo) = sh.sheet.sections_named("Geometry").first() {
+            for ix in geo.rows.iter().map(|r| r.ix).collect::<Vec<_>>() {
+                if ix > 4 {
+                    cmds.push(Box::new(dc_core::commands::RemoveSectionRow::new(
+                        scope.clone(),
+                        "Geometry",
+                        0,
+                        dc_core::commands::RowSel::Ix(ix),
+                    )));
+                }
+            }
+        }
         if curved {
             for (name, f, v) in crate::connectors::curved_row_extras(ex - bx, ey - by) {
                 cmds.push(Box::new(dc_core::SetRowCell::new(
@@ -5547,6 +5618,11 @@ impl App {
                     },
                 )));
             }
+        }
+        // #303: the new route may cross differently — the stored
+        // jumps reconcile in the same undo step.
+        if let Some(page_id) = self.page_id() {
+            cmds.push(Box::new(crate::cmd::ReconcileLineJumps::new(page_id)));
         }
         self.apply(Macro::new(
             crate::i18n::strs().msg_set_connector_route_style(),
@@ -6160,7 +6236,13 @@ impl App {
             let conn = vsdx::model::find_shape_by_id(&page2.shapes, sid)?;
             let chain2 = shape_chain(&ep.doc, page_id, sid).ok()?;
             crate::cmd::plan_connector_frame(
-                &ep.doc, conn, &chain2, beg, endp, ep.pre_end, ep.pre_beg,
+                &ep.doc,
+                conn,
+                &chain2,
+                beg,
+                endp,
+                (ep.pre_beg, ep.pre_end),
+                dc::geom::jump_radii_in(&ep.doc, page2),
             )
         };
         // Apply the plan's writes to the snapshot (plain cache writes
@@ -6180,6 +6262,21 @@ impl App {
                     name,
                     cell.clone(),
                 );
+            }
+            // #303: the grow path replaces the route rows wholesale —
+            // mirror the commit's SetSectionRows directly on the
+            // snapshot; the per-row path keeps its cell writes.
+            if let Some((sec_ix, rep)) = &plan.rows_replace {
+                if let Some(sec) = conn.sheet.children.iter_mut().find_map(|c| match c {
+                    vsdx::model::SheetChild::Section(sec)
+                        if sec.name == "Geometry" && sec.ix == *sec_ix =>
+                    {
+                        Some(sec)
+                    }
+                    _ => None,
+                }) {
+                    sec.rows = rep.clone();
+                }
             }
             for (ix, x, y) in &plan.rows {
                 for (name, v) in [("X", *x), ("Y", *y)] {
@@ -6447,13 +6544,20 @@ impl App {
         let Some(page_id) = self.page_id() else {
             return;
         };
-        self.apply(SetCell::new(
-            Scope::PageSheet { page: page_id },
-            "LineJumpCode",
-            // Off writes 0 (visPLOJumpNone, [MS-Learn]) — 6 was
-            // never in the enumeration (#218 review).
-            vsdx::Cell::value(if show { "1" } else { "0" }),
-        ));
+        // #301: hiding jumps straightens the stored arcs in the same
+        // step — the render already draws them straight, and the file
+        // should agree.
+        let cmds: Vec<Box<dyn dc_core::Command>> = vec![
+            Box::new(SetCell::new(
+                Scope::PageSheet { page: page_id },
+                "LineJumpCode",
+                // Off writes 0 (visPLOJumpNone, [MS-Learn]) — 6 was
+                // never in the enumeration (#218 review).
+                vsdx::Cell::value(if show { "1" } else { "0" }),
+            )),
+            Box::new(crate::cmd::ReconcileLineJumps::new(page_id)),
+        ];
+        self.apply(dc_core::Macro::new("set line jumps shown", cmds));
         self.status = if show {
             crate::i18n::strs().msg_line_jumps_shown()
         } else {
@@ -6462,15 +6566,30 @@ impl App {
     }
 
     /// #251: the page's jump-size multiplier (`LineJumpFactorX`).
+    /// #301: the stored jumps normalize with the edit — recognized at
+    /// the PRE-edit radius (they were authored there) and rewritten
+    /// at the new one, so the stored rows and the overlay never
+    /// disagree after a factor change.
     fn apply_line_jump_factor(&mut self, factor: f64) {
         let Some(page_id) = self.page_id() else {
             return;
         };
-        self.apply(SetCell::new(
+        let pre = self.ed.as_ref().and_then(|ed| {
+            ed.doc
+                .pages
+                .iter()
+                .find(|p| p.id == page_id)
+                .map(|p| dc::geom::jump_radii_in(&ed.doc, p))
+        });
+        let mut cmds: Vec<Box<dyn dc_core::Command>> = vec![Box::new(SetCell::new(
             Scope::PageSheet { page: page_id },
             "LineJumpFactorX",
             vsdx::Cell::value(format!("{factor:.6}")),
-        ));
+        ))];
+        if let Some(pre) = pre {
+            cmds.push(Box::new(crate::cmd::ReconcileLineJumps::with_strip(page_id, pre)));
+        }
+        self.apply(dc_core::Macro::new("set line jump factor", cmds));
         // The factor steps in fractions (0.5 .. 3.0) — the i64 cast
         // truncated them to ×0/×1 in the status note (PR #269
         // review); FluentNumber carries the decimal through.
@@ -8281,7 +8400,6 @@ impl App {
                 self.apply_snap_settings();
             }
             Action::SnapGlue => self.snap_dlg_open = !self.snap_dlg_open,
-            Action::Language => self.language_dlg_open = true,
             Action::SpellCheck => self.start_spellcheck(),
             Action::PointerTool => {
                 self.tool = Tool::Pointer;
@@ -11081,9 +11199,7 @@ impl App {
             ),
         };
         let id = dc_core::commands::next_shape_id(&ed.doc, page_id);
-        let author = std::env::var("USER")
-            .or_else(|_| std::env::var("USERNAME"))
-            .unwrap_or_else(|_| "user".into());
+        let author = self.comment_author();
         let date = format_now_utc();
         let text = format!("{} — {}: {}", author, date, body.trim());
         // Replies stack under the thread's first bubble (#29 rework).
@@ -11174,6 +11290,82 @@ impl App {
         ));
     }
 
+    /// The comment author: the General page's user name (File ▸
+    /// Options, #268) when set, else the environment (the pre-#268
+    /// behavior), else "user".
+    fn comment_author(&self) -> String {
+        let name = self.options_store.user_name.trim();
+        if !name.is_empty() {
+            return name.to_string();
+        }
+        std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "user".into())
+    }
+
+    /// The comment-avatar initials for one annotation author (#268):
+    /// the General page's initials for the configured user when set,
+    /// else derived from the name — the first letter of up to three
+    /// words, uppercase (Visio's avatar derives them the same way).
+    fn author_initials(&self, author: &str) -> String {
+        if author == self.comment_author() {
+            let ini = self.options_store.user_initials.trim();
+            if !ini.is_empty() {
+                return ini.to_string();
+            }
+        }
+        author
+            .split_whitespace()
+            .filter_map(|w| w.chars().next())
+            .take(3)
+            .map(|c| c.to_uppercase().to_string())
+            .collect()
+    }
+
+}
+
+/// #304: the comment-avatar initials fitted to the 16pt circle —
+/// first by SHRINKING the font (10pt down to 8pt keeps a normal
+/// two-letter pair whole), then by truncating, floor of one character
+/// (the full author name stays in the header beside the avatar).
+/// Returns the fitted text and its font size.
+fn fit_initials_to_avatar(ctx: &egui::Context, initials: &str) -> (String, f32) {
+    // Bound the candidate first (#305 review): nothing beyond a
+    // handful of glyphs can ever clear the circle, and an unbounded
+    // paste would make the truncation loop quadratic per frame.
+    let initials: String = initials.chars().take(8).collect();
+    let width = |text: &str, size: f32| -> f32 {
+        ctx.fonts_mut(|f| {
+            let mut job = egui::text::LayoutJob::default();
+            job.append(
+                text,
+                0.0,
+                egui::TextFormat::simple(
+                    egui::FontId::proportional(size),
+                    Color32::WHITE,
+                ),
+            );
+            f.layout_job(job)
+        })
+        .size()
+        .x
+    };
+    for size in [10.0f32, 9.5, 9.0, 8.5, 8.0] {
+        if width(&initials, size) <= 13.0 {
+            return (initials.to_string(), size);
+        }
+    }
+    let mut fitted = initials.to_string();
+    while fitted.chars().count() > 1 {
+        fitted = fitted.chars().take(fitted.chars().count() - 1).collect();
+        if width(&fitted, 8.0) <= 13.0 {
+            return (fitted, 8.0);
+        }
+    }
+    (fitted, 8.0)
+}
+
+impl App {
     /// The shape's comment thread (#29): annotation shapes whose
     /// `User.AnnotationRef` names it, oldest first — (annotation id,
     /// author, date, body).
@@ -11237,6 +11429,12 @@ impl App {
             return;
         };
         let thread = self.comments_for(shape_id);
+        // #268: the avatar initials per row (the General page's
+        // initials for the configured user, derived from the name
+        // otherwise) — computed before the window closure so the
+        // render loop doesn't borrow self.
+        let initials: Vec<String> =
+            thread.iter().map(|(_, a, _, _)| self.author_initials(a)).collect();
         let mut body = std::mem::take(&mut self.comment_body);
         let mut edit = self.comment_edit.take();
         let mut close = false;
@@ -11250,7 +11448,9 @@ impl App {
                     if thread.is_empty() {
                         ui.weak(crate::i18n::strs().msg_no_comments_on_this_shape_yet());
                     }
-                    for (ann_id, author, date, cbody) in &thread {
+                    for ((ann_id, author, date, cbody), initial) in
+                        thread.iter().zip(&initials)
+                    {
                         let card = egui::Frame::new()
                             .inner_margin(egui::Margin::same(6))
                             .stroke(egui::Stroke::new(
@@ -11262,11 +11462,10 @@ impl App {
                                 // 2016 header: avatar initial + author + date
                                 // (mirrored with the chrome under RTL).
                                 row(ui, |ui| {
-                                    let initial = author
-                                        .chars()
-                                        .next()
-                                        .map(|c| c.to_string())
-                                        .unwrap_or_else(|| "?".into());
+                                    // #268: the avatar shows the row's
+                                    // initials (the General page's
+                                    // setting for the configured
+                                    // user, name-derived otherwise).
                                     let (c, _) =
                                         ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
                                     ui.painter().circle_filled(
@@ -11274,11 +11473,16 @@ impl App {
                                         8.0,
                                         ui.visuals().selection.bg_fill,
                                     );
+                                    // #304: the initials FIT the avatar
+                                    // (the full author name stays in
+                                    // the header beside it).
+                                    let (fitted, size) =
+                                        fit_initials_to_avatar(ui.ctx(), initial);
                                     ui.painter().text(
                                         c.center(),
                                         egui::Align2::CENTER_CENTER,
-                                        initial,
-                                        egui::FontId::proportional(10.0),
+                                        fitted,
+                                        egui::FontId::proportional(size),
                                         Color32::WHITE,
                                     );
                                     ui.label(
@@ -15295,6 +15499,32 @@ impl App {
             self.backstage_page = p;
         }
     }
+    /// kittest: open the Options dialog exactly like the rail's
+    /// Options entry does (#268).
+    #[doc(hidden)]
+    pub fn open_options_for_test(&mut self) {
+        self.open_options_dialog();
+    }
+    /// kittest: jump straight to one Options page ("general" | "save"
+    /// | "language") — a no-op while the dialog is closed (#268).
+    #[doc(hidden)]
+    pub fn set_options_page_for_test(&mut self, name: &str) {
+        if let Some(d) = self.options_draft.as_mut() {
+            if let Some(p) = crate::options::Page::from_test_name(name) {
+                d.page = p;
+            }
+        }
+    }
+    /// kittest: whether the Options dialog is showing (#268).
+    #[doc(hidden)]
+    pub fn debug_options_open(&self) -> bool {
+        self.options_open
+    }
+    /// kittest: the live options store (#268 round-trip asserts).
+    #[doc(hidden)]
+    pub fn debug_options(&self) -> &crate::options::Options {
+        &self.options_store
+    }
     /// kittest: whether the File backstage is showing.
     #[doc(hidden)]
     pub fn debug_backstage(&self) -> bool {
@@ -16221,7 +16451,6 @@ impl App {
         self.backgrounds_window(&ctx);
         self.select_by_type_window(&ctx);
         self.snap_glue_window(&ctx);
-        self.language_window(&ctx);
         self.hyperlink_window(&ctx);
         self.fields_insert_window(&ctx);
         self.spell_window(&ctx);
@@ -16249,6 +16478,11 @@ impl App {
         self.sync_window_title(ui.ctx());
         if self.backstage {
             self.backstage_view(ui);
+            // #268: the Options dialog opens over the File screen and
+            // must paint inside this branch (the backstage early-
+            // returns), before the confirm modals so their layering
+            // wins.
+            self.options_window(&ctx);
             self.confirm_new_window(&ctx);
             self.confirm_close_window(&ctx);
             return;
@@ -16614,51 +16848,132 @@ impl App {
         }
     }
 
-    /// #246: the Language dialog (View ▸ Window) — one radio row per
-    /// shipped language (native names), applying on selection. Strings
-    /// resolve through the catalog each frame, so the switch is live:
-    /// the very next frame re-renders in the picked language.
-    fn language_window(&mut self, ctx: &egui::Context) {
-        if !self.language_dlg_open {
+    /// #268: open the Options dialog from the backstage rail — the
+    /// draft starts at the live store values plus the current language
+    /// choice (match-system while no explicit language is persisted).
+    fn open_options_dialog(&mut self) {
+        let lang = if crate::i18n::is_system_match() {
+            crate::options::LangChoice::System
+        } else {
+            crate::options::LangChoice::Concrete(crate::i18n::current())
+        };
+        self.options_open = true;
+        self.options_opened_this_frame = true;
+        self.options_draft = Some(crate::options::Draft::capture(&self.options_store, lang));
+    }
+
+    /// #268: the Options dialog over the backstage. Rendered inside
+    /// the backstage branch (the backstage early-returns); the modal
+    /// manages its own Esc, so nothing here touches the key handling.
+    fn options_window(&mut self, ctx: &egui::Context) {
+        if !self.options_open {
             return;
         }
-        let mut open = true;
-        let mut picked: Option<crate::i18n::L10n> = None;
-        let mut close = false;
-        egui::Window::new(crate::i18n::strs().msg_display_language())
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                // #257 item 3: RTL right-aligns the dialog's content.
-                let dir = if crate::i18n::rtl() {
-                    egui::Layout::top_down(egui::Align::RIGHT)
-                } else {
-                    egui::Layout::top_down(egui::Align::LEFT)
-                };
-                ui.with_layout(dir, |ui| {
-                    ui.label(crate::i18n::strs().msg_choose_the_display_language_for());
-                    ui.add_space(6.0);
-                    let current = crate::i18n::current();
-                    for lang in crate::i18n::L10n::iter() {
-                        if ui.radio(*lang == current, lang.language_name()).clicked() {
-                            picked = Some(*lang);
-                        }
-                    }
-                    ui.add_space(6.0);
-                    ui.weak(crate::i18n::strs().msg_applies_to_the_ribbon_menus_and());
-                    ui.add_space(8.0);
-                    if ui.button(crate::i18n::strs().msg_close()).clicked() {
-                        close = true;
-                    }
-                });
-            });
-        if let Some(lang) = picked {
-            crate::i18n::set_language(lang);
-            self.status = crate::i18n::strs().msg_applies_to_the_ribbon_menus_and();
+        let freshly_opened = std::mem::take(&mut self.options_opened_this_frame);
+        // #304: a confirm modal ABOVE the dialog (the close/new
+        // confirmation) owns Escape while it is up.
+        let esc_blocked = self.confirm_close.is_some() || self.confirm_new;
+        let outcome = match self.options_draft.as_mut() {
+            Some(draft) => {
+                draft.lang_persist_failed = self.lang_write_failed;
+                draft.settings_persist_failed = self.settings_write_failed;
+                crate::options::window(ctx, draft, freshly_opened, esc_blocked)
+            }
+            None => crate::options::Outcome::Cancel,
+        };
+        match outcome {
+            crate::options::Outcome::None => {}
+            crate::options::Outcome::Ok => {
+                self.commit_options();
+                // PR #305 review: a FAILED save (language OR
+                // options.json) keeps the dialog open — closing here
+                // would hide the in-dialog warning (the File screen
+                // behind it paints no status bar) and the user would
+                // believe the choice saved until a restart restored
+                // the old settings.
+                if !self.lang_write_failed && !self.settings_write_failed {
+                    self.options_open = false;
+                    self.options_draft = None;
+                }
+            }
+            crate::options::Outcome::Apply => self.commit_options(),
+            crate::options::Outcome::Cancel => {
+                self.options_open = false;
+                self.options_draft = None;
+            }
         }
-        self.language_dlg_open = open && !close;
+    }
+
+    /// #268: commit the draft — the store fields (persisted when the
+    /// store is not ephemeral) and the Language page's choice (the
+    /// Options dialog is the ONLY language surface since #304 retired
+    /// the View ▸ Window dialog; the headless pinning rule picks the
+    /// ephemeral twins when the store is in-memory).
+    fn commit_options(&mut self) {
+        let Some(d) = self.options_draft.as_ref() else {
+            return;
+        };
+        let lang = d.lang;
+        let lang_change = match lang {
+            crate::options::LangChoice::System => !crate::i18n::is_system_match(),
+            crate::options::LangChoice::Concrete(l) => {
+                crate::i18n::current() != l || crate::i18n::is_system_match()
+            }
+        };
+        // #305 review: the SETTINGS write result rides up too — a
+        // failed options.json save warns in the dialog and retries on
+        // the next Apply/OK (the in-memory apply always happened).
+        match self.options_store.apply(d) {
+            Ok(()) => self.settings_write_failed = false,
+            Err(e) => {
+                self.settings_write_failed = true;
+                self.status = format!(
+                    "{} ({e})",
+                    crate::i18n::strs().msg_options_settings_save_failed()
+                );
+            }
+        }
+        // Sync the committed values back into the draft (a clamped
+        // interval or trimmed name corrects visibly on the next paint).
+        if let Some(d) = self.options_draft.as_mut() {
+            d.sync_committed(&self.options_store);
+        }
+        // #304: retry a FAILED persistence even when the in-memory
+        // language already matches the draft — swallowing the write
+        // error stranded the session/file choice with no path back.
+        if lang_change || self.lang_write_failed {
+            let persisted = match lang {
+                crate::options::LangChoice::System => {
+                    if self.options_store.persists() {
+                        crate::i18n::set_system_default()
+                    } else {
+                        crate::i18n::set_system_default_ephemeral();
+                        Ok(())
+                    }
+                }
+                crate::options::LangChoice::Concrete(l) => {
+                    if self.options_store.persists() {
+                        crate::i18n::set_language(l)
+                    } else {
+                        crate::i18n::set_language_ephemeral(l);
+                        Ok(())
+                    }
+                }
+            };
+            match persisted {
+                Ok(()) => {
+                    self.lang_write_failed = false;
+                    self.status = crate::i18n::strs().msg_applies_to_the_ribbon_menus_and();
+                }
+                Err(e) => {
+                    self.lang_write_failed = true;
+                    self.status = format!(
+                        "{} ({e})",
+                        crate::i18n::strs().msg_options_language_save_failed()
+                    );
+                }
+            }
+        }
     }
 
     /// A close request arrived — the window's ✕ / Alt-F4 (or the
@@ -16964,9 +17279,11 @@ impl App {
         let mut close_backstage = false;
         let mut action: Option<BackAction> = None;
         // Esc always returns to the document — unless a prompt owns
-        // the screen.
+        // the screen, or the Options dialog (#268: it manages its own
+        // Esc and must not close the backstage underneath it).
         if !self.confirm_new
             && self.confirm_close.is_none()
+            && !self.options_open
             && ui.ctx().input(|i| i.key_pressed(egui::Key::Escape))
         {
             close_backstage = true;
@@ -17116,16 +17433,21 @@ impl App {
                 egui::Layout::bottom_up(egui::Align::LEFT)
             };
             ui.with_layout(rail_footer_dir, |ui| {
-                ui.add_enabled(
-                    false,
+                // #268: the rail's Options entry is live — the click
+                // opens the Options dialog over the File screen
+                // (Visio's pinned footer spot).
+                let resp = ui.add(
                     egui::Button::new(
                         egui::RichText::new(crate::i18n::strs().msg_options())
                             .size(14.0)
-                            .color(t.rail_disabled),
+                            .color(Color32::WHITE),
                     )
                     .frame(false),
-                )
-                .on_disabled_hover_text(crate::i18n::strs().msg_options_arrive_with_a_later_mile());
+                );
+                if resp.clicked() && !self.options_open {
+                    self.open_options_dialog();
+                }
+                resp.on_hover_text(crate::i18n::strs().msg_options_entry_desc());
             });
         });
         // Page content (the 2010 white backstage surface).
@@ -17560,7 +17882,7 @@ fn backstage_stub(ui: &mut Ui, title: &str, context: &str, action: &str, tip: &s
 /// carried by [`row`]/[`row_rev`] (mirrored row, column and button
 /// order) and egui's own bidi shaping of each label; full-body
 /// right-alignment is recorded as an egui limitation on the issue.
-fn dialog_dir() -> egui::Layout {
+pub(crate) fn dialog_dir() -> egui::Layout {
     egui::Layout::top_down(egui::Align::LEFT)
 }
 
@@ -17570,7 +17892,7 @@ fn dialog_dir() -> egui::Layout {
 /// parent's full cross space, voiding everything below it; the
 /// pre-existing end-pinned bars wrap the flip in horizontal for
 /// exactly that reason).
-fn row<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> egui::Response {
+pub(crate) fn row<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> egui::Response {
     let dir = if crate::i18n::rtl() {
         egui::Layout::right_to_left(egui::Align::Center)
     } else {
@@ -17582,7 +17904,7 @@ fn row<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> egui::Respons
 
 /// The INVERSE of [`row`] — an end-pinned control bar whose LTR form
 /// was `right_to_left` and mirrors to `left_to_right` under RTL.
-fn row_rev<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> egui::Response {
+pub(crate) fn row_rev<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> egui::Response {
     let dir = if crate::i18n::rtl() {
         egui::Layout::left_to_right(egui::Align::Center)
     } else {

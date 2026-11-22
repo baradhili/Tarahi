@@ -220,7 +220,6 @@ pub enum Action {
     RotateLeft,
     RotateRight,
     /// #246: open the Language dialog (View ▸ Window).
-    Language,
     /// #121 Review ▸ Proofing: the dialog-driven Check Spelling pass
     /// over the page's shape text (F7).
     SpellCheck,
@@ -352,7 +351,6 @@ pub enum Icon {
     /// #252 Container Tools wave.
     Lock,
     /// #246 i18n: the Language command.
-    Translate,
     /// #149: the context-menu mini-toolbar's Flip flyout.
     FlipVertical,
     /// #283: the Pan tool (MDI hand-back-right-outline, the hand
@@ -366,7 +364,6 @@ impl Icon {
         let a = match self {
             Icon::Save => "save",
             Icon::Undo => "undo",
-            Icon::Translate => "translate",
             Icon::FlipVertical => "flip-vertical",
             Icon::Redo => "redo",
             Icon::Open => "open",
@@ -767,21 +764,6 @@ impl Icon {
                     c + Vec2::new(8.5, -1.5),
                     1.4,
                     lit(Color32::from_rgb(0xe0, 0x4a, 0x2f)),
-                );
-            }
-            Icon::Translate => {
-                // #246 fallback glyph (the MDI texture is primary):
-                // two overlapping letter tiles.
-                let a = Rect::from_center_size(c + Vec2::new(-2.5, -2.5), Vec2::splat(9.0));
-                let b = Rect::from_center_size(c + Vec2::new(3.0, 3.5), Vec2::splat(8.0));
-                p.rect_filled(a, 1.5, blue);
-                p.rect_filled(b, 1.5, lit(Color32::from_rgb(0xe0, 0x7b, 0x1f)));
-                p.line_segment(
-                    [
-                        a.center() + Vec2::new(-2.0, 1.5),
-                        a.center() + Vec2::new(0.0, -2.5),
-                    ],
-                    Stroke::new(1.2, Color32::WHITE),
                 );
             }
             Icon::Pen => {

@@ -115,14 +115,9 @@ fn zoom_cols(s: &'static crate::l10n::L10nLanguage) -> Vec<super::Col> {
 fn window_cols(s: &'static crate::l10n::L10nLanguage) -> Vec<super::Col> {
     vec![grid(vec![
         vec![
-            // #246: the Language dialog — applies on selection, no
-            // restart; the next frame re-renders from the catalog.
-            RibbonButton::new(
-                Icon::Translate,
-                s.msg_language_menu(),
-                Action::Language,
-            )
-            .tip(s.msg_choose_the_display_language_for()),
+            // #304: the Language command is RETIRED — the UI language
+            // switches only in File ▸ Options (the View ▸ Window
+            // dialog is gone).
             RibbonButton::new(Icon::New, s.msg_new_window(), Action::Macros)
                 .enabled(false)
                 .tip(s.msg_new_window_planned_single_window()),
