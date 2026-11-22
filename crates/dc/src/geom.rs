@@ -474,6 +474,14 @@ type EvaldRow<'a> = (
     Option<f64>,
 );
 
+/// The geometry walk's row budget: [`geometry_hit_segments`] reads at
+/// most this many rows per section — a render-time horizon. Rows past
+/// it are invisible to the walk (and to the jump overlay, which rides
+/// the same walk), so a document edit that REPLACES rows from the
+/// walk's output must skip longer sections or it erases their tails
+/// (review on the #303 batch).
+pub const MAX_WALK_ROWS: usize = 64;
+
 /// The connector hit segments of a shape's geometry in PAGE space
 /// (#173/#179): walks the shape's Geometry rows — merging inherited
 /// rows and cells from the master — sampling arcs, and mapping every
@@ -573,7 +581,6 @@ pub fn geometry_hit_segments(
                                             // standalone. The flattened samples ARE the hit polyline, so
                                             // hit-testing agrees with the rendered ink (crate::curve::flatten).
     let mut spline_acc: Option<crate::curve::SplineAcc> = None;
-    const MAX_ROWS: usize = 64;
     // The ordered walk: the instance's rows, then master-only rows
     // (by ix) the instance never overrode. Each row carries its
     // section-qualified feed name (`Geometry1.X2`) — the ink path's
@@ -583,11 +590,11 @@ pub fn geometry_hit_segments(
         .collect();
     let mut walk: Vec<(&Row, Option<&Row>, &str)> = Vec::new();
     for (si, geo) in sections.iter().enumerate() {
-        for row in geo.rows.iter().take(MAX_ROWS) {
+        for row in geo.rows.iter().take(MAX_WALK_ROWS) {
             walk.push((row, master_row(row.ix), &gnames[si]));
         }
     }
-    for r in master_rows.iter().take(MAX_ROWS) {
+    for r in master_rows.iter().take(MAX_WALK_ROWS) {
         if !walk.iter().any(|(row, _, _)| row.ix == r.ix) {
             walk.push((r, None, "Geometry1"));
         }
@@ -623,7 +630,7 @@ pub fn geometry_hit_segments(
     // fed the env, the hit walk didn't, and a resized route stripped
     // in one walk but not the other).
     let mut evald: Vec<EvaldRow> = Vec::new();
-    for (row, master, gname) in walk.iter().take(MAX_ROWS) {
+    for (row, master, gname) in walk.iter().take(MAX_WALK_ROWS) {
         let t = row
             .t
             .as_deref()
@@ -661,7 +668,7 @@ pub fn geometry_hit_segments(
     // second pass makes is the captured per-row value (the round-3
     // review — a post-pass env read would sample later rows' feeds).
     for (k, (row, _master, _gname, t, end_local, end, ca, cb, cc, cd)) in
-        evald.iter().take(MAX_ROWS).enumerate()
+        evald.iter().take(MAX_WALK_ROWS).enumerate()
     {
         let t = t.as_str();
         let end_local = *end_local;

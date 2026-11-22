@@ -2012,6 +2012,15 @@ impl Command for ReconcileLineJumps {
             // The section's own IX — the replace targets it, never a
             // hardcoded 0 (CodeRabbit on the #303 batch).
             let geo_ix = geo.ix;
+            // The walk reads at most MAX_WALK_ROWS rows — a longer
+            // section's tail is invisible to it, and a replace built
+            // from the walk would ERASE those rows from the file
+            // (review on the #303 batch). Leave such connectors
+            // verbatim, like other authored geometry; the overlay
+            // still draws hops render-time for the crossings it sees.
+            if geo.rows.len() > dc::geom::MAX_WALK_ROWS {
+                continue;
+            }
             let live: Vec<&vsdx::model::Row> =
                 geo.rows.iter().filter(|r| !r.is_deleted()).collect();
             if live.len() < 2 {
@@ -4522,6 +4531,56 @@ mod reconcile_jump_tests {
         assert!((cell(&rows[2], "A") - (-R)).abs() < 1e-5);
         assert_eq!(rows[3].t.as_deref(), Some("LineTo"));
         assert!((cell(&rows[3], "X") - 3.0).abs() < 1e-6);
+    }
+
+    /// Review on the #303 batch: the renderer's walk reads at most
+    /// MAX_WALK_ROWS rows, and the reconcile replaces the section from
+    /// that walk — a connector longer than the budget would have every
+    /// row past the cap ERASED from the file. Such connectors stay
+    /// verbatim (the crossing sits well inside the cap, so the buggy
+    /// path would rewrite — and truncate).
+    #[test]
+    fn reconcile_leaves_a_connector_beyond_the_walk_row_cap_alone() {
+        let (mut ed, page_id) = crossing_doc();
+        // H grows past the walk's row budget with literal straight rows
+        // (collinear — the row COUNT is the point, not the shape).
+        let n = dc::geom::MAX_WALK_ROWS + 6;
+        let mut grown = vec![Row {
+            t: Some("MoveTo".into()),
+            ix: 1,
+            cells: xy(0.0, 0.0),
+            ..Row::default()
+        }];
+        for i in 2..=n {
+            let x = (i - 1) as f64 * 4.0 / (n - 1) as f64;
+            grown.push(lineto(i as i64, x, 0.0));
+        }
+        let h = ed
+            .doc
+            .pages[0]
+            .shapes
+            .iter_mut()
+            .find(|s| s.id == 5)
+            .unwrap();
+        set_geo_rows(h, grown);
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(
+            rows.len(),
+            n,
+            "the tail beyond the walk cap survives: {} rows",
+            rows.len()
+        );
+        assert!(
+            (cell(&rows[n - 1], "X") - 4.0).abs() < 1e-6,
+            "the terminal row is intact: {rows:?}"
+        );
+        assert!(
+            rows.iter().all(|r| r.t.as_deref() != Some("ArcTo")),
+            "the connector was left verbatim: {rows:?}"
+        );
     }
 
     /// CodeRabbit on the #303 batch: the collinear merge keeps a
