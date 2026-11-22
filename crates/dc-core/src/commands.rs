@@ -2435,10 +2435,12 @@ impl crate::Command for SetSectionRows {
         Ok(())
     }
     fn undo(&mut self, doc: &mut Document) -> Result<()> {
-        let prev = self
-            .previous
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("not yet applied"))?;
+        // Resolve the target FIRST and consume the snapshot only once
+        // it exists (review on the #303 batch): a failed undo that
+        // changed nothing must keep `previous` — a holder that retries
+        // after the section is restored still gets the original rows,
+        // where `take()` before resolution burned the pre-state and
+        // the retry hit "not yet applied".
         let s = sheet_mut(doc, &self.scope)?;
         let sec = s
             .children
@@ -2452,6 +2454,10 @@ impl crate::Command for SetSectionRows {
                 _ => None,
             })
             .ok_or_else(|| anyhow::anyhow!("section vanished before undo"))?;
+        let prev = self
+            .previous
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("not yet applied"))?;
         sec.rows = prev;
         Ok(())
     }

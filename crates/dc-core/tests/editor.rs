@@ -8,7 +8,7 @@
 use dc_core::commands::{
     AddConnect, AddLayer, AddPage, AddShape, DuplicatePage, GroupShapes, MovePage, RemoveConnect,
     RemoveLayer, RemovePage, RemoveShape, RenameLayer, RenamePage, RowSel, SetCell, SetRowCell,
-    SetText, UngroupShape,
+    SetSectionRows, SetText, UngroupShape,
 };
 use dc_core::connects::{Connect, ConnectsHost, ConnectsOwner};
 use dc_core::layers::{layer_name, layer_rows};
@@ -3397,4 +3397,86 @@ fn master_side_guards_and_locks_protect_instances() {
             vsdx::model::Cell::value("9"),
         ))
         .is_err());
+}
+
+/// Review on the #303 batch: `SetSectionRows::undo` consumed the
+/// saved pre-state BEFORE resolving the target section — a failed undo
+/// (the section vanished between apply and undo) burned the snapshot,
+/// and a retry after the section came back hit "not yet applied"
+/// instead of restoring the original rows. The snapshot is consumed
+/// only once the target exists, so a failed undo keeps it and the
+/// command-level retry works (composite holders — Macro, the reconcile
+/// — keep inner commands on partial failure).
+#[test]
+fn set_section_rows_undo_keeps_the_prestate_when_the_section_is_missing() {
+    let mut ed = Editor::new(bare_doc());
+    let scope = Scope::Shape { page: 0, shape: 1 };
+    let row = |ix: i64, x: &str| vsdx::model::Row {
+        t: Some("LineTo".into()),
+        ix,
+        cells: vec![("X".to_string(), Cell::value(x))],
+        ..vsdx::model::Row::default()
+    };
+    ed.doc
+        .pages[0]
+        .shapes
+        .iter_mut()
+        .find(|s| s.id == 1)
+        .unwrap()
+        .sheet
+        .children
+        .push(vsdx::model::SheetChild::Section(vsdx::model::Section {
+            name: "Geometry".into(),
+            ix: 0,
+            rows: vec![row(1, "0"), row(2, "4")],
+            ..vsdx::model::Section::default()
+        }));
+    let mut cmd = SetSectionRows::new(
+        Scope::Shape { page: 0, shape: 1 },
+        "Geometry",
+        0,
+        vec![row(1, "0"), row(2, "2"), row(3, "4")],
+    );
+    cmd.apply(&mut ed.doc).unwrap();
+    // The section vanishes between apply and undo; the undo must
+    // refuse WITHOUT consuming the snapshot.
+    {
+        let s = ed
+            .doc
+            .pages[0]
+            .shapes
+            .iter_mut()
+            .find(|s| s.id == 1)
+            .unwrap();
+        s.sheet.children.retain(|c| {
+            !matches!(c, vsdx::model::SheetChild::Section(sec) if sec.name == "Geometry")
+        });
+    }
+    assert!(
+        cmd.undo(&mut ed.doc).is_err(),
+        "the vanished section refuses the undo"
+    );
+    // The section returns — an unrelated writer's fresh, EMPTY one —
+    // and the retried undo restores the ORIGINAL pre-apply rows.
+    {
+        let s = ed
+            .doc
+            .pages[0]
+            .shapes
+            .iter_mut()
+            .find(|s| s.id == 1)
+            .unwrap();
+        s.sheet
+            .children
+            .push(vsdx::model::SheetChild::Section(vsdx::model::Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..vsdx::model::Section::default()
+            }));
+    }
+    cmd.undo(&mut ed.doc).unwrap();
+    let geo = &scope_sheet(&ed.doc, &scope).unwrap().sections_named("Geometry")[0];
+    assert_eq!(geo.rows.len(), 2, "the original two rows are back");
+    assert_eq!(geo.rows[0].cell("X").unwrap().v.as_deref(), Some("0"));
+    assert_eq!(geo.rows[1].cell("X").unwrap().v.as_deref(), Some("4"));
 }
