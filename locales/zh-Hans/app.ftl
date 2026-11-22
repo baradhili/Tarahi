@@ -592,6 +592,7 @@ options-minutes = 分钟
 options-proofing = 校对
 options-proofing-planned = 校对选项 — 计划中
 options-save-autorecover = 保存自动恢复信息时间间隔：
+options-settings-save-failed = 无法将设置保存到磁盘 — 仅在本次会话中生效。请检查文件权限后，再次选择“应用”或“确定”。
 options-user-name = 用户名:
 org-chart = 组织结构图
 orientation = 方向

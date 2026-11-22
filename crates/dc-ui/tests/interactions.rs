@@ -10180,6 +10180,23 @@ fn close_confirmation_owns_escape_over_the_options_draft() {
     h.run();
     assert!(h.state().debug_close_prompt(), "the confirm modal is up");
     assert!(h.state().debug_options_open());
+    // ENTER is the confirm's too (PR #305 review): while it is up,
+    // the Options Enter-as-OK fallback must not commit the draft and
+    // close the dialog under the pending close decision.
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().debug_close_prompt(), "the confirm still owns the frame");
+    assert!(
+        h.state().debug_options_open(),
+        "Enter did not commit-and-close Options under the confirm"
+    );
+    assert_eq!(
+        h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+            .value()
+            .as_deref(),
+        Some("precious draft"),
+        "the draft was not committed by Enter under the confirm"
+    );
     // Escape cancels the CLOSE only — the draft keeps its edit.
     h.key_press(egui::Key::Escape);
     h.run();
@@ -10201,6 +10218,51 @@ fn close_confirmation_owns_escape_over_the_options_draft() {
     h.run();
     assert!(!h.state().debug_options_open());
     assert_eq!(h.state().debug_options().user_name, "", "discarded");
+}
+
+/// #305 review: a failed `options.json` save warns in the dialog and
+/// keeps it open on OK (the retry leg lands the file) — the settings
+/// twin of the language-write failure path.
+#[test]
+fn options_settings_save_failure_warns_and_a_retry_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    let mut h = harness_with_blank();
+    // A PERSISTING store whose options.json sits under a regular FILE
+    // — the write fails while the in-memory apply succeeds.
+    h.state_mut().set_options_store_for_test(
+        dc_ui::options::Options::persisting_for_test(blocker.join("options.json")),
+    );
+    open_options(&mut h);
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Bret Watson");
+    h.run();
+    h.get_by_label("OK").click();
+    h.run();
+    assert!(
+        h.state().debug_options_open(),
+        "OK keeps the dialog open after a failed settings save"
+    );
+    assert!(
+        h.query_by_label_contains("Couldn't save your settings").is_some(),
+        "the in-dialog warning is up"
+    );
+    assert!(!blocker.join("options.json").exists());
+
+    // The retry: a writable store, OK again — closes and lands.
+    h.state_mut().set_options_store_for_test(
+        dc_ui::options::Options::persisting_for_test(dir.path().join("options.json")),
+    );
+    h.get_by_label("OK").click();
+    h.run();
+    assert!(
+        !h.state().debug_options_open(),
+        "OK closes the dialog once the save succeeded"
+    );
+    assert_eq!(h.state().debug_options().user_name, "Bret Watson");
+    let text = std::fs::read_to_string(dir.path().join("options.json")).unwrap();
+    assert!(text.contains("Bret Watson"), "the settings landed: {text}");
 }
 
 /// #304: the comment-avatar initials FIT the 16pt circle — a long
@@ -10230,6 +10292,11 @@ fn comment_avatar_initials_fit_the_circle() {
     // A normal configured pair survives whole — shrunk, not dropped.
     let (pair, _) = App::debug_fit_initials_for_test(&ctx, "BW");
     assert_eq!(pair, "BW");
+    // A pathological paste is bounded (PR #305 review): the candidate
+    // caps at eight glyphs before any truncation work.
+    let huge = "W".repeat(100_000);
+    let (few, _) = App::debug_fit_initials_for_test(&ctx, &huge);
+    assert!(few.chars().count() <= 2, "bounded: {few}");
 }
 
 #[test]

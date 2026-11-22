@@ -593,6 +593,7 @@ options-minutes = 분
 options-proofing = 교정
 options-proofing-planned = 교정 옵션 — 예정
 options-save-autorecover = 자동 복구 정보 저장 간격:
+options-settings-save-failed = 설정을 디스크에 저장할 수 없습니다 — 이 세션에만 적용됩니다. 파일 권한을 확인한 후 적용 또는 확인을 다시 선택하세요.
 options-user-name = 사용자 이름:
 org-chart = 조직도
 orientation = 방향

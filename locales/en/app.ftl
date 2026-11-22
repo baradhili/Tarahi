@@ -678,6 +678,7 @@ options-minutes = minutes
 options-proofing = Proofing
 options-proofing-planned = Proofing options — planned
 options-save-autorecover = Save AutoRecover information every:
+options-settings-save-failed = Couldn't save your settings to disk — they apply to this session only. Try applying again after checking the file's permissions.
 options-user-name = User name:
 org-chart = Org Chart
 orientation = Orientation

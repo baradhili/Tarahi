@@ -138,8 +138,12 @@ impl Options {
 
     /// Commit a dialog draft into the store (and persist when not
     /// ephemeral). The interval clamps to 1..=120 minutes; garbage
-    /// keeps the previous value; the name/initials trim.
-    pub(crate) fn apply(&mut self, d: &Draft) {
+    /// keeps the previous value; the name/initials trim. Returns the
+    /// PERSISTENCE result (#305 review): the in-memory apply always
+    /// happens — a read-only config dir must not break the session —
+    /// but a failed `options.json` write is the caller's to surface
+    /// (Ok for the ephemeral stores, where nothing was attempted).
+    pub(crate) fn apply(&mut self, d: &Draft) -> std::io::Result<()> {
         self.user_name = d.user_name.trim().to_string();
         self.user_initials = d.user_initials.trim().to_string();
         self.autorecover = d.autorecover;
@@ -147,16 +151,14 @@ impl Options {
             self.autorecover_minutes = m.clamp(1, 120);
         }
         self.autorecover_dir = d.autorecover_dir.clone();
-        if self.store.is_some() {
-            self.persist();
-        }
+        self.persist()
     }
 
-    /// Serialize + write (best-effort — a read-only config dir must
-    /// not break the commit), returning whether the file landed.
-    fn persist_to(&self, path: &Path) -> bool {
+    /// Serialize + write — the write's `io::Result` rides up so the
+    /// commit path can warn (#305 review).
+    fn persist_to(&self, path: &Path) -> std::io::Result<()> {
         if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            std::fs::create_dir_all(dir)?;
         }
         let text = serde_json::json!({
             "version": 1,
@@ -167,13 +169,13 @@ impl Options {
             "autorecover_dir": self.autorecover_dir,
         })
         .to_string();
-        std::fs::write(path, text).is_ok()
+        std::fs::write(path, text)
     }
 
-    fn persist(&self) -> bool {
+    fn persist(&self) -> std::io::Result<()> {
         match self.store.as_ref() {
             Some(path) => self.persist_to(path),
-            None => false,
+            None => Ok(()), // ephemeral: nothing was attempted
         }
     }
 
@@ -181,7 +183,7 @@ impl Options {
     /// uses config_base(); the logic is shared).
     #[doc(hidden)]
     pub fn persist_to_for_test(&self, path: &Path) -> bool {
-        self.persist_to(path)
+        self.persist_to(path).is_ok()
     }
 
     /// Test seam: parse the JSON form.
@@ -242,6 +244,9 @@ pub struct Draft {
     /// window paints a warning and the next Apply retries (app.rs
     /// syncs this from its own flag each frame; not captured).
     pub lang_persist_failed: bool,
+    /// #305 review: the LAST commit's `options.json` persistence
+    /// failed — same contract as the language flag.
+    pub settings_persist_failed: bool,
 }
 
 impl Draft {
@@ -259,6 +264,7 @@ impl Draft {
             autorecover_dir: o.autorecover_dir.clone(),
             lang,
             lang_persist_failed: false,
+            settings_persist_failed: false,
         }
     }
 
@@ -327,13 +333,21 @@ pub(crate) fn window(
             // #304: the last language commit could not persist —
             // say so IN the dialog (a status note behind the modal is
             // invisible); the next Apply retries.
-            if draft.lang_persist_failed {
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(i18n::strs().msg_options_language_save_failed())
-                        .small()
-                        .color(ui.visuals().error_fg_color),
-                );
+            for (failed, text) in [
+                (draft.lang_persist_failed, i18n::strs().msg_options_language_save_failed()),
+                (
+                    draft.settings_persist_failed,
+                    i18n::strs().msg_options_settings_save_failed(),
+                ),
+            ] {
+                if failed {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(text)
+                            .small()
+                            .color(ui.visuals().error_fg_color),
+                    );
+                }
             }
             ui.add_space(10.0);
             crate::app::row_rev(ui, |ui| {
@@ -362,7 +376,8 @@ pub(crate) fn window(
     // the worst of both.
     if !esc_blocked && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         outcome = Outcome::Cancel;
-    } else if outcome == Outcome::None
+    } else if !esc_blocked
+        && outcome == Outcome::None
         && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)
     {
         // Only when no button handler already claimed the frame: a
@@ -585,8 +600,9 @@ mod tests {
             autorecover_dir: String::new(),
             lang: LangChoice::Concrete(L10n::En),
             lang_persist_failed: false,
+            settings_persist_failed: false,
         };
-        o.apply(&d);
+        assert!(o.apply(&d).is_ok(), "ephemeral apply persists nothing");
         assert_eq!(o.user_name, "Bret Watson");
         assert_eq!(o.user_initials, "bw");
         assert_eq!(o.autorecover_minutes, 1, "the interval clamps to 1..=120");
@@ -605,8 +621,9 @@ mod tests {
             autorecover_dir: String::new(),
             lang: LangChoice::Concrete(L10n::En),
             lang_persist_failed: false,
+            settings_persist_failed: false,
         };
-        o.apply(&d);
+        assert!(o.apply(&d).is_ok(), "ephemeral apply persists nothing");
         assert_eq!(o.autorecover_minutes, 10);
     }
 

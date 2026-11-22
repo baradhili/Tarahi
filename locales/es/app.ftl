@@ -676,6 +676,7 @@ options-minutes = minutos
 options-proofing = Revisión
 options-proofing-planned = Opciones de revisión — planeado
 options-save-autorecover = Guardar información de Autorrecuperación cada:
+options-settings-save-failed = No se pudieron guardar las opciones en el disco; solo se aplican a esta sesión. Elija Aplicar o Aceptar de nuevo después de revisar los permisos del archivo.
 options-user-name = Nombre de usuario:
 org-chart = Organigrama
 orientation = Orientación

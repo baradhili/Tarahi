@@ -137,6 +137,9 @@ pub struct App {
     /// dialog warns and the next Apply retries even though the
     /// in-memory language already matches the draft.
     lang_write_failed: bool,
+    /// #305 review: the last `options.json` commit failed to persist
+    /// — same contract: warn in the dialog, retry on Apply/OK.
+    settings_write_failed: bool,
     options_draft: Option<crate::options::Draft>,
     /// Set for the single frame the Options dialog opened on
     /// (CodeRabbit round): the Enter that ACTIVATED the backstage
@@ -731,6 +734,7 @@ impl App {
             spell: crate::spellcheck::SpellState::headless(),
             options_open: false,
             lang_write_failed: false,
+            settings_write_failed: false,
             options_draft: None,
             options_opened_this_frame: false,
             options_store: crate::options::Options::ephemeral(),
@@ -11326,6 +11330,10 @@ impl App {
 /// (the full author name stays in the header beside the avatar).
 /// Returns the fitted text and its font size.
 fn fit_initials_to_avatar(ctx: &egui::Context, initials: &str) -> (String, f32) {
+    // Bound the candidate first (#305 review): nothing beyond a
+    // handful of glyphs can ever clear the circle, and an unbounded
+    // paste would make the truncation loop quadratic per frame.
+    let initials: String = initials.chars().take(8).collect();
     let width = |text: &str, size: f32| -> f32 {
         ctx.fonts_mut(|f| {
             let mut job = egui::text::LayoutJob::default();
@@ -11343,7 +11351,7 @@ fn fit_initials_to_avatar(ctx: &egui::Context, initials: &str) -> (String, f32) 
         .x
     };
     for size in [10.0f32, 9.5, 9.0, 8.5, 8.0] {
-        if width(initials, size) <= 13.0 {
+        if width(&initials, size) <= 13.0 {
             return (initials.to_string(), size);
         }
     }
@@ -16868,6 +16876,7 @@ impl App {
         let outcome = match self.options_draft.as_mut() {
             Some(draft) => {
                 draft.lang_persist_failed = self.lang_write_failed;
+                draft.settings_persist_failed = self.settings_write_failed;
                 crate::options::window(ctx, draft, freshly_opened, esc_blocked)
             }
             None => crate::options::Outcome::Cancel,
@@ -16876,12 +16885,13 @@ impl App {
             crate::options::Outcome::None => {}
             crate::options::Outcome::Ok => {
                 self.commit_options();
-                // PR #305 review (Greptile): a FAILED language save
-                // keeps the dialog open — closing here would hide the
-                // in-dialog warning (the File screen behind it paints
-                // no status bar) and the user would believe the choice
-                // saved until a restart restored the old language.
-                if !self.lang_write_failed {
+                // PR #305 review: a FAILED save (language OR
+                // options.json) keeps the dialog open — closing here
+                // would hide the in-dialog warning (the File screen
+                // behind it paints no status bar) and the user would
+                // believe the choice saved until a restart restored
+                // the old settings.
+                if !self.lang_write_failed && !self.settings_write_failed {
                     self.options_open = false;
                     self.options_draft = None;
                 }
@@ -16910,7 +16920,19 @@ impl App {
                 crate::i18n::current() != l || crate::i18n::is_system_match()
             }
         };
-        self.options_store.apply(d);
+        // #305 review: the SETTINGS write result rides up too — a
+        // failed options.json save warns in the dialog and retries on
+        // the next Apply/OK (the in-memory apply always happened).
+        match self.options_store.apply(d) {
+            Ok(()) => self.settings_write_failed = false,
+            Err(e) => {
+                self.settings_write_failed = true;
+                self.status = format!(
+                    "{} ({e})",
+                    crate::i18n::strs().msg_options_settings_save_failed()
+                );
+            }
+        }
         // Sync the committed values back into the draft (a clamped
         // interval or trimmed name corrects visibly on the next paint).
         if let Some(d) = self.options_draft.as_mut() {

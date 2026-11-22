@@ -633,6 +633,7 @@ options-minutes = دقیقه
 options-proofing = بازبینی
 options-proofing-planned = گزینه‌های بازبینی — برنامه‌ریزی شده
 options-save-autorecover = ذخیرهٔ اطلاعات بازیابی خودکار هر:
+options-settings-save-failed = ذخیره‌ی تنظیمات روی دیسک ممکن نبود — فقط برای این نشست اعمال می‌شوند. پس از بررسی مجوزهای فایل، دوباره «اعمال» یا «تأیید» را انتخاب کنید.
 options-user-name = نام کاربر:
 org-chart = نمودار سازمانی
 orientation = جهت‌گیری

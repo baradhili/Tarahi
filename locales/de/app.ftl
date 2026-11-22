@@ -633,6 +633,7 @@ options-minutes = Minuten
 options-proofing = Dokumentprüfung
 options-proofing-planned = Dokumentprüfungsoptionen — geplant
 options-save-autorecover = AutoWiederherstellen-Informationen speichern alle:
+options-settings-save-failed = Die Einstellungen konnten nicht auf der Festplatte gespeichert werden — sie gelten nur für diese Sitzung. Wählen Sie nach Prüfung der Dateiberechtigungen erneut Übernehmen oder OK.
 options-user-name = Benutzername:
 org-chart = Organigramm
 orientation = Ausrichtung

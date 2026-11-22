@@ -4062,6 +4062,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "options-settings-save-failed",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "options-user-name",
         attribute: None,
         vars: &[],
@@ -6862,13 +6869,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..48140,
-            Self::En => 48140..94676,
-            Self::Es => 94676..145885,
-            Self::Fa => 145885..206868,
-            Self::Ja => 206868..258327,
-            Self::Ko => 258327..305789,
-            Self::ZhHans => 305789..347366,
+            Self::De => 0..48358,
+            Self::En => 48358..95056,
+            Self::Es => 95056..146456,
+            Self::Fa => 146456..207722,
+            Self::Ja => 207722..259444,
+            Self::Ko => 259444..307104,
+            Self::ZhHans => 307104..348847,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -9119,6 +9126,9 @@ impl L10nLanguage {
     }
     pub fn msg_options_save_autorecover(&self) -> String {
         self.0.msg("options-save-autorecover", None).unwrap()
+    }
+    pub fn msg_options_settings_save_failed(&self) -> String {
+        self.0.msg("options-settings-save-failed", None).unwrap()
     }
     pub fn msg_options_user_name(&self) -> String {
         self.0.msg("options-user-name", None).unwrap()

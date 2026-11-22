@@ -592,6 +592,7 @@ options-minutes = 分
 options-proofing = 文書校正
 options-proofing-planned = 文書校正オプション — 予定
 options-save-autorecover = 自動回復情報の保存間隔:
+options-settings-save-failed = 設定をディスクに保存できませんでした — このセッションのみに適用されます。ファイルのアクセス権を確認してから、もう一度 [適用] または [OK] を選択してください。
 options-user-name = ユーザー名:
 org-chart = 組織図
 orientation = 向き
