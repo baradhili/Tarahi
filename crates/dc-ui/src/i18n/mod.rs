@@ -76,10 +76,16 @@ fn set_current(lang: L10n) {
 /// Switch the language and persist the choice app-level (never in the
 /// `.vsdx` — DocumentSettings' schema is closed). Applies on the next
 /// frame: call sites read [`strs()`] fresh, no stored strings mutate.
-pub fn set_language(lang: L10n) {
+///
+/// Returns the PERSISTENCE result (#304): the session switches either
+/// way, but a failed `language.json` write is the caller's to surface
+/// — silently swallowing it stranded the session/file choice apart
+/// with no retry (a second Apply saw the in-memory language already
+/// matching and skipped the write).
+pub fn set_language(lang: L10n) -> std::io::Result<()> {
     set_current(lang);
     SYSTEM_MATCH.store(false, Ordering::Relaxed);
-    persist(lang);
+    persist(lang)
 }
 
 /// Switch without persisting (tests, previews).
@@ -92,10 +98,10 @@ pub fn set_language_ephemeral(lang: L10n) {
 /// from the environment now and on the next run (`language.json` loses
 /// its explicit language key). Applies on the next frame like
 /// [`set_language`].
-pub fn set_system_default() {
+pub fn set_system_default() -> std::io::Result<()> {
     set_current(detect_system_locale());
     SYSTEM_MATCH.store(true, Ordering::Relaxed);
-    persist_system();
+    persist_system()
 }
 
 /// The ephemeral twin of [`set_system_default`] (tests, previews): no
@@ -185,31 +191,59 @@ pub fn init_from_disk() {
     }
 }
 
+/// Where `language.json` lives — the per-user config base, or the
+/// test override ([`set_store_dir_for_tests`], #304's failure-path
+/// tests point this at an unwritable location).
 fn store_path() -> Option<PathBuf> {
+    if let Some(dir) = TEST_STORE_DIR.lock().unwrap().clone() {
+        return Some(dir.join("language.json"));
+    }
     config_base().map(|b| b.join("diagramcraft").join("language.json"))
 }
 
-fn persist(lang: L10n) {
-    let Some(path) = store_path() else { return };
+/// The on-disk writer both persistence twins share: `Some(lang)`
+/// writes the explicit choice, `None` the match-the-system form (the
+/// key absent). Returns the write's `io::Result` so the setters can
+/// report a failed save (#304).
+fn write_language_file(path: &std::path::Path, lang: Option<L10n>) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
     }
-    let _ = std::fs::write(
-        &path,
-        serde_json::json!({ "version": SCHEMA_VERSION, "language": lang.to_string() }).to_string(),
-    );
+    let body = match lang {
+        Some(l) => {
+            serde_json::json!({ "version": SCHEMA_VERSION, "language": l.to_string() })
+        }
+        None => serde_json::json!({ "version": SCHEMA_VERSION }),
+    };
+    std::fs::write(path, body.to_string())
+}
+
+fn persist(lang: L10n) -> std::io::Result<()> {
+    let path = store_path().ok_or_else(|| {
+        std::io::Error::other("no writable config location for language.json")
+    })?;
+    write_language_file(&path, Some(lang))
 }
 
 /// Persist the "match the system locale" choice (#268): `language.json`
 /// WITHOUT a language key — the schema version stays, the choice reads
 /// back as [`Persisted::System`].
-fn persist_system() {
-    let Some(path) = store_path() else { return };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(&path, serde_json::json!({ "version": SCHEMA_VERSION }).to_string());
+fn persist_system() -> std::io::Result<()> {
+    let path = store_path().ok_or_else(|| {
+        std::io::Error::other("no writable config location for language.json")
+    })?;
+    write_language_file(&path, None)
 }
+
+/// #304 test seam: redirect `language.json` to `dir` (None restores
+/// the real config base). The failure-path tests point this at an
+/// unwritable location; the retry tests at a tempdir.
+#[doc(hidden)]
+pub fn set_store_dir_for_tests(dir: Option<PathBuf>) {
+    *TEST_STORE_DIR.lock().unwrap() = dir;
+}
+
+static TEST_STORE_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// The on-disk form of `language.json` (#268): an explicit language, or
 /// the match-the-system-locale choice (the key absent or null — a file
@@ -516,5 +550,54 @@ mod tests {
         std::fs::read_to_string(path)
             .ok()
             .and_then(|text| super::parse(&text))
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "dc-i18n-304-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// #304: the writer reports failures — a `language.json` under a
+    /// regular FILE (create_dir_all hits NotADirectory) is an Err, so
+    /// the setter surfaces it instead of swallowing it.
+    #[test]
+    fn language_write_failure_is_reported() {
+        let dir = temp_dir("fail");
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        let target = blocker.join("language.json");
+        assert!(super::write_language_file(&target, Some(L10n::De)).is_err());
+        assert!(super::write_language_file(&target, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #304: `set_language` propagates the result through the test
+    /// store-dir seam — Err on the unwritable spot, Ok (and the file
+    /// landed) on a writable one.
+    #[test]
+    fn set_language_reports_persistence_through_the_seam() {
+        let dir = temp_dir("seam");
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        // English both legs: this test shares its BINARY with the
+        // English-asserting suites, so it never moves the
+        // process-global language (the seam's semantics — Err/Ok and
+        // the landed file — do not depend on which language).
+        super::set_store_dir_for_tests(Some(blocker.clone()));
+        assert!(super::set_language(L10n::En).is_err(), "unwritable spot");
+        super::set_store_dir_for_tests(Some(dir.clone()));
+        assert!(super::set_language(L10n::En).is_ok(), "writable spot");
+        let text = std::fs::read_to_string(dir.join("language.json")).unwrap();
+        assert!(text.contains("\"en\""), "the choice landed: {text}");
+        super::set_store_dir_for_tests(None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -3005,13 +3005,6 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "language-menu",
-        attribute: None,
-        vars: &[],
-        bool_vars: &[],
-        elements: &[],
-    },
-    MessageContract {
         message: "language-name",
         attribute: None,
         vars: &[],
@@ -4021,6 +4014,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "options-initials",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-language-save-failed",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -6862,13 +6862,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..47956,
-            Self::En => 47956..94346,
-            Self::Es => 94346..145385,
-            Self::Fa => 145385..206108,
-            Self::Ja => 206108..257321,
-            Self::Ko => 257321..304604,
-            Self::ZhHans => 304604..346035,
+            Self::De => 0..48140,
+            Self::En => 48140..94676,
+            Self::Es => 94676..145885,
+            Self::Fa => 145885..206868,
+            Self::Ja => 206868..258327,
+            Self::Ko => 258327..305789,
+            Self::ZhHans => 305789..347366,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -8544,9 +8544,6 @@ impl L10nLanguage {
     pub fn msg_language(&self) -> String {
         self.0.msg("language", None).unwrap()
     }
-    pub fn msg_language_menu(&self) -> String {
-        self.0.msg("language-menu", None).unwrap()
-    }
     #[allow(unused)]
     pub fn msg_language_name(&self) -> String {
         self.0.msg("language-name", None).unwrap()
@@ -9104,6 +9101,9 @@ impl L10nLanguage {
     }
     pub fn msg_options_initials(&self) -> String {
         self.0.msg("options-initials", None).unwrap()
+    }
+    pub fn msg_options_language_save_failed(&self) -> String {
+        self.0.msg("options-language-save-failed", None).unwrap()
     }
     pub fn msg_options_match_system_locale(&self) -> String {
         self.0.msg("options-match-system-locale", None).unwrap()

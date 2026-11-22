@@ -133,6 +133,10 @@ pub struct App {
     /// domain lives in `options.rs`; app.rs keeps the state fields +
     /// glue — the decomposition direction).
     options_open: bool,
+    /// #304: the last language commit failed to persist — the Options
+    /// dialog warns and the next Apply retries even though the
+    /// in-memory language already matches the draft.
+    lang_write_failed: bool,
     options_draft: Option<crate::options::Draft>,
     /// Set for the single frame the Options dialog opened on
     /// (CodeRabbit round): the Enter that ACTIVATED the backstage
@@ -229,7 +233,6 @@ pub struct App {
     /// The Snap & Glue dialog is open (View ▸ Visual Aids, #109).
     snap_dlg_open: bool,
     /// #246: the Language dialog is open.
-    language_dlg_open: bool,
     /// #218 review: the Jump-size drag's draft — a DragValue commit
     /// per frame flooded history; the draft edits locally and commits
     /// once, when the drag stops (typed input commits immediately).
@@ -727,6 +730,7 @@ impl App {
             hyperlink_open: None,
             spell: crate::spellcheck::SpellState::headless(),
             options_open: false,
+            lang_write_failed: false,
             options_draft: None,
             options_opened_this_frame: false,
             options_store: crate::options::Options::ephemeral(),
@@ -769,7 +773,6 @@ impl App {
             pending_activate: None,
             snap: crate::snap::SnapSettings::default(),
             snap_dlg_open: false,
-            language_dlg_open: false,
             line_jump_draft: None,
             snap_live: Vec::new(),
             conn_fx_last: crate::connectors::ConnPointFx::default(),
@@ -957,6 +960,21 @@ impl App {
     #[doc(hidden)]
     pub fn debug_open_doc_count(&self) -> usize {
         self.docs.len() + self.ed.is_some() as usize
+    }
+    /// kittest (#304): swap the Options store (the language-save
+    /// failure tests install a PERSISTING store at a tempdir).
+    #[doc(hidden)]
+    pub fn set_options_store_for_test(&mut self, o: crate::options::Options) {
+        self.options_store = o;
+    }
+    /// kittest (#304): the avatar-initials fit — (text, font size);
+    /// a long configured string must truncate into the 16pt circle.
+    #[doc(hidden)]
+    pub fn debug_fit_initials_for_test(
+        ctx: &egui::Context,
+        initials: &str,
+    ) -> (String, f32) {
+        fit_initials_to_avatar(ctx, initials)
     }
     /// kittest: what every editing command does — dirty + version bump
     /// (the Info thumbnail's cache key, #58).
@@ -3087,6 +3105,15 @@ impl App {
     // -- interaction ------------------------------------------------------
 
     fn handle_shortcuts(&mut self, ctx: &Context) {
+        // #304: the Options dialog is MODAL — while it is up the
+        // application shortcuts (Ctrl+Z/N/S…) never fire and keytips
+        // stand down; the dialog's own fields own the keyboard (a
+        // Ctrl+Z in the User name field must undo TEXT, not the
+        // drawing).
+        if self.options_open {
+            self.keytips.disarm();
+            return;
+        }
         // #184 keytips own the keyboard FIRST: while Alt-armed (or on
         // an Alt+letter combo) the letter never reaches a widget.
         self.keytip_input(ctx);
@@ -3268,7 +3295,7 @@ impl App {
     /// so no text field ever types them.
     fn keytip_input(&mut self, ctx: &Context) {
         // Office shows no ribbon keytips on the File screen.
-        if self.backstage || self.language_dlg_open {
+        if self.backstage {
             self.keytips.disarm();
             return;
         }
@@ -3655,10 +3682,6 @@ impl App {
     fn close_front_dialog(&mut self) -> bool {
         if self.selby_open {
             self.selby_open = false;
-            return true;
-        }
-        if self.language_dlg_open {
-            self.language_dlg_open = false;
             return true;
         }
         // #121: the Check Spelling dialog.
@@ -8373,7 +8396,6 @@ impl App {
                 self.apply_snap_settings();
             }
             Action::SnapGlue => self.snap_dlg_open = !self.snap_dlg_open,
-            Action::Language => self.language_dlg_open = true,
             Action::SpellCheck => self.start_spellcheck(),
             Action::PointerTool => {
                 self.tool = Tool::Pointer;
@@ -11296,6 +11318,46 @@ impl App {
             .collect()
     }
 
+}
+
+/// #304: the comment-avatar initials fitted to the 16pt circle —
+/// first by SHRINKING the font (10pt down to 8pt keeps a normal
+/// two-letter pair whole), then by truncating, floor of one character
+/// (the full author name stays in the header beside the avatar).
+/// Returns the fitted text and its font size.
+fn fit_initials_to_avatar(ctx: &egui::Context, initials: &str) -> (String, f32) {
+    let width = |text: &str, size: f32| -> f32 {
+        ctx.fonts_mut(|f| {
+            let mut job = egui::text::LayoutJob::default();
+            job.append(
+                text,
+                0.0,
+                egui::TextFormat::simple(
+                    egui::FontId::proportional(size),
+                    Color32::WHITE,
+                ),
+            );
+            f.layout_job(job)
+        })
+        .size()
+        .x
+    };
+    for size in [10.0f32, 9.5, 9.0, 8.5, 8.0] {
+        if width(initials, size) <= 13.0 {
+            return (initials.to_string(), size);
+        }
+    }
+    let mut fitted = initials.to_string();
+    while fitted.chars().count() > 1 {
+        fitted = fitted.chars().take(fitted.chars().count() - 1).collect();
+        if width(&fitted, 8.0) <= 13.0 {
+            return (fitted, 8.0);
+        }
+    }
+    (fitted, 8.0)
+}
+
+impl App {
     /// The shape's comment thread (#29): annotation shapes whose
     /// `User.AnnotationRef` names it, oldest first — (annotation id,
     /// author, date, body).
@@ -11403,11 +11465,16 @@ impl App {
                                         8.0,
                                         ui.visuals().selection.bg_fill,
                                     );
+                                    // #304: the initials FIT the avatar
+                                    // (the full author name stays in
+                                    // the header beside it).
+                                    let (fitted, size) =
+                                        fit_initials_to_avatar(ui.ctx(), initial);
                                     ui.painter().text(
                                         c.center(),
                                         egui::Align2::CENTER_CENTER,
-                                        initial,
-                                        egui::FontId::proportional(10.0),
+                                        fitted,
+                                        egui::FontId::proportional(size),
                                         Color32::WHITE,
                                     );
                                     ui.label(
@@ -16376,7 +16443,6 @@ impl App {
         self.backgrounds_window(&ctx);
         self.select_by_type_window(&ctx);
         self.snap_glue_window(&ctx);
-        self.language_window(&ctx);
         self.hyperlink_window(&ctx);
         self.fields_insert_window(&ctx);
         self.spell_window(&ctx);
@@ -16774,53 +16840,6 @@ impl App {
         }
     }
 
-    /// #246: the Language dialog (View ▸ Window) — one radio row per
-    /// shipped language (native names), applying on selection. Strings
-    /// resolve through the catalog each frame, so the switch is live:
-    /// the very next frame re-renders in the picked language.
-    fn language_window(&mut self, ctx: &egui::Context) {
-        if !self.language_dlg_open {
-            return;
-        }
-        let mut open = true;
-        let mut picked: Option<crate::i18n::L10n> = None;
-        let mut close = false;
-        egui::Window::new(crate::i18n::strs().msg_display_language())
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                // #257 item 3: RTL right-aligns the dialog's content.
-                let dir = if crate::i18n::rtl() {
-                    egui::Layout::top_down(egui::Align::RIGHT)
-                } else {
-                    egui::Layout::top_down(egui::Align::LEFT)
-                };
-                ui.with_layout(dir, |ui| {
-                    ui.label(crate::i18n::strs().msg_choose_the_display_language_for());
-                    ui.add_space(6.0);
-                    let current = crate::i18n::current();
-                    for lang in crate::i18n::L10n::iter() {
-                        if ui.radio(*lang == current, lang.language_name()).clicked() {
-                            picked = Some(*lang);
-                        }
-                    }
-                    ui.add_space(6.0);
-                    ui.weak(crate::i18n::strs().msg_applies_to_the_ribbon_menus_and());
-                    ui.add_space(8.0);
-                    if ui.button(crate::i18n::strs().msg_close()).clicked() {
-                        close = true;
-                    }
-                });
-            });
-        if let Some(lang) = picked {
-            crate::i18n::set_language(lang);
-            self.status = crate::i18n::strs().msg_applies_to_the_ribbon_menus_and();
-        }
-        self.language_dlg_open = open && !close;
-    }
-
     /// #268: open the Options dialog from the backstage rail — the
     /// draft starts at the live store values plus the current language
     /// choice (match-system while no explicit language is persisted).
@@ -16843,8 +16862,14 @@ impl App {
             return;
         }
         let freshly_opened = std::mem::take(&mut self.options_opened_this_frame);
+        // #304: a confirm modal ABOVE the dialog (the close/new
+        // confirmation) owns Escape while it is up.
+        let esc_blocked = self.confirm_close.is_some() || self.confirm_new;
         let outcome = match self.options_draft.as_mut() {
-            Some(draft) => crate::options::window(ctx, draft, freshly_opened),
+            Some(draft) => {
+                draft.lang_persist_failed = self.lang_write_failed;
+                crate::options::window(ctx, draft, freshly_opened, esc_blocked)
+            }
             None => crate::options::Outcome::Cancel,
         };
         match outcome {
@@ -16863,10 +16888,10 @@ impl App {
     }
 
     /// #268: commit the draft — the store fields (persisted when the
-    /// store is not ephemeral) and the Language page's choice. The
-    /// View ▸ Window switch stays the quick shortcut; both surfaces
-    /// share the same `i18n` calls (the headless pinning rule picks
-    /// the ephemeral twins when the store is in-memory).
+    /// store is not ephemeral) and the Language page's choice (the
+    /// Options dialog is the ONLY language surface since #304 retired
+    /// the View ▸ Window dialog; the headless pinning rule picks the
+    /// ephemeral twins when the store is in-memory).
     fn commit_options(&mut self) {
         let Some(d) = self.options_draft.as_ref() else {
             return;
@@ -16884,24 +16909,41 @@ impl App {
         if let Some(d) = self.options_draft.as_mut() {
             d.sync_committed(&self.options_store);
         }
-        if lang_change {
-            match lang {
+        // #304: retry a FAILED persistence even when the in-memory
+        // language already matches the draft — swallowing the write
+        // error stranded the session/file choice with no path back.
+        if lang_change || self.lang_write_failed {
+            let persisted = match lang {
                 crate::options::LangChoice::System => {
                     if self.options_store.persists() {
-                        crate::i18n::set_system_default();
+                        crate::i18n::set_system_default()
                     } else {
                         crate::i18n::set_system_default_ephemeral();
+                        Ok(())
                     }
                 }
                 crate::options::LangChoice::Concrete(l) => {
                     if self.options_store.persists() {
-                        crate::i18n::set_language(l);
+                        crate::i18n::set_language(l)
                     } else {
                         crate::i18n::set_language_ephemeral(l);
+                        Ok(())
                     }
                 }
+            };
+            match persisted {
+                Ok(()) => {
+                    self.lang_write_failed = false;
+                    self.status = crate::i18n::strs().msg_applies_to_the_ribbon_menus_and();
+                }
+                Err(e) => {
+                    self.lang_write_failed = true;
+                    self.status = format!(
+                        "{} ({e})",
+                        crate::i18n::strs().msg_options_language_save_failed()
+                    );
+                }
             }
-            self.status = crate::i18n::strs().msg_applies_to_the_ribbon_menus_and();
         }
     }
 

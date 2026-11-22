@@ -118,6 +118,17 @@ impl Options {
         })
     }
 
+    /// #304 test seam: a PERSISTING store at an explicit path (the
+    /// language-save failure/retry tests pair it with i18n's
+    /// `set_store_dir_for_tests`).
+    #[doc(hidden)]
+    pub fn persisting_for_test(path: impl Into<std::path::PathBuf>) -> Options {
+        Options {
+            store: Some(path.into()),
+            ..Options::default()
+        }
+    }
+
     /// Whether this store persists (production) — the Language page's
     /// commit picks the persistent or ephemeral `i18n` call
     /// accordingly (the headless pinning rule).
@@ -227,6 +238,10 @@ pub struct Draft {
     pub autorecover_minutes: String,
     pub autorecover_dir: String,
     pub lang: LangChoice,
+    /// #304: the LAST commit's language persistence failed — the
+    /// window paints a warning and the next Apply retries (app.rs
+    /// syncs this from its own flag each frame; not captured).
+    pub lang_persist_failed: bool,
 }
 
 impl Draft {
@@ -243,6 +258,7 @@ impl Draft {
             autorecover_minutes: o.autorecover_minutes.to_string(),
             autorecover_dir: o.autorecover_dir.clone(),
             lang,
+            lang_persist_failed: false,
         }
     }
 
@@ -278,7 +294,12 @@ pub(crate) enum Outcome {
 /// is still in the input then, so the key checks skip it once (the
 /// CodeRabbit round); the returned outcome drives app.rs's
 /// commit/discard glue.
-pub(crate) fn window(ctx: &Context, draft: &mut Draft, freshly_opened: bool) -> Outcome {
+pub(crate) fn window(
+    ctx: &Context,
+    draft: &mut Draft,
+    freshly_opened: bool,
+    esc_blocked: bool,
+) -> Outcome {
     let mut outcome = Outcome::None;
     // MODAL (#166 precedent; the CodeRabbit round): the backdrop
     // blocks input to the backstage behind the dialog — a Back/rail/
@@ -303,6 +324,17 @@ pub(crate) fn window(ctx: &Context, draft: &mut Draft, freshly_opened: bool) -> 
                     }
                 });
             });
+            // #304: the last language commit could not persist —
+            // say so IN the dialog (a status note behind the modal is
+            // invisible); the next Apply retries.
+            if draft.lang_persist_failed {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(i18n::strs().msg_options_language_save_failed())
+                        .small()
+                        .color(ui.visuals().error_fg_color),
+                );
+            }
             ui.add_space(10.0);
             crate::app::row_rev(ui, |ui| {
                 if ui.button(i18n::strs().msg_ok()).clicked() {
@@ -324,7 +356,11 @@ pub(crate) fn window(ctx: &Context, draft: &mut Draft, freshly_opened: bool) -> 
     if freshly_opened {
         return outcome;
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    // #304: a confirm modal ABOVE this dialog (the close/new
+    // confirmation) owns Escape for the frame — letting the draft
+    // discard here too would drop the edits AND cancel the close,
+    // the worst of both.
+    if !esc_blocked && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         outcome = Outcome::Cancel;
     } else if outcome == Outcome::None
         && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)
@@ -548,6 +584,7 @@ mod tests {
             autorecover_minutes: "0".into(),
             autorecover_dir: String::new(),
             lang: LangChoice::Concrete(L10n::En),
+            lang_persist_failed: false,
         };
         o.apply(&d);
         assert_eq!(o.user_name, "Bret Watson");
@@ -567,6 +604,7 @@ mod tests {
             autorecover_minutes: "abc".into(),
             autorecover_dir: String::new(),
             lang: LangChoice::Concrete(L10n::En),
+            lang_persist_failed: false,
         };
         o.apply(&d);
         assert_eq!(o.autorecover_minutes, 10);

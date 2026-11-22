@@ -10134,6 +10134,104 @@ fn options_dialog_save_page_round_trips() {
     assert!(o.autorecover, "the checkbox defaults on");
 }
 
+/// #304: the Options dialog is MODAL for the keyboard too — Ctrl+Z
+/// while it is up (even focused in its own User name field) must undo
+/// TEXT in the field, never fire the application's do_undo.
+#[test]
+fn options_blocks_application_shortcuts() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("typed while modal");
+    h.run();
+    // With no history, an unblocked Ctrl+Z would land the
+    // "Nothing to undo" status — the proof the handler ran.
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run();
+    assert!(
+        !h.state().debug_status().contains("undo"),
+        "the shortcut never fired: {}",
+        h.state().debug_status()
+    );
+    assert!(h.state().debug_options_open(), "the dialog stays up");
+    // And the field kept its text (the undo did not touch the doc).
+    assert_eq!(
+        h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+            .value()
+            .as_deref(),
+        Some("typed while modal")
+    );
+}
+
+/// #304: the close confirmation OWNS Escape while it is up — the
+/// Options draft under it survives the frame (the old layering
+/// discarded the draft AND canceled the close).
+#[test]
+fn close_confirmation_owns_escape_over_the_options_draft() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("precious draft");
+    h.run();
+    // A dirty document + the OS close request: the confirm modal
+    // opens OVER the dialog.
+    h.state_mut().mark_dirty_for_test();
+    h.state_mut().request_close_for_test();
+    h.run();
+    assert!(h.state().debug_close_prompt(), "the confirm modal is up");
+    assert!(h.state().debug_options_open());
+    // Escape cancels the CLOSE only — the draft keeps its edit.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().debug_close_prompt(), "the close canceled");
+    assert!(
+        h.state().debug_options_open(),
+        "the Options dialog survived the Esc"
+    );
+    assert_eq!(
+        h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+            .value()
+            .as_deref(),
+        Some("precious draft"),
+        "the draft survived the confirm's Esc"
+    );
+    // With the confirm gone, the next Esc is Options' own — it
+    // discards and closes (the #71 contract, still intact).
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().debug_options_open());
+    assert_eq!(h.state().debug_options().user_name, "", "discarded");
+}
+
+/// #304: the comment-avatar initials FIT the 16pt circle — a long
+/// configured string truncates until its laid-out width clears it.
+#[test]
+fn comment_avatar_initials_fit_the_circle() {
+    // A minimal harness that only installs the production fonts and
+    // hands the Context out (the fit measures through its fonts).
+    let ctx_cell = std::rc::Rc::new(std::cell::RefCell::new(
+        Option::<egui::Context>::None,
+    ));
+    let cell = ctx_cell.clone();
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(200.0, 100.0))
+        .build_ui(move |ui| {
+            dc_ui::theme::install_for(ui.ctx(), egui::ThemePreference::Light);
+            *cell.borrow_mut() = Some(ui.ctx().clone());
+        });
+    h.run();
+    let ctx = ctx_cell.borrow().clone().expect("a frame ran");
+    let (fitted, size) = App::debug_fit_initials_for_test(&ctx, "WWWWWWWW");
+    assert!(
+        fitted.chars().count() <= 2,
+        "eight Ws truncate hard: {fitted}"
+    );
+    assert!(size <= 8.0 + f32::EPSILON, "the truncation tier is the floor font");
+    // A normal configured pair survives whole — shrunk, not dropped.
+    let (pair, _) = App::debug_fit_initials_for_test(&ctx, "BW");
+    assert_eq!(pair, "BW");
+}
+
 #[test]
 fn options_general_user_name_feeds_the_comment_author() {
     let mut h = harness_with_blank();

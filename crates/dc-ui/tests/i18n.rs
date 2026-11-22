@@ -852,6 +852,86 @@ fn options_dialog_language_page_switches_the_shell() {
     harness.get_by_label_contains("Datei");
 }
 
+/// #304: a failed language persistence is IN-YOUR-FACE and retryable —
+/// the dialog warns, the session still switches, and the next Apply
+/// retries the write even though the in-memory language already
+/// matches the draft (the old code skipped it, stranding the choice).
+/// The retry leg also pins that a retry lands the file.
+#[test]
+fn options_language_save_failure_warns_and_a_retry_persists() {
+    let _guard = LANG_LOCK.lock().unwrap();
+    let _english = EnglishOnDrop;
+    dc_ui::i18n::pin_english();
+    let dir = tempfile::tempdir().unwrap();
+    // The unwritable spot: a regular FILE as the would-be parent of
+    // language.json.
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    struct StoreDirOnDrop;
+    impl Drop for StoreDirOnDrop {
+        fn drop(&mut self) {
+            dc_ui::i18n::set_store_dir_for_tests(None);
+        }
+    }
+    let _store_guard = StoreDirOnDrop;
+    dc_ui::i18n::set_store_dir_for_tests(Some(blocker.clone()));
+
+    let mut app = App::with_blank();
+    // A PERSISTING Options store (the ephemeral headless one never
+    // reaches the i18n write path).
+    app.set_options_store_for_test(dc_ui::options::Options::persisting_for_test(
+        dir.path().join("options.json"),
+    ));
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_ui_state(
+            |ui, app: &mut App| {
+                dc_ui::theme::install_for(ui.ctx(), egui::ThemePreference::Light);
+                app.draw(ui);
+            },
+            app,
+        );
+    harness.run();
+    harness.get_by_label("File").click();
+    harness.run();
+    harness.get_by_label("Options").click();
+    harness.run();
+    harness
+        .get_all_by_label("Language")
+        .find(|n| n.rect().center().x > 300.0)
+        .expect("the Language nav row")
+        .click();
+    harness.run();
+    harness.get_by_label("Deutsch").click();
+    harness.run();
+    harness.get_by_label("Apply").click();
+    harness.run();
+    // The session switched to German (the dialog chrome is German
+    // now) and the warning is up — in German, since the switch is
+    // live.
+    harness.get_by_label_contains("Datei");
+    assert!(
+        harness.query_by_label_contains("Sprachwahl").is_some(),
+        "the in-dialog warning is up"
+    );
+    // The file did NOT land on the unwritable spot.
+    assert!(!blocker.join("language.json").exists());
+
+    // The retry: point the store at the writable tempdir and Apply
+    // again — the draft's language matches the in-memory current, so
+    // only the failed-write retry rule makes this write.
+    dc_ui::i18n::set_store_dir_for_tests(Some(dir.path().to_path_buf()));
+    harness.get_by_label("Übernehmen").click();
+    harness.run();
+    assert!(
+        harness.query_by_label_contains("Sprachwahl").is_none(),
+        "the warning cleared after the successful retry"
+    );
+    let text = std::fs::read_to_string(dir.path().join("language.json")).unwrap();
+    assert!(text.contains("\"de\""), "the choice landed: {text}");
+}
+
 /// #268: the Options dialog under German — the catalog rule's German
 /// look for the new surface (the long AutoRecover/proofing strings
 /// must fit; the golden pins the translated chrome).
