@@ -970,6 +970,9 @@ pub struct Jump {
     pub dir: (f64, f64),
     /// Unit vector along the under line.
     pub under: (f64, f64),
+    /// The JUMPING line's shape id (the stored-jump reconciliation,
+    /// #303: hops are written into the jumper's own Geometry rows).
+    pub jumper: i64,
     pub weight: f64,
     pub under_weight: f64,
     pub color: (u8, u8, u8),
@@ -1263,6 +1266,7 @@ pub fn line_jumps(lines: &[JumpLine], (radius, radius_y): (f64, f64)) -> Vec<Jum
                         at,
                         dir: d,
                         under: du,
+                        jumper: jmp.id,
                         weight: jmp.weight,
                         under_weight: und.weight,
                         color: jmp.color,
@@ -1329,12 +1333,28 @@ fn parse_hex_rgb(v: &str) -> Option<(u8, u8, u8)> {
 /// ([`line_jumps`]: the more-horizontal line hops, ties to the later
 /// z). Hidden-layer members and guides skip like the render walk.
 pub fn page_jumps(doc: &vsdx::Document, page: &vsdx::Page, hidden: &[i64]) -> Vec<Jump> {
+    page_jumps_stripping(doc, page, hidden, None)
+}
+
+/// [`page_jumps`] with an explicit STRIP-radius override (the #303
+/// reconciliation): the stored-jump classification runs at `strip` —
+/// the PRE-edit radius when a jump-size edit just moved the page
+/// radius (#301) — while the hops themselves still compute at the
+/// page's CURRENT radius. `None` strips at the current radius, the
+/// plain [`page_jumps`] behavior.
+pub fn page_jumps_stripping(
+    doc: &vsdx::Document,
+    page: &vsdx::Page,
+    hidden: &[i64],
+    strip: Option<(f64, f64)>,
+) -> Vec<Jump> {
     // #294: the hop radii are the page's own LineToLineX/Y ×
     // LineJumpFactorX/Y / 2, resolved through the style chain — the
     // X pair for a horizontal hop, the Y pair for a vertical one
     // (PR #299 review).
     let radius = jump_radius_in(doc, page);
     let radius_y = jump_radius_y_in(doc, page);
+    let (strip_r, strip_ry) = strip.unwrap_or((radius, radius_y));
     let mut lines: Vec<JumpLine> = Vec::new();
     for (z, s) in page.shapes.iter().enumerate() {
         if s.sheet
@@ -1372,8 +1392,9 @@ pub fn page_jumps(doc: &vsdx::Document, page: &vsdx::Page, hidden: &[i64]) -> Ve
         // stored jump arcs strip from the polyline (#294) — the hop
         // computes on the straight run, never on a stale arc. The
         // evidence is THIS page's resolved radius (the same value the
-        // hop draws with).
-        let segs = geometry_hit_segments(s, master_root, &frame, Some((radius, radius_y)));
+        // hop draws with) — or the caller's override, the #301
+        // pre-edit radius when a jump-size edit just landed.
+        let segs = geometry_hit_segments(s, master_root, &frame, Some((strip_r, strip_ry)));
         if segs.is_empty() {
             continue;
         }

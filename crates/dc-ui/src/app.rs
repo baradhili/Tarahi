@@ -5571,6 +5571,11 @@ impl App {
                 )));
             }
         }
+        // #303: the new route may cross differently — the stored
+        // jumps reconcile in the same undo step.
+        if let Some(page_id) = self.page_id() {
+            cmds.push(Box::new(crate::cmd::ReconcileLineJumps::new(page_id)));
+        }
         self.apply(Macro::new(
             crate::i18n::strs().msg_set_connector_route_style(),
             cmds,
@@ -6183,7 +6188,13 @@ impl App {
             let conn = vsdx::model::find_shape_by_id(&page2.shapes, sid)?;
             let chain2 = shape_chain(&ep.doc, page_id, sid).ok()?;
             crate::cmd::plan_connector_frame(
-                &ep.doc, conn, &chain2, beg, endp, ep.pre_end, ep.pre_beg,
+                &ep.doc,
+                conn,
+                &chain2,
+                beg,
+                endp,
+                (ep.pre_beg, ep.pre_end),
+                dc::geom::jump_radii_in(&ep.doc, page2),
             )
         };
         // Apply the plan's writes to the snapshot (plain cache writes
@@ -6203,6 +6214,21 @@ impl App {
                     name,
                     cell.clone(),
                 );
+            }
+            // #303: the grow path replaces the route rows wholesale —
+            // mirror the commit's SetSectionRows directly on the
+            // snapshot; the per-row path keeps its cell writes.
+            if let Some(rep) = &plan.rows_replace {
+                if let Some(sec) = conn.sheet.children.iter_mut().find_map(|c| match c {
+                    vsdx::model::SheetChild::Section(sec)
+                        if sec.name == "Geometry" && sec.ix == 0 =>
+                    {
+                        Some(sec)
+                    }
+                    _ => None,
+                }) {
+                    sec.rows = rep.clone();
+                }
             }
             for (ix, x, y) in &plan.rows {
                 for (name, v) in [("X", *x), ("Y", *y)] {
@@ -6470,13 +6496,20 @@ impl App {
         let Some(page_id) = self.page_id() else {
             return;
         };
-        self.apply(SetCell::new(
-            Scope::PageSheet { page: page_id },
-            "LineJumpCode",
-            // Off writes 0 (visPLOJumpNone, [MS-Learn]) — 6 was
-            // never in the enumeration (#218 review).
-            vsdx::Cell::value(if show { "1" } else { "0" }),
-        ));
+        // #301: hiding jumps straightens the stored arcs in the same
+        // step — the render already draws them straight, and the file
+        // should agree.
+        let cmds: Vec<Box<dyn dc_core::Command>> = vec![
+            Box::new(SetCell::new(
+                Scope::PageSheet { page: page_id },
+                "LineJumpCode",
+                // Off writes 0 (visPLOJumpNone, [MS-Learn]) — 6 was
+                // never in the enumeration (#218 review).
+                vsdx::Cell::value(if show { "1" } else { "0" }),
+            )),
+            Box::new(crate::cmd::ReconcileLineJumps::new(page_id)),
+        ];
+        self.apply(dc_core::Macro::new("set line jumps shown", cmds));
         self.status = if show {
             crate::i18n::strs().msg_line_jumps_shown()
         } else {
@@ -6485,15 +6518,30 @@ impl App {
     }
 
     /// #251: the page's jump-size multiplier (`LineJumpFactorX`).
+    /// #301: the stored jumps normalize with the edit — recognized at
+    /// the PRE-edit radius (they were authored there) and rewritten
+    /// at the new one, so the stored rows and the overlay never
+    /// disagree after a factor change.
     fn apply_line_jump_factor(&mut self, factor: f64) {
         let Some(page_id) = self.page_id() else {
             return;
         };
-        self.apply(SetCell::new(
+        let pre = self.ed.as_ref().and_then(|ed| {
+            ed.doc
+                .pages
+                .iter()
+                .find(|p| p.id == page_id)
+                .map(|p| dc::geom::jump_radii_in(&ed.doc, p))
+        });
+        let mut cmds: Vec<Box<dyn dc_core::Command>> = vec![Box::new(SetCell::new(
             Scope::PageSheet { page: page_id },
             "LineJumpFactorX",
             vsdx::Cell::value(format!("{factor:.6}")),
-        ));
+        ))];
+        if let Some(pre) = pre {
+            cmds.push(Box::new(crate::cmd::ReconcileLineJumps::with_strip(page_id, pre)));
+        }
+        self.apply(dc_core::Macro::new("set line jump factor", cmds));
         // The factor steps in fractions (0.5 .. 3.0) — the i64 cast
         // truncated them to ×0/×1 in the status note (PR #269
         // review); FluentNumber carries the decimal through.

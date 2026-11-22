@@ -247,7 +247,15 @@ fn preview_planner_matches_the_commit_reroute() {
         let page = ed.doc.pages.iter().find(|p| p.id == page_id).unwrap();
         let sh = find_shape_by_id(&page.shapes, 1021).unwrap();
         let chain = dc_core::scope::shape_chain(&ed.doc, page_id, 1021).unwrap();
-        dc_ui::cmd::plan_connector_frame(&ed.doc, sh, &chain, begin, drop, pre_end, pre_beg)
+        dc_ui::cmd::plan_connector_frame(
+            &ed.doc,
+            sh,
+            &chain,
+            begin,
+            drop,
+            (pre_beg, pre_end),
+            dc::geom::jump_radii_in(&ed.doc, page),
+        )
     };
     {
         use dc_core::commands::{set_row_cell, RowSel};
@@ -255,6 +263,18 @@ fn preview_planner_matches_the_commit_reroute() {
         let sh = vsdx::model::find_shape_by_id_mut(&mut page.shapes, 1021).unwrap();
         for (n, v) in [("EndX", drop.0), ("EndY", drop.1)] {
             sh.sheet.set_cell(n, vsdx::Cell::value(format!("{v:.6}")));
+        }
+        if let Some(rep) = &plan.rows_replace {
+            if let Some(sec) = sh.sheet.children.iter_mut().find_map(|c| match c {
+                vsdx::model::SheetChild::Section(sec)
+                    if sec.name == "Geometry" && sec.ix == 0 =>
+                {
+                    Some(sec)
+                }
+                _ => None,
+            }) {
+                sec.rows = rep.clone();
+            }
         }
         for (n, v, _) in &plan.cells {
             sh.sheet.set_cell(n, vsdx::Cell::value(format!("{v:.6}")));
