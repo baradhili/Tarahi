@@ -805,3 +805,95 @@ fn rtl_snap_glue_dialog_mirrors() {
         .expect("the Glue column caption (msg_glue = چسباندن)");
     harness.snapshot("i18n_persian_snap_glue");
 }
+
+/// #268: the Options dialog's Language page switches the shell — the
+/// draft applies on OK (the ephemeral i18n path: the headless store is
+/// in-memory, so the user's real `language.json` is never touched).
+/// The View ▸ Window switch stays the quick shortcut; this pins the
+/// second surface.
+#[test]
+fn options_dialog_language_page_switches_the_shell() {
+    let _guard = LANG_LOCK.lock().unwrap();
+    let _english = EnglishOnDrop;
+    // Pin FIRST, construct, then drive the dialog: the headless
+    // constructor pins English, so the switch must come after it.
+    dc_ui::i18n::pin_english();
+    let mut app = App::with_blank();
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_ui(move |ui| {
+            dc_ui::theme::install_for(ui.ctx(), egui::ThemePreference::Light);
+            app.draw(ui);
+        });
+    harness.run();
+    harness.get_by_label("File").click();
+    harness.run();
+    harness.get_by_label("Options").click();
+    harness.run();
+    // The nav rows sit right of x=300 (the CENTER-anchored dialog over
+    // the backstage rail's own rows — the interactions helper's rule).
+    harness
+        .get_all_by_label("Language")
+        .find(|n| n.rect().center().x > 300.0)
+        .expect("the Language nav row")
+        .click();
+    harness.run();
+    // Pick German in the draft, then OK — the very next frame renders
+    // the shell in German.
+    harness.get_by_label("Deutsch").click();
+    harness.run();
+    harness.get_by_label("OK").click();
+    harness.run();
+    // The dialog closed but the backstage stays under it — Esc returns
+    // to the (now German) shell.
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    harness.get_by_label_contains("Datei");
+}
+
+/// #268: the Options dialog under German — the catalog rule's German
+/// look for the new surface (the long AutoRecover/proofing strings
+/// must fit; the golden pins the translated chrome).
+#[test]
+fn language_switch_renders_german_options_dialog() {
+    let _guard = LANG_LOCK.lock().unwrap();
+    let _english = EnglishOnDrop;
+    // Pin FIRST, construct, then switch: the headless constructor pins
+    // English, so the switch must come after it.
+    dc_ui::i18n::pin_english();
+    let mut app = App::with_blank();
+    dc_ui::i18n::set_language_ephemeral(dc_ui::i18n::L10n::De);
+    dc_ui::svgimg::pin_determinism_for_tests();
+    app.open_backstage_for_test();
+    app.open_options_for_test();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_ui_state(
+            |ui, app: &mut App| {
+                dc_ui::theme::install_for(ui.ctx(), egui::ThemePreference::Light);
+                app.draw(ui);
+            },
+            app,
+        );
+    harness.run();
+    harness.run();
+    // The rail entry and the dialog title share the German word, so
+    // query (never get): both must exist, plus the translated General
+    // page's field label.
+    assert!(
+        harness
+            .query_all_by_label_contains("Optionen")
+            .next()
+            .is_some(),
+        "the German rail entry renders"
+    );
+    assert!(
+        harness
+            .query_all_by_label_contains("Benutzername:")
+            .next()
+            .is_some(),
+        "the German Options dialog renders the translated General page"
+    );
+    harness.snapshot("i18n_german_options_dialog");
+}

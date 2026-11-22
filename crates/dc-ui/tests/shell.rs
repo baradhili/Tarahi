@@ -209,6 +209,34 @@ fn shell_snapshot_backstage_new() {
     run_shell("dc_ui_shell_backstage_new", app);
 }
 
+/// #268: the Options dialog over the File screen, one golden per
+/// first-class page (the grayed Proofing/Advanced nav rows ride the
+/// General golden). The path is pinned like the Info golden.
+fn run_options_shell(name: &str, page: &'static str) {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = App::with_doc(&fixture(tmp.path()));
+    app.set_path_for_test(std::path::PathBuf::from("/golden/shell.vssx"));
+    app.open_backstage_for_test();
+    app.open_options_for_test();
+    app.set_options_page_for_test(page);
+    run_shell(name, app);
+}
+
+#[test]
+fn shell_snapshot_options_general() {
+    run_options_shell("dc_ui_shell_options_general", "general");
+}
+
+#[test]
+fn shell_snapshot_options_save() {
+    run_options_shell("dc_ui_shell_options_save", "save");
+}
+
+#[test]
+fn shell_snapshot_options_language() {
+    run_options_shell("dc_ui_shell_options_language", "language");
+}
+
 #[test]
 fn shell_snapshot_blank_drawing() {
     // File → New: empty page with the starter shape masters in the pane.

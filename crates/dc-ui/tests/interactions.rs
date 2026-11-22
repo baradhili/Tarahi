@@ -9989,3 +9989,197 @@ fn spell_dialog_ignore_all_and_add() {
         vec!["tset".to_string(), "zork".to_string()]
     );
 }
+
+// ---------------------------------------------------------------------------
+// File ▸ Options (#268)
+// ---------------------------------------------------------------------------
+
+/// Click one Options-dialog nav row. The dialog is CENTER-anchored in
+/// the fixed 1280-wide harness, so its nav rows sit right of x=300 —
+/// the backstage rail's own rows (a "Save" collision) stay far left.
+fn options_nav(h: &mut Harness<'static, App>, label: &str) {
+    h.get_all_by_label(label)
+        .find(|n| n.rect().center().x > 300.0)
+        .expect("the nav row")
+        .click();
+}
+
+/// Open the Options dialog from the real path: File tab → backstage →
+/// the rail footer's Options entry (#268).
+fn open_options(h: &mut Harness<'static, App>) {
+    h.run();
+    h.get_by_label("File").click();
+    h.run();
+    assert!(h.state().backstage, "the File tab opens the backstage");
+    h.get_by_label("Options").click();
+    h.run();
+    assert!(
+        h.state().debug_options_open(),
+        "the rail's Options entry opens the dialog"
+    );
+}
+
+#[test]
+fn options_dialog_opens_from_the_backstage_rail() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    // General first (Visio's landing page), with the backstage still
+    // underneath — the dialog paints inside the backstage branch.
+    assert!(
+        h.query_by_role_and_label(egui::Role::TextInput, "User name:")
+            .is_some(),
+        "the dialog opens on General"
+    );
+    assert!(h.state().backstage, "the backstage stays under the dialog");
+}
+
+#[test]
+fn options_dialog_general_round_trips_through_ok() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Bret Watson");
+    h.get_by_role_and_label(egui::Role::TextInput, "Initials:")
+        .set_text_value_accesskit("BW");
+    h.run();
+    // Enter is the dialog's OK (#71 contract): commit + close.
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(!h.state().debug_options_open(), "OK closes the dialog");
+    assert_eq!(h.state().debug_options().user_name, "Bret Watson");
+    assert_eq!(h.state().debug_options().user_initials, "BW");
+    // Reopening captures the committed store values into the draft.
+    h.get_by_label("Options").click();
+    h.run();
+    assert_eq!(
+        h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+            .value()
+            .as_deref(),
+        Some("Bret Watson"),
+        "the reopened draft shows the committed values"
+    );
+}
+
+#[test]
+fn options_dialog_apply_commits_without_closing() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Bret");
+    h.run();
+    h.get_by_label("Apply").click();
+    h.run();
+    assert!(
+        h.state().debug_options_open(),
+        "Apply commits without closing"
+    );
+    assert_eq!(h.state().debug_options().user_name, "Bret");
+    // Further edits stay draft-only: Esc after the Apply discards the
+    // uncommitted value, never the committed one.
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Bret Two");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert_eq!(h.state().debug_options().user_name, "Bret");
+}
+
+#[test]
+fn options_dialog_cancel_and_esc_discard() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Nobody");
+    h.run();
+    h.get_by_label("Cancel").click();
+    h.run();
+    assert!(!h.state().debug_options_open(), "Cancel closes the dialog");
+    assert_eq!(h.state().debug_options().user_name, "", "Cancel discards");
+    // Esc discards too — and it must NOT close the backstage under the
+    // dialog; the second Esc returns to the document.
+    h.get_by_label("Options").click();
+    h.run();
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Nobody");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().debug_options_open());
+    assert!(
+        h.state().backstage,
+        "the dialog's Esc leaves the backstage open"
+    );
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().backstage, "the second Esc closes the backstage");
+}
+
+#[test]
+fn options_dialog_save_page_round_trips() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    options_nav(&mut h, "Save");
+    h.run();
+    h.get_by_role_and_label(
+        egui::Role::TextInput,
+        "Save AutoRecover information every:",
+    )
+    .set_text_value_accesskit("15");
+    h.get_by_role_and_label(egui::Role::TextInput, "AutoRecover file location:")
+        .set_text_value_accesskit("/tmp/autorecover");
+    h.run();
+    h.get_by_label("OK").click();
+    h.run();
+    let o = h.state().debug_options();
+    assert_eq!(o.autorecover_minutes, 15);
+    assert_eq!(o.autorecover_dir, "/tmp/autorecover");
+    assert!(o.autorecover, "the checkbox defaults on");
+}
+
+#[test]
+fn options_general_user_name_feeds_the_comment_author() {
+    let mut h = harness_with_blank();
+    h.run();
+    // Set the General page's user name through the real dialog path.
+    h.get_by_label("File").click();
+    h.run();
+    h.get_by_label("Options").click();
+    h.run();
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Bret Watson");
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert_eq!(h.state().debug_options().user_name, "Bret Watson");
+    // Leave the backstage (the dialog's OK closed it only) for the
+    // canvas, then author a comment the Visio way: right-click →
+    // Add Comment.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    let from = h.state().debug_master_cells()[0].1.center();
+    let to = h.state().debug_canvas_rect().center();
+    click_at(&mut h, from, egui::PointerButton::Primary);
+    click_at(&mut h, to, egui::PointerButton::Primary);
+    click_at(&mut h, to, egui::PointerButton::Secondary);
+    h.run();
+    h.get_all_by_label_contains("Add Comment")
+        .filter(|n| n.rect().height() < 30.0)
+        .find(|n| n.rect().min.y > 250.0)
+        .expect("Add Comment row")
+        .click();
+    h.run();
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("New comment"),
+    )
+    .set_text_value_accesskit("needs review");
+    h.run();
+    h.get_by_label("OK").click();
+    h.run();
+    let ann = h.state().debug_annotations_for_test();
+    assert_eq!(ann.len(), 1, "one annotation on the Annotation layer");
+    assert!(
+        ann[0].1.starts_with("Bret Watson — "),
+        "the General page's user name authors the comment (the \
+         pre-#268 behavior read the environment): {:?}",
+        ann[0].1
+    );
+}

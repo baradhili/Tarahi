@@ -3957,7 +3957,112 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "options-arrive-with-a-later-mile",
+        message: "options-advanced",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-advanced-planned",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-autorecover-location",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-autorecover-location-hint",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-default-marker",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-editing-languages",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-editing-languages-planned",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-entry-desc",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-general",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-initials",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-match-system-locale",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-minutes",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-proofing",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-proofing-planned",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-save-autorecover",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-user-name",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -6757,13 +6862,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..47149,
-            Self::En => 47149..92840,
-            Self::Es => 92840..143054,
-            Self::Fa => 143054..202770,
-            Self::Ja => 202770..253220,
-            Self::Ko => 253220..299805,
-            Self::ZhHans => 299805..340545,
+            Self::De => 0..47956,
+            Self::En => 47956..94346,
+            Self::Es => 94346..145385,
+            Self::Fa => 145385..206108,
+            Self::Ja => 206108..257321,
+            Self::Ko => 257321..304604,
+            Self::ZhHans => 304604..346035,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -8966,10 +9071,57 @@ impl L10nLanguage {
     pub fn msg_options(&self) -> String {
         self.0.msg("options", None).unwrap()
     }
-    pub fn msg_options_arrive_with_a_later_mile(&self) -> String {
+    pub fn msg_options_advanced(&self) -> String {
+        self.0.msg("options-advanced", None).unwrap()
+    }
+    pub fn msg_options_advanced_planned(&self) -> String {
+        self.0.msg("options-advanced-planned", None).unwrap()
+    }
+    pub fn msg_options_autorecover_location(&self) -> String {
+        self.0.msg("options-autorecover-location", None).unwrap()
+    }
+    pub fn msg_options_autorecover_location_hint(&self) -> String {
         self.0
-            .msg("options-arrive-with-a-later-mile", None)
+            .msg("options-autorecover-location-hint", None)
             .unwrap()
+    }
+    pub fn msg_options_default_marker(&self) -> String {
+        self.0.msg("options-default-marker", None).unwrap()
+    }
+    pub fn msg_options_editing_languages(&self) -> String {
+        self.0.msg("options-editing-languages", None).unwrap()
+    }
+    pub fn msg_options_editing_languages_planned(&self) -> String {
+        self.0
+            .msg("options-editing-languages-planned", None)
+            .unwrap()
+    }
+    pub fn msg_options_entry_desc(&self) -> String {
+        self.0.msg("options-entry-desc", None).unwrap()
+    }
+    pub fn msg_options_general(&self) -> String {
+        self.0.msg("options-general", None).unwrap()
+    }
+    pub fn msg_options_initials(&self) -> String {
+        self.0.msg("options-initials", None).unwrap()
+    }
+    pub fn msg_options_match_system_locale(&self) -> String {
+        self.0.msg("options-match-system-locale", None).unwrap()
+    }
+    pub fn msg_options_minutes(&self) -> String {
+        self.0.msg("options-minutes", None).unwrap()
+    }
+    pub fn msg_options_proofing(&self) -> String {
+        self.0.msg("options-proofing", None).unwrap()
+    }
+    pub fn msg_options_proofing_planned(&self) -> String {
+        self.0.msg("options-proofing-planned", None).unwrap()
+    }
+    pub fn msg_options_save_autorecover(&self) -> String {
+        self.0.msg("options-save-autorecover", None).unwrap()
+    }
+    pub fn msg_options_user_name(&self) -> String {
+        self.0.msg("options-user-name", None).unwrap()
     }
     pub fn msg_org_chart(&self) -> String {
         self.0.msg("org-chart", None).unwrap()

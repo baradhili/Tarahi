@@ -129,6 +129,16 @@ pub struct App {
     /// the app-level custom dictionary (the domain lives in
     /// `spellcheck.rs`; app.rs keeps only the state field + glue).
     spell: crate::spellcheck::SpellState,
+    /// File ▸ Options (#268): the dialog's open flag and draft (the
+    /// domain lives in `options.rs`; app.rs keeps the state fields +
+    /// glue — the decomposition direction).
+    options_open: bool,
+    options_draft: Option<crate::options::Draft>,
+    /// The app-level options store (#268): user name/initials (the
+    /// Comments author field) and the Save page's AutoRecover
+    /// settings. Production opens the persisted copy; headless ctors
+    /// stay ephemeral.
+    options_store: crate::options::Options,
     /// The Comments popup is open for this shape (#29 rework: the
     /// Visio 2016 thread view — author header, edit/delete/reply).
     comment_target: Option<i64>,
@@ -649,6 +659,9 @@ impl App {
         // re-enables with the user-config `dictionaries/` drop-point
         // joining the system scan.
         app.spell = crate::spellcheck::SpellState::prod();
+        // #268: the persisted options (user name/initials, the Save
+        // page's AutoRecover settings) — headless ctors stay ephemeral.
+        app.options_store = crate::options::Options::open();
         dc::spellcheck::enable_local_discovery();
         dc::spellcheck::register_local_dirs(
             crate::recent::config_base()
@@ -708,6 +721,9 @@ impl App {
             reorder_open: false,
             hyperlink_open: None,
             spell: crate::spellcheck::SpellState::headless(),
+            options_open: false,
+            options_draft: None,
+            options_store: crate::options::Options::ephemeral(),
             hyperlink_draft: None,
             fields_open: None,
             fields_caret: None,
@@ -3446,6 +3462,7 @@ impl App {
         self.selby_open
             || self.snap_dlg_open
             || self.pagesetup_open
+            || self.options_open
             || self.copypic_open
             || self.contgal_open
             || self.backgrounds_open
@@ -11081,9 +11098,7 @@ impl App {
             ),
         };
         let id = dc_core::commands::next_shape_id(&ed.doc, page_id);
-        let author = std::env::var("USER")
-            .or_else(|_| std::env::var("USERNAME"))
-            .unwrap_or_else(|_| "user".into());
+        let author = self.comment_author();
         let date = format_now_utc();
         let text = format!("{} — {}: {}", author, date, body.trim());
         // Replies stack under the thread's first bubble (#29 rework).
@@ -11174,6 +11189,38 @@ impl App {
         ));
     }
 
+    /// The comment author: the General page's user name (File ▸
+    /// Options, #268) when set, else the environment (the pre-#268
+    /// behavior), else "user".
+    fn comment_author(&self) -> String {
+        let name = self.options_store.user_name.trim();
+        if !name.is_empty() {
+            return name.to_string();
+        }
+        std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "user".into())
+    }
+
+    /// The comment-avatar initials for one annotation author (#268):
+    /// the General page's initials for the configured user when set,
+    /// else derived from the name — the first letter of up to three
+    /// words, uppercase (Visio's avatar derives them the same way).
+    fn author_initials(&self, author: &str) -> String {
+        if author == self.comment_author() {
+            let ini = self.options_store.user_initials.trim();
+            if !ini.is_empty() {
+                return ini.to_string();
+            }
+        }
+        author
+            .split_whitespace()
+            .filter_map(|w| w.chars().next())
+            .take(3)
+            .map(|c| c.to_uppercase().to_string())
+            .collect()
+    }
+
     /// The shape's comment thread (#29): annotation shapes whose
     /// `User.AnnotationRef` names it, oldest first — (annotation id,
     /// author, date, body).
@@ -11237,6 +11284,12 @@ impl App {
             return;
         };
         let thread = self.comments_for(shape_id);
+        // #268: the avatar initials per row (the General page's
+        // initials for the configured user, derived from the name
+        // otherwise) — computed before the window closure so the
+        // render loop doesn't borrow self.
+        let initials: Vec<String> =
+            thread.iter().map(|(_, a, _, _)| self.author_initials(a)).collect();
         let mut body = std::mem::take(&mut self.comment_body);
         let mut edit = self.comment_edit.take();
         let mut close = false;
@@ -11250,7 +11303,9 @@ impl App {
                     if thread.is_empty() {
                         ui.weak(crate::i18n::strs().msg_no_comments_on_this_shape_yet());
                     }
-                    for (ann_id, author, date, cbody) in &thread {
+                    for ((ann_id, author, date, cbody), initial) in
+                        thread.iter().zip(&initials)
+                    {
                         let card = egui::Frame::new()
                             .inner_margin(egui::Margin::same(6))
                             .stroke(egui::Stroke::new(
@@ -11262,11 +11317,10 @@ impl App {
                                 // 2016 header: avatar initial + author + date
                                 // (mirrored with the chrome under RTL).
                                 row(ui, |ui| {
-                                    let initial = author
-                                        .chars()
-                                        .next()
-                                        .map(|c| c.to_string())
-                                        .unwrap_or_else(|| "?".into());
+                                    // #268: the avatar shows the row's
+                                    // initials (the General page's
+                                    // setting for the configured
+                                    // user, name-derived otherwise).
                                     let (c, _) =
                                         ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
                                     ui.painter().circle_filled(
@@ -15295,6 +15349,32 @@ impl App {
             self.backstage_page = p;
         }
     }
+    /// kittest: open the Options dialog exactly like the rail's
+    /// Options entry does (#268).
+    #[doc(hidden)]
+    pub fn open_options_for_test(&mut self) {
+        self.open_options_dialog();
+    }
+    /// kittest: jump straight to one Options page ("general" | "save"
+    /// | "language") — a no-op while the dialog is closed (#268).
+    #[doc(hidden)]
+    pub fn set_options_page_for_test(&mut self, name: &str) {
+        if let Some(d) = self.options_draft.as_mut() {
+            if let Some(p) = crate::options::Page::from_test_name(name) {
+                d.page = p;
+            }
+        }
+    }
+    /// kittest: whether the Options dialog is showing (#268).
+    #[doc(hidden)]
+    pub fn debug_options_open(&self) -> bool {
+        self.options_open
+    }
+    /// kittest: the live options store (#268 round-trip asserts).
+    #[doc(hidden)]
+    pub fn debug_options(&self) -> &crate::options::Options {
+        &self.options_store
+    }
     /// kittest: whether the File backstage is showing.
     #[doc(hidden)]
     pub fn debug_backstage(&self) -> bool {
@@ -16249,6 +16329,11 @@ impl App {
         self.sync_window_title(ui.ctx());
         if self.backstage {
             self.backstage_view(ui);
+            // #268: the Options dialog opens over the File screen and
+            // must paint inside this branch (the backstage early-
+            // returns), before the confirm modals so their layering
+            // wins.
+            self.options_window(&ctx);
             self.confirm_new_window(&ctx);
             self.confirm_close_window(&ctx);
             return;
@@ -16661,6 +16746,88 @@ impl App {
         self.language_dlg_open = open && !close;
     }
 
+    /// #268: open the Options dialog from the backstage rail — the
+    /// draft starts at the live store values plus the current language
+    /// choice (match-system while no explicit language is persisted).
+    fn open_options_dialog(&mut self) {
+        let lang = if crate::i18n::is_system_match() {
+            crate::options::LangChoice::System
+        } else {
+            crate::options::LangChoice::Concrete(crate::i18n::current())
+        };
+        self.options_open = true;
+        self.options_draft = Some(crate::options::Draft::capture(&self.options_store, lang));
+    }
+
+    /// #268: the Options dialog over the backstage. Rendered inside
+    /// the backstage branch (the backstage early-returns); the dialog
+    /// manages its own Esc, so nothing here touches the key handling.
+    fn options_window(&mut self, ctx: &egui::Context) {
+        if !self.options_open {
+            return;
+        }
+        let outcome = match self.options_draft.as_mut() {
+            Some(draft) => crate::options::window(ctx, &mut self.options_open, draft),
+            None => crate::options::Outcome::Cancel,
+        };
+        match outcome {
+            crate::options::Outcome::None => {}
+            crate::options::Outcome::Ok => {
+                self.commit_options();
+                self.options_open = false;
+                self.options_draft = None;
+            }
+            crate::options::Outcome::Apply => self.commit_options(),
+            crate::options::Outcome::Cancel => {
+                self.options_open = false;
+                self.options_draft = None;
+            }
+        }
+    }
+
+    /// #268: commit the draft — the store fields (persisted when the
+    /// store is not ephemeral) and the Language page's choice. The
+    /// View ▸ Window switch stays the quick shortcut; both surfaces
+    /// share the same `i18n` calls (the headless pinning rule picks
+    /// the ephemeral twins when the store is in-memory).
+    fn commit_options(&mut self) {
+        let Some(d) = self.options_draft.as_ref() else {
+            return;
+        };
+        let lang = d.lang;
+        let lang_change = match lang {
+            crate::options::LangChoice::System => !crate::i18n::is_system_match(),
+            crate::options::LangChoice::Concrete(l) => {
+                crate::i18n::current() != l || crate::i18n::is_system_match()
+            }
+        };
+        self.options_store.apply(d);
+        // Sync the committed values back into the draft (a clamped
+        // interval or trimmed name corrects visibly on the next paint).
+        if let Some(d) = self.options_draft.as_mut() {
+            d.sync_committed(&self.options_store);
+        }
+        if lang_change {
+            match lang {
+                crate::options::LangChoice::System => {
+                    if self.options_store.persists() {
+                        crate::i18n::set_system_default();
+                    } else {
+                        crate::i18n::set_system_default_ephemeral();
+                    }
+                }
+                crate::options::LangChoice::Concrete(l) => {
+                    if self.options_store.persists() {
+                        crate::i18n::set_language(l);
+                    } else {
+                        crate::i18n::set_language_ephemeral(l);
+                    }
+                }
+            }
+            self.status = crate::i18n::strs().msg_applies_to_the_ribbon_menus_and();
+        }
+    }
+
     /// A close request arrived — the window's ✕ / Alt-F4 (or the
     /// kittest hook): veto it and ask the user first when there is
     /// anything to lose; a clean document closes straight away
@@ -16964,9 +17131,11 @@ impl App {
         let mut close_backstage = false;
         let mut action: Option<BackAction> = None;
         // Esc always returns to the document — unless a prompt owns
-        // the screen.
+        // the screen, or the Options dialog (#268: it manages its own
+        // Esc and must not close the backstage underneath it).
         if !self.confirm_new
             && self.confirm_close.is_none()
+            && !self.options_open
             && ui.ctx().input(|i| i.key_pressed(egui::Key::Escape))
         {
             close_backstage = true;
@@ -17116,16 +17285,21 @@ impl App {
                 egui::Layout::bottom_up(egui::Align::LEFT)
             };
             ui.with_layout(rail_footer_dir, |ui| {
-                ui.add_enabled(
-                    false,
+                // #268: the rail's Options entry is live — the click
+                // opens the Options dialog over the File screen
+                // (Visio's pinned footer spot).
+                let resp = ui.add(
                     egui::Button::new(
                         egui::RichText::new(crate::i18n::strs().msg_options())
                             .size(14.0)
-                            .color(t.rail_disabled),
+                            .color(Color32::WHITE),
                     )
                     .frame(false),
-                )
-                .on_disabled_hover_text(crate::i18n::strs().msg_options_arrive_with_a_later_mile());
+                );
+                if resp.clicked() && !self.options_open {
+                    self.open_options_dialog();
+                }
+                resp.on_hover_text(crate::i18n::strs().msg_options_entry_desc());
             });
         });
         // Page content (the 2010 white backstage surface).
@@ -17560,7 +17734,7 @@ fn backstage_stub(ui: &mut Ui, title: &str, context: &str, action: &str, tip: &s
 /// carried by [`row`]/[`row_rev`] (mirrored row, column and button
 /// order) and egui's own bidi shaping of each label; full-body
 /// right-alignment is recorded as an egui limitation on the issue.
-fn dialog_dir() -> egui::Layout {
+pub(crate) fn dialog_dir() -> egui::Layout {
     egui::Layout::top_down(egui::Align::LEFT)
 }
 
@@ -17570,7 +17744,7 @@ fn dialog_dir() -> egui::Layout {
 /// parent's full cross space, voiding everything below it; the
 /// pre-existing end-pinned bars wrap the flip in horizontal for
 /// exactly that reason).
-fn row<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> egui::Response {
+pub(crate) fn row<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> egui::Response {
     let dir = if crate::i18n::rtl() {
         egui::Layout::right_to_left(egui::Align::Center)
     } else {
@@ -17582,7 +17756,7 @@ fn row<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> egui::Respons
 
 /// The INVERSE of [`row`] — an end-pinned control bar whose LTR form
 /// was `right_to_left` and mirrors to `left_to_right` under RTL.
-fn row_rev<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> egui::Response {
+pub(crate) fn row_rev<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> egui::Response {
     let dir = if crate::i18n::rtl() {
         egui::Layout::left_to_right(egui::Align::Center)
     } else {
