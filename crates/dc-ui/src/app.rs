@@ -16876,8 +16876,15 @@ impl App {
             crate::options::Outcome::None => {}
             crate::options::Outcome::Ok => {
                 self.commit_options();
-                self.options_open = false;
-                self.options_draft = None;
+                // PR #305 review (Greptile): a FAILED language save
+                // keeps the dialog open — closing here would hide the
+                // in-dialog warning (the File screen behind it paints
+                // no status bar) and the user would believe the choice
+                // saved until a restart restored the old language.
+                if !self.lang_write_failed {
+                    self.options_open = false;
+                    self.options_draft = None;
+                }
             }
             crate::options::Outcome::Apply => self.commit_options(),
             crate::options::Outcome::Cancel => {

@@ -905,12 +905,19 @@ fn options_language_save_failure_warns_and_a_retry_persists() {
     harness.run();
     harness.get_by_label("Deutsch").click();
     harness.run();
-    harness.get_by_label("Apply").click();
+    // OK on a FAILED save must NOT close the dialog (PR #305 review:
+    // closing hides the only warning — the File screen behind paints
+    // no status bar).
+    harness.get_by_label("OK").click();
     harness.run();
     // The session switched to German (the dialog chrome is German
     // now) and the warning is up — in German, since the switch is
     // live.
     harness.get_by_label_contains("Datei");
+    assert!(
+        harness.state().debug_options_open(),
+        "OK keeps the dialog open after a failed save"
+    );
     assert!(
         harness.query_by_label_contains("Sprachwahl").is_some(),
         "the in-dialog warning is up"
@@ -927,6 +934,13 @@ fn options_language_save_failure_warns_and_a_retry_persists() {
     assert!(
         harness.query_by_label_contains("Sprachwahl").is_none(),
         "the warning cleared after the successful retry"
+    );
+    // A saved choice closes cleanly on OK.
+    harness.get_by_label("OK").click();
+    harness.run();
+    assert!(
+        !harness.state().debug_options_open(),
+        "OK closes the dialog once the save succeeded"
     );
     let text = std::fs::read_to_string(dir.path().join("language.json")).unwrap();
     assert!(text.contains("\"de\""), "the choice landed: {text}");
