@@ -2423,7 +2423,15 @@ impl crate::Command for SetSectionRows {
             .ok_or_else(|| {
                 anyhow::anyhow!("section {}:{} not found", self.section, self.section_ix)
             })?;
-        self.previous = Some(std::mem::replace(&mut sec.rows, self.rows.clone()));
+        // Keep the FIRST pre-state until undo succeeds (CodeRabbit on
+        // the #303 batch): a re-apply must not overwrite the snapshot
+        // undo restores — the original rows, not the intermediate
+        // ones. A redo after undo re-captures the restored set.
+        if self.previous.is_none() {
+            self.previous = Some(std::mem::replace(&mut sec.rows, self.rows.clone()));
+        } else {
+            sec.rows = self.rows.clone();
+        }
         Ok(())
     }
     fn undo(&mut self, doc: &mut Document) -> Result<()> {

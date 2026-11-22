@@ -264,10 +264,10 @@ fn preview_planner_matches_the_commit_reroute() {
         for (n, v) in [("EndX", drop.0), ("EndY", drop.1)] {
             sh.sheet.set_cell(n, vsdx::Cell::value(format!("{v:.6}")));
         }
-        if let Some(rep) = &plan.rows_replace {
+        if let Some((sec_ix, rep)) = &plan.rows_replace {
             if let Some(sec) = sh.sheet.children.iter_mut().find_map(|c| match c {
                 vsdx::model::SheetChild::Section(sec)
-                    if sec.name == "Geometry" && sec.ix == 0 =>
+                    if sec.name == "Geometry" && sec.ix == *sec_ix =>
                 {
                     Some(sec)
                 }

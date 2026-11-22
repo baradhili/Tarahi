@@ -5555,6 +5555,23 @@ impl App {
                 t,
             )));
         }
+        // #303: a reconciled connector can carry MORE than the four
+        // route rows (stored hops add rows) — the style rewrite covers
+        // rows 2..=4 only, so any row beyond 4 is stale after the
+        // change and is removed here, before the reconcile re-adds
+        // what the new route actually needs.
+        if let Some(geo) = sh.sheet.sections_named("Geometry").first() {
+            for ix in geo.rows.iter().map(|r| r.ix).collect::<Vec<_>>() {
+                if ix > 4 {
+                    cmds.push(Box::new(dc_core::commands::RemoveSectionRow::new(
+                        scope.clone(),
+                        "Geometry",
+                        0,
+                        dc_core::commands::RowSel::Ix(ix),
+                    )));
+                }
+            }
+        }
         if curved {
             for (name, f, v) in crate::connectors::curved_row_extras(ex - bx, ey - by) {
                 cmds.push(Box::new(dc_core::SetRowCell::new(
@@ -6218,10 +6235,10 @@ impl App {
             // #303: the grow path replaces the route rows wholesale —
             // mirror the commit's SetSectionRows directly on the
             // snapshot; the per-row path keeps its cell writes.
-            if let Some(rep) = &plan.rows_replace {
+            if let Some((sec_ix, rep)) = &plan.rows_replace {
                 if let Some(sec) = conn.sheet.children.iter_mut().find_map(|c| match c {
                     vsdx::model::SheetChild::Section(sec)
-                        if sec.name == "Geometry" && sec.ix == 0 =>
+                        if sec.name == "Geometry" && sec.ix == *sec_ix =>
                     {
                         Some(sec)
                     }
