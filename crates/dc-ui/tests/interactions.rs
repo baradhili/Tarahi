@@ -10203,6 +10203,33 @@ fn options_dialog_survives_the_activating_enter() {
     assert!(h.state().backstage);
 }
 
+/// Review on the #268 dialog keys: Enter on a KEYBOARD-FOCUSED Cancel
+/// must cancel — the button handler and the dialog-level Enter-to-OK
+/// see the SAME key press, and the dialog-level check used to
+/// overwrite the button's outcome (a focused Cancel committed the
+/// draft instead of discarding it). Enter-to-OK still applies when no
+/// button claimed the frame (options_dialog_general_round_trips_
+/// through_ok).
+#[test]
+fn options_dialog_enter_on_a_focused_cancel_cancels() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
+        .set_text_value_accesskit("Nobody");
+    h.run();
+    // Keyboard-focus the Cancel button and activate it with Enter.
+    h.get_by_label("Cancel").focus();
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(!h.state().debug_options_open(), "the dialog closed");
+    assert_eq!(
+        h.state().debug_options().user_name,
+        "",
+        "Cancel won — Enter-to-OK did not clobber the button's outcome"
+    );
+}
+
 #[test]
 fn options_modal_blocks_backstage_navigation() {
     let mut h = harness_with_blank();

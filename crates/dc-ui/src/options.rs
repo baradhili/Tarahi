@@ -326,7 +326,13 @@ pub(crate) fn window(ctx: &Context, draft: &mut Draft, freshly_opened: bool) -> 
     }
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         outcome = Outcome::Cancel;
-    } else if ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) {
+    } else if outcome == Outcome::None
+        && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)
+    {
+        // Only when no button handler already claimed the frame: a
+        // KEYBOARD-ACTIVATED Cancel/Apply fires the same Enter press,
+        // and overwriting its outcome here would turn a focused
+        // Cancel into a commit (review on the #268 dialog keys).
         outcome = Outcome::Ok;
     }
     outcome
