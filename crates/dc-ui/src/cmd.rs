@@ -2095,7 +2095,13 @@ impl Command for ReconcileLineJumps {
             }
             // No live master-only rows: they render through
             // inheritance and would survive a row replace untouched.
-            let have: Vec<i64> = live.iter().map(|r| r.ix).collect();
+            // A deleted shadow row (#293) is NOT master-only — the
+            // instance owns its master row as a delete, and the walk
+            // filters it — so it counts as coverage. Building `have`
+            // from live rows alone would strand a once-shortened
+            // connector out of eligibility forever (hide → show never
+            // restores the saved arcs; review on the #303 batch).
+            let have: Vec<i64> = geo.rows.iter().map(|r| r.ix).collect();
             if master_geo_rows.iter().any(|ix| !have.contains(ix)) {
                 continue;
             }
@@ -4408,6 +4414,114 @@ mod reconcile_jump_tests {
             rows.iter().take(2).all(|r| r.t.as_deref() != Some("ArcTo")),
             "the stale arc is gone"
         );
+    }
+
+    /// Review on the #303 batch: a deleted shadow is coverage, not a
+    /// master-only row — a master-based connector that once shrank
+    /// (hidden jumps) carries `Del="1"` shadows, and the eligibility
+    /// gate must keep admitting it or the NEXT pass can never restore
+    /// the saved arcs: hide → show left the file without the hop the
+    /// overlay draws. The full cycle on the kreuzung shape.
+    #[test]
+    fn reconcile_hide_show_cycle_restores_arcs_on_a_master_connector() {
+        let mut ed = dc_core::Editor::new_blank();
+        let page_id = ed.doc.pages[0].id;
+        // The kreuzung-shaped master: ObjType=2 + three geometry rows.
+        let mut root = vsdx::model::Shape {
+            id: 1,
+            type_: Some("Shape".into()),
+            ..vsdx::model::Shape::default()
+        };
+        root.sheet.set_cell("ObjType", VCell::value("2"));
+        let mut mg = vsdx::model::Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Default::default()
+        };
+        for (ix, t, x, y) in [(1, "MoveTo", 0.0, 0.0), (2, "LineTo", 0.0, -1.0), (3, "LineTo", 1.0, -1.0)] {
+            mg.rows.push(Row {
+                t: Some(t.into()),
+                ix,
+                cells: xy(x, y),
+                ..Row::default()
+            });
+        }
+        root.sheet.children.push(SheetChild::Section(mg));
+        let mut m = vsdx::Master::default();
+        m.shapes.push(root);
+        ed.doc.masters.push(m);
+        // The instance: a stored jump mid-run (local 1.5±R), four rows
+        // covering the master's three.
+        let mut h = crate::connectors::connector_shape(5, (1.0, 4.0), (4.0, 4.0));
+        h.master = Some(0);
+        set_geo_rows(
+            &mut h,
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.0, 0.0),
+                    ..Row::default()
+                },
+                lineto(2, 1.5 - R, 0.0),
+                Row {
+                    t: Some("ArcTo".into()),
+                    ix: 3,
+                    cells: {
+                        let mut c = xy(1.5 + R, 0.0);
+                        c.push(("A".to_string(), VCell::value(format!("{}", -R))));
+                        c
+                    },
+                    ..Row::default()
+                },
+                lineto(4, 3.0, 0.0),
+            ],
+        );
+        ed.doc.pages[0].shapes.push(h);
+        // The real crossing: V at page x=3 — H-local x=2, where the
+        // restored hop must land.
+        let v = crate::connectors::connector_shape(6, (3.0, 2.0), (3.0, 6.0));
+        ed.doc.pages[0].shapes.push(v);
+        // HIDE: the stored arc straightens and the shrunken route
+        // shadows master row 3 — the state the old gate stranded.
+        SetCell::new(
+            Scope::PageSheet { page: page_id },
+            "LineJumpCode",
+            VCell::value("0"),
+        )
+        .apply(&mut ed.doc)
+        .unwrap();
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows.len(), 3, "two route rows + one shadow: {rows:?}");
+        assert!(rows[2].is_deleted(), "master row 3 stays shadowed");
+        // SHOW: still eligible — the shadow counts as coverage — and
+        // the hop returns at the CURRENT crossing, the shadow row
+        // re-covered by the grown target.
+        SetCell::new(
+            Scope::PageSheet { page: page_id },
+            "LineJumpCode",
+            VCell::value("1"),
+        )
+        .apply(&mut ed.doc)
+        .unwrap();
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows.len(), 4, "the hop rows are back: {rows:?}");
+        assert!(
+            rows.iter().all(|r| !r.is_deleted()),
+            "the grown target re-covers the master rows: {rows:?}"
+        );
+        assert_eq!(rows[2].t.as_deref(), Some("ArcTo"));
+        assert!((cell(&rows[1], "X") - (2.0 - R)).abs() < 1e-5);
+        assert!((cell(&rows[2], "X") - (2.0 + R)).abs() < 1e-5);
+        assert!((cell(&rows[2], "A") - (-R)).abs() < 1e-5);
+        assert_eq!(rows[3].t.as_deref(), Some("LineTo"));
+        assert!((cell(&rows[3], "X") - 3.0).abs() < 1e-6);
     }
 
     /// CodeRabbit on the #303 batch: the collinear merge keeps a
