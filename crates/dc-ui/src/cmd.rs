@@ -1230,6 +1230,26 @@ pub fn plan_connector_frame(
                     ..Default::default()
                 });
             }
+            // LIVE master rows the new route does not cover would come
+            // back as MASTER-ONLY rows through the walk — the replace
+            // drops the instance rows that shadowed them (live
+            // overrides or Del markers), resurrecting a stale tail and
+            // knocking the connector out of the reconcile's coverage
+            // gate. Keep them suppressed with #293 deleted overrides,
+            // the reconcile's (K) block exactly — including when the
+            // instance GROWS: what matters is the MASTER's row set,
+            // not the old instance's (review on the #303 batch).
+            let have: Vec<i64> = rep.iter().map(|r| r.ix).collect();
+            for m in &master_rows {
+                if !m.is_deleted() && !have.contains(&m.ix) {
+                    rep.push(vsdx::model::Row {
+                        t: m.t.clone(),
+                        ix: m.ix,
+                        attrs: vec![("Del".to_string(), "1".to_string())],
+                        ..Default::default()
+                    });
+                }
+            }
             (sec_ix, rep)
         });
         let planned = if grow { Vec::new() } else { planned };
@@ -3172,6 +3192,98 @@ mod reroute_master_tests {
                 );
             }
         }
+    }
+
+    /// Review on the #303 batch: the wholesale replace dropped every
+    /// instance mention of master rows the new route does not cover —
+    /// live overrides AND Del markers — so the walk re-appended those
+    /// master rows as master-only rows (a resurrected stale tail) and
+    /// the connector fell out of the reconcile's coverage gate. The
+    /// replace keeps uncovered LIVE master rows suppressed with #293
+    /// deleted overrides — the reconcile's (K) block, applied to the
+    /// planner. Here the instance GROWS (3 rows → the 4-row Z) and the
+    /// master's row 5 still needs its shadow.
+    #[test]
+    fn reroute_replace_shadows_master_rows_the_route_no_longer_covers() {
+        let (mut ed, page_id) = doc_with_master_connector(100, false);
+        // The master carries FIVE live geometry rows; the instance
+        // covers only the first three. (Find the master BY ID — the
+        // blank template's built-in stencil masters precede the
+        // fixture's id-0 master in `doc.masters`.)
+        {
+            let m0 = ed
+                .doc
+                .masters
+                .iter_mut()
+                .find(|m| m.id == 0)
+                .expect("the fixture master (id 0)");
+            let root = m0.shapes.first_mut().unwrap();
+            let mut mg = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            for (ix, t, x, y) in [
+                (1, "MoveTo", 0.0, 0.0),
+                (2, "LineTo", 1.0, 0.0),
+                (3, "LineTo", 1.0, 1.0),
+                (4, "LineTo", 2.0, 1.0),
+                (5, "LineTo", 2.0, 2.0),
+            ] {
+                mg.rows.push(Row {
+                    t: Some(t.into()),
+                    ix,
+                    cells: vec![vc("X", &format!("{x}")), vc("Y", &format!("{y}"))],
+                    ..Row::default()
+                });
+            }
+            root.sheet.children.push(SheetChild::Section(mg));
+        }
+        {
+            let conn = ed
+                .doc
+                .pages[0]
+                .shapes
+                .iter_mut()
+                .find(|s| s.id == 11)
+                .unwrap();
+            for c in conn.sheet.children.iter_mut() {
+                if let vsdx::model::SheetChild::Section(sec) = c {
+                    if sec.name == "Geometry" {
+                        sec.rows.truncate(3);
+                    }
+                }
+            }
+        }
+        // The Z-growth move.
+        for sh in ed.doc.pages[0].shapes.iter_mut() {
+            if sh.id == 10 {
+                sh.sheet.set_cell("PinX", VCell::value("3.5"));
+                sh.sheet.set_cell("PinY", VCell::value("3.5"));
+            }
+        }
+        RerouteConnectors::new(page_id, vec![10])
+            .apply(&mut ed.doc)
+            .unwrap();
+        let conn = ed.doc.pages[0].shapes.iter().find(|s| s.id == 11).unwrap();
+        let geo = conn.sheet.sections_named("Geometry").remove(0);
+        let live: Vec<&Row> = geo.rows.iter().filter(|r| !r.is_deleted()).collect();
+        assert_eq!(live.len(), 4, "the four-row Z route: {geo:?}");
+        assert_eq!(live[0].t.as_deref(), Some("MoveTo"));
+        assert!(
+            live.iter().skip(1).all(|r| r.t.as_deref() == Some("LineTo")),
+            "the route rows are typed LineTo"
+        );
+        // Master row 5 keeps its suppression — without the shadow the
+        // walk would re-append it as a master-only stale tail.
+        let shadows: Vec<&Row> = geo.rows.iter().filter(|r| r.is_deleted()).collect();
+        assert_eq!(
+            shadows.len(),
+            1,
+            "exactly the uncovered master row is shadowed: {geo:?}"
+        );
+        assert_eq!(shadows[0].ix, 5);
+        assert_eq!(shadows[0].t.as_deref(), Some("LineTo"));
     }
 
     /// #303's conservative half: a connector whose frame does NOT
