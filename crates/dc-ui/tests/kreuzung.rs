@@ -105,7 +105,12 @@ fn kreuzung_move_grows_the_z_and_keeps_the_hop_current() {
         Box::new(dc_ui::cmd::RerouteConnectors::new(page_id, vec![3])),
     ];
     ed.apply(dc_core::Macro::new("move C", cmds)).unwrap();
-    let out = std::env::temp_dir().join("kreuzung-303-roundtrip.vsdx");
+    // A unique tempdir per run — concurrent runs share /tmp, and a
+    // fixed path let one run's save race another's parse; the guard
+    // stays alive through the assertions, so cleanup happens on drop
+    // even when one fails (review on the #303 test).
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("kreuzung-303-roundtrip.vsdx");
     ed.save_as(&out).unwrap();
     let doc = vsdx::parse::parse(&out).unwrap();
     let ed2 = dc_core::Editor::new(doc);
@@ -113,5 +118,4 @@ fn kreuzung_move_grows_the_z_and_keeps_the_hop_current() {
     assert!((row_val(&ed2, 5, 4, "Y") - 2.320_375).abs() < 1e-5);
     assert_eq!(row_count(&ed2, 6), 4);
     assert!((row_val(&ed2, 6, 3, "X") - 1.541_666_7).abs() < 1e-6);
-    let _ = std::fs::remove_file(&out);
 }
