@@ -1993,8 +1993,20 @@ impl Command for ReconcileLineJumps {
         let shown = page.line_jumps_shown();
         // The hops compute at the CURRENT radius with the override's
         // classification (#301): page_jumps_stripping is exactly the
-        // render overlay's crossing walk.
-        let hops = dc::geom::page_jumps_stripping(doc, page, &[], self.strip);
+        // render overlay's crossing walk. Hidden jumps never consume
+        // hops (reconciled_rows writes no arcs), so the page-wide
+        // crossing discovery is skipped and the hop list is empty —
+        // which also keeps the no-op fast path honest: a connector
+        // with no stored arcs is not rewritten (collapsing degenerate
+        // elbows) just because INVISIBLE crossings exist. The
+        // per-connector strip pass below is untouched: stored arcs
+        // fail plain==stripped on their own, so Hide Line Jumps still
+        // straightens them (review on the #303 batch).
+        let hops = if shown {
+            dc::geom::page_jumps_stripping(doc, page, &[], self.strip)
+        } else {
+            Vec::new()
+        };
         // Snapshot the candidates' data read-only, then write.
         struct Cand {
             id: i64,
@@ -5107,6 +5119,60 @@ mod reconcile_jump_tests {
             "the cache is not frozen into a literal: {rows:?}"
         );
         assert!(rows[2].is_deleted(), "the coverage shadow stays");
+    }
+
+    /// Review on the #303 batch: with jumps HIDDEN, the crossing
+    /// discovery fed `my_hops` for crossings nobody draws — the no-op
+    /// fast path then skipped nothing, and a connector with NO stored
+    /// arcs got rewritten anyway (its degenerate collinear elbows
+    /// collapsed). Hidden jumps use an empty hop list: nothing to do
+    /// means nothing written; the strip pass (stored arcs) is a
+    /// separate gate and keeps working
+    /// (reconcile_hides_jumps_straightens_stored_arcs).
+    #[test]
+    fn reconcile_hidden_jumps_leave_stored_arc_free_connectors_alone() {
+        let (mut ed, page_id) = crossing_doc();
+        // H with NO stored arc — just degenerate collinear elbows on
+        // the run; V still crosses it at H-local x=2.
+        let h = ed
+            .doc
+            .pages[0]
+            .shapes
+            .iter_mut()
+            .find(|s| s.id == 5)
+            .unwrap();
+        set_geo_rows(
+            h,
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.0, 0.0),
+                    ..Row::default()
+                },
+                lineto(2, 1.0, 0.0),
+                lineto(3, 2.0, 0.0),
+                lineto(4, 4.0, 0.0),
+            ],
+        );
+        SetCell::new(
+            Scope::PageSheet { page: page_id },
+            "LineJumpCode",
+            VCell::value("0"),
+        )
+        .apply(&mut ed.doc)
+        .unwrap();
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(
+            rows.len(),
+            4,
+            "no elbow collapse for a jump-less connector under hidden jumps: {rows:?}"
+        );
+        assert!((cell(&rows[1], "X") - 1.0).abs() < 1e-9);
+        assert!((cell(&rows[3], "X") - 4.0).abs() < 1e-9);
     }
 
     /// CodeRabbit on the #303 batch: the collinear merge keeps a
