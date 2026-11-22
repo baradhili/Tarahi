@@ -607,7 +607,11 @@ fn curved_control_caches(
     env.insert("Height".to_string(), h_new);
     for g in conn.sheet.sections_named("Geometry") {
         for r in &g.rows {
-            if r.t.as_deref() != Some("CubicBezTo") {
+            // Deleted rows stay deleted (PR #305 review): a cache
+            // write planned here lands AFTER a rows_replace on the
+            // commit path and SetRowCell would recreate the row; the
+            // preview discards it — the two paths would diverge.
+            if r.is_deleted() || r.t.as_deref() != Some("CubicBezTo") {
                 continue;
             }
             for name in ["A", "B", "C", "D"] {
@@ -1863,7 +1867,7 @@ fn reconciled_rows(
             ..Default::default()
         });
     };
-    for w in pts.windows(2) {
+    for (si, w) in pts.windows(2).enumerate() {
         let (a, b) = (w[0], w[1]);
         let seg = (b.0 - a.0, b.1 - a.1);
         let len = seg.0.hypot(seg.1);
@@ -1901,20 +1905,36 @@ fn reconciled_rows(
             .map(|j| (j.at.0 - a.0) * dir.0 + (j.at.1 - a.1) * dir.1)
             .collect::<Vec<_>>();
         here.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
-        let arcs = shown && r > 0.0;
+        // The classifier strips only an axis-ALIGNED local chord
+        // (`is_stored_jump_arc`) — an arc stored on a diagonal run
+        // could never be recognized again, so a diagonal crossing
+        // stays plain in the file (the overlay still draws the hop;
+        // PR #305 review).
+        let axis_aligned = {
+            let alen = ldir.0.hypot(ldir.1);
+            alen > 1e-9 && ldir.0.abs().min(ldir.1.abs()) <= alen * 0.02
+        };
+        let arcs = shown && r > 0.0 && axis_aligned;
         // (C) Two hops closer than 2r would emit an arc starting
         // before the previous one ends — a backwards segment. Walk a
         // cursor: a hop that does not clear the last arc's end is
         // left as a plain crossing.
         let mut cursor = 0.0f64;
         for t in here {
-            // (D) The geometry walks cap at 64 rows — leave headroom
-            // for the terminal line and stop storing arcs (the
-            // remaining hops keep rendering through the overlay).
-            if rows.len() >= 60 {
+            // (D) The geometry walks cap at 64 rows: an arc pair
+            // must leave room for every remaining route point (the
+            // segment-end lines) and the caller's master shadows —
+            // reserve, don't just cap (PR #305 review). Remaining
+            // hops render through the overlay instead.
+            if rows.len() + 2 + (pts.len() - (si + 1)) > 60 {
                 break;
             }
-            if !arcs || t - r <= cursor + 1e-9 || t + r >= len - 1e-9 {
+            // The 2e-6 margin keeps the gap between adjacent arcs
+            // nonzero after six-decimal row formatting — a zero-length
+            // LineTo between arcs breaks the classifier's neighbor
+            // walk and both arcs would stop being stored jumps (PR
+            // #305 review).
+            if !arcs || t - r <= cursor + 2e-6 || t + r >= len - 1e-9 {
                 continue; // overlapping or no room — a plain crossing
             }
             cursor = t + r;
@@ -3368,7 +3388,7 @@ mod reroute_master_tests {
                                 ..VCell::default()
                             }
                         } else {
-                            VCell::value(&format!("{x}"))
+                            VCell::value(format!("{x}"))
                         },
                     ));
                     mg.rows.push(Row {
