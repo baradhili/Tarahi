@@ -1311,12 +1311,25 @@ fn route_owned_rows(
     }
     // A literal cell through the chain: the instance's own cell, else
     // the master row's — a value with no formula, or an inherited
-    // cache (`F="Inh"`/`No Formula`) whose V carries the literal.
+    // cache (`F="Inh"`/`No Formula`) whose V carries the literal. An
+    // inherited cache counts ONLY when its master source carries no
+    // effective formula — a formula-driven master cell (the Line-arc
+    // `Width*1`) is derived tracking, and freezing its stale cached V
+    // as a literal would destroy the authored row (#226's rule, the
+    // planner's inherited_geo_formula; review on the #303 batch).
     let master_row = |ix: i64| master_rows.iter().find(|r| r.ix == ix);
     let lit = |r: &vsdx::model::Row, n: &str| -> Option<f64> {
-        let cell = r
-            .cell(n)
-            .or_else(|| master_row(r.ix).and_then(|m| m.cell(n)))?;
+        let own = r.cell(n);
+        let cell = own.or_else(|| master_row(r.ix).and_then(|m| m.cell(n)))?;
+        if matches!(cell.f.as_deref(), Some("Inh") | Some("No Formula")) && own.is_some() {
+            let derived = master_row(r.ix)
+                .and_then(|m| m.cell(n))
+                .and_then(|c| c.f.as_deref())
+                .is_some_and(|f| f != "Inh" && f != "No Formula");
+            if derived {
+                return None;
+            }
+        }
         match cell.f.as_deref() {
             None | Some("Inh") | Some("No Formula") => cell.numeric(),
             _ => None,
@@ -2079,10 +2092,24 @@ impl Command for ReconcileLineJumps {
                         .and_then(|g| g.rows.iter().find(|r| r.ix == ix))
                 })
             };
+            // An inherited cache (`F="Inh"`/`No Formula`) counts as a
+            // literal only when its master source carries no effective
+            // formula — the planner's #226 rule (see route_owned_rows)
+            // applied to the reconcile walk (review on the #303 batch).
             let lit = |r: &vsdx::model::Row, n: &str| -> Option<f64> {
-                let cell = r
-                    .cell(n)
-                    .or_else(|| master_row(r.ix).and_then(|m| m.cell(n)))?;
+                let own = r.cell(n);
+                let cell = own.or_else(|| master_row(r.ix).and_then(|m| m.cell(n)))?;
+                if matches!(cell.f.as_deref(), Some("Inh") | Some("No Formula"))
+                    && own.is_some()
+                {
+                    let derived = master_row(r.ix)
+                        .and_then(|m| m.cell(n))
+                        .and_then(|c| c.f.as_deref())
+                        .is_some_and(|f| f != "Inh" && f != "No Formula");
+                    if derived {
+                        return None;
+                    }
+                }
                 match cell.f.as_deref() {
                     None | Some("Inh") | Some("No Formula") => cell.numeric(),
                     _ => None,
@@ -3284,6 +3311,125 @@ mod reroute_master_tests {
         );
         assert_eq!(shadows[0].ix, 5);
         assert_eq!(shadows[0].t.as_deref(), Some("LineTo"));
+    }
+
+    /// Review on the #303 batch: `lit` accepted an instance `F="Inh"`
+    /// cache as a literal without checking its master source — a
+    /// formula-driven master cell (the Line-arc `Width*1` pattern) is
+    /// DERIVED tracking, and the wholesale replace would freeze its
+    /// stale cached V as a literal. #226's rule (the planner's
+    /// inherited_geo_formula) now rides route_owned_rows: derived
+    /// caches keep the connector off the replace; caches over LITERAL
+    /// master cells still admit it.
+    #[test]
+    fn reroute_keeps_a_formula_backed_inh_cache_out_of_the_replace() {
+        for derived in [true, false] {
+            let (mut ed, page_id) = doc_with_master_connector(100, false);
+            // Master geometry: straight rows; row 2's X is a formula
+            // (derived) or a plain literal (the control).
+            {
+                let m0 = ed
+                    .doc
+                    .masters
+                    .iter_mut()
+                    .find(|m| m.id == 0)
+                    .expect("the fixture master (id 0)");
+                let root = m0.shapes.first_mut().unwrap();
+                let mut mg = Section {
+                    name: "Geometry".into(),
+                    ix: 0,
+                    ..Section::default()
+                };
+                for (ix, t, x, y) in [
+                    (1, "MoveTo", 0.0, 0.0),
+                    (2, "LineTo", 1.0, 0.0),
+                    (3, "LineTo", 1.0, 1.0),
+                    (4, "LineTo", 2.0, 1.0),
+                ] {
+                    let mut cells = vec![vc("Y", &format!("{y}"))];
+                    cells.push((
+                        "X".to_string(),
+                        if ix == 2 && derived {
+                            VCell {
+                                v: Some("1.0".into()),
+                                f: Some("Width*1".into()),
+                                ..VCell::default()
+                            }
+                        } else {
+                            VCell::value(&format!("{x}"))
+                        },
+                    ));
+                    mg.rows.push(Row {
+                        t: Some(t.into()),
+                        ix,
+                        cells,
+                        ..Row::default()
+                    });
+                }
+                root.sheet.children.push(SheetChild::Section(mg));
+            }
+            // The instance: three rows, row 2's X an Inh cache.
+            {
+                let conn = ed
+                    .doc
+                    .pages[0]
+                    .shapes
+                    .iter_mut()
+                    .find(|s| s.id == 11)
+                    .unwrap();
+                for c in conn.sheet.children.iter_mut() {
+                    if let vsdx::model::SheetChild::Section(sec) = c {
+                        if sec.name == "Geometry" {
+                            sec.rows.truncate(3);
+                            for r in sec.rows.iter_mut() {
+                                if r.ix == 2 {
+                                    r.cells.retain(|(n, _)| n != "X");
+                                    r.cells.push((
+                                        "X".to_string(),
+                                        VCell {
+                                            v: Some("1.0".into()),
+                                            f: Some("Inh".into()),
+                                            ..VCell::default()
+                                        },
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // The Z-growth move.
+            for sh in ed.doc.pages[0].shapes.iter_mut() {
+                if sh.id == 10 {
+                    sh.sheet.set_cell("PinX", VCell::value("3.5"));
+                    sh.sheet.set_cell("PinY", VCell::value("3.5"));
+                }
+            }
+            RerouteConnectors::new(page_id, vec![10])
+                .apply(&mut ed.doc)
+                .unwrap();
+            let conn = ed.doc.pages[0].shapes.iter().find(|s| s.id == 11).unwrap();
+            let geo = conn.sheet.sections_named("Geometry").remove(0);
+            if derived {
+                assert_eq!(
+                    geo.rows.len(),
+                    3,
+                    "derived={derived}: no wholesale replace on formula-backed rows"
+                );
+                let x2 = geo.rows[1].cell("X").unwrap();
+                assert_eq!(
+                    x2.f.as_deref(),
+                    Some("Inh"),
+                    "derived={derived}: the cache is not frozen into a literal"
+                );
+            } else {
+                assert_eq!(
+                    geo.rows.len(),
+                    4,
+                    "derived={derived}: a cache over a LITERAL master cell still grows the Z"
+                );
+            }
+        }
     }
 
     /// #303's conservative half: a connector whose frame does NOT
@@ -4848,6 +4994,119 @@ mod reconcile_jump_tests {
         );
         assert!((cell(&rows[1], "X") - 0.8).abs() < 1e-9);
         assert!((cell(&rows[3], "X") - 4.0).abs() < 1e-9);
+    }
+
+    /// Review on the #303 batch (the reconcile's half of the Inh rule):
+    /// an instance `F="Inh"` cache over a FORMULA-driven master cell is
+    /// derived tracking — the owned walk must not classify the
+    /// connector as route-owned and rewrite it, freezing the stale
+    /// cached V as a literal (#226's rule; the coverage shadow keeps
+    /// the gate honest so the OWNED walk is what skips).
+    #[test]
+    fn reconcile_leaves_formula_backed_inh_cache_rows_alone() {
+        let mut ed = dc_core::Editor::new_blank();
+        let page_id = ed.doc.pages[0].id;
+        // The master: three straight rows, row 2's X a formula.
+        let mut root = vsdx::model::Shape {
+            id: 1,
+            type_: Some("Shape".into()),
+            ..vsdx::model::Shape::default()
+        };
+        root.sheet.set_cell("ObjType", VCell::value("2"));
+        let mut mg = vsdx::model::Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Default::default()
+        };
+        mg.rows.push(Row {
+            t: Some("MoveTo".into()),
+            ix: 1,
+            cells: xy(0.0, 0.0),
+            ..Row::default()
+        });
+        mg.rows.push(Row {
+            t: Some("LineTo".into()),
+            ix: 2,
+            cells: vec![
+                (
+                    "X".to_string(),
+                    VCell {
+                        v: Some("3.0".into()),
+                        f: Some("Width*1".into()),
+                        ..VCell::default()
+                    },
+                ),
+                ("Y".to_string(), VCell::value("0")),
+            ],
+            ..Row::default()
+        });
+        mg.rows.push(Row {
+            t: Some("LineTo".into()),
+            ix: 3,
+            cells: xy(1.0, -1.0),
+            ..Row::default()
+        });
+        root.sheet.children.push(SheetChild::Section(mg));
+        let mut m = vsdx::Master::default();
+        m.shapes.push(root);
+        ed.doc.masters.push(m);
+        // The instance: row 2's X is an Inh CACHE over the formula;
+        // master row 3 stays mentioned (a shadow) so the coverage gate
+        // passes and the owned walk is the only skip.
+        let mut h = crate::connectors::connector_shape(5, (1.0, 4.0), (4.0, 4.0));
+        h.master = Some(0);
+        set_geo_rows(
+            &mut h,
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.0, 0.0),
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 2,
+                    cells: vec![
+                        (
+                            "X".to_string(),
+                            VCell {
+                                v: Some("3.0".into()),
+                                f: Some("Inh".into()),
+                                ..VCell::default()
+                            },
+                        ),
+                        ("Y".to_string(), VCell::value("0")),
+                    ],
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 3,
+                    attrs: vec![("Del".to_string(), "1".to_string())],
+                    ..Row::default()
+                },
+            ],
+        );
+        ed.doc.pages[0].shapes.push(h);
+        // The crossing sits on the run (page x=3 — H-local x=2).
+        let v = crate::connectors::connector_shape(6, (3.0, 2.0), (3.0, 6.0));
+        ed.doc.pages[0].shapes.push(v);
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows.len(), 3, "no rewrite: {rows:?}");
+        assert!(
+            rows.iter().all(|r| r.t.as_deref() != Some("ArcTo")),
+            "no hop landed on derived-tracking rows: {rows:?}"
+        );
+        assert_eq!(
+            rows[1].cell("X").unwrap().f.as_deref(),
+            Some("Inh"),
+            "the cache is not frozen into a literal: {rows:?}"
+        );
+        assert!(rows[2].is_deleted(), "the coverage shadow stays");
     }
 
     /// CodeRabbit on the #303 batch: the collinear merge keeps a
