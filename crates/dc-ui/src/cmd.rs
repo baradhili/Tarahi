@@ -2061,6 +2061,7 @@ impl Command for ReconcileLineJumps {
                 }
             };
             let mut arctos = 0usize;
+            let mut movetos = 0usize;
             let mut owned = true;
             for r in &live {
                 // The EFFECTIVE type (a typeless local row inherits
@@ -2072,12 +2073,18 @@ impl Command for ReconcileLineJumps {
                     .as_deref()
                     .or_else(|| master_row(r.ix).and_then(|m| m.t.as_deref()));
                 match t {
-                    Some("MoveTo") | Some("RelMoveTo") | Some("LineTo")
-                    | Some("RelLineTo") => {
+                    Some("MoveTo") | Some("RelMoveTo") => {
+                        movetos += 1;
                         // Straight rows must read literal coordinates
                         // through the chain — a formula (`X=Width`) is
                         // authored tracking and must survive the
                         // rewrite.
+                        if lit(r, "X").is_none() || lit(r, "Y").is_none() {
+                            owned = false;
+                            break;
+                        }
+                    }
+                    Some("LineTo") | Some("RelLineTo") => {
                         if lit(r, "X").is_none() || lit(r, "Y").is_none() {
                             owned = false;
                             break;
@@ -2100,6 +2107,14 @@ impl Command for ReconcileLineJumps {
                 }
             }
             if !owned {
+                continue;
+            }
+            // Multi-stroke sections stay verbatim: the walk emits one
+            // disjoint segment run per stroke and the rewrite flattens
+            // them into a single polyline — welding the strokes with
+            // LineTos across gaps the original never drew (review on
+            // the #303 batch).
+            if movetos > 1 {
                 continue;
             }
             // No live master-only rows: they render through
@@ -4581,6 +4596,67 @@ mod reconcile_jump_tests {
             rows.iter().all(|r| r.t.as_deref() != Some("ArcTo")),
             "the connector was left verbatim: {rows:?}"
         );
+    }
+
+    /// Review on the #303 batch: the walk emits one disjoint segment
+    /// run per stroke (a MoveTo positions the pen and draws nothing),
+    /// and the reconcile flattens them into a single polyline — a
+    /// multi-stroke connector would come back WELDED, with LineTos
+    /// across the gaps the original never drew. Multi-stroke sections
+    /// stay verbatim (the crossing sits on the second stroke, so the
+    /// buggy path would rewrite — and weld).
+    #[test]
+    fn reconcile_leaves_a_multi_stroke_connector_alone() {
+        let (mut ed, page_id) = crossing_doc();
+        // Two strokes on H: a short one, then a gap, then the long one
+        // carrying the crossing (page x=3 — H-local x=2, mid-stroke).
+        let h = ed
+            .doc
+            .pages[0]
+            .shapes
+            .iter_mut()
+            .find(|s| s.id == 5)
+            .unwrap();
+        set_geo_rows(
+            h,
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.5, 0.0),
+                    ..Row::default()
+                },
+                lineto(2, 0.8, 0.0),
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 3,
+                    cells: xy(1.0, 0.0),
+                    ..Row::default()
+                },
+                lineto(4, 4.0, 0.0),
+            ],
+        );
+        ReconcileLineJumps::new(page_id)
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows.len(), 4, "the section is untouched: {rows:?}");
+        assert_eq!(
+            rows[0].t.as_deref(),
+            Some("MoveTo"),
+            "stroke 1 keeps its start"
+        );
+        assert_eq!(
+            rows[2].t.as_deref(),
+            Some("MoveTo"),
+            "the stroke break survives — no weld across the gap: {rows:?}"
+        );
+        assert!(
+            rows.iter().all(|r| r.t.as_deref() != Some("ArcTo")),
+            "nothing was rewritten: {rows:?}"
+        );
+        assert!((cell(&rows[1], "X") - 0.8).abs() < 1e-9);
+        assert!((cell(&rows[3], "X") - 4.0).abs() < 1e-9);
     }
 
     /// CodeRabbit on the #303 batch: the collinear merge keeps a
