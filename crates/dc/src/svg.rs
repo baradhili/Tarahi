@@ -7861,6 +7861,63 @@ mod tests {
         assert!(text_wrapper_transform(1.0, 1.0, 0.0).is_none());
     }
 
+    /// D is the ratio of the axis along C to the axis across it
+    /// (Visio 2021 witness t14, Greptile on PR #330): through
+    /// (0,.5)-(1,1)-(2,.5) in a 2×1 box with C = 0, D = 2 draws the
+    /// flat half-ellipse (along 1, across 0.5), D = 0.5 a tall one.
+    /// The ratio-1 solver tests alone would not catch an inverted D.
+    #[test]
+    fn elliptical_arc_d_is_along_over_across() {
+        let arc = |d: f64| {
+            let mut s = shape_at(1, (2.0, 2.0), 2.0, 1.0, 0.0);
+            push_geo(
+                &mut s,
+                vec![
+                    geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.5)]),
+                    geo_row(
+                        2,
+                        "EllipticalArcTo",
+                        &[
+                            ("X", 2.0),
+                            ("Y", 0.5),
+                            ("A", 1.0),
+                            ("B", 1.0),
+                            ("C", 0.0),
+                            ("D", d),
+                        ],
+                    ),
+                ],
+            );
+            let (doc, page) = page_fixture(vec![s]);
+            let svg = render_page(&doc, &page).unwrap();
+            let i = svg.find(" A ").unwrap_or_else(|| panic!("no arc: {svg}"));
+            let v: Vec<f64> = svg[i + 3..]
+                .split_whitespace()
+                .take(3)
+                .map(|t| t.parse().unwrap())
+                .collect();
+            // (along C, across C): rx/ry, swapped when the solver
+            // reports the axes rotated by 90°.
+            let rot = v[2].rem_euclid(180.0);
+            if (rot - 90.0).abs() < 1e-3 {
+                (v[1], v[0])
+            } else {
+                assert!(rot.abs() < 1e-3 || (rot - 180.0).abs() < 1e-3, "rot {rot}");
+                (v[0], v[1])
+            }
+        };
+        let (along, across) = arc(2.0);
+        assert!(
+            (along - 1.0).abs() < 1e-4 && (across - 0.5).abs() < 1e-4,
+            "D=2: the flat half-ellipse ({along}, {across})"
+        );
+        let (along, across) = arc(0.5);
+        assert!(
+            (along / across - 0.5).abs() < 1e-4,
+            "D=0.5: along/across = 0.5 ({along}, {across})"
+        );
+    }
+
     #[test]
     fn elliptical_arc_half_circle() {
         // Upper half of the unit circle: start (-1,0), on-arc top (0,1),
