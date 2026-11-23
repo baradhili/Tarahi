@@ -26,7 +26,9 @@ pub struct JumpLine {
 /// A computed hop (#108): where the jumping line crosses the under
 /// line, both directions (unit), and both strokes. Visio's default
 /// crossing treatment — the more-horizontal line hops (ties: the
-/// later in z), arc style, never persisted.
+/// later in z), arc style. The overlay itself persists nothing;
+/// dc-ui's `ReconcileLineJumps` is what writes these hops into the
+/// jumper's Geometry rows.
 #[derive(Debug, Clone, Copy)]
 pub struct Jump {
     pub at: (f64, f64),
@@ -98,19 +100,24 @@ fn run_continues(dir: Option<(f64, f64)>, chord: (f64, f64)) -> bool {
 /// crossing with the page's own radius — a stored arc stops lingering
 /// after a move (#294).
 ///
-/// `radius` is the page's own jump radius ([`jump_radius_in`])
-/// expressed in THIS frame — the shape-local units the sagitta and
-/// chord are measured in (the caller divides by the frame's
-/// perpendicular-axis scale when the rows live in master units). The
-/// shape checks alone cannot tell an AUTHORED semicircle between two
-/// straight runs from a stored jump (a 1-inch arc with A=−0.5 over
+/// `radius_x`/`radius_y` are the page's own jump radii
+/// ([`jump_radii_in`]), passed UNCONVERTED. Every geometry frame is
+/// inches — master-local, instance-local, page; the instance/master
+/// ratios are rescals applied after authoring — and the stored arc's
+/// A was authored at the page's radius, so the sagitta is compared
+/// with the page radius in whatever frame the rows are read. Both
+/// callers hand over the resolved page radii as they are.
+///
+/// The shape checks alone cannot tell an AUTHORED semicircle between
+/// two straight runs from a stored jump (a 1-inch arc with A=−0.5 over
 /// collinear runs matches every geometric test — CodeRabbit rounds 1–2
 /// on #121), so the radius is the deciding evidence: the arc strips
 /// only when its sagitta matches the page's resolved radius within
-/// writer rounding. An authored arc that happens to sit exactly at the
-/// page radius is indistinguishable from a stored jump and is
-/// deliberately preserved (the safer direction — never destroy
-/// authored geometry on a guess).
+/// writer rounding. Every authored arc OFF the page radius is
+/// preserved (the safer direction — never destroy authored geometry on
+/// a guess); one that sits exactly AT it is indistinguishable from a
+/// stored jump and is straightened like one — the unit test pins that
+/// case.
 pub fn is_stored_jump_arc(
     sagitta: f64,
     chord: (f64, f64),
@@ -586,8 +593,9 @@ mod tests {
             color: (0, 0, 0),
             pts: pts.to_vec(),
         };
-        // A shallow arc's belly crossed by a line: entry and exit sit
-        // within the hop radius of each other.
+        // A shallow arc's belly cut by a horizontal just under its
+        // apex: the line enters and leaves 0.05 in apart — well inside
+        // a hop's reach (2 × 0.0417 in).
         let arc = vec![
             (0.0, 1.0),
             (0.5, 1.04),
@@ -595,14 +603,33 @@ mod tests {
             (1.5, 1.04),
             (2.0, 1.0),
         ];
+        let through = [(0.0, 1.059), (2.0, 1.059)];
+        // Control: that really is a PAIR of crossings. With nothing to
+        // merge in — zero weights and a ~0 radius leave no reach — both
+        // hop, so the one-hop assertion cannot pass on a single
+        // crossing by accident (CodeRabbit round on #324: the steep
+        // line this test used meets the arc once).
+        let pair = [
+            JumpLine {
+                weight: 0.0,
+                ..l(1, 0, &arc)
+            },
+            JumpLine {
+                weight: 0.0,
+                ..l(2, 1, &through)
+            },
+        ];
+        let unmerged = line_jumps(&pair, (1e-9, 1e-9));
+        assert_eq!(unmerged.len(), 2, "the pair is two crossings: {unmerged:?}");
         let js = line_jumps(
-            &[
-                l(1, 0, &arc),
-                l(2, 1, &[(0.8, 2.0), (1.2, 0.0)]),
-            ],
+            &[l(1, 0, &arc), l(2, 1, &through)],
             (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         );
         assert_eq!(js.len(), 1, "the converging pair merges: {js:?}");
+        assert!(
+            (js[0].at.0 - 1.0).abs() < 1e-9,
+            "the merged hop sits at the pair's centroid: {js:?}"
+        );
         // Two crossings far apart stay two hops.
         let js = line_jumps(
             &[
@@ -963,6 +990,8 @@ mod tests {
         assert!(js.is_empty(), "a touch never hops: {js:?}");
     }
 
+    /// #187: two crossing connectors produce one hop; a rotated
+    /// jumper crosses too (slice 2 — the Angle gate is gone).
     #[test]
     fn page_jumps_crosses_axis_and_rotated() {
         let connector = |id: i64, pin: (f64, f64), w: f64, h: f64, angle: f64| {

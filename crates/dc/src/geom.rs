@@ -1508,14 +1508,13 @@ mod tests {
         assert!(off, "hit samples leave the chord");
     }
 
-    /// #187: two crossing connectors produce one hop; a rotated
-    /// jumper crosses too (slice 2 — the Angle gate is gone).
+    /// #278 review (Greptile P1 + CodeRabbit): dead ink leaves the
+    /// interaction — an authored D=0 arc renders the chord, so its
+    /// on-curve control is dead and no curve handle seat floats off
+    /// the ink; and a zero-weight connector paints nothing, so nothing
+    /// hops over it.
     #[test]
     fn zero_width_arcs_and_zero_weight_connectors_leave_interaction() {
-        // #278 review (Greptile P1 + CodeRabbit): an authored D=0 arc
-        // renders the chord, so its on-curve control is dead — no
-        // curve handle seat floats off the ink — and a zero-weight
-        // connector paints nothing, so nothing hops over it.
         let arc_shape = |d: &str| {
             let mut s = Shape {
                 id: 1,
