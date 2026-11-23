@@ -1404,42 +1404,73 @@ fn shape_xform(doc: &Document, s: &Shape, chain: &[&Shape], page_h: f64) -> Shap
     }
 }
 
-/// One hop's arc in page-space SVG (y-down: `sy = page_h − y`): a
-/// semicircle from `at − dir·r` to `at + dir·r` bulging along
-/// [`jump_normal`], in the jumper's own color and weight. The jumper
-/// itself is cut open beneath it ([`jump_cut_clip_d`]) and the arc
-/// feet lead half a pen INTO the un-cut run so the joint closes — no
-/// paper gap or under-line redraw is needed (the hop is part of the
-/// line, #322/#324 phase 3). `radius` is the page's resolved jump
-/// radius (#294 — LineToLineX × LineJumpFactorX / 2).
+/// One hop in page-space SVG (y-down: `sy = page_h − y`), in the
+/// jumper's own color and weight, bridging the cut slot
+/// ([`jump_cut_clip_d`]) per the jumper's resolved style
+/// ([`crate::jumps::JumpStyle`] — the encodings are recorded in
+/// `Analysis/line-jump-styles.md`):
+/// - **Arc** — a 12-point semicircle from `at − dir·r` to
+///   `at + dir·r` bulging along [`jump_normal`];
+/// - **Gap** — nothing at all: the cut IS the hop (the line breaks);
+/// - **Square** — the witnessed rectangle: risers at the slot ends,
+///   flat top at r;
+/// - **Sides(n)** — an n-segment hump inscribed in the semicircle
+///   (n = 2 is the witnessed triangle; n ≥ 3 unwitnessed).
+///
+/// Every style's feet lead half a pen INTO the un-cut run so the
+/// joint closes — no paper gap or under-line redraw is needed (the
+/// hop is part of the line, #322/#324 phase 3). `radius` is the
+/// page's resolved jump radius (#294 — LineToLineX ×
+/// LineJumpFactorX / 2).
 fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::jumps::Jump, radius: f64) {
+    use crate::jumps::JumpStyle;
+    // Gap draws nothing — the cut slot is the whole treatment.
+    if let JumpStyle::Gap = j.style {
+        return;
+    }
     let (r, w) = (radius, j.weight);
     let sy = |y: f64| page_h - y;
     let pt = |p: (f64, f64)| format!("{:.5} {:.5}", p.0, sy(p.1));
     let hex = |c: (u8, u8, u8)| format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2);
     let n = jump_normal(j.dir);
-    // The arc overlaps the cut line ends by half a pen so the joint
-    // closes (round join, no notch at the arc's foot).
+    // The hop overlaps the cut line ends by half a pen so the joint
+    // closes (round join, no notch at the foot).
     let lead = |s: f64| {
         (
             j.at.0 + j.dir.0 * s * (r + w * 0.5),
             j.at.1 + j.dir.1 * s * (r + w * 0.5),
         )
     };
-    let mut path = format!("M {} ", pt(lead(-1.0)));
-    for k in 0..=12 {
-        let t = k as f64 / 12.0;
-        let ang = std::f64::consts::PI * t;
-        let local = (
-            -j.dir.0 * r * ang.cos() + n.0 * r * ang.sin(),
-            -j.dir.1 * r * ang.cos() + n.1 * r * ang.sin(),
-        );
-        let p = (j.at.0 + local.0, j.at.1 + local.1);
-        path.push_str("L ");
+    // The bump's vertices between the slot feet, per style: the arc
+    // samples the semicircle, the square's top corners sit a full r
+    // above the FEET, the n-sided hump takes the inscribed polygon's
+    // interior vertices (bump(0)/bump(π) ARE the feet).
+    let bump = |ang: f64| {
+        (
+            j.at.0 - j.dir.0 * r * ang.cos() + n.0 * r * ang.sin(),
+            j.at.1 - j.dir.1 * r * ang.cos() + n.1 * r * ang.sin(),
+        )
+    };
+    let apex = bump(std::f64::consts::FRAC_PI_2);
+    let mids: Vec<(f64, f64)> = match j.style {
+        JumpStyle::Arc => (1..=11)
+            .map(|k| bump(std::f64::consts::PI * k as f64 / 12.0))
+            .collect(),
+        JumpStyle::Square => vec![
+            (apex.0 - j.dir.0 * r, apex.1 - j.dir.1 * r),
+            (apex.0 + j.dir.0 * r, apex.1 + j.dir.1 * r),
+        ],
+        JumpStyle::Sides(ns) => (1..ns)
+            .map(|k| bump(std::f64::consts::PI * k as f64 / ns as f64))
+            .collect(),
+        JumpStyle::Gap => Vec::new(),
+    };
+    let mut path = format!("M {} L {}", pt(lead(-1.0)), pt(bump(0.0)));
+    for p in mids {
+        path.push_str(" L ");
         path.push_str(&pt(p));
-        path.push(' ');
     }
-    path.push_str(&format!("L {}", pt(lead(1.0))));
+    path.push_str(&format!(" L {} L {}", pt(bump(std::f64::consts::PI)), pt(lead(1.0))));
     let _ = writeln!(
         svg,
         r#"<path d="{}" fill="none" stroke="{c}" stroke-width="{w:.4}" stroke-linejoin="round"/>"#,
@@ -8855,6 +8886,101 @@ mod tests {
             1,
             "one hop ARC at the real crossing (a second crossing on the              same jumper would draw a second arc)"
         );
+    }
+
+    /// Every style renders (#324 phase 4): the arc's semicircle, the
+    /// GAP's nothing (the cut IS the hop), the square's flat top a
+    /// full radius up, and the 2-sided triangle's single apex — the
+    /// same 2r × r box each (`Analysis/line-jump-styles.md`).
+    #[test]
+    fn export_renders_every_jump_style() {
+        let connector = |id: i64, pin: (f64, f64), w: f64, h: f64| {
+            let mut s = shape_at(id, pin, w, h, 0.0);
+            s.sheet.set_cell("ObjType", Cell::value("2"));
+            let line = |ix: i64, x: f64, y: f64| Row {
+                t: Some("LineTo".into()),
+                ix,
+                cells: vec![
+                    ("X".to_string(), Cell::value(format!("{x}"))),
+                    ("Y".to_string(), Cell::value(format!("{y}"))),
+                ],
+                ..Row::default()
+            };
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            sec.rows = vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: vec![
+                        ("X".to_string(), Cell::value("0")),
+                        ("Y".to_string(), Cell::value("0")),
+                    ],
+                    ..Row::default()
+                },
+                line(2, w, h),
+            ];
+            s.sheet.children.push(SheetChild::Section(sec));
+            s
+        };
+        let r = 0.125 * (2.0 / 3.0) / 2.0;
+        for (style, arcs) in [
+            ("2", 0usize), // Gap — no path bridges the cut
+            ("3", 1),      // Square — one flat-topped path
+            ("4", 1),      // 2 sides — one triangular path
+            ("9", 1),      // 7 sides — one polygonal path
+        ] {
+            let (doc, mut page) = page_fixture(vec![
+                connector(1, (3.0, 5.0), 4.0, 0.0),
+                connector(2, (3.0, 5.0), 0.0, 4.0),
+            ]);
+            page.sheet_mut()
+                .unwrap()
+                .set_cell("LineJumpStyle", Cell::value(style));
+            let svg = render_page(&doc, &page).unwrap();
+            assert_eq!(
+                svg.matches(r#"stroke-linejoin="round""#).count(),
+                arcs,
+                "style {style}: {svg}"
+            );
+            // The cut is cut in every style (the gap's whole point).
+            assert!(
+                svg.contains(r#"<clipPath id="dc-jumpcut1""#),
+                "style {style} cuts the jumper"
+            );
+            if arcs == 1 && style != "9" {
+                // The apex coordinate appears in the path: the square's
+                // top corners and the even-sided humps' apex vertex sit
+                // a full r above the crossing (page y 5 → SVG y 6 − r).
+                // An ODD-sided hump (9 = 7 sides) has no vertex at
+                // π/2 — its shoulders sit just below.
+                let apex_y = format!("{:.5}", 6.0 - r);
+                assert!(
+                    svg.contains(&apex_y),
+                    "style {style} rises a full radius: {apex_y}"
+                );
+            }
+        }
+        // The square's flat top: TWO points at the apex height, at the
+        // slot ends (crossing x 3 ± r).
+        let (doc, mut page) = page_fixture(vec![
+            connector(1, (3.0, 5.0), 4.0, 0.0),
+            connector(2, (3.0, 5.0), 0.0, 4.0),
+        ]);
+        page.sheet_mut()
+            .unwrap()
+            .set_cell("LineJumpStyle", Cell::value("3"));
+        let svg = render_page(&doc, &page).unwrap();
+        let apex_y = format!("{:.5}", 6.0 - r);
+        for x in [3.0 - r, 3.0 + r] {
+            assert!(
+                svg.contains(&format!("{:.5} {}", x, apex_y)),
+                "the square's top corner at ({x:.5}, {apex_y})"
+            );
+        }
     }
 
     /// Two hops closer together than their radii still open the shaft

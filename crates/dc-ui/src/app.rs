@@ -5775,6 +5775,7 @@ impl App {
                         dc::svg::backdrop_color_at(doc, page, j.at, j.jumper, hidden);
                     Color32::from_rgb(r, g, b)
                 },
+                style: j.style,
                 at: j.at,
                 dir: j.dir,
                 under: j.under,

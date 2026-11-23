@@ -23,6 +23,9 @@ pub struct JumpLine {
     pub weight: f64,
     /// (r, g, b) — the stroke color both overlays repaint.
     pub color: (u8, u8, u8),
+    /// The line's resolved hop style (`ConLineJumpStyle` over the
+    /// page's `LineJumpStyle`, #324 phase 4).
+    pub style: JumpStyle,
     pub pts: Vec<(f64, f64)>,
 }
 
@@ -46,6 +49,9 @@ pub struct Jump {
     pub under_weight: f64,
     pub color: (u8, u8, u8),
     pub under_color: (u8, u8, u8),
+    /// The JUMPER's resolved hop style (#324 phase 4 — the row writer
+    /// and both painters read it).
+    pub style: JumpStyle,
 }
 
 /// Visio's jump radius (#294): `LineToLineX × LineJumpFactorX / 2`,
@@ -73,6 +79,69 @@ pub fn jump_radii_in(doc: &vsdx::Document, page: &vsdx::Page) -> (f64, f64) {
     (jump_radius_in(doc, page), jump_radius_y_in(doc, page))
 }
 
+/// Visio's line-jump styles (page `LineJumpStyle` / connector
+/// `ConLineJumpStyle`, #324 phase 4): the hop's shape inside its
+/// 2r × r box over the slot. Value table and row encodings are
+/// recorded in `Analysis/line-jump-styles.md` — [MS-Learn]'s
+/// enumeration, MisterDiagram's Visio-2021 witnesses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JumpStyle {
+    /// Values 0/1 — the semicircle (Default = Arc).
+    Arc,
+    /// Value 2 — the line breaks; nothing bridges the slot.
+    Gap,
+    /// Value 3 — a rectangular hump: risers at the slot ends, flat
+    /// top at r (the "Square" name notwithstanding, the box is 2r
+    /// wide — the witnessed form).
+    Square,
+    /// Values 4–9 — "2 sides".."7 sides": an N-segment hump
+    /// inscribed in the semicircle (N = 2 is the witnessed triangle;
+    /// N ≥ 3 is the natural reading of the display names,
+    /// UNWITNESSED — see the Analysis record).
+    Sides(u8),
+}
+
+impl JumpStyle {
+    /// The cell value → style: 0 and 1 are both Arc, 2 Gap, 3 Square,
+    /// 4–9 the 2–7-sided humps; anything else falls back to Arc (the
+    /// safe default family).
+    pub fn from_cell(v: f64) -> JumpStyle {
+        match v.round() as i64 {
+            2 => JumpStyle::Gap,
+            3 => JumpStyle::Square,
+            n @ 4..=9 => JumpStyle::Sides((n - 2) as u8),
+            _ => JumpStyle::Arc,
+        }
+    }
+}
+
+/// A connector's resolved jump style: its own `ConLineJumpStyle`
+/// (chain-resolved; 0 = the page default) over the page's
+/// `LineJumpStyle`.
+fn line_jump_style(
+    doc: &vsdx::Document,
+    chain: &[&vsdx::model::Shape],
+    s: &vsdx::model::Shape,
+    page_style: JumpStyle,
+) -> JumpStyle {
+    match doc
+        .resolve_cell(s, chain, "ConLineJumpStyle")
+        .and_then(|c| c.numeric())
+    {
+        Some(v) if v != 0.0 => JumpStyle::from_cell(v),
+        _ => page_style,
+    }
+}
+
+/// The page's own `LineJumpStyle`, style-resolved like the radius
+/// cells; absent = Arc, Visio's default.
+pub fn page_jump_style(doc: &vsdx::Document, page: &vsdx::Page) -> JumpStyle {
+    doc.resolve_page_layout_cell(page, "LineJumpStyle")
+        .and_then(|c| c.numeric())
+        .map(JumpStyle::from_cell)
+        .unwrap_or(JumpStyle::Arc)
+}
+
 /// The run continues along the chord: the neighboring segment exists,
 /// is collinear with it, and points the same way (Visio writes jumps
 /// MID-RUN — an isolated authored semicircle has no such context and
@@ -86,6 +155,108 @@ fn run_continues(dir: Option<(f64, f64)>, chord: (f64, f64)) -> bool {
     dl > 1e-9
         && (d.0 * chord.1 - d.1 * chord.0).abs() <= 0.02 * cl * dl
         && d.0 * chord.0 + d.1 * chord.1 > 0.0
+}
+
+/// Parse a `POLYLINE(xType, yType, x1, y1, …)` control string into
+/// its type flags and vertex pairs. Anything malformed (or not a
+/// percentage-typed polyline — the stored-hop form is always
+/// `POLYLINE(0, 0, …)`) is `None`.
+pub type PolylineControls = ((f64, f64), Vec<(f64, f64)>);
+
+pub fn parse_polyline_controls(a: &str) -> Option<PolylineControls> {
+    let inner = a.trim().strip_prefix("POLYLINE(")?.strip_suffix(')')?;
+    let nums: Vec<f64> = inner
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.parse::<f64>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    if nums.len() < 4 || !nums.len().is_multiple_of(2) {
+        return None;
+    }
+    let types = (nums[0], nums[1]);
+    if types != (0.0, 0.0) {
+        return None; // local-coordinate controls are not the stored form
+    }
+    let pairs: Vec<(f64, f64)> = nums[2..]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| (c[0], c[1]))
+        .collect();
+    Some((types, pairs))
+}
+
+/// A stored SQUARE / TRIANGLE / N-SIDES hop row (#324 phase 4): a
+/// `PolylineTo` whose `A` controls are percentages of the shape's
+/// `size` that all sit inside the 2r × r box over the row's chord,
+/// with the route continuing collinear on both sides — the same
+/// evidence family as [`is_stored_jump_arc`] (the chord is the slot:
+/// ≈ 2·radius, the arc's exact twin). `Analysis/line-jump-styles.md`.
+#[allow(clippy::too_many_arguments)] // the stored-hop evidence contract, one fact per argument
+pub fn is_stored_jump_polyline(
+    a_text: &str,
+    start: (f64, f64),
+    chord: (f64, f64),
+    prev_dir: Option<(f64, f64)>,
+    next_dir: Option<(f64, f64)>,
+    size: (f64, f64),
+    radius_x: f64,
+    radius_y: f64,
+) -> bool {
+    let Some((_, controls)) = parse_polyline_controls(a_text) else {
+        return false;
+    };
+    if controls.is_empty() || size.0 <= 0.0 || size.1 <= 0.0 {
+        return false;
+    }
+    let len = chord.0.hypot(chord.1);
+    if len <= 1e-9 || !run_continues(prev_dir, chord) || !run_continues(next_dir, chord) {
+        return false;
+    }
+    // The chord IS the slot: ≈ 2· the radius, the axis picked by the
+    // chord's class (the arc row's rule).
+    let radius = if chord.0.abs() >= chord.1.abs() {
+        radius_x
+    } else {
+        radius_y
+    };
+    if radius <= 0.0 || (len - 2.0 * radius).abs() > (radius * 0.05).max(1e-6) {
+        return false;
+    }
+    // Every control inside the 2r × r box over the chord (a hair of
+    // writer rounding on each side). The fractions are of the WHOLE
+    // SHAPE, so each denormalized control is read relative to the
+    // chord's own start.
+    let (ux, uy) = (chord.0 / len, chord.1 / len);
+    let (nx, ny) = (-uy, ux);
+    controls.iter().all(|(fx, fy)| {
+        let (cx, cy) = (fx * size.0 - start.0, fy * size.1 - start.1);
+        let along = cx * ux + cy * uy;
+        let off = (cx * nx + cy * ny).abs();
+        along >= -radius * 0.1 && along <= len + radius * 0.1 && off <= radius * 1.1
+    })
+}
+
+/// A stored GAP hop (#324 phase 4): a mid-route `MoveTo` whose skip
+/// is collinear with the runs on both sides and ≈ 2·radius long —
+/// `LineTo(at−r) · MoveTo(at+r) · LineTo`, the witnessed gap form.
+pub fn is_stored_jump_gap(
+    skip: (f64, f64),
+    prev_dir: Option<(f64, f64)>,
+    next_dir: Option<(f64, f64)>,
+    radius_x: f64,
+    radius_y: f64,
+) -> bool {
+    let len = skip.0.hypot(skip.1);
+    if len <= 1e-9 || !run_continues(prev_dir, skip) || !run_continues(next_dir, skip) {
+        return false;
+    }
+    let radius = if skip.0.abs() >= skip.1.abs() {
+        radius_x
+    } else {
+        radius_y
+    };
+    radius > 0.0 && (len - 2.0 * radius).abs() <= (radius * 0.05).max(1e-6)
 }
 
 /// A stored line-jump arc (#294): Visio saves a connector's jump as an
@@ -531,6 +702,7 @@ pub fn line_jumps_with(
                         under_weight: und.weight,
                         color: jmp.color,
                         under_color: und.color,
+                        style: jmp.style,
                     });
                 }
             }
@@ -717,6 +889,7 @@ pub fn page_jumps_stripping(
     let radius_y = jump_radius_y_in(doc, page);
     let (strip_r, strip_ry) = strip.unwrap_or((radius, radius_y));
     let rules = page_jump_rules(doc, page);
+    let page_style = page_jump_style(doc, page);
     let mut lines: Vec<JumpLine> = Vec::new();
     for (z, s) in page.shapes.iter().enumerate() {
         if s.sheet
@@ -799,6 +972,7 @@ pub fn page_jumps_stripping(
             z,
             weight,
             color,
+            style: line_jump_style(doc, &chain, s, page_style),
             pts,
         });
     }
@@ -814,13 +988,14 @@ mod tests {
     /// the #294 identity).
     const TEST_JUMP_RADIUS: f64 = 0.125 * (2.0 / 3.0) / 2.0;
 
-    /// A plain black 0.01-in test line.
+    /// A plain black 0.01-in test line (an Arc-styled jumper).
     fn jline(id: i64, z: usize, pts: &[(f64, f64)]) -> JumpLine {
         JumpLine {
             id,
             z,
             weight: 0.01,
             color: (0, 0, 0),
+            style: JumpStyle::Arc,
             pts: pts.to_vec(),
         }
     }
@@ -836,6 +1011,7 @@ mod tests {
             z,
             weight: 0.01,
             color: (0, 0, 0),
+            style: JumpStyle::Arc,
             pts: pts.to_vec(),
         };
         // A shallow arc's belly cut by a horizontal just under its
@@ -1088,6 +1264,7 @@ mod tests {
                 z: 1,
                 weight: 0.01,
                 color: (0, 0, 0),
+                style: JumpStyle::Arc,
                 pts: vec![(0.0, 1.0), (2.0, 1.0)],
             },
             // The crossed line: a U crossing the run TWICE — at x=1
@@ -1097,6 +1274,7 @@ mod tests {
                 z: 2,
                 weight: 0.01,
                 color: (0, 0, 0),
+                style: JumpStyle::Arc,
                 pts: vec![(1.0, 0.0), (1.0, 2.0), (1.5, 2.0), (1.5, 0.0)],
             },
         ];
@@ -1137,6 +1315,7 @@ mod tests {
             z: 0,
             weight: 0.012,
             color: (0, 0, 0),
+            style: JumpStyle::Arc,
             pts: vec![(1.0, 0.5), (0.4, 0.5), (0.4, 1.0)],
         };
         let u = JumpLine {
@@ -1144,6 +1323,7 @@ mod tests {
             z: 1,
             weight: 0.012,
             color: (0, 0, 0),
+            style: JumpStyle::Arc,
             pts: vec![(0.35, 0.578), (0.5, 0.428)],
         };
         // X radius 0 (no horizontal hops can draw), Y radius 0.05.
@@ -1512,7 +1692,11 @@ mod tests {
         page.shapes.push(h);
         page.shapes.push(v.clone());
         let doc = vsdx::Document::default();
-        assert_eq!(page_jumps(&doc, &page, &[]).len(), 1, "forced hop on a default page");
+        assert_eq!(
+            page_jumps(&doc, &page, &[]).len(),
+            1,
+            "forced hop on a default page"
+        );
         // Jumps off (visPLOJumpNone): no hop survives the forced code.
         let sheet = vsdx::model::Sheet::default();
         page.children = vec![vsdx::model::IndexChild::Sheet {
@@ -1536,6 +1720,133 @@ mod tests {
             page_jumps(&doc, &page, &[]).is_empty(),
             "nothing hops over an invisible shaft"
         );
+    }
+
+    /// #324 phase 4: the hop carries its JUMPER's resolved style —
+    /// the page's `LineJumpStyle`, overridden per connector by a
+    /// nonzero `ConLineJumpStyle`.
+    #[test]
+    fn page_jumps_resolves_the_hop_style() {
+        let mut sheet = vsdx::model::Sheet::default();
+        sheet.set_cell("LineJumpStyle", Cell::value("3"));
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            children: vec![vsdx::model::IndexChild::Sheet {
+                tag: "PageSheet".into(),
+                sheet,
+            }],
+            ..vsdx::Page::default()
+        };
+        let mut a = straight_connector(1, (1.0, 1.0), (5.0, 1.0), None);
+        let b = straight_connector(2, (3.0, 0.0), (3.0, 2.0), None);
+        page.shapes.push(a.clone());
+        page.shapes.push(b);
+        let doc = vsdx::Document::default();
+        assert_eq!(page_jump_style(&doc, &page), JumpStyle::Square);
+        let js = page_jumps(&doc, &page, &[]);
+        assert_eq!((js.len(), js[0].style), (1, JumpStyle::Square));
+        // The connector's own code overrides the page: 4 = the
+        // 2-sided triangle; 0 = the page default.
+        for (code, want) in [
+            ("4", JumpStyle::Sides(2)),
+            ("0", JumpStyle::Square),
+            ("9", JumpStyle::Sides(7)),
+        ] {
+            a.sheet.set_cell("ConLineJumpStyle", Cell::value(code));
+            page.shapes[0] = a.clone();
+            let js = page_jumps(&doc, &page, &[]);
+            assert_eq!((js.len(), js[0].style), (1, want), "code {code}");
+        }
+    }
+
+    /// The stored styled-hop recognition (#324 phase 4): the
+    /// witnessed `POLYLINE` forms and the gap's MoveTo skip, against
+    /// authored art with the same row types.
+    #[test]
+    fn stored_styled_hop_rows_classify() {
+        // The witnessed square controls (fractions of 5 × 0.25).
+        let sq = "POLYLINE(0, 0, 0.49166666666667,0.66666666666667, 0.50833333333333,0.66666666666667)";
+        let tri = "POLYLINE(0, 0, 0.5,0.66666666666667)";
+        let r2 = 2.0 * (0.125 * (2.0 / 3.0) / 2.0);
+        for a in [sq, tri] {
+            assert!(
+                is_stored_jump_polyline(
+                    a,
+                    (2.458_333_3, 0.125),
+                    (r2, 0.0),
+                    Some((1.0, 0.0)),
+                    Some((1.0, 0.0)),
+                    (5.0, 0.25),
+                    r2 / 2.0,
+                    r2 / 2.0,
+                ),
+                "{a} is a stored hop"
+            );
+        }
+        // Off the radius (the chord is not the slot) — authored art.
+        assert!(!is_stored_jump_polyline(
+            sq,
+            (2.458_333_3, 0.125),
+            (0.5, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            (5.0, 0.25),
+            r2 / 2.0,
+            r2 / 2.0,
+        ));
+        // Controls outside the box — authored art.
+        let wild = "POLYLINE(0, 0, 0.5,2.0)";
+        assert!(!is_stored_jump_polyline(
+            wild,
+            (2.458_333_3, 0.125),
+            (r2, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            (5.0, 0.25),
+            r2 / 2.0,
+            r2 / 2.0,
+        ));
+        // No continuing runs — a corner polyline.
+        assert!(!is_stored_jump_polyline(
+            sq,
+            (2.458_333_3, 0.125),
+            (r2, 0.0),
+            None,
+            Some((1.0, 0.0)),
+            (5.0, 0.25),
+            r2 / 2.0,
+            r2 / 2.0,
+        ));
+        // Local-typed controls are not the stored form.
+        assert_eq!(parse_polyline_controls("POLYLINE(1, 0, 1, 1)"), None);
+        assert_eq!(parse_polyline_controls("POLYLINE(0, 0)"), None);
+        assert_eq!(parse_polyline_controls("not a polyline"), None);
+        // The gap: a collinear ≈2r skip with continuing runs.
+        assert!(is_stored_jump_gap(
+            (r2, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            r2 / 2.0,
+            r2 / 2.0
+        ));
+        // A cornering MoveTo (the next run turns) is a second stroke,
+        // not a gap hop.
+        assert!(!is_stored_jump_gap(
+            (r2, 0.0),
+            Some((1.0, 0.0)),
+            Some((0.0, 1.0)),
+            r2 / 2.0,
+            r2 / 2.0
+        ));
+        // A skip off the radius.
+        assert!(!is_stored_jump_gap(
+            (0.5, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            r2 / 2.0,
+            r2 / 2.0
+        ));
     }
 
     /// #187: two crossing connectors produce one hop; a rotated

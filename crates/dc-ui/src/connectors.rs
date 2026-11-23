@@ -1154,6 +1154,7 @@ mod tests {
             z,
             weight: 0.01,
             color: (0, 0, 0),
+            style: dc::jumps::JumpStyle::Arc,
             pts: pts.to_vec(),
         };
         // H crosses V at (1, 1): H hops.

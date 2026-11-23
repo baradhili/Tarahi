@@ -453,6 +453,9 @@ pub struct GuideFx {
 pub struct JumpFx {
     /// The color behind the jumper at the hop (the gap's paint).
     pub gap_color: Color32,
+    /// The jumper's resolved hop style (#324 phase 4 — the paint
+    /// switch below mirrors the export's painter).
+    pub style: dc::jumps::JumpStyle,
     pub at: (f64, f64),
     pub dir: (f64, f64),
     pub under: (f64, f64),
@@ -1984,20 +1987,36 @@ pub fn show(
             [at - under * ext, at + under * ext],
             Stroke::new(uw, j.under_color),
         );
-        // 3. the hop arc — the export's own direction rule (a
-        // horizontal-class jumper bulges up on screen, a
-        // vertical-class one left — the b01 witness, #322); page y-up
-        // → screen y-down.
+        // 3. the hop, per the jumper's style — the export's own
+        // painter, direction rule and proportions (the encodings in
+        // Analysis/line-jump-styles.md); page y-up → screen y-down.
+        use dc::jumps::JumpStyle;
+        if let JumpStyle::Gap = j.style {
+            continue; // the gap IS the hop — the cut shows through
+        }
         let np = dc::svg::jump_normal(j.dir);
         let n = Vec2::new(np.0 as f32, -(np.1 as f32));
-        let mut pts = Vec::with_capacity(9);
-        for k in 0..=8 {
-            let t = k as f32 / 8.0;
-            let ang = std::f32::consts::PI * t;
-            // local frame: from g1 around to g2 through at + n*r.
-            let local = -dir * r * ang.cos() + n * r * ang.sin();
-            pts.push(at + local);
-        }
+        let bump = |ang: f32| at - dir * r * ang.cos() + n * r * ang.sin();
+        let lead = |s: f32| at + dir * s * (r + w * 0.5);
+        let mids: Vec<egui::Pos2> = match j.style {
+            JumpStyle::Arc => (1..=11)
+                .map(|k| bump(std::f32::consts::PI * k as f32 / 12.0))
+                .collect(),
+            JumpStyle::Square => {
+                let apex = bump(std::f32::consts::FRAC_PI_2);
+                vec![apex - dir * r, apex + dir * r]
+            }
+            JumpStyle::Sides(ns) => (1..ns)
+                .map(|k| bump(std::f32::consts::PI * k as f32 / ns as f32))
+                .collect(),
+            JumpStyle::Gap => Vec::new(),
+        };
+        let mut pts = Vec::with_capacity(mids.len() + 4);
+        pts.push(lead(-1.0));
+        pts.push(bump(0.0));
+        pts.extend(mids);
+        pts.push(bump(std::f32::consts::PI));
+        pts.push(lead(1.0));
         p.add(egui::Shape::line(pts, Stroke::new(w, j.color)));
     }
 
