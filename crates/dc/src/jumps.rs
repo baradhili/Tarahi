@@ -1,8 +1,10 @@
 //! The line-jump engine (#108, #187, #251, #294, #301, #303): the hop
 //! radius from the page's layout cells, the stored-jump classifier,
 //! the crossing selection among connector polylines, and the page's
-//! crossing set. The canvas overlay and the `dc::svg` export both
-//! draw from THIS code, so the two can't drift.
+//! crossing set. The canvas overlay, the `dc::svg` export and the
+//! stored-jump reconciliation all draw their hops from THIS code —
+//! one crossing set, [`page_jumps_stripping`] — so none of them can
+//! drift from the others (#336: the canvas used to build its own).
 //!
 //! Extracted from `geom.rs` as a pure move (#324 phase 1 — Visio's
 //! selection codes and jump styles grow here in later phases, and the
@@ -481,12 +483,13 @@ fn parse_hex_rgb(v: &str) -> Option<(u8, u8, u8)> {
     Some((pair(0)?, pair(2)?, pair(4)?))
 }
 
-/// The page's connector crossings (#187 export parity): every
-/// top-level connector's polyline — the same `hit_frame` +
-/// [`geometry_hit_segments`] walk the canvas jump overlay uses,
-/// formula-preferred, curve-aware — crossed with Visio's rule
-/// ([`line_jumps`]: the more-horizontal line hops, ties to the later
-/// z). Hidden-layer members and guides skip like the render walk.
+/// The page's connector crossings (#187): every top-level connector's
+/// polyline — `hit_frame` + [`geometry_hit_segments`], formula-
+/// preferred, curve-aware — crossed with Visio's rule ([`line_jumps`]:
+/// the more-horizontal line hops, ties to the later z). Hidden-layer
+/// members and guides skip like the render walk. This is THE crossing
+/// set: the canvas overlay, the export and the stored-jump
+/// reconciliation all draw from it (#336).
 pub fn page_jumps(doc: &vsdx::Document, page: &vsdx::Page, hidden: &[i64]) -> Vec<Jump> {
     page_jumps_stripping(doc, page, hidden, None)
 }
@@ -1113,6 +1116,48 @@ mod tests {
         );
     }
 
+    /// A straight two-row `ObjType=2` connector from `from` to `to`
+    /// (page inches, y-up), with an optional `LineColor` cell value.
+    fn straight_connector(id: i64, from: (f64, f64), to: (f64, f64), color: Option<&str>) -> Shape {
+        let (w, h) = (to.0 - from.0, to.1 - from.1);
+        let mut s = Shape {
+            id,
+            type_: Some("Shape".into()),
+            ..Shape::default()
+        };
+        for (n, v) in [
+            ("PinX", (from.0 + to.0) / 2.0),
+            ("PinY", (from.1 + to.1) / 2.0),
+            ("Width", w),
+            ("Height", h),
+            ("LocPinX", w / 2.0),
+            ("LocPinY", h / 2.0),
+            ("ObjType", 2.0),
+        ] {
+            s.sheet.set_cell(n, Cell::value(format!("{v}")));
+        }
+        if let Some(c) = color {
+            s.sheet.set_cell("LineColor", Cell::value(c));
+        }
+        let row = |ix: i64, t: &str, x: f64, y: f64| Row {
+            t: Some(t.into()),
+            ix,
+            cells: vec![
+                ("X".to_string(), Cell::value(format!("{x}"))),
+                ("Y".to_string(), Cell::value(format!("{y}"))),
+            ],
+            ..Row::default()
+        };
+        let mut sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec.rows = vec![row(1, "MoveTo", 0.0, 0.0), row(2, "LineTo", w, h)];
+        s.sheet.children.push(SheetChild::Section(sec));
+        s
+    }
+
     /// #333: `color_value` passes a `#…` LineColor through verbatim, so
     /// a malformed one reaches the crossing set — and must land in the
     /// gray fallback, never panic. `#aé000` is six bytes with `é`
@@ -1141,58 +1186,64 @@ mod tests {
         // jumper (it lies flatter), and both strokes of its hop
         // resolve — its own to the gray fallback, the other's to its
         // real color.
-        let connector = |id: i64, color: &str, from: (f64, f64), to: (f64, f64)| {
-            let (w, h) = (to.0 - from.0, to.1 - from.1);
-            let mut s = Shape {
-                id,
-                type_: Some("Shape".into()),
-                ..Shape::default()
-            };
-            for (n, v) in [
-                ("PinX", (from.0 + to.0) / 2.0),
-                ("PinY", (from.1 + to.1) / 2.0),
-                ("Width", w),
-                ("Height", h),
-                ("LocPinX", w / 2.0),
-                ("LocPinY", h / 2.0),
-                ("ObjType", 2.0),
-            ] {
-                s.sheet.set_cell(n, Cell::value(format!("{v}")));
-            }
-            s.sheet.set_cell("LineColor", Cell::value(color));
-            let row = |ix: i64, t: &str, x: f64, y: f64| Row {
-                t: Some(t.into()),
-                ix,
-                cells: vec![
-                    ("X".to_string(), Cell::value(format!("{x}"))),
-                    ("Y".to_string(), Cell::value(format!("{y}"))),
-                ],
-                ..Row::default()
-            };
-            let mut sec = Section {
-                name: "Geometry".into(),
-                ix: 0,
-                ..Section::default()
-            };
-            sec.rows = vec![row(1, "MoveTo", 0.0, 0.0), row(2, "LineTo", w, h)];
-            s.sheet.children.push(SheetChild::Section(sec));
-            s
-        };
         let mut page = vsdx::Page {
             id: 0,
             name: "T".into(),
             ..vsdx::Page::default()
         };
-        page.shapes
-            .push(connector(1, "#a\u{e9}000", (1.0, 1.0), (5.0, 1.0)));
-        page.shapes
-            .push(connector(2, "#ff0000", (3.0, 0.0), (3.0, 2.0)));
+        page.shapes.push(straight_connector(
+            1,
+            (1.0, 1.0),
+            (5.0, 1.0),
+            Some("#a\u{e9}000"),
+        ));
+        page.shapes.push(straight_connector(
+            2,
+            (3.0, 0.0),
+            (3.0, 2.0),
+            Some("#ff0000"),
+        ));
         let doc = vsdx::Document::default();
         let jumps = page_jumps(&doc, &page, &[]);
         assert_eq!(jumps.len(), 1, "one crossing: {jumps:?}");
         assert_eq!(
             (jumps[0].jumper, jumps[0].color, jumps[0].under_color),
             (1, (0x42, 0x42, 0x42), (0xff, 0, 0))
+        );
+    }
+
+    /// The crossing set's inputs resolve the way the renderer does, and
+    /// hidden layers leave it. The canvas overlay draws from this same
+    /// function (#336), so both are its to keep: a palette-index
+    /// jumper's hop is its own color, never the gray fallback, and
+    /// nothing hops over a connector on a hidden layer.
+    #[test]
+    fn page_jumps_resolves_palette_colors_and_skips_hidden_layers() {
+        // LineColor as a legacy palette index — 2 is red.
+        let mut crossing = straight_connector(2, (3.0, 0.0), (3.0, 2.0), None);
+        crossing.sheet.set_cell("LayerMember", Cell::value("3"));
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        page.shapes
+            .push(straight_connector(1, (1.0, 1.0), (5.0, 1.0), Some("2")));
+        page.shapes.push(crossing);
+        let doc = vsdx::Document::default();
+        let js = page_jumps(&doc, &page, &[]);
+        assert_eq!(js.len(), 1, "one crossing: {js:?}");
+        assert_eq!(
+            (js[0].jumper, js[0].color),
+            (1, (0xff, 0, 0)),
+            "the palette-index jumper hops in its own color: {js:?}"
+        );
+        // A layer nothing sits on changes nothing; hiding the layer the
+        // crossed connector sits on takes it out of the set.
+        assert_eq!(page_jumps(&doc, &page, &[7]).len(), 1);
+        assert!(
+            page_jumps(&doc, &page, &[3]).is_empty(),
+            "nothing hops over a hidden connector"
         );
     }
 }

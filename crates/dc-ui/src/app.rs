@@ -5741,106 +5741,53 @@ impl App {
         ))
     }
 
+    /// #108 line jumps: the hops the frame paints. They come from the
+    /// SAME crossing set the export and the stored-jump reconciliation
+    /// draw from — `dc::jumps::page_jumps_stripping` — so the canvas
+    /// cannot drift from the file: master inheritance, palette and
+    /// theme line colors, hidden layers and zero-weight shafts resolve
+    /// one way everywhere. (The canvas built its own set here and did
+    /// drift: palette-index lines hopped in gray, and hidden connectors
+    /// still made visible ones hop — #336.) `jump_radius` is the
+    /// page's resolved hop radius, (0, 0) when the page shows no jumps.
+    fn jump_fx(&self, jump_radius: (f64, f64), hidden: &[i64]) -> Vec<canvas::JumpFx> {
+        let Some(ed) = self.ed.as_ref() else {
+            return Vec::new();
+        };
+        let doc = &ed.doc;
+        let Some(page) = doc.pages.get(self.page_idx) else {
+            return Vec::new();
+        };
+        let shown = jump_radius.0 > 0.0 || jump_radius.1 > 0.0;
+        if !shown {
+            return Vec::new();
+        }
+        dc::jumps::page_jumps_stripping(doc, page, hidden, None)
+            .into_iter()
+            .map(|j| canvas::JumpFx {
+                at: j.at,
+                dir: j.dir,
+                under: j.under,
+                weight: j.weight,
+                under_weight: j.under_weight,
+                color: Color32::from_rgb(j.color.0, j.color.1, j.color.2),
+                under_color: Color32::from_rgb(j.under_color.0, j.under_color.1, j.under_color.2),
+                // The hop sizes with the radius of the jumping
+                // segment's own axis (the svg overlay's rule — PR #299
+                // review).
+                radius_in: (if j.dir.0.abs() >= j.dir.1.abs() {
+                    jump_radius.0
+                } else {
+                    jump_radius.1
+                }) as f32,
+            })
+            .collect()
+    }
+
     /// The page's glue candidates (#108): every non-connector shape's
     /// page rect with its connection-point rows (IX → page position —
     /// own rows first, the master's for instances, like #109's
     /// snap-target collection).
-    /// #108 line jumps: every top-level connector's page polyline
-    /// (unrotated, instance- or master-geometry through the hit
-    /// frame) with its stroke, in z order — the input to
-    /// [`crate::connectors::line_jumps`].
-    fn jump_lines(&self) -> Vec<crate::connectors::JumpLine> {
-        let mut out = Vec::new();
-        let Some(ed) = self.ed() else {
-            return out;
-        };
-        let Some(page_id) = self.page_id() else {
-            return out;
-        };
-        let Some(page) = ed.doc.pages.iter().find(|p| p.id == page_id) else {
-            return out;
-        };
-        for (z, sh) in page.shapes.iter().enumerate() {
-            let Ok(chain) = shape_chain(&ed.doc, page_id, sh.id) else {
-                continue;
-            };
-            if !crate::connectors::is_connector_in(&ed.doc, &chain, sh) {
-                continue;
-            }
-            // #187 slice 2: rotated connectors hop too — the polyline
-            // source (HitFrame + geometry_hit_segments) maps the
-            // rotated frame, and the overlay's arc normal is chosen
-            // per jump in page space, so no Angle gate remains.
-            let (root, msize) = sh
-                .master
-                .and_then(|mid| ed.doc.master(mid))
-                .and_then(|m| m.shapes.first())
-                .map(|r| {
-                    let g = |n: &str| {
-                        ed.doc
-                            .resolve_cell(r, &[r], n)
-                            .and_then(|c| c.numeric())
-                            .unwrap_or(1.0)
-                    };
-                    (Some(r), (g("Width"), g("Height")))
-                })
-                .unwrap_or((None, (1.0, 1.0)));
-            let frame = crate::connectors::hit_frame(&ed.doc, &chain, sh, msize);
-            // The loop gate above guarantees a connector, so stored
-            // jump arcs strip from the polyline (#294) — with the
-            // page's own radius as the evidence.
-            let segs = crate::connectors::geometry_hit_segments(
-                sh,
-                root,
-                &frame,
-                // jump_radius_in resolves through the Page, not its id.
-                Some(
-                    ed.doc
-                        .pages
-                        .iter()
-                        .find(|p| p.id == page_id)
-                        .map(|p| crate::connectors::jump_radii_in(&ed.doc, p))
-                        .unwrap_or((0.0, 0.0)),
-                ),
-            );
-            let mut pts = Vec::with_capacity(segs.len() + 1);
-            if let Some((a, _)) = segs.first() {
-                pts.push(*a);
-            }
-            for (_, b) in &segs {
-                pts.push(*b);
-            }
-            let weight = ed
-                .doc
-                .resolve_cell(sh, &chain, "LineWeight")
-                .and_then(|c| c.numeric())
-                .unwrap_or(0.01);
-            // #235 corollary (CodeRabbit, #278): an explicit-zero
-            // LineWeight paints nothing — the export path
-            // (`page_jumps`) drops such connectors from the crossing
-            // set, and the canvas overlay must agree or a visible
-            // connector hops over an invisible shaft on screen while
-            // the export shows no hop.
-            if weight == 0.0 {
-                continue;
-            }
-            let color = ed
-                .doc
-                .resolve_cell(sh, &chain, "LineColor")
-                .and_then(|c| c.v.clone())
-                .and_then(|v| parse_hex_rgb(&v))
-                .unwrap_or((0x42, 0x42, 0x42));
-            out.push(crate::connectors::JumpLine {
-                id: sh.id,
-                z,
-                weight,
-                color,
-                pts,
-            });
-        }
-        out
-    }
-
     fn glue_candidates(&self, excluding: &[i64]) -> Vec<crate::connectors::GlueCandidate> {
         let Some(ed) = self.ed() else {
             return Vec::new();
@@ -10246,34 +10193,9 @@ impl App {
                 (0.0, 0.0)
             }
         };
-        let jump_fx: Vec<canvas::JumpFx> = if jump_radius.0 > 0.0 || jump_radius.1 > 0.0 {
-            crate::connectors::line_jumps(&self.jump_lines(), jump_radius)
-                .into_iter()
-                .map(|j| canvas::JumpFx {
-                    at: j.at,
-                    dir: j.dir,
-                    under: j.under,
-                    weight: j.weight,
-                    under_weight: j.under_weight,
-                    color: Color32::from_rgb(j.color.0, j.color.1, j.color.2),
-                    under_color: Color32::from_rgb(
-                        j.under_color.0,
-                        j.under_color.1,
-                        j.under_color.2,
-                    ),
-                    // The hop sizes with the radius of the jumping
-                    // segment's own axis (the svg overlay's rule —
-                    // PR #299 review).
-                    radius_in: (if j.dir.0.abs() >= j.dir.1.abs() {
-                        jump_radius.0
-                    } else {
-                        jump_radius.1
-                    }) as f32,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        // One crossing set for the canvas, the export and the
+        // stored-jump reconciliation (#336) — `jump_fx`.
+        let jump_fx = self.jump_fx(jump_radius, &hidden);
         self.jumps_last = jump_fx.len();
         // #177: everything the connection-point overlay needs, built
         // before the destructuring borrows below (the closure runs
@@ -18553,12 +18475,16 @@ mod tests {
         assert!((pts[0].pos.1 - 3.0).abs() < 1e-6, "{}", pts[0].pos.1);
     }
 
-    /// #187 slice 2: a ROTATED connector joins the jump lines — the
-    /// Angle gate is gone; the HitFrame polyline carries the rotated
-    /// geometry, so it crosses the axis-aligned line and hops.
+    /// #336: the canvas overlay draws from the export's own crossing set,
+    /// so the two cannot drift. The canvas copy parsed LineColor as hex
+    /// only — a palette-index line hopped in the gray fallback while its
+    /// ink was drawn red — and took no hidden-layer input, so a visible
+    /// line hopped over a hidden connector. (Rotated connectors are dc's
+    /// own pin, `page_jumps_crosses_axis_and_rotated`, through this same
+    /// builder.)
     #[test]
-    fn rotated_connector_joins_the_jump_lines() {
-        let connector = |id: i64, pin: (f64, f64), w: f64, angle: f64| {
+    fn canvas_jump_overlay_is_the_export_crossing_set() {
+        let connector = |id: i64, pin: (f64, f64), w: f64, h: f64, color: Option<&str>| {
             let mut s = vsdx::model::Shape {
                 id,
                 type_: Some("Shape".into()),
@@ -18568,13 +18494,15 @@ mod tests {
                 ("PinX", pin.0),
                 ("PinY", pin.1),
                 ("Width", w),
-                ("Height", 0.0),
+                ("Height", h),
                 ("LocPinX", w / 2.0),
-                ("LocPinY", 0.0),
-                ("Angle", angle),
+                ("LocPinY", h / 2.0),
                 ("ObjType", 2.0),
             ] {
                 s.sheet.set_cell(n, vsdx::Cell::value(format!("{v}")));
+            }
+            if let Some(c) = color {
+                s.sheet.set_cell("LineColor", vsdx::Cell::value(c));
             }
             let mut sec = vsdx::model::Section {
                 name: "Geometry".into(),
@@ -18596,7 +18524,7 @@ mod tests {
                     ix: 2,
                     cells: vec![
                         ("X".to_string(), vsdx::Cell::value(format!("{w}"))),
-                        ("Y".to_string(), vsdx::Cell::value("0")),
+                        ("Y".to_string(), vsdx::Cell::value(format!("{h}"))),
                     ],
                     ..vsdx::model::Row::default()
                 },
@@ -18605,31 +18533,78 @@ mod tests {
             s
         };
         let mut ed = dc_core::Editor::new_blank();
+        // A master-based, UNGLUED connector — Visio's own shape: ObjType
+        // and the geometry live on the MASTER, nothing local — crossed by
+        // a vertical that sits on layer 3.
+        ed.doc.masters.push(vsdx::Master {
+            id: 1,
+            name_u: Some("Dynamic connector".into()),
+            shapes: vec![connector(1, (0.0, 0.125), 1.0, 0.25, None)],
+            ..vsdx::Master::default()
+        });
+        let mut inst = connector(2, (3.0, 3.0), 4.0, 0.0, None);
+        inst.sheet
+            .children
+            .retain(|c| !matches!(c, vsdx::model::SheetChild::Section(_)));
+        inst.master = Some(1);
+        ed.doc.pages[0].shapes.push(inst);
+        let mut layered = connector(3, (3.0, 3.0), 0.0, 2.0, None);
+        layered
+            .sheet
+            .set_cell("LayerMember", vsdx::Cell::value("3"));
+        ed.doc.pages[0].shapes.push(layered);
+        // A legacy palette-index LineColor — index 2 is red.
         ed.doc.pages[0]
             .shapes
-            .push(connector(1, (3.0, 3.0), 4.0, 0.0));
-        // The 45° rotated line through pin (3, 2.5) crosses the
-        // horizontal at (3.5, 3), strictly inside both.
-        ed.doc.pages[0].shapes.push(connector(
-            2,
-            (3.0, 2.5),
-            2.8284271,
-            std::f64::consts::FRAC_PI_4,
-        ));
+            .push(connector(4, (6.0, 3.0), 4.0, 0.0, Some("2")));
+        ed.doc.pages[0]
+            .shapes
+            .push(connector(5, (7.0, 3.0), 0.0, 2.0, None));
         let mut app = App::with_doc_opt(None);
         app.ed = Some(ed);
         app.page_idx = 0;
-        let lines = app.jump_lines();
+        let radius = (0.041_666_7, 0.041_666_7);
+        let fx = app.jump_fx(radius, &[]);
+        assert_eq!(fx.len(), 2, "two crossings: {fx:?}");
+        let palette_hop = fx
+            .iter()
+            .find(|j| (j.at.0 - 7.0).abs() < 1e-9)
+            .expect("the palette-index crossing");
         assert_eq!(
-            lines.len(),
-            2,
-            "the rotated connector joins the jump lines: {}",
-            lines.len()
+            palette_hop.color,
+            Color32::from_rgb(0xff, 0, 0),
+            "the hop takes its line's palette color, not the gray fallback: {fx:?}"
         );
-        // And the crossing hops: the axis line (flatter) jumps.
-        let jumps = crate::connectors::line_jumps(&lines, (0.041_666_7, 0.041_666_7));
-        assert_eq!(jumps.len(), 1, "one crossing: {jumps:?}");
-        assert!(jumps[0].dir.1.abs() < 1e-6, "the axis line hops");
+        // Hiding layer 3 takes its connector out of the set — the
+        // compositor hides those very shapes — so nothing crosses the
+        // master-based line any more and the other hop stays.
+        let fx_hidden = app.jump_fx(radius, &[3]);
+        assert_eq!(
+            fx_hidden.len(),
+            1,
+            "a hidden connector is not hopped over: {fx_hidden:?}"
+        );
+        assert!((fx_hidden[0].at.0 - 7.0).abs() < 1e-9);
+        // …and the canvas's answer IS the export's for the same page.
+        let ed = app.ed.as_ref().unwrap();
+        for hidden in [&[][..], &[3][..]] {
+            let export = dc::jumps::page_jumps_stripping(&ed.doc, &ed.doc.pages[0], hidden, None);
+            let canvas = app.jump_fx(radius, hidden);
+            assert_eq!(canvas.len(), export.len());
+            for (c, e) in canvas.iter().zip(&export) {
+                assert_eq!(
+                    (c.at, c.weight, c.under_weight),
+                    (e.at, e.weight, e.under_weight)
+                );
+                assert_eq!(c.color, Color32::from_rgb(e.color.0, e.color.1, e.color.2));
+                assert_eq!(
+                    c.under_color,
+                    Color32::from_rgb(e.under_color.0, e.under_color.1, e.under_color.2)
+                );
+            }
+        }
+        // A page that shows no jumps (radius 0) paints none.
+        assert!(app.jump_fx((0.0, 0.0), &[]).is_empty());
     }
 
     #[test]
@@ -18952,22 +18927,6 @@ fn classify_dbl_click(formula: Option<&str>) -> DblClick {
     } else {
         DblClick::Deferred(crate::i18n::strs().msg_eventdblclick_f_macro_and_naviga(f))
     }
-}
-
-/// "#rrggbb" → rgb triple (the renderer's resolved color form);
-/// None on malformed values (#108 line jumps).
-fn parse_hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
-    let h = s.trim_start_matches('#');
-    if h.len() == 6 {
-        if let Ok(v) = u32::from_str_radix(h, 16) {
-            return Some((
-                ((v >> 16) & 0xff) as u8,
-                ((v >> 8) & 0xff) as u8,
-                (v & 0xff) as u8,
-            ));
-        }
-    }
-    None
 }
 
 /// #156: a stencil's master by NameU (SDCONT's gallery names).

@@ -4,7 +4,7 @@
 //! put). The connector-crossing math is the line-jump engine, now in
 //! [`crate::jumps`] (#324) and re-exported below for path
 //! compatibility; the line-jump overlay the canvas paints and the one
-//! `dc::svg` appends share THAT code, so the two can't drift.
+//! `dc::svg` appends both come from that module's one crossing set.
 
 use vsdx::model::{Cell, Row, Section, Shape};
 
