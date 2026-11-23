@@ -603,7 +603,7 @@ impl Document {
             if c.v.is_some() && is_xform_cell(name) {
                 return Some(c.clone());
             }
-            if !c.is_inherited() && !c.is_themed() {
+            if (!c.is_inherited() && !c.is_themed()) || self.theme_evaluates(c) {
                 return Some(c.clone());
             }
             if c.is_theme_eval() {
@@ -612,7 +612,7 @@ impl Document {
         }
         if let Some(t) = self.instance_source(shape, ancestors) {
             if let Some(c) = t.sheet.cell(name) {
-                if !c.is_inherited() && !c.is_themed() {
+                if (!c.is_inherited() && !c.is_themed()) || self.theme_evaluates(c) {
                     return Some(c.clone());
                 }
                 if c.is_theme_eval() {
@@ -622,6 +622,51 @@ impl Document {
         }
         let style_id = self.shape_style_for(shape, ancestors, name);
         self.stylesheet_cascade_cell(style_id, name)
+    }
+
+    /// Variant colors from `visio/theme/theme1.xml` (DrawingML scheme),
+    /// indexed by `THEMEVAL("VariantColorN")` formulas (N = 1…8).
+    pub fn theme_variant_colors(&self) -> Vec<String> {
+        let Some(pkg) = self.package.as_ref() else {
+            return Vec::new();
+        };
+        let Some(raw) = pkg.part("visio/theme/theme1.xml") else {
+            return Vec::new();
+        };
+        let xml = String::from_utf8_lossy(raw).into_owned();
+        let mut out = Vec::new();
+        // <vt:varColorN><a:srgbClr val="RRGGBB"/>...</vt:varColorN>
+        for n in 1..=8 {
+            let tag = format!("varColor{n}");
+            let Some(pos) = xml.find(&tag) else { continue };
+            let window = &xml[pos..(pos + 300).min(xml.len())];
+            if let Some(vpos) = window.find("srgbClr val=\"") {
+                let rest = &window[vpos + 13..];
+                if let Some(end) = rest.find('"') {
+                    if end == 6 {
+                        out.push(format!("#{}", &rest[..end]));
+                        continue;
+                    }
+                }
+            }
+            break;
+        }
+        out
+    }
+
+    /// A Themed `THEMEVAL("VariantColorN")` cell that this document's
+    /// theme actually evaluates: it is a real value (the renderer reads
+    /// the variant color from the formula), not a theme-less No Style
+    /// fallback (Greptile on PR #335).
+    fn theme_evaluates(&self, c: &Cell) -> bool {
+        let Some(f) = c.f.as_deref() else {
+            return false;
+        };
+        if !c.is_theme_eval() || !f.contains("THEMEVAL") {
+            return false;
+        }
+        let variants = self.theme_variant_colors();
+        (1..=variants.len()).any(|n| f.contains(&format!("VariantColor{n}")))
     }
 
     /// The stylesheet a shape's `name` cell cascades into: the shape's
@@ -669,7 +714,7 @@ impl Document {
         };
         for _ in 0..8 {
             if let Some(c) = cur.sheet.cell(name) {
-                if !c.is_inherited() && !c.is_themed() {
+                if (!c.is_inherited() && !c.is_themed()) || self.theme_evaluates(c) {
                     return Some(c.clone());
                 }
                 // THEMEVAL() with no evaluated theme: the No Style value.
@@ -722,25 +767,28 @@ impl Document {
             if c.v.is_some() && is_xform_cell(name) {
                 return Some(c.clone());
             }
-            if !c.is_inherited() && !c.is_themed() {
+            if (!c.is_inherited() && !c.is_themed()) || self.theme_evaluates(c) {
                 return Some(c.clone());
             }
+            // THEMEVAL() with no evaluated theme: the No Style value, else
+            // the terminal defaults — never the master's or the style's
+            // value (CodeRabbit on PR #335).
             if c.is_theme_eval() {
-                if let Some(c) = self.stylesheet_cascade_cell(0, name) {
-                    return Some(c);
-                }
+                return self
+                    .stylesheet_cascade_cell(0, name)
+                    .or_else(|| self.terminal_default(name));
             }
         }
         // Master inheritance.
         if let Some(t) = self.instance_source(shape, ancestors) {
             if let Some(c) = t.sheet.cell(name) {
-                if !c.is_inherited() && !c.is_themed() {
+                if (!c.is_inherited() && !c.is_themed()) || self.theme_evaluates(c) {
                     return Some(c.clone());
                 }
                 if c.is_theme_eval() {
-                    if let Some(c) = self.stylesheet_cascade_cell(0, name) {
-                        return Some(c);
-                    }
+                    return self
+                        .stylesheet_cascade_cell(0, name)
+                        .or_else(|| self.terminal_default(name));
                 }
             }
         }
@@ -749,6 +797,12 @@ impl Document {
         if let Some(c) = self.stylesheet_cascade_cell(style_id, name) {
             return Some(c);
         }
+        self.terminal_default(name)
+    }
+
+    /// The last resort below the style cascade: the document sheet's
+    /// own value, else the built-in default.
+    fn terminal_default(&self, name: &str) -> Option<Cell> {
         if let Some(c) = self.sheet.cell(name) {
             if !c.is_inherited() {
                 return Some(c.clone());
@@ -1380,6 +1434,181 @@ mod snap_glue_tests {
             Some("#cabb97"),
             "a style-less instance cascades into its master's FillStyle"
         );
+    }
+
+    /// Each kind of cell walks its own parent attribute: a style whose
+    /// LineStyle, FillStyle and TextStyle attributes name three
+    /// different parents hands each kind the value of its own parent
+    /// (Greptile on PR #335: one shared parent could not tell them
+    /// apart).
+    #[test]
+    fn style_parents_are_picked_per_kind_of_cell() {
+        let mut doc = Document::default();
+        for (id, cell, v) in [
+            (31, "LineColor", "#110000"),
+            (32, "FillForegnd", "#002200"),
+            (33, "TextBkgnd", "#000033"),
+        ] {
+            let mut st = StyleSheet {
+                id,
+                ..Default::default()
+            };
+            // Every parent carries all three cells, so a wrong pick
+            // returns a wrong color instead of nothing.
+            for other in ["LineColor", "FillForegnd", "TextBkgnd"] {
+                let val = if other == cell { v } else { "#ffffff" };
+                st.sheet.set_cell(other, Cell::value(val));
+            }
+            doc.stylesheets.push(st);
+        }
+        let mut child = StyleSheet {
+            id: 30,
+            ..Default::default()
+        };
+        for (attr, parent, cell) in [
+            ("LineStyle", "31", "LineColor"),
+            ("FillStyle", "32", "FillForegnd"),
+            ("TextStyle", "33", "TextBkgnd"),
+        ] {
+            child.attrs.push((attr.to_string(), parent.to_string()));
+            // Themed `Inh`: no value here, the walk goes to the parent.
+            child.sheet.set_cell(
+                cell,
+                Cell {
+                    v: Some("Themed".into()),
+                    f: Some("Inh".into()),
+                    ..Cell::default()
+                },
+            );
+        }
+        doc.stylesheets.push(child);
+        let s = Shape {
+            id: 1,
+            line_style: Some(30),
+            fill_style: Some(30),
+            text_style: Some(30),
+            ..Shape::default()
+        };
+        let v = |n: &str| doc.resolve_cell(&s, &[], n).unwrap().v;
+        assert_eq!(v("LineColor").as_deref(), Some("#110000"));
+        assert_eq!(v("FillForegnd").as_deref(), Some("#002200"));
+        assert_eq!(v("TextBkgnd").as_deref(), Some("#000033"));
+    }
+
+    /// A document whose theme part defines `varColor1`.
+    fn doc_with_theme() -> Document {
+        use std::io::Write;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut z = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::SimpleFileOptions::default();
+            z.start_file("[Content_Types].xml", opts).unwrap();
+            z.write_all(br#"<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"#)
+                .unwrap();
+            z.start_file("visio/theme/theme1.xml", opts).unwrap();
+            z.write_all(
+                br#"<a:theme><vt:varColor1><a:srgbClr val="4472C4"/></vt:varColor1></a:theme>"#,
+            )
+            .unwrap();
+            z.finish().unwrap();
+        }
+        buf.set_position(0);
+        Document {
+            package: Some(Package::from_reader(buf).unwrap()),
+            ..Document::default()
+        }
+    }
+
+    /// A Themed `THEMEVAL("VariantColorN")` cell that the document's
+    /// theme evaluates keeps its formula for the renderer — on the
+    /// shape, on its master and in a style — instead of falling to the
+    /// No Style value (Greptile on PR #335). Without that variant it
+    /// still takes the No Style value.
+    #[test]
+    fn evaluable_theme_variants_keep_their_formula() {
+        let themed = |f: &str| Cell {
+            v: Some("Themed".into()),
+            f: Some(f.into()),
+            ..Cell::default()
+        };
+        let mut doc = doc_with_theme();
+        assert_eq!(doc.theme_variant_colors(), vec!["#4472C4".to_string()]);
+        let mut no_style = StyleSheet::default();
+        no_style.sheet.set_cell("FillForegnd", Cell::value("1"));
+        let mut theme = StyleSheet {
+            id: 6,
+            ..Default::default()
+        };
+        theme
+            .sheet
+            .set_cell("FillForegnd", themed(r#"THEMEVAL("VariantColor1")"#));
+        doc.stylesheets.extend([no_style, theme]);
+        let f = |c: Option<Cell>| c.and_then(|c| c.f);
+        // On the shape itself.
+        let mut s = Shape {
+            id: 1,
+            ..Shape::default()
+        };
+        s.sheet
+            .set_cell("FillForegnd", themed(r#"THEMEVAL("VariantColor1")"#));
+        assert_eq!(
+            f(doc.resolve_cell(&s, &[], "FillForegnd")).as_deref(),
+            Some(r#"THEMEVAL("VariantColor1")"#)
+        );
+        assert!(doc
+            .resolve_cell_explicit(&s, &[], "FillForegnd")
+            .is_some_and(|c| c.is_themed()));
+        // In the shape's style.
+        let styled = Shape {
+            id: 2,
+            fill_style: Some(6),
+            ..Shape::default()
+        };
+        assert_eq!(
+            f(doc.resolve_cell(&styled, &[], "FillForegnd")).as_deref(),
+            Some(r#"THEMEVAL("VariantColor1")"#)
+        );
+        // A variant the theme does not define: the No Style value.
+        s.sheet
+            .set_cell("FillForegnd", themed(r#"THEMEVAL("VariantColor5")"#));
+        let c = doc.resolve_cell(&s, &[], "FillForegnd").unwrap();
+        assert_eq!(c.v.as_deref(), Some("1"));
+    }
+
+    /// A `THEMEVAL()` cell that finds nothing in No Style goes to the
+    /// terminal defaults; it does not resume the master's or the
+    /// style's value below it (CodeRabbit on PR #335).
+    #[test]
+    fn a_missed_themeval_fallback_does_not_resume_inheritance() {
+        let mut doc = Document::default();
+        // No Style without a FillForegnd cell; style 14 with a tint.
+        doc.stylesheets.push(StyleSheet::default());
+        let mut tint = StyleSheet {
+            id: 14,
+            ..Default::default()
+        };
+        tint.sheet.set_cell("FillForegnd", Cell::value("#cabb97"));
+        doc.stylesheets.push(tint);
+        let mut s = Shape {
+            id: 1,
+            fill_style: Some(14),
+            ..Shape::default()
+        };
+        s.sheet.set_cell(
+            "FillForegnd",
+            Cell {
+                v: Some("Themed".into()),
+                f: Some("THEMEVAL()".into()),
+                ..Cell::default()
+            },
+        );
+        let builtin = builtin_defaults()
+            .iter()
+            .find(|(n, _)| *n == "FillForegnd")
+            .map(|(_, v)| v.to_string());
+        let v = doc.resolve_cell(&s, &[], "FillForegnd").and_then(|c| c.v);
+        assert_eq!(v, builtin, "not the style's #cabb97");
+        assert!(doc.resolve_cell_explicit(&s, &[], "FillForegnd").is_none());
     }
 
     /// A minimal document carrying one verbatim `DocumentSettings`
