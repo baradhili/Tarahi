@@ -3970,6 +3970,49 @@ fn render_all_geometry(
                     let bound = 3.0 * width.max(height).max(0.02);
                     let mut extra: Vec<(String, Cell)> = Vec::new();
                     for (cname, scell) in &src_row.cells {
+                        // A PolylineTo's A cell is formula TEXT, not a
+                        // number: the numeric merge below would drop it
+                        // and the row would draw a chord. An instance row
+                        // without its own POLYLINE text takes the
+                        // master's; absolute axes (type 1) are master
+                        // units and scale like X/Y, fractional ones stay
+                        // (CodeRabbit on PR #329).
+                        if cname == "A" && src_row.t.as_deref() == Some("PolylineTo") {
+                            let own_text = row.cells.iter().any(|(n, c)| {
+                                n == "A"
+                                    && c.v
+                                        .as_deref()
+                                        .or(c.f.as_deref())
+                                        .is_some_and(|t| t.trim_start().starts_with("POLYLINE"))
+                            });
+                            let master_text = scell
+                                .v
+                                .as_deref()
+                                .or(scell.f.as_deref())
+                                .unwrap_or_default();
+                            if !own_text {
+                                if let Some((xt, yt, verts)) =
+                                    crate::curve::parse_polyline(master_text)
+                                {
+                                    let mut text = format!("POLYLINE({xt}, {yt}");
+                                    for (vx, vy) in verts {
+                                        let vx = if xt == 0.0 { vx } else { scaled("X", vx) };
+                                        let vy = if yt == 0.0 { vy } else { scaled("Y", vy) };
+                                        let _ = write!(text, ", {vx},{vy}");
+                                    }
+                                    text.push(')');
+                                    let cell = Cell {
+                                        v: Some(text),
+                                        ..Cell::default()
+                                    };
+                                    match row.cells.iter_mut().find(|(n, _)| n == "A") {
+                                        Some((_, c)) => *c = cell,
+                                        None => extra.push(("A".to_string(), cell)),
+                                    }
+                                }
+                            }
+                            continue;
+                        }
                         if !matches!(cname.as_str(), "X" | "Y" | "A" | "B" | "C" | "D") {
                             continue;
                         }
@@ -4769,8 +4812,21 @@ fn render_geometry(
                     } else {
                         1.0
                     };
-                    for (px, py) in pts {
-                        let _ = write!(d, "L {}", emit_pt((px * fx, py * fy)));
+                    // Repeated points (a vertex on the previous point or
+                    // on the endpoint) would leave zero-length segments,
+                    // and `path_frames` takes no tangent from those: an
+                    // open connector lost its arrowheads (CodeRabbit on
+                    // PR #329).
+                    let same = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).hypot(a.1 - b.1) < 1e-9;
+                    let n = pts.len();
+                    let mut last = cur;
+                    for (i, (px, py)) in pts.into_iter().enumerate() {
+                        let v = (px * fx, py * fy);
+                        if same(v, last) || (i + 1 == n && same(v, (x, y))) {
+                            continue;
+                        }
+                        let _ = write!(d, "L {}", emit_pt(v));
+                        last = v;
                     }
                 }
                 let _ = write!(d, "L {}", emit_pt((x, y)));
@@ -9881,6 +9937,82 @@ mod tests {
         assert!((0.5 * frame_dim(-4.0, -2.0) * -2.0 - -2.0).abs() < 1e-12);
         assert!((frame_dim(3.0, 1.5) - 2.0).abs() < 1e-12);
         assert_eq!(frame_dim(3.0, 0.0), 3.0, "a zero scale keeps the dim");
+    }
+
+    /// An instance PolylineTo row without its own A cell takes the
+    /// master's POLYLINE() text; absolute vertices scale master →
+    /// instance like X/Y (CodeRabbit on PR #329).
+    #[test]
+    fn polyline_to_inherits_the_master_polyline_text() {
+        let poly_row = |x: f64, a: Option<&str>| {
+            let mut r = geo_row(2, "PolylineTo", &[("X", x), ("Y", 0.0)]);
+            if let Some(a) = a {
+                r.cells.push((
+                    "A".into(),
+                    Cell {
+                        v: Some(a.into()),
+                        ..Cell::default()
+                    },
+                ));
+            }
+            r
+        };
+        let mut master = shape_at(1, (1.0, 0.5), 2.0, 1.0, 0.0);
+        push_geo(
+            &mut master,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                poly_row(2.0, Some("POLYLINE(1, 1, 0,1, 2,1)")),
+            ],
+        );
+        let mut inst = shape_at(1, (4.0, 5.0), 4.0, 1.0, 0.0);
+        inst.master = Some(7);
+        push_geo(
+            &mut inst,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                poly_row(4.0, None),
+            ],
+        );
+        let (mut doc, page) = page_fixture(vec![inst]);
+        doc.masters.push(vsdx::model::Master {
+            id: 7,
+            shapes: vec![master],
+            ..vsdx::model::Master::default()
+        });
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(
+            svg.contains("L 0.00000 -1.00000 L 4.00000 -1.00000 L 4.00000 -0.00000"),
+            "the master's vertices, stretched to the instance width: {svg}"
+        );
+    }
+
+    /// A last vertex on the endpoint leaves no zero-length segment, so
+    /// the end tangent and the arrowheads survive (CodeRabbit on PR
+    /// #329).
+    #[test]
+    fn polyline_to_skips_a_vertex_on_its_endpoint() {
+        let mut s = shape_at(1, (2.0, 2.0), 1.0, 1.0, 0.0);
+        let mut poly = geo_row(2, "PolylineTo", &[("X", 1.0), ("Y", 1.0)]);
+        poly.cells.push((
+            "A".into(),
+            Cell {
+                v: Some("POLYLINE(1, 1, 1,0, 1,1)".into()),
+                ..Cell::default()
+            },
+        ));
+        push_geo(
+            &mut s,
+            vec![geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]), poly],
+        );
+        s.sheet.set_cell("EndArrow", Cell::value("2"));
+        let (doc, page) = page_fixture(vec![s]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(svg.contains("dc-ah"), "the arrowhead survives: {svg}");
+        assert!(
+            !svg.contains("L 1.00000 -1.00000 L 1.00000 -1.00000"),
+            "no repeated endpoint: {svg}"
+        );
     }
 
     /// PolylineTo walks its POLYLINE() vertices (Visio 2021 witness,
