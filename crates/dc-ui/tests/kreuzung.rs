@@ -1,6 +1,7 @@
 //! #303's own repro, end to end, against the reporter-supplied
-//! fixture `Sample/test files/kreuzung.vsdx` (untracked by design —
-//! the test skips when it is absent, like the other corpus fixtures).
+//! fixture `tests/fixtures/kreuzung.vsdx` (committed beside the test —
+//! owner instruction: tests live inside `diagramcraft/`, never
+//! against the outer `Sample/` tree, which is not pushed).
 //!
 //! The page: boxes A(1) B(2) C(3) D(4); A→B is connector 6 (carrying
 //! Visio's own stored jump `ArcTo` at the old crossing x=3.5), C→D is
@@ -15,17 +16,12 @@
 use dc_core::Command;
 use vsdx::model::find_shape_by_id;
 
-const FIXTURE: &str = "../../../Sample/test files/kreuzung.vsdx";
+const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/kreuzung.vsdx");
 
-fn open_fixture() -> Option<dc_core::Editor> {
-    if !std::path::Path::new(FIXTURE).exists() {
-        eprintln!("skipping: fixture not available");
-        return None;
-    }
-    match vsdx::parse::parse(std::path::Path::new(FIXTURE)) {
-        Ok(doc) => Some(dc_core::Editor::new(doc)),
-        Err(e) => panic!("the fixture exists but does not parse: {e}"),
-    }
+fn open_fixture() -> dc_core::Editor {
+    vsdx::parse::parse(std::path::Path::new(FIXTURE))
+        .map(dc_core::Editor::new)
+        .unwrap_or_else(|e| panic!("fixture {FIXTURE} must parse: {e}"))
 }
 
 fn conn(ed: &dc_core::Editor, id: i64) -> &vsdx::model::Shape {
@@ -54,9 +50,7 @@ fn row_count(ed: &dc_core::Editor, id: i64) -> usize {
 /// where the route actually crosses.
 #[test]
 fn kreuzung_move_grows_the_z_and_keeps_the_hop_current() {
-    let Some(mut ed) = open_fixture() else {
-        return;
-    };
+    let mut ed = open_fixture();
     let page_id = ed.doc.pages[0].id;
     // Sanity: the fixture is the #294/#303 shape — A→B's stored jump
     // and C→D's three rows.

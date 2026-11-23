@@ -14,21 +14,23 @@
 //! local `ObjType`; the marker lives on their master — so these
 //! files also pin the chain-resolved jump-candidacy gate.
 //!
-//! Untracked fixtures in `Sample/test files/` (the kreuzung pattern);
-//! the tests skip when they are absent.
+//! The fixtures are COMMITTED beside the test (owner instruction:
+//! tests live inside `diagramcraft/`, never against the outer
+//! `Sample/` tree — it is not pushed and its tests would run
+//! nowhere else). A missing fixture fails the parse, not a skip.
 
-const B01: &str = "../../../Sample/test files/b01-linejumps.vsdx";
-const C02: &str = "../../../Sample/test files/c02-jumpcodes.vsdx";
+const B01: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/b01-linejumps.vsdx"
+);
+const C02: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/c02-jumpcodes.vsdx"
+);
 
-fn open(path: &str) -> Option<vsdx::Document> {
-    if !std::path::Path::new(path).exists() {
-        eprintln!("skipping: fixture not available");
-        return None;
-    }
-    match vsdx::parse::parse(std::path::Path::new(path)) {
-        Ok(doc) => Some(doc),
-        Err(e) => panic!("the fixture exists but does not parse: {e}"),
-    }
+fn open(path: &str) -> vsdx::Document {
+    vsdx::parse::parse(std::path::Path::new(path))
+        .unwrap_or_else(|e| panic!("fixture {path} must parse: {e}"))
 }
 
 /// The page's hop jumpers, sorted — the set to compare with Visio's
@@ -49,9 +51,7 @@ fn jumpers(doc: &vsdx::Document, page: &vsdx::Page) -> Vec<i64> {
 /// pair, the X included (5).
 #[test]
 fn b01_page_codes_pick_visio_stored_jumpers() {
-    let Some(doc) = open(B01) else {
-        return;
-    };
+    let doc = open(B01);
     assert_eq!(
         jumpers(&doc, &doc.pages[0]),
         vec![2, 6, 8],
@@ -72,9 +72,7 @@ fn b01_page_codes_pick_visio_stored_jumpers() {
 /// and 3 hands the hop to the vertical (33 hops over 32).
 #[test]
 fn c02_connector_codes_pick_visio_stored_jumpers() {
-    let Some(doc) = open(C02) else {
-        return;
-    };
+    let doc = open(C02);
     assert_eq!(
         jumpers(&doc, &doc.pages[0]),
         vec![2, 5, 8, 11, 14, 17, 20, 23, 29, 33],

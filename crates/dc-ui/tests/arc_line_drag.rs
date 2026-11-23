@@ -1,7 +1,8 @@
 //! #226: the corpus Line-arc connector's endpoint drag, end to end,
-//! against the owner-authored fixture `Sample/test files/utilisation.vsdx`
-//! (untracked by design — the test skips when it is absent, like the
-//! arrows-gallery fixture pins).
+//! against the owner-authored fixture `tests/fixtures/utilisation.vsdx`
+//! (committed beside the test — owner instruction: tests live inside
+//! `diagramcraft/`, never against the outer `Sample/` tree, which is
+//! not pushed).
 //!
 //! The `Line-arc connector` master (master 5) carries NO ObjType — its
 //! connector signature is `GlueType` + `BegTrigger`/`EndTrigger` — so
@@ -11,20 +12,19 @@
 use dc_core::{Command, Scope};
 use vsdx::model::find_shape_by_id;
 
-const FIXTURE: &str = "../../../Sample/test files/utilisation.vsdx";
+const FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/utilisation.vsdx"
+);
 
-fn open_fixture() -> Option<dc_core::Editor> {
-    if !std::path::Path::new(FIXTURE).exists() {
-        eprintln!("skipping: fixture not available");
-        return None;
-    }
-    // A PRESENT fixture that fails to parse is a regression (a corrupt
-    // file or a parser break) — fail loudly, never silently pass the
-    // three tests that gate on this (#218 review).
-    match vsdx::parse::parse(std::path::Path::new(FIXTURE)) {
-        Ok(doc) => Some(dc_core::Editor::new(doc)),
-        Err(e) => panic!("the fixture exists but does not parse: {e}"),
-    }
+fn open_fixture() -> dc_core::Editor {
+    // A fixture that fails to parse is a regression (a corrupt file
+    // or a parser break) — fail loudly, never silently pass the three
+    // tests that gate on this (#218 review). The fixture is committed,
+    // so a missing one fails here too.
+    vsdx::parse::parse(std::path::Path::new(FIXTURE))
+        .map(dc_core::Editor::new)
+        .unwrap_or_else(|e| panic!("fixture {FIXTURE} must parse: {e}"))
 }
 
 fn conn(ed: &dc_core::Editor, id: i64) -> &vsdx::model::Shape {
@@ -80,7 +80,7 @@ fn arc_page_end(ed: &dc_core::Editor, id: i64) -> (f64, f64) {
 /// the reroute lands the arc's end on the drop point.
 #[test]
 fn release_commit_lands_the_arc_end_on_the_drop_point() {
-    let Some(mut ed) = open_fixture() else { return };
+    let mut ed = open_fixture();
     let page_id = ed.doc.pages[0].id;
     let pre_begin_f = conn(&ed, 1021).sheet.cell("BeginX").unwrap().f.clone();
     assert!(
@@ -160,7 +160,7 @@ fn release_commit_lands_the_arc_end_on_the_drop_point() {
 /// the reroute see them at all).
 #[test]
 fn moving_the_target_drags_the_glued_arc() {
-    let Some(mut ed) = open_fixture() else { return };
+    let mut ed = open_fixture();
     let page_id = ed.doc.pages[0].id;
     let pre_begin = (resolved(&ed, 1021, "BeginX"), resolved(&ed, 1021, "BeginY"));
 
@@ -201,7 +201,7 @@ fn moving_the_target_drags_the_glued_arc() {
 /// writes for the same endpoint pair.
 #[test]
 fn preview_planner_matches_the_commit_reroute() {
-    let Some(ed) = open_fixture() else { return };
+    let ed = open_fixture();
     let page_id = ed.doc.pages[0].id;
     let begin = (resolved(&ed, 1021, "BeginX"), resolved(&ed, 1021, "BeginY"));
     let drop = (7.6, 8.9);
