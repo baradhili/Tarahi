@@ -284,13 +284,18 @@ fn merely_touches(vx: usize, pts: &[(f64, f64)], other: &[(f64, f64)]) -> bool {
     // Pure sign comparison — a magnitude cutoff would wave through
     // shallow same-side contacts on short segments (#294 review). A
     // run ON the line reads as side 0, which the product took for a
-    // crossing — every merge onto a through line hopped. The vertex is
-    // on the segment already (that is the contact), so the run is the
-    // segment's own when its far end lies on its line too.
+    // crossing — every merge onto a through line hopped. A shared run
+    // needs the VERTEX on the other line too — a merge arrives AT the
+    // line, so the contact vertex sits on it within the same noise
+    // scale (a near-miss inside the hug tolerance can have its far
+    // end graze the line while the vertex, and the route, crossed:
+    // CodeRabbit round on #324 phase 2 — [(0,−1),(0,5e−10),(0.01,
+    // 5e−12)] over a horizontal used to merge away a real crossing).
     side(back) * side(fwd) > 0.0
-        || [back, fwd]
-            .iter()
-            .any(|&p| off_line(dir, a, p) <= SHARED_RUN_OFF_IN)
+        || (off_line(dir, a, pts[vx]) <= SHARED_RUN_OFF_IN
+            && [back, fwd]
+                .iter()
+                .any(|&p| off_line(dir, a, p) <= SHARED_RUN_OFF_IN))
 }
 
 /// The polyline index a crossing hugs, when it hugs a segment
@@ -525,7 +530,15 @@ pub fn line_jumps_with(
             // Merge the pair's jumps inside a hop radius: the arc's
             // own reach (2× the page's jump radius) bounds what "one
             // region" means visually. Distinct crossings beyond it
-            // stay.
+            // stay. A crossing that lands ON the jumper's own bend
+            // contributes one candidate per leg; the merged hop keeps
+            // the first leg's direction, so its far endpoint can sit
+            // off the other leg — a known boundary (CodeRabbit round
+            // on #324 phase 2), deliberately left: the corpus's hops
+            // are all MID-RUN (#294's evidence — Visio writes jumps
+            // on runs, never at a jumper's bend), so there is no
+            // witness for what a bent hop's geometry or stored rows
+            // should be; the Phase 3 hop-geometry rewrite owns it.
             let mut clustered: Vec<Jump> = Vec::new();
             for jmp in pair {
                 // The reach is the hop's OWN axis radius — the unrelated
@@ -536,6 +549,17 @@ pub fn line_jumps_with(
                 } else {
                     radius_y
                 };
+                // A hop on a zero-radius axis cannot draw — and must
+                // not ENTER a cluster either: its stroke-width reach
+                // would absorb a valid hop on the other axis and the
+                // merged direction would draw nothing (CodeRabbit
+                // round on #324 phase 2). The strip side already
+                // holds the same rule — a zero on the chosen axis
+                // never strips (`is_stored_jump_arc`, PR #299
+                // round-3).
+                if jr <= 0.0 {
+                    continue;
+                }
                 let reach = (jr * 2.0).max((jmp.weight + jmp.under_weight) * 2.0);
                 // Compare EVERY existing cluster (#218 review): the
                 // last-only check (under the old x-sort) let a jump
@@ -586,8 +610,11 @@ fn parse_hex_rgb(v: &str) -> Option<(u8, u8, u8)> {
 /// only true connectors; a plain glued 1D line — `ObjType 0`, static
 /// `PAR(PNT` glue — never joins the crossing set). The wider
 /// glue-ownership gate [`crate::geom::is_connector_in`] stays what
-/// reroute and glue use; jump candidacy is deliberately narrower.
-fn is_jump_candidate(
+/// reroute and glue use; jump candidacy is deliberately narrower,
+/// and EVERY site that strips or rewrites stored jump arcs gates on
+/// it too (the ink path and the reconcile — an authored arc on a
+/// non-candidate line is artwork, never a hop to straighten).
+pub fn is_jump_candidate(
     doc: &vsdx::Document,
     chain: &[&vsdx::model::Shape],
     s: &vsdx::model::Shape,
@@ -1034,6 +1061,48 @@ mod tests {
         );
     }
 
+    /// A hop on a ZERO-radius axis never enters a cluster (CodeRabbit
+    /// round on #324 phase 2): an always-jump connector crossing the
+    /// same line on its horizontal leg and, a stroke's width away, on
+    /// its vertical leg used to let the undrawable horizontal
+    /// candidate absorb the valid vertical hop — the merged direction
+    /// then drew nothing at r = 0.
+    #[test]
+    fn zero_axis_hops_never_enter_a_cluster() {
+        // The jumper: horizontal leg INTO the bend, then a vertical
+        // leg up — ConLineJumpCode 2, it hops at both crossings. The
+        // under line crosses the horizontal leg at (0.428, 0.5) and
+        // the vertical one at (0.4, 0.528) — 0.0396 in apart, inside
+        // the stroke-width reach (2 × (0.012 + 0.012)), so the FIRST
+        // (horizontal) candidate used to swallow the second.
+        let j = JumpLine {
+            id: 1,
+            z: 0,
+            weight: 0.012,
+            color: (0, 0, 0),
+            pts: vec![(1.0, 0.5), (0.4, 0.5), (0.4, 1.0)],
+        };
+        let u = JumpLine {
+            id: 2,
+            z: 1,
+            weight: 0.012,
+            color: (0, 0, 0),
+            pts: vec![(0.35, 0.578), (0.5, 0.428)],
+        };
+        // X radius 0 (no horizontal hops can draw), Y radius 0.05.
+        let js = line_jumps_with(
+            &[j, u],
+            (0.0, 0.05),
+            &JumpRules {
+                page_code: 1,
+                con_codes: [(1, 2)].into_iter().collect(),
+            },
+        );
+        assert_eq!(js.len(), 1, "the vertical-leg hop alone: {js:?}");
+        assert!(js[0].dir.0.abs() < 1e-9, "the survivor is vertical: {js:?}");
+        assert_eq!(js[0].jumper, 1);
+    }
+
     /// #294 review: a crossing exactly ON an interior vertex of the
     /// under polyline still hops — the strict-interior intersection
     /// used to drop it (and with stored jump arcs straightened, the
@@ -1188,6 +1257,22 @@ mod tests {
         {
             let js = hops(&[jline(1, 0, &through), jline(2, 1, &piercing)]);
             assert_eq!(js.len(), 1, "a near-miss is a crossing, case {k}: {js:?}");
+        }
+        // …and the mirror near-miss — the vertex just ABOVE the line,
+        // the outgoing run grazing it — crossed too, until the shared-
+        // run branch read the grazing far end alone as a merge
+        // (CodeRabbit round on #324 phase 2: a merge needs the vertex
+        // ON the line; this route came from below and left above).
+        let grazing = vec![(0.0, -1.0), (0.0, 5e-10), (0.01, 5e-12)];
+        for (k, through) in [
+            vec![(-2.0, 0.0), (2.0, 0.0)],
+            vec![(-2.0, 0.0), (0.0, 0.0), (2.0, 0.0)],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let js = hops(&[jline(1, 0, &through), jline(2, 1, &grazing)]);
+            assert_eq!(js.len(), 1, "a grazing near-miss is a crossing, case {k}: {js:?}");
         }
     }
 

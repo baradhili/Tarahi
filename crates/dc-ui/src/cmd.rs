@@ -1985,7 +1985,7 @@ impl Command for ReconcileLineJumps {
                     chain.push(root);
                 }
             }
-            if dc::geom::is_connector_in(doc, &chain, s) {
+            if dc::jumps::is_jump_candidate(doc, &chain, s) {
                 list.shapes.push(dc_core::Touched {
                     page: self.page,
                     shape: s.id,
@@ -2057,7 +2057,7 @@ impl Command for ReconcileLineJumps {
                     (g("Width"), g("Height"))
                 })
                 .unwrap_or((1.0, 1.0));
-            if !dc::geom::is_connector_in(doc, &chain, s) {
+            if !dc::jumps::is_jump_candidate(doc, &chain, s) {
                 continue;
             }
             let weight = doc

@@ -4346,9 +4346,15 @@ fn render_geometry(
                 // classifier itself selects the arc's axis radius, so a
                 // zero on one axis only kills that axis's strips.
                 if (jump_radius.0 > 0.0 || jump_radius.1 > 0.0)
-                    // Connector-ness gates the kind: artwork arcs never
-                    // strip even with a resolved radius (#294 review).
-                    && crate::geom::is_connector_in(doc, chain, s)
+                    // Jump CANDIDACY gates the kind (#324 phase 2): a
+                    // stored arc straightens only on a line the crossing
+                    // set would hop — an authored arc on a plain glued
+                    // 1D line (`ObjType 0`) is artwork, and artwork arcs
+                    // never strip even with a resolved radius (#294
+                    // review; CodeRabbit round on #324 phase 2 caught
+                    // the wider `is_connector_in` here stripping arcs
+                    // no hop would ever replace).
+                    && crate::jumps::is_jump_candidate(doc, chain, s)
                     && crate::jumps::is_stored_jump_arc(
                         h,
                         (x - sx, y - sy),
