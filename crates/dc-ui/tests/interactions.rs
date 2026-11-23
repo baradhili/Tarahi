@@ -10419,3 +10419,98 @@ fn options_modal_blocks_backstage_navigation() {
         "Back closes the backstage once Options is closed"
     );
 }
+
+// #324 phase 5: the Page Setup ▸ Layout and Routing section — the
+// line-jump dropdowns write the PageSheet cells through one undo step
+// each with the stored-hop reconcile riding the same macro, and the
+// Routing group paints Visio's controls disabled (routing proper is
+// #225's deferred bulk).
+#[test]
+fn layout_and_routing_dialog_writes_jump_cells() {
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(
+            |ui, app: &mut App| {
+                dc_ui::theme::install(ui.ctx());
+                app.draw(ui);
+            },
+            App::debug_page_setup_with_crossing_for_test(),
+        );
+    h.run();
+    assert!(
+        h.state()
+            .debug_page_sheet_cell_for_test("LineJumpStyle")
+            .is_none(),
+        "the blank page carries no style cell"
+    );
+    // The style dropdown shows "Arc  ›"; open it and pick Gap.
+    let btn = h
+        .get_all_by_label_contains("Arc")
+        .filter(|n| n.rect().width() < 120.0)
+        .max_by_key(|n| n.rect().min.y as i64)
+        .expect("the line jump style dropdown");
+    btn.click();
+    h.run();
+    h.get_by_label("Gap").click();
+    h.run();
+    assert_eq!(
+        h.state()
+            .debug_page_sheet_cell_for_test("LineJumpStyle")
+            .as_deref(),
+        Some("2"),
+        "the dropdown wrote LineJumpStyle = 2 (Gap)"
+    );
+    // The reconcile rode the macro: the stored rows are the gap form.
+    assert_eq!(
+        h.state().debug_geometry_row_types_for_test(5),
+        vec!["MoveTo", "LineTo", "MoveTo", "LineTo"],
+        "the gap form landed"
+    );
+    // One undo restores the absent cell and the straight rows.
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run();
+    assert!(
+        h.state()
+            .debug_page_sheet_cell_for_test("LineJumpStyle")
+            .is_none(),
+        "one undo removed the style cell"
+    );
+    assert_eq!(
+        h.state().debug_geometry_row_types_for_test(5),
+        vec!["MoveTo", "LineTo"],
+        "the route is back"
+    );
+    // "Add line jumps to: None" hides the page's jumps — LineJumpCode
+    // 0, one more undo step back to shown.
+    let btn = h
+        .get_all_by_label_contains("Horizontal Lines")
+        .filter(|n| n.rect().width() < 140.0)
+        .max_by_key(|n| n.rect().min.y as i64)
+        .expect("the add-line-jumps-to dropdown");
+    btn.click();
+    h.run();
+    h.get_by_label("None").click();
+    h.run();
+    assert_eq!(
+        h.state()
+            .debug_page_sheet_cell_for_test("LineJumpCode")
+            .as_deref(),
+        Some("0"),
+        "None wrote the off switch"
+    );
+    // The Routing group paints disabled: the Style row's button exists
+    // and is not clickable (visPLO-style cells absent whatever the
+    // user tries).
+    let disabled = h
+        .get_all_by_label_contains("Right Angle")
+        .max_by_key(|n| n.rect().min.y as i64);
+    assert!(disabled.is_some(), "the routing Style control paints");
+    assert!(
+        h.state()
+            .debug_page_sheet_cell_for_test("RouteStyle")
+            .is_none(),
+        "no routing cell was written"
+    );
+}

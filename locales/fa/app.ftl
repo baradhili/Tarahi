@@ -21,6 +21,8 @@ add-in-hosting-arrives-with-m8 = میزبانی افزونه‌ها با M8 عر
 add-in-manager = مدیریت افزونه‌ها
 add-in-manager-m8 = مدیریت افزونه‌ها — M8
 add-ins = افزونه‌ها
+add-line-jumps-to = افزودن پرش‌های خط به:
+
 add-name-prop-row-test = افزودن سطر ویژگی { $name } (آزمون)
 add-to-new-container = افزودن به ظرف جدید
 add-to-quick-shapes = افزودن به شکل‌های سریع
@@ -321,8 +323,64 @@ field-preview = پیش‌نمایش:
 field-subject = موضوع
 field-title = عنوان
 field-width = عرض
+horizontal-size = اندازه افقی:
+
 insert-a-text-field = درج یک فیلد متنی
 insert-field = درج فیلد
+line-jump-style = سبک پرش خط:
+
+line-jump-style-set = سبک پرش خط روی { $style } قرار گرفت
+
+lj-code-horizontal = خطوط افقی
+
+lj-code-last-displayed = آخرین خط نمایش‌داده‌شده
+
+lj-code-last-routed = آخرین خط مسیریابی‌شده
+
+lj-code-none = هیچ‌کدام
+
+lj-code-vertical = خطوط عمودی
+
+lj-style-2-sides = ۲ ضلع
+
+lj-style-3-sides = ۳ ضلع
+
+lj-style-4-sides = ۴ ضلع
+
+lj-style-5-sides = ۵ ضلع
+
+lj-style-6-sides = ۶ ضلع
+
+lj-style-7-sides = ۷ ضلع
+
+lj-style-arc = کمان
+
+lj-style-gap = فاصله
+
+lj-style-square = مربع
+
+routing-appearance = نمود:
+
+routing-deferred = مسیریابی اتصال‌دهنده‌ها هنوز در دسترس نیست.
+
+routing-direction = جهت:
+
+routing-group = مسیریابی
+
+routing-overlap = همپوشانی:
+
+routing-right-angle = زاویه قائم
+
+routing-separate = جداسازی:
+
+routing-straight = مستقیم
+
+routing-style = سبک:
+
+routing-unrelated-lines = خطوط نامرتبط
+
+routing-using-style = بر اساس سبک مسیریابی
+
 select-a-shape-to-insert-a-field = برای درج فیلد شکلی انتخاب کنید.
 
 even-horizontal-spacing-3-shapes = فاصله‌گذاری افقی یکنواخت (۳ شکل یا بیشتر)
@@ -455,7 +513,6 @@ inspect-drawing = بازرسی نقاشی…
 inspect-the-selected-shape-s-cel = بازرسی سلول‌های شکل گزینش‌شده
 italic = مورب
 italic-planned = مورب — برنامه‌ریزی شده
-jump-size = اندازهٔ پرش
 justify = هم‌تراز از دو سو
 justify-planned = هم‌ترازی از دو سو — برنامه‌ریزی شده
 # $key - کلید میان‌بر
@@ -847,7 +904,6 @@ show-hide = نمایش/پنهان‌سازی
 show-hide-comments = نمایش/پنهان‌سازی نظرها
 show-hide-comments-planned-view = نمایش/پنهان‌سازی نظرها — برنامه‌ریزی‌شده (کلید View امروز سیم‌کشی شده است)
 show-hide-data-graphics-on-the-p = نمایش/پنهان‌سازی نمودارهای داده روی صفحه (M6)
-show-line-jumps = نمایش پرش‌های خط
 show-markup = نمایش بازبینی‌ها
 show-markup-planned = نمایش بازبینی‌ها — برنامه‌ریزی شده
 show-shapesheet = نمایش ShapeSheet
@@ -1065,6 +1121,8 @@ vba-arrives-with-m7-vsdm = VBA با M7 می‌آید (.vsdm)
 vector-svg = برداری (SVG)
 # $cell - توصیف سلول فرمول‌محور
 vertex-drag-refused = کشیدن رأس رد شد: { $cell } فرمول‌محور است — برای تغییر، فرمول را ویرایش کنید
+vertical-size = اندازه عمودی:
+
 view = نما
 views = نماها
 visio-drawing = نقاشی Visio
@@ -1096,3 +1154,4 @@ zoom-menu = بزرگ‌نمایی…
 zoom-out = کوچک‌نمایی
 zoom-out-tip = کوچک‌نمایی
 zoom-to-selection-shift-z = بزرگ‌نمایی به گزینش (Shift+Z)
+

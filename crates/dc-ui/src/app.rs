@@ -240,6 +240,7 @@ pub struct App {
     /// per frame flooded history; the draft edits locally and commits
     /// once, when the drag stops (typed input commits immediately).
     line_jump_draft: Option<f32>,
+    line_jump_draft_y: Option<f32>,
     /// Dynamic-grid hints for the frame in progress (#109, URS-1088),
     /// recomputed by `update_drag` while a move drag is live and
     /// painted by the canvas from `DragFx::hints`.
@@ -778,6 +779,7 @@ impl App {
             snap: crate::snap::SnapSettings::default(),
             snap_dlg_open: false,
             line_jump_draft: None,
+            line_jump_draft_y: None,
             snap_live: Vec::new(),
             conn_fx_last: crate::connectors::ConnPointFx::default(),
             drag_glue: None,
@@ -6498,7 +6500,12 @@ impl App {
     /// PageLayout-section cell): 1 = horizontal lines jump (Visio's
     /// authored default), 6 = "no line gets jumps" (the off switch).
     /// One undoable command.
-    fn apply_line_jumps_shown(&mut self, show: bool) {
+    /// #324 phase 5: the "Add line jumps to" dropdown — Visio's
+    /// five-entry list (None / Horizontal Lines / Vertical Lines /
+    /// Last Routed Line / Last Displayed Line), `LineJumpCode`
+    /// 0–4. The reconcile rides the same macro (normalize-on-edit,
+    /// #301) so the stored rows track the switch.
+    fn apply_line_jump_code(&mut self, code: i64) {
         let Some(page_id) = self.page_id() else {
             return;
         };
@@ -6511,16 +6518,36 @@ impl App {
                 "LineJumpCode",
                 // Off writes 0 (visPLOJumpNone, [MS-Learn]) — 6 was
                 // never in the enumeration (#218 review).
-                vsdx::Cell::value(if show { "1" } else { "0" }),
+                vsdx::Cell::value(code.to_string()),
             )),
             Box::new(crate::cmd::ReconcileLineJumps::new(page_id)),
         ];
         self.apply(dc_core::Macro::new("set line jumps shown", cmds));
-        self.status = if show {
-            crate::i18n::strs().msg_line_jumps_shown()
-        } else {
+        self.status = if code == 0 {
             crate::i18n::strs().msg_line_jumps_hidden()
+        } else {
+            crate::i18n::strs().msg_line_jumps_shown()
         };
+    }
+
+    /// #324 phase 5: the "Line jump style" dropdown — `LineJumpStyle`
+    /// 1–9 (Arc/Gap/Square/2–7 Sides). The reconcile rides the same
+    /// macro: a style change swaps the stored hop rows only, never the
+    /// route (I1, pinned in the cmd tests).
+    fn apply_line_jump_style(&mut self, code: i64, name: String) {
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
+        let cmds: Vec<Box<dyn dc_core::Command>> = vec![
+            Box::new(SetCell::new(
+                Scope::PageSheet { page: page_id },
+                "LineJumpStyle",
+                vsdx::Cell::value(code.to_string()),
+            )),
+            Box::new(crate::cmd::ReconcileLineJumps::new(page_id)),
+        ];
+        self.apply(dc_core::Macro::new("set line jump style", cmds));
+        self.status = crate::i18n::strs().msg_line_jump_style_set(&name);
     }
 
     /// #251: the page's jump-size multiplier (`LineJumpFactorX`).
@@ -6545,12 +6572,41 @@ impl App {
             vsdx::Cell::value(format!("{factor:.6}")),
         ))];
         if let Some(pre) = pre {
-            cmds.push(Box::new(crate::cmd::ReconcileLineJumps::with_strip(page_id, pre)));
+            cmds.push(Box::new(crate::cmd::ReconcileLineJumps::with_strip(
+                page_id, pre,
+            )));
         }
         self.apply(dc_core::Macro::new("set line jump factor", cmds));
         // The factor steps in fractions (0.5 .. 3.0) — the i64 cast
         // truncated them to ×0/×1 in the status note (PR #269
         // review); FluentNumber carries the decimal through.
+        self.status = crate::i18n::strs().msg_line_jump_factor_set(factor);
+    }
+
+    /// #324 phase 5: the twin of [`Self::apply_line_jump_factor`] for
+    /// `LineJumpFactorY` — Visio's "Vertical size" slider.
+    fn apply_line_jump_factor_y(&mut self, factor: f64) {
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
+        let pre = self.ed.as_ref().and_then(|ed| {
+            ed.doc
+                .pages
+                .iter()
+                .find(|p| p.id == page_id)
+                .map(|p| dc::jumps::jump_radii_in(&ed.doc, p))
+        });
+        let mut cmds: Vec<Box<dyn dc_core::Command>> = vec![Box::new(SetCell::new(
+            Scope::PageSheet { page: page_id },
+            "LineJumpFactorY",
+            vsdx::Cell::value(format!("{factor:.6}")),
+        ))];
+        if let Some(pre) = pre {
+            cmds.push(Box::new(crate::cmd::ReconcileLineJumps::with_strip(
+                page_id, pre,
+            )));
+        }
+        self.apply(dc_core::Macro::new("set line jump factor", cmds));
         self.status = crate::i18n::strs().msg_line_jump_factor_set(factor);
     }
 
@@ -7525,69 +7581,202 @@ impl App {
                     if l_clicked {
                         apply = Some((geom.h_in.max(geom.w_in), geom.h_in.min(geom.w_in)));
                     }
-                    // Layout and Routing (#251): the line-jump display
-                    // switch and jump size — Visio's Page Setup group,
-                    // persisted on the PageSheet.
-                    ui.separator();
-                    ui.strong(crate::i18n::strs().msg_line_jumps());
-                    let mut show_toggle = self
-                        .ed
-                        .as_ref()
-                        .map(|ed| {
-                            ed.doc.pages[self.page_idx.min(ed.doc.pages.len() - 1)]
-                                .line_jumps_shown()
-                        })
-                        .unwrap_or(true);
-                    if ui
-                        .checkbox(&mut show_toggle, crate::i18n::strs().msg_show_line_jumps())
-                        .changed()
-                    {
-                        self.apply_line_jumps_shown(show_toggle);
-                    }
-                    let doc_factor = self
+                    // Layout and Routing (#251, grown by #324 phase 5
+                    // toward Visio's Page Setup ▸ Layout and Routing
+                    // tab): the Line jumps group — which lines jump,
+                    // the jump style, and the horizontal/vertical size
+                    // sliders — all persisted on the PageSheet through
+                    // one undo step each, with the stored-hop reconcile
+                    // riding the same macro (normalize-on-edit, #301).
+                    // The Routing group paints Visio's controls
+                    // DISABLED — routing proper is #225's deferred
+                    // bulk ("follow direction of paint, but disabled").
+                    let (doc_code, doc_style, doc_factor_x, doc_factor_y) = self
                         .ed
                         .as_ref()
                         .map(|ed| {
                             let page = &ed.doc.pages[self.page_idx.min(ed.doc.pages.len() - 1)];
-                            // #294: the RESOLVED factor — the page
-                            // usually carries no inline cell and rides
-                            // the style chain.
-                            ed.doc.page_line_jump_factor(page)
+                            // The RESOLVED cells — pages usually carry
+                            // no inline jump cells and ride the style
+                            // chain (#294).
+                            let code = ed
+                                .doc
+                                .resolve_page_layout_cell(page, "LineJumpCode")
+                                .and_then(|c| c.numeric())
+                                .map_or(1, |v| v.round() as i64);
+                            let style_code = match dc::jumps::page_jump_style(&ed.doc, page)
+                            {
+                                dc::jumps::JumpStyle::Arc => 1,
+                                dc::jumps::JumpStyle::Gap => 2,
+                                dc::jumps::JumpStyle::Square => 3,
+                                dc::jumps::JumpStyle::Sides(n) => n as i64 + 2,
+                            };
+                            (
+                                code,
+                                style_code,
+                                ed.doc.page_line_jump_factor(page),
+                                ed.doc.page_line_jump_factor_y(page),
+                            )
                         })
-                        .unwrap_or(2.0 / 3.0) as f32;
-                    let mut jump_factor = self.line_jump_draft.unwrap_or(doc_factor);
-                    // #257: mirrored emission under RTL (horizontal).
-                    let jump_label = crate::i18n::strs().msg_jump_size();
+                        .unwrap_or((1, 1, 2.0 / 3.0, 2.0 / 3.0));
+                    ui.separator();
+                    ui.strong(crate::i18n::strs().msg_line_jumps());
+                    let s = crate::i18n::strs();
+                    // "Add line jumps to:" — Visio's five-entry list
+                    // (the screenshots), LineJumpCode 0–4. An unwitnessed
+                    // code 5 (engine: the earlier line) shows its number.
+                    let code_key = match doc_code {
+                        0..=4 => doc_code.to_string(),
+                        other => other.to_string(),
+                    };
+                    let code_choices: [(&'static str, String); 5] = [
+                        ("0", s.msg_lj_code_none()),
+                        ("1", s.msg_lj_code_horizontal()),
+                        ("2", s.msg_lj_code_vertical()),
+                        ("3", s.msg_lj_code_last_routed()),
+                        ("4", s.msg_lj_code_last_displayed()),
+                    ];
+                    let code_label = s.msg_add_line_jumps_to();
                     ui.horizontal(|ui| {
-                        let mut factor_row = |ui: &mut egui::Ui| {
-                            let r = ui.add(
-                                egui::DragValue::new(&mut jump_factor)
+                        if !crate::i18n::rtl() {
+                            ui.label(&code_label);
+                        }
+                        if let Some(k) = Self::fmt_dropdown(
+                            ui,
+                            &code_key,
+                            &|k| k.to_string(),
+                            &code_choices,
+                        ) {
+                            if let Ok(code) = k.parse::<i64>() {
+                                self.apply_line_jump_code(code);
+                            }
+                        }
+                        if crate::i18n::rtl() {
+                            ui.label(&code_label);
+                        }
+                    });
+                    // "Line jump style:" — Arc/Gap/Square/2–7 Sides,
+                    // LineJumpStyle 1–9 (0 and 1 both draw Arc).
+                    let style_choices: [(&'static str, String); 9] = [
+                        ("1", s.msg_lj_style_arc()),
+                        ("2", s.msg_lj_style_gap()),
+                        ("3", s.msg_lj_style_square()),
+                        ("4", s.msg_lj_style_2_sides()),
+                        ("5", s.msg_lj_style_3_sides()),
+                        ("6", s.msg_lj_style_4_sides()),
+                        ("7", s.msg_lj_style_5_sides()),
+                        ("8", s.msg_lj_style_6_sides()),
+                        ("9", s.msg_lj_style_7_sides()),
+                    ];
+                    let style_label = s.msg_line_jump_style();
+                    ui.horizontal(|ui| {
+                        if !crate::i18n::rtl() {
+                            ui.label(&style_label);
+                        }
+                        if let Some(k) = Self::fmt_dropdown(
+                            ui,
+                            &doc_style.to_string(),
+                            &|k| k.to_string(),
+                            &style_choices,
+                        ) {
+                            if let Ok(code) = k.parse::<i64>() {
+                                let name = style_choices
+                                    .iter()
+                                    .find(|(kk, _)| *kk == k)
+                                    .map(|(_, d)| d.clone())
+                                    .unwrap_or_default();
+                                self.apply_line_jump_style(code, name);
+                            }
+                        }
+                        if crate::i18n::rtl() {
+                            ui.label(&style_label);
+                        }
+                    });
+                    // The horizontal/vertical size sliders — the
+                    // LineJumpFactorX/Y multipliers (the screenshots'
+                    // twin 0.6667 sliders).
+                    let mut jump_factor_x = self.line_jump_draft.unwrap_or(doc_factor_x as f32);
+                    let mut jump_factor_y =
+                        self.line_jump_draft_y.unwrap_or(doc_factor_y as f32);
+                    let x_label = s.msg_horizontal_size();
+                    let y_label = s.msg_vertical_size();
+                    // One row per factor (a local macro keeps the two
+                    // identical rows in step without fighting the
+                    // double-`self` borrow a shared closure would take).
+                    macro_rules! factor_row {
+                        ($ui:expr, $label:expr, $value:expr, $doc:expr, $draft:ident, $apply:ident) => {{
+                            $ui.label(&$label);
+                            let r = $ui.add(
+                                egui::DragValue::new(&mut $value)
                                     .range(0.5..=3.0)
                                     .speed(0.05)
                                     .suffix("×"),
                             );
-                            // Draft while dragging; commit ONCE at drag end
-                            // (or immediately for typed input) — the value
-                            // reloads from the document each frame, so the
-                            // draft is what carries the drag (#218 review).
+                            // Draft while dragging; commit ONCE at drag
+                            // end (or immediately for typed input) — the
+                            // value reloads from the document each
+                            // frame, so the draft carries the drag
+                            // (#218 review).
                             if r.dragged() {
-                                self.line_jump_draft = Some(jump_factor);
+                                self.$draft = Some($value);
                             }
                             if r.drag_stopped() || (r.changed() && !r.dragged()) {
-                                self.line_jump_draft = None;
-                                if (jump_factor - doc_factor).abs() > 1e-6 {
-                                    self.apply_line_jump_factor(jump_factor as f64);
+                                self.$draft = None;
+                                if ($value - $doc as f32).abs() > 1e-6 {
+                                    self.$apply($value as f64);
                                 }
                             }
-                        };
-                        if !crate::i18n::rtl() {
-                            ui.label(jump_label);
-                            factor_row(ui);
-                        } else {
-                            factor_row(ui);
-                            ui.label(jump_label);
-                        }
+                        }};
+                    }
+                    ui.vertical(|ui| {
+                        factor_row!(
+                            ui,
+                            x_label,
+                            jump_factor_x,
+                            doc_factor_x,
+                            line_jump_draft,
+                            apply_line_jump_factor
+                        );
+                        factor_row!(
+                            ui,
+                            y_label,
+                            jump_factor_y,
+                            doc_factor_y,
+                            line_jump_draft_y,
+                            apply_line_jump_factor_y
+                        );
                     });
+                    // The Routing group: Visio's five controls, present
+                    // but disabled (this issue's body — routing proper
+                    // is #225's deferred bulk).
+                    ui.separator();
+                    ui.strong(crate::i18n::strs().msg_routing_group());
+                    let disabled_note = crate::i18n::strs().msg_routing_deferred();
+                    for (label, value) in [
+                        (crate::i18n::strs().msg_routing_style(), crate::i18n::strs().msg_routing_right_angle()),
+                        (crate::i18n::strs().msg_routing_direction(), String::new()),
+                        (crate::i18n::strs().msg_routing_separate(), crate::i18n::strs().msg_routing_unrelated_lines()),
+                        (crate::i18n::strs().msg_routing_overlap(), crate::i18n::strs().msg_routing_using_style()),
+                        (crate::i18n::strs().msg_routing_appearance(), crate::i18n::strs().msg_routing_straight()),
+                    ] {
+                        ui.horizontal(|ui| {
+                            if !crate::i18n::rtl() {
+                                ui.label(&label);
+                            }
+                            ui.add_enabled(
+                                false,
+                                egui::Button::new(format!("{value}  ›")),
+                            )
+                            .on_disabled_hover_text(&disabled_note);
+                            if crate::i18n::rtl() {
+                                ui.label(&label);
+                            }
+                        });
+                    }
+                    ui.label(
+                        egui::RichText::new(crate::i18n::strs().msg_routing_deferred())
+                            .small(),
+                    );
                 };
                 if crate::i18n::rtl() {
                     ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
@@ -15912,6 +16101,100 @@ impl App {
             .cell("Value")
             .and_then(|c| c.v.clone())
     }
+    /// kittest: the current page's own PageSheet cell value (#324
+    /// phase 5 — the Layout and Routing dialog's writes).
+    #[doc(hidden)]
+    pub fn debug_page_sheet_cell_for_test(&self, cell: &str) -> Option<String> {
+        let ed = self.ed()?;
+        let page = ed
+            .doc
+            .pages
+            .get(self.page_idx.min(ed.doc.pages.len().saturating_sub(1)))?;
+        page.sheet()?.cell(cell).and_then(|c| c.v.clone())
+    }
+
+    /// kittest: a document with a crossing connector pair plus the
+    /// Page Setup dialog open (#324 phase 5 — the reconcile has a hop
+    /// to rewrite when the style changes; the witness-geometry band
+    /// like the cmd tests).
+    #[doc(hidden)]
+    pub fn debug_page_setup_with_crossing_for_test() -> App {
+        let mut ed = dc_core::Editor::new_blank();
+        let mut h5 = crate::connectors::connector_shape(5, (1.5, 5.0), (6.5, 5.0));
+        h5.sheet.set_cell("Height", vsdx::Cell::value("0.25"));
+        h5.sheet.set_cell("LocPinY", vsdx::Cell::value("0.125"));
+        {
+            use vsdx::model::Row;
+            let xy = |x: f64, y: f64| {
+                vec![
+                    ("X".to_string(), vsdx::Cell::value(format!("{x}"))),
+                    ("Y".to_string(), vsdx::Cell::value(format!("{y}"))),
+                ]
+            };
+            // REPLACE connector_shape's own geometry rows (the
+            // set_geo_rows pattern) — appending a second section
+            // would leave the shape with two and the reconcile's
+            // one-section eligibility guard skips it.
+            for child in h5.sheet.children.iter_mut() {
+                if let vsdx::model::SheetChild::Section(sec) = child {
+                    if sec.name == "Geometry" {
+                        sec.rows = vec![
+                            Row {
+                                t: Some("MoveTo".into()),
+                                ix: 1,
+                                cells: xy(0.0, 0.125),
+                                ..Default::default()
+                            },
+                            Row {
+                                t: Some("LineTo".into()),
+                                ix: 2,
+                                cells: xy(5.0, 0.125),
+                                ..Default::default()
+                            },
+                        ];
+                    }
+                }
+            }
+        }
+        let v6 = crate::connectors::connector_shape(6, (4.0, 2.0), (4.0, 8.0));
+        ed.doc.pages[0].shapes.push(h5);
+        ed.doc.pages[0].shapes.push(v6);
+        let mut app = App::with_blank();
+        app.ed = Some(ed);
+        app.pagesetup_open = true;
+        app.page_idx = 0;
+        app
+    }
+
+    /// kittest: shape geometry row types on the current page (#324
+    /// phase 5 — the stored-hop row forms after a reconcile).
+    #[doc(hidden)]
+    pub fn debug_geometry_row_types_for_test(&self, shape_id: i64) -> Vec<String> {
+        let Some(ed) = self.ed() else {
+            return Vec::new();
+        };
+        let Some(page) = ed
+            .doc
+            .pages
+            .get(self.page_idx.min(ed.doc.pages.len().saturating_sub(1)))
+        else {
+            return Vec::new();
+        };
+        let Some(sh) = vsdx::model::find_shape_by_id(&page.shapes, shape_id) else {
+            return Vec::new();
+        };
+        sh.sheet
+            .sections_named("Geometry")
+            .first()
+            .map(|sec| {
+                sec.rows
+                    .iter()
+                    .map(|r| r.t.clone().unwrap_or_default())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// kittest: a shape's effective cell value (#31).
     #[doc(hidden)]
     pub fn debug_cell_for_test(&self, shape_id: i64, cell: &str) -> Option<String> {
@@ -18718,6 +19001,7 @@ mod tests {
         // A page that shows no jumps (radius 0) paints none.
         assert!(app.jump_fx((0.0, 0.0), &[]).is_empty());
     }
+
 
     #[test]
     fn dialog_pending_keeps_polling() {

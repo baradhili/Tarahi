@@ -114,6 +114,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "add-line-jumps-to",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "add-name-prop-row-test",
         attribute: None,
         vars: &["name"],
@@ -2109,6 +2116,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "horizontal-size",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "insert-a-text-field",
         attribute: None,
         vars: &[],
@@ -2117,6 +2131,195 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "insert-field",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "line-jump-style",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "line-jump-style-set",
+        attribute: None,
+        vars: &["style"],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "lj-code-horizontal",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "lj-code-last-displayed",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "lj-code-last-routed",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "lj-code-none",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "lj-code-vertical",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "lj-style-2-sides",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "lj-style-3-sides",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "lj-style-4-sides",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "lj-style-5-sides",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "lj-style-6-sides",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "lj-style-7-sides",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "lj-style-arc",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "lj-style-gap",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "lj-style-square",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "routing-appearance",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "routing-deferred",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "routing-direction",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "routing-group",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "routing-overlap",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "routing-right-angle",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "routing-separate",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "routing-straight",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "routing-style",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "routing-unrelated-lines",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "routing-using-style",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -2936,13 +3139,6 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "italic-planned",
-        attribute: None,
-        vars: &[],
-        bool_vars: &[],
-        elements: &[],
-    },
-    MessageContract {
-        message: "jump-size",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -5378,13 +5574,6 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "show-line-jumps",
-        attribute: None,
-        vars: &[],
-        bool_vars: &[],
-        elements: &[],
-    },
-    MessageContract {
         message: "show-markup",
         attribute: None,
         vars: &[],
@@ -6575,6 +6764,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "vertical-size",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "view",
         attribute: None,
         vars: &[],
@@ -6869,13 +7065,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..48358,
-            Self::En => 48358..95056,
-            Self::Es => 95056..146456,
-            Self::Fa => 146456..207722,
-            Self::Ja => 207722..259444,
-            Self::Ko => 259444..307104,
-            Self::ZhHans => 307104..348847,
+            Self::De => 0..49361,
+            Self::En => 49361..97032,
+            Self::Es => 97032..149484,
+            Self::Fa => 149484..211925,
+            Self::Ja => 211925..264723,
+            Self::Ko => 264723..313388,
+            Self::ZhHans => 313388..356053,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -7002,10 +7198,12 @@ impl L10nLanguage {
     pub fn msg_add_ins(&self) -> String {
         self.0.msg("add-ins", None).unwrap()
     }
-    /// $name (String) - argument
-    pub fn msg_add_name_prop_row_test<F0: AsRef<str>>(&self, name: F0) -> String {
+    pub fn msg_add_line_jumps_to(&self) -> String {
+        self.0.msg("add-line-jumps-to", None).unwrap()
+    }
+    pub fn msg_add_name_prop_row_test<'a, F0: Into<FluentValue<'a>>>(&self, name: F0) -> String {
         let mut _args = FluentArgs::new();
-        _args.set("name", name.as_ref());
+        _args.set("name", name);
         self.0.msg("add-name-prop-row-test", Some(_args)).unwrap()
     }
     pub fn msg_add_to_new_container(&self) -> String {
@@ -8070,11 +8268,98 @@ impl L10nLanguage {
     pub fn msg_field_width(&self) -> String {
         self.0.msg("field-width", None).unwrap()
     }
+    pub fn msg_horizontal_size(&self) -> String {
+        self.0.msg("horizontal-size", None).unwrap()
+    }
     pub fn msg_insert_a_text_field(&self) -> String {
         self.0.msg("insert-a-text-field", None).unwrap()
     }
     pub fn msg_insert_field(&self) -> String {
         self.0.msg("insert-field", None).unwrap()
+    }
+    pub fn msg_line_jump_style(&self) -> String {
+        self.0.msg("line-jump-style", None).unwrap()
+    }
+    /// $style (String) - the chosen jump style's display name
+    pub fn msg_line_jump_style_set<F0: AsRef<str>>(&self, style: F0) -> String {
+        let mut _args = FluentArgs::new();
+        _args.set("style", style.as_ref());
+        self.0.msg("line-jump-style-set", Some(_args)).unwrap()
+    }
+    pub fn msg_lj_code_horizontal(&self) -> String {
+        self.0.msg("lj-code-horizontal", None).unwrap()
+    }
+    pub fn msg_lj_code_last_displayed(&self) -> String {
+        self.0.msg("lj-code-last-displayed", None).unwrap()
+    }
+    pub fn msg_lj_code_last_routed(&self) -> String {
+        self.0.msg("lj-code-last-routed", None).unwrap()
+    }
+    pub fn msg_lj_code_none(&self) -> String {
+        self.0.msg("lj-code-none", None).unwrap()
+    }
+    pub fn msg_lj_code_vertical(&self) -> String {
+        self.0.msg("lj-code-vertical", None).unwrap()
+    }
+    pub fn msg_lj_style_2_sides(&self) -> String {
+        self.0.msg("lj-style-2-sides", None).unwrap()
+    }
+    pub fn msg_lj_style_3_sides(&self) -> String {
+        self.0.msg("lj-style-3-sides", None).unwrap()
+    }
+    pub fn msg_lj_style_4_sides(&self) -> String {
+        self.0.msg("lj-style-4-sides", None).unwrap()
+    }
+    pub fn msg_lj_style_5_sides(&self) -> String {
+        self.0.msg("lj-style-5-sides", None).unwrap()
+    }
+    pub fn msg_lj_style_6_sides(&self) -> String {
+        self.0.msg("lj-style-6-sides", None).unwrap()
+    }
+    pub fn msg_lj_style_7_sides(&self) -> String {
+        self.0.msg("lj-style-7-sides", None).unwrap()
+    }
+    pub fn msg_lj_style_arc(&self) -> String {
+        self.0.msg("lj-style-arc", None).unwrap()
+    }
+    pub fn msg_lj_style_gap(&self) -> String {
+        self.0.msg("lj-style-gap", None).unwrap()
+    }
+    pub fn msg_lj_style_square(&self) -> String {
+        self.0.msg("lj-style-square", None).unwrap()
+    }
+    pub fn msg_routing_appearance(&self) -> String {
+        self.0.msg("routing-appearance", None).unwrap()
+    }
+    pub fn msg_routing_deferred(&self) -> String {
+        self.0.msg("routing-deferred", None).unwrap()
+    }
+    pub fn msg_routing_direction(&self) -> String {
+        self.0.msg("routing-direction", None).unwrap()
+    }
+    pub fn msg_routing_group(&self) -> String {
+        self.0.msg("routing-group", None).unwrap()
+    }
+    pub fn msg_routing_overlap(&self) -> String {
+        self.0.msg("routing-overlap", None).unwrap()
+    }
+    pub fn msg_routing_right_angle(&self) -> String {
+        self.0.msg("routing-right-angle", None).unwrap()
+    }
+    pub fn msg_routing_separate(&self) -> String {
+        self.0.msg("routing-separate", None).unwrap()
+    }
+    pub fn msg_routing_straight(&self) -> String {
+        self.0.msg("routing-straight", None).unwrap()
+    }
+    pub fn msg_routing_style(&self) -> String {
+        self.0.msg("routing-style", None).unwrap()
+    }
+    pub fn msg_routing_unrelated_lines(&self) -> String {
+        self.0.msg("routing-unrelated-lines", None).unwrap()
+    }
+    pub fn msg_routing_using_style(&self) -> String {
+        self.0.msg("routing-using-style", None).unwrap()
     }
     pub fn msg_select_a_shape_to_insert_a_field(&self) -> String {
         self.0
@@ -8507,9 +8792,6 @@ impl L10nLanguage {
     }
     pub fn msg_italic_planned(&self) -> String {
         self.0.msg("italic-planned", None).unwrap()
-    }
-    pub fn msg_jump_size(&self) -> String {
-        self.0.msg("jump-size", None).unwrap()
     }
     pub fn msg_justify(&self) -> String {
         self.0.msg("justify", None).unwrap()
@@ -9884,9 +10166,6 @@ impl L10nLanguage {
             .msg("show-hide-data-graphics-on-the-p", None)
             .unwrap()
     }
-    pub fn msg_show_line_jumps(&self) -> String {
-        self.0.msg("show-line-jumps", None).unwrap()
-    }
     pub fn msg_show_markup(&self) -> String {
         self.0.msg("show-markup", None).unwrap()
     }
@@ -10572,6 +10851,9 @@ impl L10nLanguage {
         let mut _args = FluentArgs::new();
         _args.set("cell", cell.as_ref());
         self.0.msg("vertex-drag-refused", Some(_args)).unwrap()
+    }
+    pub fn msg_vertical_size(&self) -> String {
+        self.0.msg("vertical-size", None).unwrap()
     }
     pub fn msg_view(&self) -> String {
         self.0.msg("view", None).unwrap()

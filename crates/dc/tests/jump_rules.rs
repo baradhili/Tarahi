@@ -164,12 +164,12 @@ fn d04_diagonal_stored_hop_strips_and_the_backdrop_is_the_panel() {
     // white.
     let j3 = js.iter().find(|j| j.jumper == 3).unwrap();
     assert_eq!(
-        dc::svg::backdrop_color_at(&doc, page, j3.at, 3),
+        dc::svg::backdrop_color_at(&doc, page, j3.at, 3, &[]),
         (0xbf, 0xbf, 0xbf),
         "the gap over the gray panel paints the panel's fill"
     );
     assert_eq!(
-        dc::svg::backdrop_color_at(&doc, page, (7.8, 4.6), 8),
+        dc::svg::backdrop_color_at(&doc, page, (7.8, 4.6), 8, &[]),
         (0xff, 0xff, 0xff),
         "off the panel the backdrop is the page's white"
     );
