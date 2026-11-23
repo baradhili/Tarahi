@@ -4728,18 +4728,16 @@ fn render_geometry(
         // path; NoFill sections opt out here, NoLine changes nothing
         // for the fill, and the implicit close SVG already applies to
         // open subpaths leaves the stroke open per section.
-        // 1-D shapes fill closed sections only (see `one_d` above).
-        let closed = || {
-            let first = evald.iter().find(|r| r.1 == "MoveTo" || r.1 == "RelMoveTo");
-            match (first, evald.last()) {
-                (Some(a), Some(b)) => {
-                    evald.len() > 2 && (a.2 .0 - b.2 .0).hypot(a.2 .1 - b.2 .1) < 1e-6
-                }
-                _ => false,
-            }
+        // 1-D shapes fill their closed subpaths only (see `one_d`
+        // above); closure is judged per subpath, not per section
+        // (Greptile on PR #328).
+        let fill_part = if one_d {
+            closed_subpaths(&d)
+        } else {
+            d.clone()
         };
-        if !no_fill && fill != "none" && (!one_d || closed()) {
-            paint.fill_d.push_str(&d);
+        if !no_fill && fill != "none" && !fill_part.trim().is_empty() {
+            paint.fill_d.push_str(&fill_part);
             paint.fill_d.push(' ');
             paint.fill = fill.clone();
         }
@@ -5786,6 +5784,47 @@ fn stroke_attr(no_line: bool, line_color: &str, line_weight: f64, dash: Option<&
             line_weight
         )
     }
+}
+
+/// The closed subpaths of a path in the renderer's own format
+/// (space-separated tokens, each subpath opened by `M`): a subpath is
+/// closed when it ends in `Z` or its last point returns to its `M`
+/// point. Any command closes, so a single curve that returns to its
+/// start counts. Open subpaths are dropped.
+fn closed_subpaths(d: &str) -> String {
+    let mut out = String::new();
+    let mut flush = |sub: &[&str]| {
+        if sub.len() < 4 {
+            return; // `M x y` alone draws nothing
+        }
+        let num = |t: &str| t.parse::<f64>().ok();
+        let closed = sub.last() == Some(&"Z")
+            || match (
+                num(sub[1]),
+                num(sub[2]),
+                num(sub[sub.len() - 2]),
+                num(sub[sub.len() - 1]),
+            ) {
+                (Some(x0), Some(y0), Some(x1), Some(y1)) => {
+                    (x0 - x1).abs() < 1e-4 && (y0 - y1).abs() < 1e-4
+                }
+                _ => false,
+            };
+        if closed {
+            out.push_str(&sub.join(" "));
+            out.push(' ');
+        }
+    };
+    let toks: Vec<&str> = d.split_whitespace().collect();
+    let mut start = 0;
+    for (i, t) in toks.iter().enumerate() {
+        if *t == "M" && i > start {
+            flush(&toks[start..i]);
+            start = i;
+        }
+    }
+    flush(&toks[start..]);
+    out
 }
 
 fn style_attr(
@@ -9529,6 +9568,24 @@ mod tests {
         };
         assert!(render(true).contains(r##"fill="#ed7d31""##));
         assert!(!render(false).contains("#ed7d31"));
+    }
+
+    /// Closure is per subpath (Greptile on PR #328): two closed
+    /// outlines with different starts both fill, an open subpath next
+    /// to a closed one stays out of the fill, and a closed curve made
+    /// of a single row fills too.
+    #[test]
+    fn closed_subpaths_are_judged_one_by_one() {
+        let two = "M 0 0 L 1 0 L 1 1 L 0 0 M 5 5 L 6 5 L 6 6 L 5 5 ";
+        assert_eq!(closed_subpaths(two).split_whitespace().count(), 24);
+        let mixed = "M 0 0 L 1 0 L 1 1 M 5 5 L 6 5 L 6 6 L 5 5 ";
+        let f = closed_subpaths(mixed);
+        assert!(f.starts_with("M 5 5") && !f.contains("M 0 0"), "{f}");
+        let curve = "M 0 0 C 1 0 0 1 0 0 ";
+        assert_eq!(closed_subpaths(curve).trim(), curve.trim());
+        assert_eq!(closed_subpaths("M 0 0 L 1 1 Z").trim(), "M 0 0 L 1 1 Z");
+        assert!(closed_subpaths("M 0 0 L 1 0").is_empty());
+        assert!(closed_subpaths("M 0 0").is_empty());
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
