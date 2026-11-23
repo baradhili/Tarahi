@@ -2996,6 +2996,22 @@ fn emit_text(
         return;
     };
     let tb = resolve_text_block(doc, s, chain, width, height);
+    // Character runs (`<cp IX='n'/>` markers → Character rows) and the
+    // layout text: U+2028 is a line break, a tab advances like four
+    // spaces (Visio 2021 witness c03 — tab stops are not modeled).
+    // Blocks without differing runs keep their exact former output.
+    let runs = if substituted.is_none() {
+        text_runs(doc, s, chain, &tb)
+    } else {
+        None
+    };
+    let layout_text: String;
+    let text = if text.contains(['\u{2028}', '\t']) {
+        layout_text = text.replace('\u{2028}', "\n").replace('\t', "    ");
+        layout_text.as_str()
+    } else {
+        text
+    };
     let (tx, ty) = tb.pin;
     let (tw, th) = tb.size;
     let angle = tb.angle;
@@ -3260,7 +3276,28 @@ fn emit_text(
     // (above shape geometry, below text).
     let mut bkgnd_span: Option<(f64, f64)> = None;
     let mut any_rtl = false;
-    for (line, slot) in lines.iter().zip(&slots) {
+    // Each wrapped line's character range in the layout text (lines are
+    // exact substrings, in order; the separators a break consumed are
+    // skipped) — only needed when the block carries runs.
+    let line_ranges: Vec<Option<(usize, usize)>> = if runs.is_some() {
+        let chars: Vec<char> = text.chars().collect();
+        let mut cursor = 0usize;
+        lines
+            .iter()
+            .map(|l| {
+                let lc: Vec<char> = l.text.chars().collect();
+                let found = (cursor..=chars.len().saturating_sub(lc.len()))
+                    .find(|&k| chars[k..k + lc.len()] == lc[..])?;
+                cursor = found + lc.len();
+                Some((found, found + lc.len()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut deco = String::new();
+    for (line_no, (line, slot)) in lines.iter().zip(&slots).enumerate() {
+        let range = line_ranges.get(line_no).copied().flatten();
         let (content, line_x, line_attrs, pre, y) = if line.rtl {
             any_rtl = true;
             // The RTL line paints with the complex-script pair; its
@@ -3461,12 +3498,69 @@ fn emit_text(
             (line.text.clone(), lx, attrs, pre, y)
         };
         let _ = write!(body, "{pre}");
-        let _ = write!(
-            body,
-            r#"<tspan x="{line_x:.4}" y="{y:.4}"{}>{}</tspan>"#,
-            line_attrs,
-            escape_text(&content)
-        );
+        let run_line = match (&runs, range) {
+            (Some(r), Some(rg)) if line_attrs.is_empty() && !line.rtl && content == line.text => {
+                Some((r, rg))
+            }
+            _ => None,
+        };
+        if let Some((r, (lo, _))) = run_line {
+            // One positioned chunk per run (its own fill/weight even in
+            // the PDF export, which paints a chunk in one style);
+            // underline/strike-through as real lines after the text.
+            let line_w = face.width_in_runs(&fb_chain, &content, paint_size);
+            let mut x = match anchor {
+                "start" => line_x,
+                "end" => line_x - line_w,
+                _ => line_x - line_w / 2.0,
+            };
+            let chars: Vec<char> = content.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                let st = r.style_at(lo + i);
+                let mut j = i + 1;
+                while j < chars.len() && r.style_at(lo + j) == st {
+                    j += 1;
+                }
+                let seg: String = chars[i..j].iter().collect();
+                let rs = &r.styles[st];
+                let fs = rs.size.map_or(paint_size, |z| z * reduce);
+                let seg_face = crate::textmetrics::resolve(
+                    tb.font.as_deref(),
+                    rs.bold.unwrap_or(tb.bold),
+                    rs.italic.unwrap_or(tb.italic),
+                );
+                let seg_w = seg_face.width_in_runs(&fb_chain, &seg, fs);
+                let _ = write!(
+                    body,
+                    r#"<tspan x="{x:.4}" y="{y:.4}" text-anchor="start"{}>{}</tspan>"#,
+                    rs.attrs(),
+                    escape_text(&seg)
+                );
+                let ink = rs.color.as_deref().unwrap_or(&color);
+                for (on, dy) in [(rs.underline, 0.11), (rs.strike, -0.27)] {
+                    if on && !seg.trim().is_empty() {
+                        let _ = write!(
+                            deco,
+                            r#"<line x1="{x:.4}" y1="{yy:.4}" x2="{x2:.4}" y2="{yy:.4}" stroke="{c}" stroke-width="{w:.4}"/>"#,
+                            yy = y + dy * fs,
+                            x2 = x + seg_w,
+                            c = escape_attr(ink),
+                            w = fs * 0.06,
+                        );
+                    }
+                }
+                x += seg_w;
+                i = j;
+            }
+        } else {
+            let _ = write!(
+                body,
+                r#"<tspan x="{line_x:.4}" y="{y:.4}"{}>{}</tspan>"#,
+                line_attrs,
+                escape_text(&content)
+            );
+        }
         top += slot;
     }
     // Flip-aware block rotation (issue #19): the counter-scale keeps the
@@ -3546,6 +3640,7 @@ fn emit_text(
             f = font_attrs,
             b = body
         );
+        let _ = write!(out, "{deco}");
         let _ = writeln!(out, "</g>");
     } else {
         let _ = write!(out, "{bkgnd_rect}");
@@ -3558,7 +3653,169 @@ fn emit_text(
             f = font_attrs,
             b = body
         );
+        let _ = write!(out, "{deco}");
     }
+}
+
+/// One Character row's look where it differs from the block (its
+/// first row): `None` = as the block.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct RunStyle {
+    color: Option<String>,
+    bold: Option<bool>,
+    italic: Option<bool>,
+    size: Option<f64>,
+    underline: bool,
+    strike: bool,
+}
+
+impl RunStyle {
+    fn attrs(&self) -> String {
+        let mut a = String::new();
+        if let Some(c) = &self.color {
+            let _ = write!(a, r#" fill="{}""#, escape_attr(c));
+        }
+        if let Some(b) = self.bold {
+            a.push_str(if b {
+                r#" font-weight="bold""#
+            } else {
+                r#" font-weight="normal""#
+            });
+        }
+        if let Some(i) = self.italic {
+            a.push_str(if i {
+                r#" font-style="italic""#
+            } else {
+                r#" font-style="normal""#
+            });
+        }
+        if let Some(z) = self.size {
+            let _ = write!(a, r#" font-size="{z:.4}""#);
+        }
+        a
+    }
+}
+
+/// A block's character runs: the style index of every layout-text
+/// character (tabs count four, like the layout) and the styles.
+struct TextRuns {
+    per_char: Vec<usize>,
+    styles: Vec<RunStyle>,
+}
+
+impl TextRuns {
+    fn style_at(&self, i: usize) -> usize {
+        self.per_char.get(i).copied().unwrap_or(0)
+    }
+}
+
+/// Parse the raw text's `<cp IX='n'/>` markers into per-character
+/// Character-row indices and resolve each row against the block's
+/// first-row look (Visio 2021 witness c03: strike-through, red bold
+/// and underlined runs authored through the Characters object).
+/// `None` when no run differs (the block renders as before), when the
+/// raw text does not reproduce the plain text, or it carries fields.
+fn text_runs(doc: &Document, s: &Shape, chain: &[&Shape], tb: &TextBlock) -> Option<TextRuns> {
+    let raw = s.sheet.text_raw.as_deref()?;
+    if !raw.contains("<cp") || raw.contains("<fld") {
+        return None;
+    }
+    let mut plain = String::new();
+    let mut idx: Vec<usize> = Vec::new();
+    let mut cur = 0usize;
+    let mut rest = raw;
+    while let Some(c) = rest.chars().next() {
+        if c == '<' {
+            let end = rest.find('>')?;
+            let tag = &rest[..=end];
+            if tag.starts_with("<cp") {
+                let ix = tag
+                    .split("IX=")
+                    .nth(1)
+                    .and_then(|v| v.trim_start_matches(['\'', '"']).split(['\'', '"']).next())
+                    .and_then(|v| v.parse::<usize>().ok())?;
+                cur = ix;
+            }
+            rest = &rest[end + 1..];
+            continue;
+        }
+        let (ch, len) = if c == '&' {
+            let end = rest.find(';')?;
+            let ent = &rest[1..end];
+            let ch = match ent {
+                "amp" => '&',
+                "lt" => '<',
+                "gt" => '>',
+                "quot" => '"',
+                "apos" => '\'',
+                e if e.starts_with("#x") => char::from_u32(u32::from_str_radix(&e[2..], 16).ok()?)?,
+                e if e.starts_with('#') => char::from_u32(e[1..].parse().ok()?)?,
+                _ => return None,
+            };
+            (ch, end + 1)
+        } else {
+            (c, c.len_utf8())
+        };
+        plain.push(ch);
+        // A tab lays out as four spaces.
+        let n = if ch == '\t' { 4 } else { 1 };
+        idx.extend(std::iter::repeat_n(cur, n));
+        rest = &rest[len..];
+    }
+    let expected = s.sheet.text.as_deref().unwrap_or("");
+    if plain.replace("\r\n", "\n") != expected.replace("\r\n", "\n") {
+        return None;
+    }
+    let max_ix = idx.iter().copied().max()?;
+    let row_cell = |ix: usize, name: &str| -> Option<Cell> {
+        let find = |sh: &Sheet| {
+            sh.sections_named("Character")
+                .into_iter()
+                .next()
+                .and_then(|sec| sec.rows.iter().find(|r| r.ix == ix as i64))
+                .and_then(|r| r.cell(name))
+                .filter(|c| !c.is_inherited() && !c.is_themed())
+                .cloned()
+        };
+        find(&s.sheet).or_else(|| doc.instance_source(s, chain).and_then(|m| find(&m.sheet)))
+    };
+    let styles: Vec<RunStyle> = (0..=max_ix)
+        .map(|ix| {
+            let color = row_cell(ix, "Color")
+                .map(|c| color_value(doc, c.v.as_deref().unwrap_or(""), c.f.as_deref()))
+                .filter(|c| !c.eq_ignore_ascii_case(&tb.color));
+            let bits = row_cell(ix, "Style")
+                .and_then(|c| c.numeric())
+                .map(|v| v as u32);
+            let bold = bits.map(|b| b & 1 != 0).filter(|b| *b != tb.bold);
+            let italic = bits.map(|b| b & 2 != 0).filter(|i| *i != tb.italic);
+            let underline = bits.is_some_and(|b| b & 4 != 0);
+            let strike = row_cell(ix, "Strikethru")
+                .and_then(|c| c.numeric())
+                .is_some_and(|v| v != 0.0)
+                || row_cell(ix, "DoubleStrikethrough")
+                    .and_then(|c| c.numeric())
+                    .is_some_and(|v| v != 0.0);
+            let size = row_cell(ix, "Size")
+                .and_then(|c| c.numeric())
+                .filter(|z| (z - tb.font_size).abs() > 1e-6);
+            RunStyle {
+                color,
+                bold,
+                italic,
+                size,
+                underline,
+                strike,
+            }
+        })
+        .collect();
+    if styles.iter().all(|st| *st == RunStyle::default()) {
+        return None;
+    }
+    Some(TextRuns {
+        per_char: idx,
+        styles,
+    })
 }
 
 /// `#rrggbb` (or `#rgb`) → (r, g, b) bytes; black on anything else —
@@ -10824,6 +11081,48 @@ mod tests {
         );
         let stroke = render(&[("LineGradientEnabled", "1")], true);
         assert!(stroke.contains(r#"stroke="url(#dc-grad"#), "{stroke}");
+    }
+
+    /// Character runs (Visio 2021 witness c03): `<cp IX='n'/>` markers
+    /// pick Character rows; a struck run gets a line through it, a red
+    /// bold run its own positioned chunk, an underlined run a line under
+    /// it. A block whose rows match the first row renders unchanged.
+    #[test]
+    fn character_runs_style_their_chunks() {
+        let mut s = rect_shape(1, (2.0, 2.0));
+        s.sheet.set_cell("Width", Cell::value("3"));
+        s.sheet.text = Some("normal struck red".into());
+        s.sheet.text_raw =
+            Some("<cp IX='0'/>normal <cp IX='1'/>struck<cp IX='0'/> <cp IX='2'/>red".into());
+        let mut sec = Section {
+            name: "Character".into(),
+            ..Section::default()
+        };
+        let row = |ix: i64, cells: &[(&str, &str)]| Row {
+            ix,
+            cells: cells
+                .iter()
+                .map(|(n, v)| (n.to_string(), Cell::value(*v)))
+                .collect(),
+            ..Row::default()
+        };
+        sec.rows.push(row(0, &[]));
+        sec.rows.push(row(1, &[("Strikethru", "1")]));
+        sec.rows
+            .push(row(2, &[("Color", "#ff0000"), ("Style", "1")]));
+        s.sheet.children.push(SheetChild::Section(sec));
+        let (doc, page) = page_fixture(vec![s]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(
+            svg.contains(r##"fill="#ff0000" font-weight="bold">red</tspan>"##),
+            "{svg}"
+        );
+        assert!(svg.contains(">struck</tspan>"), "{svg}");
+        assert_eq!(
+            svg.matches("<line ").count(),
+            1,
+            "one strike-through line: {svg}"
+        );
     }
 
     /// An Ellipse row joins the shape's even-odd fill (Visio 2021
