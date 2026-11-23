@@ -6202,15 +6202,45 @@ fn gradient_stops(doc: &Document, s: &Shape, chain: &[&Shape], prefix: &str) -> 
     let src = doc
         .instance_source(s, chain)
         .and_then(|m| first(&m.sheet, &name));
-    let style_id = if prefix == "Line" {
-        s.line_style
-    } else {
-        s.fill_style
+    // The style chain (the shape's — or its master's — Fill/LineStyle,
+    // then each style's parent attribute): the first style whose stop
+    // rows carry real values. The Theme style's `V='Themed'` rows are
+    // no values without an evaluated theme.
+    let parent_attr = format!("{prefix}Style");
+    let mut style = None;
+    let mut id = doc.shape_style_for(s, chain, &format!("{prefix}Gradient"));
+    for _ in 0..8 {
+        let Some(st) = doc.stylesheet(id) else { break };
+        if let Some(sec) = first(&st.sheet, &name) {
+            let real = sec.rows.iter().any(|r| {
+                r.cell("GradientStopColor")
+                    .is_some_and(|c| !c.is_themed() && !c.is_inherited())
+            });
+            if real {
+                style = Some(sec);
+                break;
+            }
+        }
+        match st
+            .attrs
+            .iter()
+            .find(|(n, _)| *n == parent_attr)
+            .and_then(|(_, v)| v.parse::<i64>().ok())
+        {
+            Some(next) if next != id => id = next,
+            _ => break,
+        }
+    }
+    let usable = |sec: &&vsdx::Section| {
+        sec.rows
+            .iter()
+            .any(|r| r.cell("GradientStopColor").is_some_and(|c| !c.is_themed()))
     };
-    let style = style_id
-        .and_then(|id| doc.stylesheet(id))
-        .and_then(|st| first(&st.sheet, &name));
-    let Some(sec) = first(&s.sheet, &name).or(src).or(style) else {
+    let Some(sec) = first(&s.sheet, &name)
+        .filter(usable)
+        .or(src.filter(usable))
+        .or(style)
+    else {
         return Vec::new();
     };
     let mut stops: Vec<Stop> = sec
