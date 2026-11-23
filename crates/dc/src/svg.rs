@@ -2096,7 +2096,7 @@ pub struct TextBlock {
     /// `None` = not bulleted.
     pub bullet: Option<BulletSpec>,
     /// #229 text background: the resolved fill color and its alpha
-    /// (0–255, from TextBkgndTrans's percent transparency). `None`
+    /// (0–255, from TextBkgndTrans's fractional transparency). `None`
     /// paints nothing — TextBkgnd 0/255, or 100 % transparency.
     pub text_bkgnd: Option<(String, u8)>,
 }
@@ -2500,8 +2500,10 @@ pub(crate) fn resolve_text_block(
     // entries 0–23; larger values index the document palette through
     // the +1 encoding; non-numeric values go through the shared color
     // mapping (theme formulas fall to the cached V, the usual
-    // convention). TextBkgndTrans is transparency in percent — 50 %
-    // renders as 128/255 alpha (measured, #229).
+    // convention). TextBkgndTrans is a fraction like every *Trans
+    // cell: the file stores 50 % as V='0.5' (Visio 2021 witness:
+    // 0 / 0.5 / 0.8 paint opaque / half / mostly see-through), which
+    // renders as 128/255 alpha.
     let text_bkgnd = doc.resolve_cell(s, chain, "TextBkgnd").and_then(|c| {
         let v = c.v.as_deref().unwrap_or("");
         let color = match v.trim().parse::<f64>() {
@@ -2518,7 +2520,7 @@ pub(crate) fn resolve_text_block(
             .resolve_cell(s, chain, "TextBkgndTrans")
             .and_then(|c| c.numeric())
             .unwrap_or(0.0);
-        let alpha = ((100.0 - trans).clamp(0.0, 100.0) * 255.0 / 100.0).round() as i64;
+        let alpha = ((1.0 - trans).clamp(0.0, 1.0) * 255.0).round() as i64;
         if alpha <= 0 {
             None
         } else {
@@ -10733,7 +10735,7 @@ mod tests {
     /// #229: TextBkgnd paints ONE rectangle spanning the laid-out
     /// lines — above geometry, below text — through the +1 palette
     /// encoding (1–24 → palette 0–23), the 0/255 no-paint rule, the
-    /// percent transparency, and the corpus's theme-default formula
+    /// fractional transparency (V=0.5 = 50 %), and the corpus's theme-default formula
     /// (falls to its cached V like every THEMEVAL we don't model).
     #[test]
     fn text_bkgnd_paints_the_laid_out_extent() {
@@ -10767,7 +10769,7 @@ mod tests {
             "TextBkgnd 5 is palette entry 4"
         );
         // 50 % transparency renders as 128/255 ≈ 0.502 alpha.
-        let half = emit_bkgnd("1", Some("50"));
+        let half = emit_bkgnd("1", Some("0.5"));
         assert!(
             half.contains(r#"fill-opacity="0.502""#),
             "50 % trans → 128/255 alpha: {half}"
