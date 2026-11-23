@@ -1077,14 +1077,18 @@ pub fn page_jumps_stripping(
         // EVERY Geometry section carries `NoShow = 1` paints no
         // stroke, so nothing hops over it and it hops over nothing
         // (whole-shape gate — a connector with any visible section
-        // stays; CodeRabbit round on #324 phase 4).
-        let geos = s.sheet.sections_named("Geometry");
+        // stays; CodeRabbit round on #324 phase 4). The flag reads
+        // the RENDERER's way — formula first, cached V as fallback —
+        // so a formula that now evaluates to 0 with a stale NoShow=1
+        // cache keeps its visible crossings (PR #339 round 4); the
+        // sections come from the EFFECTIVE sheet (master-inherited
+        // NoShow included).
+        let eff = doc.effective_sheet(s, &chain);
+        let geos = eff.sections_named("Geometry");
         if !geos.is_empty()
-            && geos.iter().all(|g| {
-                g.cell("NoShow")
-                    .and_then(|c| c.numeric())
-                    .is_some_and(|v| v != 0.0)
-            })
+            && geos
+                .iter()
+                .all(|g| crate::svg::geometry_flag_on(doc, s, &chain, g, "NoShow"))
         {
             continue;
         }
@@ -1096,6 +1100,14 @@ pub fn page_jumps_stripping(
         // evidence is THIS page's resolved radius (the same value the
         // hop draws with) — or the caller's override, the #301
         // pre-edit radius when a jump-size edit just landed.
+        // The gap/polyline writers choose their evidence radius from
+        // the ROW-LOCAL direction, but the marked walk's segments are
+        // PAGE-space — a rotated connector with unequal X/Y sizes
+        // would write at one radius and re-classify against the other
+        // (its saved gap then read as an ordinary stroke break and the
+        // crossing vanished). The bridge classification below reads
+        // the skip back through the frame's to_local, matching the
+        // writer's frame (PR #339 round 4).
         let segs = geometry_hit_segments_marked(s, master_root, &frame, Some((strip_r, strip_ry)));
         if segs.is_empty() {
             continue;
@@ -1123,10 +1135,31 @@ pub fn page_jumps_stripping(
                 // THIS segment is the bridge: a is the previous
                 // stroke's end, b the pen move's target — the skip is
                 // b − a. The run directions around it: the last real
-                // run INTO a, the first real run OUT of b.
-                let skip = (b.0 - a.0, b.1 - a.1);
-                let next_dir = segs.get(k + 1).map(|(_, nb, _)| unit(*b, *nb));
-                if !is_stored_jump_gap(skip, prev_run, next_dir, strip_r, strip_ry) {
+                // run INTO a, the first real run OUT of b — stopping
+                // at ANOTHER pen move (a second pen move once supplied
+                // a fake outgoing run and bridged blank span; PR #339
+                // round 4) and skipping zero-length drawn segments.
+                // The skip measured in the ROW-LOCAL frame — the
+                // frame the writer's radius choice and the gap
+                // classifier's axis pick both live in.
+                let skip_local = (
+                    frame.to_local(*b).0 - frame.to_local(*a).0,
+                    frame.to_local(*b).1 - frame.to_local(*a).1,
+                );
+                let mut next_dir = None;
+                let mut n = k + 1;
+                while n < segs.len() {
+                    let (na, nb, npen) = &segs[n];
+                    if *npen {
+                        break;
+                    }
+                    if (na.0 - nb.0).hypot(na.1 - nb.1) > 1e-9 {
+                        next_dir = Some(unit(*b, *nb));
+                        break;
+                    }
+                    n += 1; // a collapsed drawn segment — skip it
+                }
+                if !is_stored_jump_gap(skip_local, prev_run, next_dir, strip_r, strip_ry) {
                     breaks.push(pts.len());
                     // A NEW STROKE begins — the saved direction belongs
                     // to the old one. Keeping it let a later pen move
@@ -2059,6 +2092,110 @@ mod tests {
         assert_eq!(js.len(), 1, "the duplicate does not kill the gap: {js:?}");
     }
 
+    /// PR #339 round 4: a second pen move supplies no outgoing run —
+    /// the gap recognition must stop at it (Greptile's scenario:
+    /// M(0,0) L(1,0) | M(1+2r,0) | M(3,0) L(4,0)).
+    #[test]
+    fn pr339_next_dir_stops_at_a_second_pen_move() {
+        let r = 0.125 * (2.0 / 3.0) / 2.0;
+        let rows = |rows: &[(&str, f64, f64)]| {
+            let mut s = vsdx::model::Shape {
+                id: 1,
+                type_: Some("Shape".into()),
+                ..vsdx::model::Shape::default()
+            };
+            for (n, v) in [
+                ("PinX", 0.0),
+                ("PinY", 0.0),
+                ("Width", 4.0),
+                ("Height", 0.0),
+                ("LocPinX", 0.0),
+                ("LocPinY", 0.0),
+                ("ObjType", 2.0),
+            ] {
+                s.sheet.set_cell(n, Cell::value(format!("{v}")));
+            }
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            sec.rows = rows
+                .iter()
+                .enumerate()
+                .map(|(k, (t, x, y))| Row {
+                    t: Some((*t).into()),
+                    ix: k as i64 + 1,
+                    cells: vec![
+                        ("X".to_string(), Cell::value(format!("{x}"))),
+                        ("Y".to_string(), Cell::value(format!("{y}"))),
+                    ],
+                    ..Row::default()
+                })
+                .collect();
+            s.sheet.children.push(SheetChild::Section(sec));
+            s
+        };
+        let gapped = rows(&[
+            ("MoveTo", 0.0, 0.0),
+            ("LineTo", 1.0, 0.0),
+            ("MoveTo", 1.0 + 2.0 * r, 0.0),
+            ("MoveTo", 3.0, 0.0),
+            ("LineTo", 4.0, 0.0),
+        ]);
+        // The probe crosses the first blank span (1, 1+2r) — with a
+        // pen-move-supplied outgoing run it bridged and hopped there.
+        let mut v = rows(&[("MoveTo", 1.0 + r, -1.0), ("LineTo", 1.0 + r, 1.0)]);
+        v.id = 2;
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        page.shapes.push(gapped);
+        page.shapes.push(v);
+        let doc = vsdx::Document::default();
+        assert!(
+            page_jumps(&doc, &page, &[]).is_empty(),
+            "a second pen move supplies no outgoing run"
+        );
+    }
+
+    /// PR #339 round 4: a NoShow FORMULA that now evaluates to 0
+    /// keeps the connector in the crossing set (the stale NoShow=1
+    /// cache must not hide a visible line).
+    #[test]
+    fn pr339_noshow_formula_beats_the_stale_cache() {
+        let mut a = straight_connector(1, (1.0, 1.0), (5.0, 1.0), None);
+        {
+            for child in a.sheet.children.iter_mut() {
+                if let vsdx::model::SheetChild::Section(sec) = child {
+                    if sec.name == "Geometry" {
+                        sec.cells.push(("NoShow".to_string(), {
+                            let mut c = Cell::value("1");
+                            c.f = Some("GUARD(0)".into());
+                            c
+                        }));
+                    }
+                }
+            }
+        }
+        let b = straight_connector(2, (3.0, 0.0), (3.0, 2.0), None);
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        page.shapes.push(a);
+        page.shapes.push(b);
+        let doc = vsdx::Document::default();
+        assert_eq!(
+            page_jumps(&doc, &page, &[]).len(),
+            1,
+            "the formula-visible connector stays in the crossing set"
+        );
+    }
+
     /// PR #339 round 3: a COLLAPSED pen-up move (the MoveTo point
     /// duplicates its predecessor) dedups away — its break must
     /// VANISH, not shift onto the next inked segment (a crossing on
@@ -2142,10 +2279,7 @@ mod tests {
         // With the borrowed direction it hopped here; with the clear
         // the window is suppressed and nothing else crosses (the real
         // final segment starts at 3+2r).
-        let mut v = rows(&[
-            ("MoveTo", 3.0 + r, -1.0),
-            ("LineTo", 3.0 + r, 1.0),
-        ]);
+        let mut v = rows(&[("MoveTo", 3.0 + r, -1.0), ("LineTo", 3.0 + r, 1.0)]);
         v.id = 2;
         let mut page = vsdx::Page {
             id: 0,

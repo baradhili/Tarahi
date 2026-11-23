@@ -1872,17 +1872,39 @@ fn neighbor_dirs(typed: &[(&str, (f64, f64), Option<String>)], i: usize) -> (Run
         (l > 1e-9).then(|| (d.0 / l, d.1 / l))
     };
     let straight = |t: &str| t == "LineTo" || t == "ArcTo" || t == "PolylineTo";
+    // Both directions find the nearest NONZERO straight run without
+    // crossing a pen move — a collapsed (zero-length) LineTo beside
+    // the hop used to starve the direction and the connector was
+    // skipped as authored geometry (PR #339 round 4).
     let mut prev = None;
-    if i >= 2 && straight(typed[i - 1].0) {
-        prev = dir_of(typed[i - 2].1, typed[i - 1].1);
+    let mut k = i as isize - 1;
+    while k >= 1 {
+        if !straight(typed[k as usize].0) {
+            break; // a pen move or curve ends the run context
+        }
+        let d = dir_of(typed[k as usize - 1].1, typed[k as usize].1);
+        if d.is_some() {
+            prev = d;
+            break;
+        }
+        k -= 1; // a duplicate endpoint — skip it
     }
     // The outgoing run LEAVES row i's own end toward row i+1's — the
     // hop row is typically the penultimate row, so i+2 often does not
     // exist at all (the first cut of this helper read i+1→i+2 and
     // rejected every written hop row).
     let mut next = None;
-    if i + 1 < typed.len() && straight(typed[i + 1].0) {
-        next = dir_of(typed[i].1, typed[i + 1].1);
+    let mut m = i + 1;
+    while m < typed.len() {
+        if !straight(typed[m].0) {
+            break;
+        }
+        let d = dir_of(typed[i].1, typed[m].1);
+        if d.is_some() {
+            next = d;
+            break;
+        }
+        m += 1; // a duplicate endpoint — skip it
     }
     (prev, next)
 }
@@ -2401,8 +2423,12 @@ impl Command for ReconcileLineJumps {
                 let a = r
                     .cell("A")
                     .and_then(|c| c.v.clone().or_else(|| c.f.clone()));
-                if end.is_none() || (t == "ArcTo" && a.as_deref().and_then(|a| a.parse::<f64>().ok()).is_none() && lit(r, "A").is_none())
-                {
+                // ArcTo needs a LITERAL A through `lit` — a formula
+                // (GUARD(−r), Width-driven) is authored tracking and
+                // must survive the rewrite; the parse fallback here
+                // once accepted the cached V under such a formula and
+                // a style change erased it (PR #339 round 4).
+                if end.is_none() || (t == "ArcTo" && lit(r, "A").is_none()) {
                     owned = false;
                     break;
                 }
@@ -4978,6 +5004,109 @@ mod reconcile_jump_tests {
         let rows = rows_of(&ed, 5);
         let kinds: Vec<&str> = rows.iter().map(|r| r.t.as_deref().unwrap()).collect();
         assert_eq!(kinds, vec!["MoveTo", "LineTo"], "hidden straightens: {rows:?}");
+    }
+
+    /// PR #339 round 4: an ArcTo whose A carries a FORMULA (GUARD)
+    /// with a numeric cache is authored tracking — a style change
+    /// must leave its rows alone, not replace them.
+    #[test]
+    fn reconcile_leaves_a_formula_guarded_arc_alone() {
+        let (mut ed, page_id) = witness_doc("1");
+        {
+            let page = &mut ed.doc.pages[0];
+            let h = vsdx::model::find_shape_by_id_mut(&mut page.shapes, 5).unwrap();
+            let r = 0.125 * (2.0 / 3.0) / 2.0;
+            for child in h.sheet.children.iter_mut() {
+                if let vsdx::model::SheetChild::Section(g) = child {
+                    if g.name == "Geometry" {
+                        g.rows = vec![
+                            Row {
+                                t: Some("MoveTo".into()),
+                                ix: 1,
+                                cells: xy(0.0, 0.125),
+                                ..Row::default()
+                            },
+                            lineto(2, 2.5 - r, 0.125),
+                            Row {
+                                t: Some("ArcTo".into()),
+                                ix: 3,
+                                cells: {
+                                    let mut c = xy(2.5 + r, 0.125);
+                                    let mut a = VCell::value(format!("{}", -r));
+                                    a.f = Some(format!("GUARD({})", -r));
+                                    c.push(("A".to_string(), a));
+                                    c
+                                },
+                                ..Row::default()
+                            },
+                            lineto(4, 5.0, 0.125),
+                        ];
+                    }
+                }
+            }
+        }
+        // A style change to Gap must NOT rewrite the formula arc.
+        ed.apply(dc_core::SetCell::new(
+            dc_core::Scope::PageSheet { page: page_id },
+            "LineJumpStyle",
+            VCell::value("2"),
+        ))
+        .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows[2].t.as_deref(), Some("ArcTo"), "kept: {rows:?}");
+        assert!(
+            rows[2].cell("A").and_then(|c| c.f.clone()).is_some(),
+            "the GUARD formula survives: {rows:?}"
+        );
+    }
+
+    /// PR #339 round 4: a stored hop beside a DUPLICATE endpoint
+    /// stays eligible — the neighbor scan skips collapsed rows
+    /// instead of starving the direction.
+    #[test]
+    fn reconcile_follows_hops_beside_duplicate_endpoints() {
+        let (mut ed, page_id) = witness_doc("3");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        {
+            // Inject a duplicate before the PolylineTo's start line.
+            let page = &mut ed.doc.pages[0];
+            let h = vsdx::model::find_shape_by_id_mut(&mut page.shapes, 5).unwrap();
+            let mut sec = h.sheet.sections_named("Geometry")[0].clone();
+            let mut rows = sec.rows.clone();
+            rows.insert(
+                2,
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 99,
+                    cells: rows[1].cells.clone(),
+                    ..Row::default()
+                },
+            );
+            sec.rows = rows;
+            for child in h.sheet.children.iter_mut() {
+                if let vsdx::model::SheetChild::Section(g) = child {
+                    if g.name == "Geometry" {
+                        *g = sec.clone();
+                    }
+                }
+            }
+        }
+        // The style change still rewrites (the connector stayed
+        // eligible through the duplicate).
+        ed.apply(dc_core::SetCell::new(
+            dc_core::Scope::PageSheet { page: page_id },
+            "LineJumpStyle",
+            VCell::value("1"),
+        ))
+        .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(
+            rows[2].t.as_deref(),
+            Some("ArcTo"),
+            "the duplicate did not strand the hop: {rows:?}"
+        );
     }
 
     /// PR #339 C: every 3–7-sided hop the writer emits must

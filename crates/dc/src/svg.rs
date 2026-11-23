@@ -1495,6 +1495,35 @@ fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::jumps::Jump, rad
     );
 }
 
+/// A section-level geometry flag read the RENDERER's way: formula
+/// first, cached V as fallback (the row-cell convention — the
+/// master's cache reflects its default style while the formula
+/// re-evaluates per instance). `true` = the flag is ON.
+pub fn geometry_flag_on(
+    doc: &Document,
+    s: &Shape,
+    chain: &[&Shape],
+    section: &vsdx::model::Section,
+    name: &str,
+) -> bool {
+    let Some(c) = section.cell(name) else {
+        return false;
+    };
+    let env = shape_env(doc, s, chain);
+    let by_formula = c
+        .f
+        .as_deref()
+        .and_then(|f| {
+            if f == "Inh" || f == "No Formula" {
+                None
+            } else {
+                vsdx::formula::eval(f, &env).ok().and_then(|v| v.as_f64())
+            }
+        })
+        .filter(|v| v.is_finite());
+    by_formula.or_else(|| c.numeric()).is_some_and(|v| v != 0.0)
+}
+
 /// The color visible BEHIND a jumping connector at page point `at`
 /// (y up): the fill of the topmost filled shape painted before the
 /// connector (`below` = the connector's shape id) whose ink box holds
@@ -1515,10 +1544,13 @@ pub fn backdrop_color_at(
     fn filled(doc: &Document, s: &Shape, chain: &[&Shape]) -> Option<String> {
         let sheet = doc.effective_sheet(s, chain);
         let geos = sheet.sections_named("Geometry");
+        // NoFill/NoShow read the RENDERER's way — formula first, cached
+        // V as fallback: a hidden section (NoShow=1, or a formula that
+        // now returns 0 with a stale cache) paints nothing and must not
+        // color a gap (PR #339 round 4).
         let any_fill = geos.iter().any(|g| {
-            g.cell("NoFill")
-                .and_then(|c| c.numeric())
-                .is_none_or(|v| v == 0.0)
+            !geometry_flag_on(doc, s, chain, g, "NoShow")
+                && !geometry_flag_on(doc, s, chain, g, "NoFill")
                 && g.rows.iter().any(|r| r.t.is_some())
         });
         if !any_fill {
@@ -1580,7 +1612,17 @@ pub fn backdrop_color_at(
                 })
                 .unwrap_or((1.0, 1.0));
             let frame = crate::geom::hit_frame(doc, &chain, s, msize);
-            let segs = crate::geom::geometry_hit_segments(s, chain.get(1).copied(), &frame, None);
+            // chain.get(1) is ALWAYS None here — the walk starts with
+            // an empty chain and pushes only the instance, so a
+            // master-inheriting triangle produced no segments and the
+            // point-in-fill check silently skipped (an empty corner
+            // painted the shape's fill; PR #339 round 4). Resolve the
+            // master root the same way msize just did.
+            let root = s
+                .master
+                .and_then(|mid| doc.master(mid))
+                .and_then(|m| m.shapes.first());
+            let segs = crate::geom::geometry_hit_segments(s, root, &frame, None);
             if !segs.is_empty() {
                 let q = (pt.0, page_h - pt.1); // the cast runs page y-up
                 let mut in_fill = false;
@@ -8988,6 +9030,97 @@ mod tests {
             svg.matches(r#"stroke-linejoin="round""#).count(),
             1,
             "one hop ARC at the real crossing (a second crossing on the              same jumper would draw a second arc)"
+        );
+    }
+
+    /// PR #339 round 4: the backdrop's fill test sees master-inherited
+    /// geometry (the ray cast fired on no segments and an empty
+    /// corner painted the shape's fill) and skips NoShow sections (a
+    /// hidden red rectangle colors nothing).
+    #[test]
+    fn backdrop_reads_master_geometry_and_skips_hidden_sections() {
+        // A triangle whose geometry lives on the MASTER (chain.get(1)
+        // was always None before the fix).
+        let mut doc = Document::default();
+        doc.masters.push(vsdx::Master {
+            id: 1,
+            name_u: Some("Tri".into()),
+            shapes: vec![{
+                let mut m = shape_at(1, (2.0, 2.0), 2.0, 2.0, 0.0);
+                let row = |ix: i64, t: &str, x: f64, y: f64| Row {
+                    t: Some(t.into()),
+                    ix,
+                    cells: vec![
+                        ("X".to_string(), Cell::value(format!("{x}"))),
+                        ("Y".to_string(), Cell::value(format!("{y}"))),
+                    ],
+                    ..Row::default()
+                };
+                let mut sec = Section {
+                    name: "Geometry".into(),
+                    ix: 0,
+                    ..Section::default()
+                };
+                sec.rows = vec![
+                    row(1, "MoveTo", 0.0, 0.0),
+                    row(2, "LineTo", 2.0, 0.0),
+                    row(3, "LineTo", 0.0, 2.0),
+                ];
+                m.sheet.children.push(SheetChild::Section(sec));
+                m
+            }],
+            ..Default::default()
+        });
+        let mut tri = shape_at(2, (2.0, 2.0), 2.0, 2.0, 0.0);
+        tri.master = Some(1);
+        tri.sheet.set_cell("FillForegnd", Cell::value("#ff0000"));
+        tri.sheet
+            .children
+            .retain(|c| !matches!(c, SheetChild::Section(_)));
+        // A hidden (NoShow) blue rectangle below the other probe.
+        let mut hid = shape_at(3, (7.0, 2.0), 2.0, 2.0, 0.0);
+        hid.sheet.set_cell("FillForegnd", Cell::value("#0000ff"));
+        for child in hid.sheet.children.iter_mut() {
+            if let SheetChild::Section(sec) = child {
+                if sec.name == "Geometry" {
+                    sec.cells.push(("NoShow".to_string(), Cell::value("1")));
+                }
+            }
+        }
+        doc.pages = vec![vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            children: vec![vsdx::model::IndexChild::Sheet {
+                tag: "PageSheet".into(),
+                sheet: {
+                    let mut sh = Sheet::default();
+                    sh.set_cell("PageWidth", Cell::value("8.5"));
+                    sh.set_cell("PageHeight", Cell::value("11"));
+                    sh
+                },
+            }],
+            shapes: vec![tri, hid],
+            ..Default::default()
+        }];
+        let page = doc.pages[0].clone();
+        // (1.3, 1.3) page: inside the master triangle's fill…
+        assert_eq!(
+            backdrop_color_at(&doc, &page, (1.3, 1.3), 9, &[]),
+            (0xff, 0, 0),
+            "the master-inherited fill is read"
+        );
+        // …(2.7, 2.7): inside the triangle's box, OUTSIDE the fill —
+        // white, not red (the ray cast fired on real segments now).
+        assert_eq!(
+            backdrop_color_at(&doc, &page, (2.7, 2.7), 9, &[]),
+            (0xff, 0xff, 0xff),
+            "the empty corner reads the page's white"
+        );
+        // (7.5, 2.5): over the HIDDEN rectangle — white, not blue.
+        assert_eq!(
+            backdrop_color_at(&doc, &page, (7.5, 2.5), 9, &[]),
+            (0xff, 0xff, 0xff),
+            "a NoShow section colors nothing"
         );
     }
 
