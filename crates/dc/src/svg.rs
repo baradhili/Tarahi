@@ -1292,9 +1292,14 @@ fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::jumps::Jump, rad
         uw = uw,
     );
     // 3. the hop arc — a 9-point semicircle from g1 around to g2
-    // through at + n·r, the normal flipped toward page-up.
+    // through at + n·r. Visio's default hop directions
+    // (PageLineJumpDirX/Y = 0): a horizontal-class jumper bulges UP,
+    // a vertical-class one bulges LEFT (the b01 witness) — flipping
+    // toward page-up alone drew sideways zigzags on steep lines
+    // (#322).
     let mut n = (-j.dir.1, j.dir.0);
-    if n.1 < 0.0 {
+    let horizontal = j.dir.0.abs() >= j.dir.1.abs();
+    if (horizontal && n.1 < 0.0) || (!horizontal && n.0 > 0.0) {
         n = (-n.0, -n.1);
     }
     let mut path = String::new();
@@ -8273,6 +8278,48 @@ mod tests {
         // review): 0.125 in × 2/3 / 2.
         let apex = format!("{:.5} {:.5}", 3.0, 6.0 - 0.125 * (2.0 / 3.0) / 2.0);
         assert!(svg.contains(&apex), "the arc apex is page-up: {apex}");
+        // A VERTICAL-class jumper bulges page-LEFT (Visio's default
+        // hop directions, PageLineJumpDirX/Y = 0 — the b01 witness,
+        // #322): the horizontal carries ConLineJumpCode 3 ("other
+        // line"), so the vertical hops — and it runs SOUTH (its rows
+        // walk top to bottom), the heading where flipping toward
+        // page-up alone used to bulge the arc sideways RIGHT.
+        let (doc, page) = {
+            let mut h = connector(1, (3.0, 5.0), 4.0, 0.0);
+            h.sheet.set_cell("ConLineJumpCode", Cell::value("3"));
+            let mut v = shape_at(2, (3.0, 5.0), 0.0, 4.0, 0.0);
+            v.sheet.set_cell("ObjType", Cell::value("2"));
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            sec.rows = vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: vec![
+                        ("X".to_string(), Cell::value("0")),
+                        ("Y".to_string(), Cell::value("4")),
+                    ],
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 2,
+                    cells: vec![
+                        ("X".to_string(), Cell::value("0")),
+                        ("Y".to_string(), Cell::value("0")),
+                    ],
+                    ..Row::default()
+                },
+            ];
+            v.sheet.children.push(SheetChild::Section(sec));
+            page_fixture(vec![h, v])
+        };
+        let svg = render_page(&doc, &page).unwrap();
+        let apex = format!("{:.5} {:.5}", 3.0 - 0.125 * (2.0 / 3.0) / 2.0, 6.0);
+        assert!(svg.contains(&apex), "the arc apex is page-left: {apex}");
     }
 
     /// #251: the page's Show-Line-Jumps switch (`ConLineJumpCode=1`

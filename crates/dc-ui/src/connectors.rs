@@ -1144,8 +1144,9 @@ mod tests {
     }
 
     /// #108: line jumps — a proper crossing hops the horizontal line;
-    /// a tie hops the later-in-z line; parallel/near-touching pairs
-    /// never hop.
+    /// two equally steep lines (a diagonal X) never hop — Visio's
+    /// steepness rule, #322's mirrored-X witness; parallel/
+    /// near-touching pairs never hop.
     #[test]
     fn line_jumps_hop_the_horizontal_line() {
         let l = |id: i64, z: usize, pts: &[(f64, f64)]| JumpLine {
@@ -1173,7 +1174,10 @@ mod tests {
             (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         )
         .is_empty());
-        // Perpendicular tie (both diagonal): the later z hops.
+        // Perpendicular mirror (both 45° diagonals, equally steep):
+        // no hop — Visio draws no jump between two equally steep
+        // segments (#322's mirrored-X witness, b01's untouched 4/5
+        // pair).
         let js = line_jumps(
             &[
                 l(1, 0, &[(0.0, 0.0), (2.0, 2.0)]),
@@ -1181,20 +1185,7 @@ mod tests {
             ],
             (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         );
-        assert_eq!(js.len(), 1);
-        // The later-in-z line 2 hops: its direction (0,2)->(2,0)
-        // normalizes to (1/sqrt(2), -1/sqrt(2)).
-        let sq = 1.0 / (2.0f64).sqrt();
-        assert!(
-            (js[0].dir.0 - sq).abs() < 1e-9,
-            "the later-z line hops: dir.x = {}",
-            js[0].dir.0
-        );
-        assert!(
-            (js[0].dir.1 - (-sq)).abs() < 1e-9,
-            "the later-z line hops: dir.y = {}",
-            js[0].dir.1
-        );
+        assert!(js.is_empty(), "{js:?}");
         // Non-crossing segments never hop.
         assert!(line_jumps(
             &[

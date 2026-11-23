@@ -1975,9 +1975,16 @@ pub fn show(
             [at - under * ext, at + under * ext],
             Stroke::new(uw, j.under_color),
         );
-        // 3. the hop arc, bulging up on screen.
+        // 3. the hop arc — Visio's default directions: a
+        // horizontal-class jumper bulges up on screen, a
+        // vertical-class one left (the b01 witness, #322).
         let n = Vec2::new(-dir.y, dir.x);
-        let n = if n.y > 0.0 { -n } else { n };
+        let horizontal = j.dir.0.abs() >= j.dir.1.abs();
+        let n = if (horizontal && n.y > 0.0) || (!horizontal && n.x > 0.0) {
+            -n
+        } else {
+            n
+        };
         let mut pts = Vec::with_capacity(9);
         for k in 0..=8 {
             let t = k as f32 / 8.0;

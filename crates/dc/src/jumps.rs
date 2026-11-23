@@ -14,8 +14,9 @@
 //! arc through [`is_stored_jump_arc`] here, and [`page_jumps_stripping`]
 //! walks the page's connectors through that same hit walk.
 
-use crate::geom::{geometry_hit_segments, hit_frame, is_connector_in};
+use crate::geom::{geometry_hit_segments, hit_frame, is_connector};
 
+#[derive(Debug, Clone)]
 pub struct JumpLine {
     pub id: i64,
     pub z: usize,
@@ -27,10 +28,10 @@ pub struct JumpLine {
 
 /// A computed hop (#108): where the jumping line crosses the under
 /// line, both directions (unit), and both strokes. Visio's default
-/// crossing treatment — the more-horizontal line hops (ties: the
-/// later in z), arc style. The overlay itself persists nothing;
-/// dc-ui's `ReconcileLineJumps` is what writes these hops into the
-/// jumper's Geometry rows.
+/// crossing treatment (page `LineJumpCode` 1, [`JumpRules`]): the
+/// flatter segment hops, equally steep segments never do; arc style.
+/// The overlay itself persists nothing; dc-ui's `ReconcileLineJumps`
+/// is what writes these hops into the jumper's Geometry rows.
 #[derive(Debug, Clone, Copy)]
 pub struct Jump {
     pub at: (f64, f64),
@@ -304,15 +305,110 @@ fn hugged_vertex(t: f64, window_index: usize) -> Option<usize> {
     }
 }
 
-/// Every crossing hop among the lines (#108): pairwise proper
-/// segment intersections; the more-horizontal segment jumps.
-/// A contact where the two routes SHARE a run — one arrives at the
-/// other's vertex and continues along it — is a merge, not a crossing
-/// (#334).
+/// Which line hops at a crossing — Visio's page `LineJumpCode` and
+/// the connectors' `ConLineJumpCode` (the Visio 2021 witnesses
+/// b01/c02, #322):
+/// - page 1 "horizontal lines": the FLATTER crossing segment hops —
+///   steepness, not class: between two steep lines the more
+///   horizontal one still hops (a 60° link hops where it crosses an
+///   84° one, the `d04` witness), and two EQUALLY steep segments
+///   (an X of mirrored diagonals) draw no hop;
+/// - page 2 "vertical lines": the mirror image — the steeper hops;
+/// - page 3/4 "last routed/displayed": the later line in z hops;
+///   page 5 "first displayed": the earlier one;
+/// - connector 1 "never" — it never hops; 2 "always" — it hops over
+///   the other; 3 "other line" — the other one hops over it;
+///   4 "neither" — no hop at its crossings. `ConFixedCode` is inert
+///   (c02's whole top row: identical hops under every value).
+#[derive(Debug, Clone)]
+pub struct JumpRules {
+    pub page_code: i64,
+    /// `ConLineJumpCode` per connector id (absent = 0, the page rule).
+    pub con_codes: std::collections::HashMap<i64, i64>,
+}
+
+impl Default for JumpRules {
+    fn default() -> Self {
+        Self {
+            page_code: 1,
+            con_codes: std::collections::HashMap::new(),
+        }
+    }
+}
+
+/// Two crossing segments within this |Δ sin θ| count as EQUALLY
+/// steep — the mirrored-X no-hop case. The band absorbs the writer
+/// rounding of coordinates that reached the crossing through
+/// different frames; genuinely different steepness (60° vs 84° is
+/// |Δ sin| ≈ 0.13) stays far above it.
+const STEEPNESS_TIE: f64 = 1e-3;
+
+impl JumpRules {
+    /// `Some(true)` when line `a` (its crossing segment running `da`)
+    /// hops over `b`, `Some(false)` when `b` hops, `None` for no hop.
+    fn jumper(&self, a: &JumpLine, da: (f64, f64), b: &JumpLine, db: (f64, f64)) -> Option<bool> {
+        let code = |l: &JumpLine| self.con_codes.get(&l.id).copied().unwrap_or(0);
+        let (ca, cb) = (code(a), code(b));
+        // 4 on either side: no hop at this crossing at all.
+        if ca == 4 || cb == 4 {
+            return None;
+        }
+        // The connector codes that FORCE the answer regardless of the
+        // page rule: 2 "always" hops, 3 demands the OTHER line hop.
+        let forced = match (ca, cb) {
+            (2, c) if c != 2 => Some(true),
+            (c, 2) if c != 2 => Some(false),
+            (3, c) if c != 3 => Some(false),
+            (c, 3) if c != 3 => Some(true),
+            _ => None,
+        };
+        let a_jumps = forced.or_else(|| match self.page_code {
+            // The steepness rule: |sin θ| is the unit direction's
+            // |dy|. Code 1 hops the flatter segment, code 2 the
+            // steeper; equally steep segments never hop.
+            1 | 2 => {
+                let (sa, sb) = (da.1.abs(), db.1.abs());
+                if (sa - sb).abs() < STEEPNESS_TIE {
+                    None
+                } else if self.page_code == 1 {
+                    Some(sa < sb)
+                } else {
+                    Some(sa > sb)
+                }
+            }
+            3 | 4 => Some(a.z > b.z),
+            5 => Some(a.z < b.z),
+            // 0 is the off switch and 6 the legacy off (the read side
+            // of #251); anything else unknown — never hop.
+            _ => None,
+        })?;
+        // 1 "never": the chosen jumper's own veto (the under line's
+        // code 1 is silent — the other line may still hop over it).
+        let jumper_code = if a_jumps { ca } else { cb };
+        (jumper_code != 1).then_some(a_jumps)
+    }
+}
+
+/// Every crossing hop among the lines (#108) under the page-1
+/// defaults; pairwise proper segment intersections, the flatter
+/// segment jumping. A contact where the two routes SHARE a run — one
+/// arrives at the other's vertex and continues along it — is a merge,
+/// not a crossing (#334).
 /// `radius` is the page's resolved jump radius (inches —
 /// [`jump_radius_in`]): it sizes the hop arc and bounds what counts
 /// as one crossing REGION (#251) when converging crossings cluster.
 pub fn line_jumps(lines: &[JumpLine], (radius, radius_y): (f64, f64)) -> Vec<Jump> {
+    line_jumps_with(lines, (radius, radius_y), &JumpRules::default())
+}
+
+/// [`line_jumps`] under explicit page/connector rules ([`JumpRules`])
+/// — what [`page_jumps_stripping`] crosses with once it has read the
+/// page's own cells through [`page_jump_rules`].
+pub fn line_jumps_with(
+    lines: &[JumpLine],
+    (radius, radius_y): (f64, f64),
+    rules: &JumpRules,
+) -> Vec<Jump> {
     // Degenerate rows (a straight route's elbow LineTos collapse onto
     // the end) repeat points; the endpoint classification below reads
     // indices, so normalize first or the connector's geometric END
@@ -402,10 +498,12 @@ pub fn line_jumps(lines: &[JumpLine], (radius, radius_y): (f64, f64)) -> Vec<Jum
                         (d.0 / l, d.1 / l)
                     };
                     let (d1, d2) = (unit(w1[0], w1[1]), unit(w2[0], w2[1]));
-                    // The more-horizontal line hops; a tie gives the
-                    // later-in-z line the hop.
-                    let i_jumps = d1.1.abs() < d2.1.abs()
-                        || (d1.1.abs() - d2.1.abs()).abs() < 1e-9 && lines[i].z > lines[j].z;
+                    // Visio's selection rule ([`JumpRules`]): which
+                    // line hops — or neither (equally steep segments,
+                    // a connector's veto).
+                    let Some(i_jumps) = rules.jumper(&lines[i], d1, &lines[j], d2) else {
+                        continue;
+                    };
                     let (jmp, und) = if i_jumps {
                         (&lines[i], &lines[j])
                     } else {
@@ -483,13 +581,69 @@ fn parse_hex_rgb(v: &str) -> Option<(u8, u8, u8)> {
     Some((pair(0)?, pair(2)?, pair(4)?))
 }
 
+/// A jump candidate is a REAL connector — `ObjType = 2`, locally or
+/// chain-resolved through the master (the #322 witness: Visio hops
+/// only true connectors; a plain glued 1D line — `ObjType 0`, static
+/// `PAR(PNT` glue — never joins the crossing set). The wider
+/// glue-ownership gate [`crate::geom::is_connector_in`] stays what
+/// reroute and glue use; jump candidacy is deliberately narrower.
+fn is_jump_candidate(
+    doc: &vsdx::Document,
+    chain: &[&vsdx::model::Shape],
+    s: &vsdx::model::Shape,
+) -> bool {
+    is_connector(s)
+        || doc
+            .resolve_cell(s, chain, "ObjType")
+            .and_then(|c| c.numeric())
+            .is_some_and(|v| v == 2.0)
+}
+
+/// The page's jump rules (#324 phase 2): the PageSheet's
+/// `LineJumpCode` — resolved through the page's style inheritance
+/// like the radius cells, absent meaning Visio's "horizontal lines"
+/// default 1 — plus every jump candidate's resolved
+/// `ConLineJumpCode`. One resolver behind the crossing set: the
+/// export, the canvas overlay and the stored-jump reconciliation all
+/// cross through [`page_jumps_stripping`], which reads its rules
+/// here.
+pub fn page_jump_rules(doc: &vsdx::Document, page: &vsdx::Page) -> JumpRules {
+    let page_code = doc
+        .resolve_page_layout_cell(page, "LineJumpCode")
+        .and_then(|c| c.numeric())
+        .map_or(1, |v| v.round() as i64);
+    let mut rules = JumpRules {
+        page_code,
+        ..JumpRules::default()
+    };
+    for s in &page.shapes {
+        let mut chain = vec![s];
+        if let Some(root) = s
+            .master
+            .and_then(|mid| doc.master(mid))
+            .and_then(|m| m.shapes.first())
+        {
+            chain.push(root);
+        }
+        if !is_jump_candidate(doc, &chain, s) {
+            continue;
+        }
+        if let Some(code) = doc
+            .resolve_cell(s, &chain, "ConLineJumpCode")
+            .and_then(|c| c.numeric())
+        {
+            rules.con_codes.insert(s.id, code.round() as i64);
+        }
+    }
+    rules
+}
+
 /// The page's connector crossings (#187): every top-level connector's
 /// polyline — `hit_frame` + [`geometry_hit_segments`], formula-
-/// preferred, curve-aware — crossed with Visio's rule ([`line_jumps`]:
-/// the more-horizontal line hops, ties to the later z). Hidden-layer
-/// members and guides skip like the render walk. This is THE crossing
-/// set: the canvas overlay, the export and the stored-jump
-/// reconciliation all draw from it (#336).
+/// preferred, curve-aware — crossed under the page's own jump rules
+/// ([`page_jump_rules`]). Hidden-layer members and guides skip like
+/// the render walk. This is THE crossing set: the canvas overlay, the
+/// export and the stored-jump reconciliation all draw from it (#336).
 pub fn page_jumps(doc: &vsdx::Document, page: &vsdx::Page, hidden: &[i64]) -> Vec<Jump> {
     page_jumps_stripping(doc, page, hidden, None)
 }
@@ -513,6 +667,7 @@ pub fn page_jumps_stripping(
     let radius = jump_radius_in(doc, page);
     let radius_y = jump_radius_y_in(doc, page);
     let (strip_r, strip_ry) = strip.unwrap_or((radius, radius_y));
+    let rules = page_jump_rules(doc, page);
     let mut lines: Vec<JumpLine> = Vec::new();
     for (z, s) in page.shapes.iter().enumerate() {
         if s.sheet
@@ -541,7 +696,7 @@ pub fn page_jumps_stripping(
                 (g("Width"), g("Height"))
             })
             .unwrap_or((1.0, 1.0));
-        if !is_connector_in(doc, &chain, s) {
+        if !is_jump_candidate(doc, &chain, s) {
             continue;
         }
         let frame = hit_frame(doc, &chain, s, msize);
@@ -587,7 +742,7 @@ pub fn page_jumps_stripping(
             pts,
         });
     }
-    line_jumps(&lines, (radius, radius_y))
+    line_jumps_with(&lines, (radius, radius_y), &rules)
 }
 
 #[cfg(test)]
@@ -1034,6 +1189,142 @@ mod tests {
             let js = hops(&[jline(1, 0, &through), jline(2, 1, &piercing)]);
             assert_eq!(js.len(), 1, "a near-miss is a crossing, case {k}: {js:?}");
         }
+    }
+
+    /// Visio's jump rules (the Visio 2021 witnesses b01 and c02,
+    /// #322): page `LineJumpCode` 1 hops the flatter segment —
+    /// steepness, not class, so the more horizontal of two STEEP
+    /// lines hops too (60° over 84°, the `d04` witness) — and
+    /// equally steep segments never hop; 2 mirrors it; 3 hops the
+    /// later line, 5 the earlier. `ConLineJumpCode` 1 never, 2
+    /// always, 3 the other line, 4 neither.
+    #[test]
+    fn jump_rules_follow_visio() {
+        let h = jline(1, 0, &[(0.0, 1.0), (2.0, 1.0)]);
+        let v = jline(2, 1, &[(1.0, 0.0), (1.0, 2.0)]);
+        // Two STEEP lines that cross (60° through the origin, an 84°
+        // one beside it) — both vertical-class under a |dx| ≥ |dy|
+        // reading, so this pair pins steepness, not class.
+        let s60 = jline(3, 2, &[(-1.0, -1.7320508), (1.0, 1.7320508)]);
+        let s84 = jline(4, 3, &[(0.3, -1.0), (0.6, 1.8542526)]);
+        // The mirrored X: equal steepness, opposite signs.
+        let x1 = jline(5, 4, &[(0.0, 0.0), (2.0, 1.6)]);
+        let x2 = jline(6, 5, &[(0.0, 1.6), (2.0, 0.0)]);
+        let r = (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS);
+        let rules = |page: i64, codes: &[(i64, i64)]| JumpRules {
+            page_code: page,
+            con_codes: codes.iter().copied().collect(),
+        };
+        let hops = |ls: &[JumpLine], ru: &JumpRules| line_jumps_with(ls, r, ru);
+        // Page 1: the horizontal hops over the vertical…
+        let js = hops(&[h.clone(), v.clone()], &rules(1, &[]));
+        assert!(js.len() == 1 && js[0].dir.1.abs() < 1e-9, "{js:?}");
+        // …the FLATTER (60°) of two steep lines hops — the d04
+        // witness, where a class reading would draw no hop…
+        let js = hops(&[s60.clone(), s84.clone()], &rules(1, &[]));
+        assert!(
+            js.len() == 1 && js[0].jumper == s60.id,
+            "the 60° link hops over the 84° one: {js:?}"
+        );
+        // …and equally steep segments (the mirrored X) never hop.
+        assert!(hops(&[x1.clone(), x2.clone()], &rules(1, &[])).is_empty());
+        // Page 2: the vertical hops; the steeper (84°) hops; the X
+        // still never hops.
+        let js = hops(&[h.clone(), v.clone()], &rules(2, &[]));
+        assert!(js.len() == 1 && js[0].dir.0.abs() < 1e-9, "{js:?}");
+        let js = hops(&[s60.clone(), s84.clone()], &rules(2, &[]));
+        assert!(
+            js.len() == 1 && js[0].jumper == s84.id,
+            "the 84° link hops over the 60° one: {js:?}"
+        );
+        assert!(hops(&[x1.clone(), x2.clone()], &rules(2, &[])).is_empty());
+        // Page 3 hops the X too — the LATER line; page 5 the earlier.
+        let js = hops(&[x1.clone(), x2.clone()], &rules(3, &[]));
+        assert_eq!((js.len(), js[0].jumper), (1, x2.id), "{js:?}");
+        let js = hops(&[x1.clone(), x2.clone()], &rules(5, &[]));
+        assert_eq!((js.len(), js[0].jumper), (1, x1.id), "{js:?}");
+        // Connector codes on the horizontal line under page 1.
+        let on_h = |code: i64| hops(&[h.clone(), v.clone()], &rules(1, &[(1, code)]));
+        assert_eq!(on_h(1).len(), 0, "never");
+        assert!(on_h(2)[0].dir.1.abs() < 1e-9, "always: the horizontal hops");
+        assert!(
+            on_h(3)[0].dir.0.abs() < 1e-9,
+            "other line: the vertical hops"
+        );
+        assert_eq!(on_h(4).len(), 0, "neither");
+    }
+
+    /// `page_jump_rules` reads what Visio reads — the PageSheet's
+    /// `LineJumpCode` through the style chain, the connectors'
+    /// resolved `ConLineJumpCode`s — and jump candidacy is
+    /// `ObjType = 2`: a plain glued 1D line (static `PAR(PNT` glue,
+    /// no ObjType) never joins the crossing set (#322's witness),
+    /// while the master chain still supplies the marker for real
+    /// connectors (#174, covered end to end by the b01/c02 fixtures).
+    #[test]
+    fn page_jump_rules_read_visio_and_gate_on_objtype() {
+        let mut sheet = vsdx::model::Sheet::default();
+        sheet.set_cell("LineJumpCode", Cell::value("2"));
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            children: vec![vsdx::model::IndexChild::Sheet {
+                tag: "PageSheet".into(),
+                sheet,
+            }],
+            ..vsdx::Page::default()
+        };
+        let mut a = straight_connector(1, (1.0, 1.0), (5.0, 1.0), None);
+        let b = straight_connector(2, (3.0, 0.0), (3.0, 2.0), None);
+        page.shapes.push(a.clone());
+        page.shapes.push(b);
+        let doc = vsdx::Document::default();
+        let rules = page_jump_rules(&doc, &page);
+        assert_eq!(rules.page_code, 2, "the PageSheet cell is read");
+        assert!(rules.con_codes.is_empty(), "absent codes stay absent");
+        // Page 2 hops the vertical.
+        let js = page_jumps(&doc, &page, &[]);
+        assert!(js.len() == 1 && js[0].jumper == 2, "{js:?}");
+        // The horizontal's own ConLineJumpCode overrides the page
+        // rule: 2 forces it to hop, 3 hands the hop to the vertical,
+        // 1 is its OWN veto only (the page-2 jumper B still hops over
+        // it — c02's witness is the veto on the WOULD-BE jumper), and
+        // 4 kills the hop at its crossings outright.
+        for (code, expect) in [(2, vec![1]), (3, vec![2]), (1, vec![2])] {
+            a.sheet
+                .set_cell("ConLineJumpCode", Cell::value(format!("{code}")));
+            page.shapes[0] = a.clone();
+            let js = page_jumps(&doc, &page, &[]);
+            let mut got: Vec<i64> = js.iter().map(|j| j.jumper).collect();
+            got.sort_unstable();
+            assert_eq!(got, expect, "code {code}: {js:?}");
+            assert_eq!(
+                page_jump_rules(&doc, &page).con_codes.get(&1),
+                Some(&code),
+                "the connector code resolves through the chain"
+            );
+        }
+        a.sheet.set_cell("ConLineJumpCode", Cell::value("4"));
+        page.shapes[0] = a.clone();
+        assert!(
+            page_jumps(&doc, &page, &[]).is_empty(),
+            "code 4: no hop at its crossings"
+        );
+        // A plain glued 1D line — static PAR(PNT glue, ObjType absent
+        // — is NOT a jump candidate: nothing hops over it and it hops
+        // over nothing, where the old glue-ownership gate drew one.
+        let mut g = straight_connector(7, (1.0, 0.5), (5.0, 0.5), None);
+        g.sheet
+            .children
+            .retain(|c| !matches!(c, vsdx::model::SheetChild::Cell(n, _) if n == "ObjType"));
+        let mut glue = Cell::value("1.0");
+        glue.f = Some("PAR(PNT(Sheet.99!Connections.X1,Sheet.99!Connections.Y1))".into());
+        g.sheet.set_cell("BeginX", glue);
+        page.shapes[0] = g;
+        assert!(
+            page_jumps(&doc, &page, &[]).is_empty(),
+            "an ObjType-0 glued line never joins the crossing set"
+        );
     }
 
     /// #187: two crossing connectors produce one hop; a rotated

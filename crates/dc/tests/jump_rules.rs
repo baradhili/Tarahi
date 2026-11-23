@@ -1,0 +1,83 @@
+//! #324 phase 2: Visio's own jump-rule fixtures, end to end —
+//! `b01-linejumps.vsdx` (page `LineJumpCode` 1/2/3 across three
+//! pages) and `c02-jumpcodes.vsdx` (connector `ConLineJumpCode` 0–4
+//! plus the inert `ConFixedCode` 0–6 row), both authored AND saved
+//! by Visio 2021 (mk-git, #322); the `.visio.pdf` beside each in the
+//! issue is Visio's own export of the same file.
+//!
+//! The stored hop arcs in the files ARE the expected answer: our
+//! crossing set must pick the same jumpers Visio stored, computed on
+//! the STRAIGHTENED routes — the fixtures' stylesheet 0 carries
+//! `LineToLineX` 0.0984252 × `LineJumpFactorX` 0.66667 / 2 = the
+//! stored |A| 0.0328084 exactly, so every stored arc strips and the
+//! hops recompute at the true crossings. The connectors carry no
+//! local `ObjType`; the marker lives on their master — so these
+//! files also pin the chain-resolved jump-candidacy gate.
+//!
+//! Untracked fixtures in `Sample/test files/` (the kreuzung pattern);
+//! the tests skip when they are absent.
+
+const B01: &str = "../../../Sample/test files/b01-linejumps.vsdx";
+const C02: &str = "../../../Sample/test files/c02-jumpcodes.vsdx";
+
+fn open(path: &str) -> Option<vsdx::Document> {
+    if !std::path::Path::new(path).exists() {
+        eprintln!("skipping: fixture not available");
+        return None;
+    }
+    match vsdx::parse::parse(std::path::Path::new(path)) {
+        Ok(doc) => Some(doc),
+        Err(e) => panic!("the fixture exists but does not parse: {e}"),
+    }
+}
+
+/// The page's hop jumpers, sorted — the set to compare with Visio's
+/// stored arcs.
+fn jumpers(doc: &vsdx::Document, page: &vsdx::Page) -> Vec<i64> {
+    let mut v: Vec<i64> = dc::jumps::page_jumps(doc, page, &[])
+        .iter()
+        .map(|j| j.jumper)
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+/// b01: page 1 (the absent-cell default) hops the flatter line of
+/// each pair — the horizontals 2 and 6, the shallow 18° line 8 — and
+/// leaves the mirrored X (the equally steep 4/5) untouched; page 2
+/// hops the verticals 3, 7, 9; page 3 hops the later line of every
+/// pair, the X included (5).
+#[test]
+fn b01_page_codes_pick_visio_stored_jumpers() {
+    let Some(doc) = open(B01) else {
+        return;
+    };
+    assert_eq!(
+        jumpers(&doc, &doc.pages[0]),
+        vec![2, 6, 8],
+        "page 1 (absent cell = Visio's default)"
+    );
+    assert_eq!(jumpers(&doc, &doc.pages[1]), vec![3, 7, 9], "page 2");
+    assert_eq!(
+        jumpers(&doc, &doc.pages[2]),
+        vec![3, 5, 7, 9],
+        "page 3 — the later line, the mirrored X included"
+    );
+}
+
+/// c02 (page 1): the horizontal of each pair hops — every
+/// `ConFixedCode` 0–6 on the top row leaves that unchanged (the
+/// cell is inert) — except where the horizontal's own
+/// `ConLineJumpCode` says otherwise: 1 never (26), 4 neither (35),
+/// and 3 hands the hop to the vertical (33 hops over 32).
+#[test]
+fn c02_connector_codes_pick_visio_stored_jumpers() {
+    let Some(doc) = open(C02) else {
+        return;
+    };
+    assert_eq!(
+        jumpers(&doc, &doc.pages[0]),
+        vec![2, 5, 8, 11, 14, 17, 20, 23, 29, 33],
+        "the ConFixedCode row hops throughout; ConLineJumpCode 1/4 rows do not"
+    );
+}
