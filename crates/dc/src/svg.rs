@@ -4382,6 +4382,30 @@ fn render_geometry(
     } else {
         fill_color.clone()
     };
+    // Fill/line transparency: every *Trans cell is a fraction (the
+    // file stores 50 % as V='0.5'). A solid fill takes
+    // FillForegndTrans, a pattern's dominant background color
+    // FillBkgndTrans; the stroke (and its arrowheads) LineColorTrans.
+    // Fully transparent paint is dropped outright — the network
+    // stencils' magenta helper boxes carry Trans 100 % and must not
+    // show (Visio 2021 witness).
+    let trans = |n: &str| -> f64 {
+        doc.resolve_cell(s, chain, n)
+            .and_then(|c| cell_num(&c, env))
+            .filter(|v| v.is_finite())
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0)
+    };
+    let fill_alpha = 1.0
+        - if fill_pattern > 1.5 && !(24.0..=40.0).contains(&fill_pattern) {
+            trans("FillBkgndTrans")
+        } else {
+            trans("FillForegndTrans")
+        };
+    let line_alpha = 1.0 - trans("LineColorTrans");
+    let no_fill = no_fill || fill_alpha <= 0.0;
+    let no_line = no_line || line_alpha <= 0.0;
+    let fill = if no_fill { "none".to_string() } else { fill };
     let dash = line_pattern.and_then(|p| line_dasharray(p, line_weight));
     let style = style_attr(
         no_fill,
@@ -4390,11 +4414,19 @@ fn render_geometry(
         &line_color,
         line_weight,
         dash.as_deref(),
+        fill_alpha,
+        line_alpha,
     );
     // #228: the section's own element is STROKE-only (fill
     // participation joins the shape's one even-odd path); standalone
     // Ellipse rows keep the full `style` above.
-    let stroke_a = stroke_attr(no_line, &line_color, line_weight, dash.as_deref());
+    let stroke_a = stroke_attr(
+        no_line,
+        &line_color,
+        line_weight,
+        dash.as_deref(),
+        line_alpha,
+    );
 
     // Master-space (unscaled) path state: geometry rows are authored in the
     // master's local units and scaled to the instance afterwards.
@@ -4981,6 +5013,7 @@ fn render_geometry(
             paint.fill_d.push_str(&fill_part);
             paint.fill_d.push(' ');
             paint.fill = fill.clone();
+            paint.fill_opacity = fill_alpha;
         }
         if !no_line {
             let _ = writeln!(
@@ -4995,6 +5028,18 @@ fn render_geometry(
         // so the size law holds without markerUnits scaling. #227: a
         // CLOSED walk gets no frames — and so no heads — at all.
         if let Some((begin, end)) = path_frames(&d) {
+            // LineColorTrans fades the heads with the shaft (the head
+            // parts set no opacity of their own, so the group's
+            // inherited fill-/stroke-opacity applies).
+            let faded = line_alpha < 1.0
+                && !no_line
+                && (kind(begin_arrow).is_some() || kind(end_arrow).is_some());
+            if faded {
+                let _ = writeln!(
+                    paint.strokes,
+                    r#"<g fill-opacity="{line_alpha:.3}" stroke-opacity="{line_alpha:.3}">"#
+                );
+            }
             if let Some(k) = kind(begin_arrow) {
                 emit_arrow_head(
                     &mut paint.strokes,
@@ -5016,6 +5061,9 @@ fn render_geometry(
                     end.0,
                     end.1,
                 );
+            }
+            if faded {
+                paint.strokes.push_str("</g>\n");
             }
         }
     }
@@ -6014,7 +6062,13 @@ fn rel_adjust(t: &str, x: f64, y: f64, w: f64, h: f64) -> (f64, f64) {
 /// The stroke half of a style attribute (#228 split): dashed strokes
 /// carry `stroke-linecap="round"` — the cap the dash table's
 /// ink→geometry conversion assumes (#235).
-fn stroke_attr(no_line: bool, line_color: &str, line_weight: f64, dash: Option<&str>) -> String {
+fn stroke_attr(
+    no_line: bool,
+    line_color: &str,
+    line_weight: f64,
+    dash: Option<&str>,
+    alpha: f64,
+) -> String {
     if no_line {
         r#"stroke="none""#.to_string()
     } else {
@@ -6026,9 +6080,10 @@ fn stroke_attr(no_line: bool, line_color: &str, line_weight: f64, dash: Option<&
         // fallback pen drew stray hairlines; MisterDiagram witness).
         // The old `.max(0.001)` fallback pen is gone.
         format!(
-            r#"stroke="{}" stroke-width="{:.5}"{dash}"#,
+            r#"stroke="{}" stroke-width="{:.5}"{dash}{}"#,
             escape_attr(line_color),
-            line_weight
+            line_weight,
+            opacity_attr("stroke-opacity", alpha)
         )
     }
 }
@@ -6111,6 +6166,18 @@ fn frame_dim(dim: f64, scale: f64) -> f64 {
     }
 }
 
+/// ` name="a"` for a partial alpha, nothing when opaque.
+fn opacity_attr(name: &str, alpha: f64) -> String {
+    if alpha < 1.0 {
+        format!(r#" {name}="{:.3}""#, alpha.max(0.0))
+    } else {
+        String::new()
+    }
+}
+
+// The full paint context of one geometry section; a struct would only
+// move the call site's argument list.
+#[allow(clippy::too_many_arguments)]
 fn style_attr(
     no_fill: bool,
     no_line: bool,
@@ -6118,16 +6185,18 @@ fn style_attr(
     line_color: &str,
     line_weight: f64,
     dash: Option<&str>,
+    fill_alpha: f64,
+    line_alpha: f64,
 ) -> String {
-    let fill = if no_fill {
-        "none".to_string()
+    let (fill, fill_op) = if no_fill {
+        ("none".to_string(), String::new())
     } else {
-        fill.to_string()
+        (fill.to_string(), opacity_attr("fill-opacity", fill_alpha))
     };
     format!(
-        r#"fill="{}" {}"#,
+        r#"fill="{}"{fill_op} {}"#,
         escape_attr(&fill),
-        stroke_attr(no_line, line_color, line_weight, dash)
+        stroke_attr(no_line, line_color, line_weight, dash, line_alpha)
     )
 }
 
@@ -6149,6 +6218,8 @@ struct ShapePaint {
     /// The fill style (shape-level cells — identical for every
     /// participating section; the last one computed wins).
     fill: String,
+    /// The fill's alpha (1 − FillForegndTrans / FillBkgndTrans).
+    fill_opacity: f64,
     /// Stroke-only paths, arrow shafts/heads, and standalone ellipse
     /// rows, in emission order.
     strokes: String,
@@ -6159,6 +6230,7 @@ impl Default for ShapePaint {
         Self {
             fill_d: String::new(),
             fill: "none".to_string(),
+            fill_opacity: 1.0,
             strokes: String::new(),
         }
     }
@@ -6170,9 +6242,10 @@ fn flush_shape_paint(paint: &mut ShapePaint, out: &mut String) {
     if !paint.fill_d.is_empty() {
         let _ = writeln!(
             out,
-            r#"<path fill-rule="evenodd" d="{}" fill="{}"/>"#,
+            r#"<path fill-rule="evenodd" d="{}" fill="{}"{}/>"#,
             escape_attr(paint.fill_d.trim()),
-            escape_attr(&paint.fill)
+            escape_attr(&paint.fill),
+            opacity_attr("fill-opacity", paint.fill_opacity)
         );
     }
     out.push_str(&paint.strokes);
@@ -10166,6 +10239,61 @@ mod tests {
             svg.contains("L 2.00000 -0.00000 L 2.00000 -1.00000 L 0.00000 -0.00000"),
             "{svg}"
         );
+    }
+
+    /// A 1×1 rectangle with closed geometry, for paint tests.
+    fn rect_shape(id: i64, pin: (f64, f64)) -> Shape {
+        let mut s = shape_at(id, pin, 1.0, 1.0, 0.0);
+        push_geo(
+            &mut s,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 1.0), ("Y", 0.0)]),
+                geo_row(3, "LineTo", &[("X", 1.0), ("Y", 1.0)]),
+                geo_row(4, "LineTo", &[("X", 0.0), ("Y", 1.0)]),
+                geo_row(5, "LineTo", &[("X", 0.0), ("Y", 0.0)]),
+            ],
+        );
+        s
+    }
+
+    /// Fill/line transparency (Visio 2021 witness, t01): the *Trans
+    /// cells are fractions; 0.5 paints at half alpha, 1 paints
+    /// nothing at all (the stencils' invisible helper boxes), and
+    /// opaque paint carries no opacity attribute.
+    #[test]
+    fn fill_and_line_transparency() {
+        let render = |cells: &[(&str, &str)]| {
+            let mut s = rect_shape(1, (2.0, 2.0));
+            s.sheet.set_cell("FillForegnd", Cell::value("#ff0000"));
+            s.sheet.set_cell("LineColor", Cell::value("#00ff00"));
+            for (n, v) in cells {
+                s.sheet.set_cell(n, Cell::value(*v));
+            }
+            let (doc, page) = page_fixture(vec![s]);
+            render_page(&doc, &page).unwrap()
+        };
+        let opaque = render(&[]);
+        assert!(opaque.contains("#ff0000") && !opaque.contains("opacity="));
+        let half = render(&[("FillForegndTrans", "0.5"), ("LineColorTrans", "0.25")]);
+        assert!(
+            half.contains(r##"fill="#ff0000" fill-opacity="0.500""##),
+            "{half}"
+        );
+        assert!(half.contains(r#"stroke-opacity="0.750""#), "{half}");
+        let gone = render(&[("FillForegndTrans", "1"), ("LineColorTrans", "1")]);
+        assert!(
+            !gone.contains("#ff0000") && !gone.contains("#00ff00"),
+            "100 % transparent paint is dropped: {gone}"
+        );
+        // A hatch pattern's dominant background color fades by
+        // FillBkgndTrans, not FillForegndTrans.
+        let bk = render(&[
+            ("FillPattern", "2"),
+            ("FillBkgnd", "#0000ff"),
+            ("FillBkgndTrans", "0.5"),
+        ]);
+        assert!(bk.contains(r#"fill-opacity="0.500""#), "{bk}");
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
