@@ -25,6 +25,38 @@ pub struct NurbsFormula {
     pub points: Vec<(f64, f64, f64, f64)>,
 }
 
+/// A parsed POLYLINE(): x type, y type, interior vertices.
+pub type Polyline = (f64, f64, Vec<(f64, f64)>);
+
+/// A `PolylineTo` row's `POLYLINE(xType, yType, x1, y1, x2, y2, …)`
+/// formula (§2.4.2.6): the interior vertices between the current
+/// point and the row's own X/Y endpoint. A type of 0 makes that axis
+/// a fraction of the geometry frame's Width/Height, 1 an absolute
+/// local coordinate (Visio 2021 witness, t05: the network stencils'
+/// router glyphs store `POLYLINE(0, 0, …)` fractions). Returns
+/// `(x_type, y_type, points)`; `None` when the text is not a
+/// POLYLINE function or an odd/non-finite argument list.
+pub fn parse_polyline(text: &str) -> Option<Polyline> {
+    let inner = text
+        .trim()
+        .strip_prefix("POLYLINE")?
+        .trim()
+        .strip_prefix("(")?
+        .strip_suffix(")")?;
+    let mut args: Vec<f64> = Vec::new();
+    for tok in inner
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+    {
+        args.push(tok.parse::<f64>().ok().filter(|v| v.is_finite())?);
+    }
+    if args.len() < 2 || !args.len().is_multiple_of(2) {
+        return None;
+    }
+    let pts = args[2..].chunks(2).map(|c| (c[0], c[1])).collect();
+    Some((args[0], args[1], pts))
+}
+
 /// Parse the `NURBS(...)` function text stored on a NURBSTo row's E
 /// cell (the cached V and the formula F are the same text in the
 /// corpus). Separators are commas and/or whitespace. `None` when the
@@ -559,5 +591,24 @@ mod tests {
             parse_nurbs("NURBS(1, 3, 0, 0, 1, 2, 3)").is_none(),
             "truncated group"
         );
+    }
+
+    #[test]
+    fn polyline_formula_parses_types_and_vertices() {
+        let (xt, yt, pts) =
+            parse_polyline("POLYLINE(0, 0, 0.25,0, 0.75,0.5, 1,1)").expect("parses");
+        assert_eq!((xt, yt), (0.0, 0.0));
+        assert_eq!(pts, vec![(0.25, 0.0), (0.75, 0.5), (1.0, 1.0)]);
+        let (xt, _, pts) = parse_polyline("POLYLINE(1,1,0.4,1.2)").expect("absolute");
+        assert_eq!(xt, 1.0);
+        assert_eq!(pts, vec![(0.4, 1.2)]);
+        // Only the type pair: a plain chord.
+        assert_eq!(parse_polyline("POLYLINE(0,0)").unwrap().2, vec![]);
+        assert!(
+            parse_polyline("POLYLINE(0,0,1)").is_none(),
+            "odd argument count"
+        );
+        assert!(parse_polyline("Themed").is_none());
+        assert!(parse_polyline("POLYLINE(0,0,inf,1)").is_none());
     }
 }

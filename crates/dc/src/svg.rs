@@ -719,6 +719,21 @@ fn node_ink_box(
                         }
                     }
                 }
+                "PolylineTo" => {
+                    // The POLYLINE() interior vertices (same per-axis
+                    // rule as NURBSTo).
+                    let a_text = row
+                        .cell("A")
+                        .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                        .unwrap_or_default();
+                    if let Some((xt, yt, pts)) = crate::curve::parse_polyline(&a_text) {
+                        let fx = if xt == 0.0 { width } else { gscale.0 };
+                        let fy = if yt == 0.0 { height } else { gscale.1 };
+                        for (px, py) in pts {
+                            pt(px * fx, py * fy, &mut u);
+                        }
+                    }
+                }
                 _ => {}
             }
             cur = (x, y);
@@ -4732,8 +4747,37 @@ fn render_geometry(
                     cur = (x, y);
                 }
             }
-            "PolylineTo" | "InfiniteLine" => {
-                // v0.2: approximate polylines/infinite lines with chords.
+            "PolylineTo" => {
+                // The A cell's POLYLINE() formula carries the interior
+                // vertices; fractions are of the geometry frame's own
+                // size (master dims in the master frame — the same
+                // per-axis rule as NURBSTo above), and the row's X/Y
+                // is the final vertex. Unparseable text keeps the
+                // straight chord.
+                let a_text = row
+                    .cell("A")
+                    .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                    .unwrap_or_default();
+                if let Some((xt, yt, pts)) = crate::curve::parse_polyline(&a_text) {
+                    let fx = if xt == 0.0 {
+                        width / scale.0.max(1e-12)
+                    } else {
+                        1.0
+                    };
+                    let fy = if yt == 0.0 {
+                        height / scale.1.max(1e-12)
+                    } else {
+                        1.0
+                    };
+                    for (px, py) in pts {
+                        let _ = write!(d, "L {}", emit_pt((px * fx, py * fy)));
+                    }
+                }
+                let _ = write!(d, "L {}", emit_pt((x, y)));
+                cur = (x, y);
+            }
+            "InfiniteLine" => {
+                // v0.2: approximate infinite lines with a chord.
                 let _ = write!(d, "L {}", emit_pt((x, y)));
                 cur = (x, y);
             }
@@ -9812,6 +9856,34 @@ mod tests {
         let open_after_curve = "M 0 0 C 1 0 0 1 0 0M 5 5 L 0 0";
         let f = closed_subpaths(open_after_curve);
         assert!(f.contains("M 0 0") && !f.contains("M 5 5"), "{f}");
+    }
+
+    /// PolylineTo walks its POLYLINE() vertices (Visio 2021 witness,
+    /// t05): fractions of Width/Height for type 0, absolute local
+    /// coordinates for type 1, then the row's X/Y endpoint — the
+    /// stencils' router glyphs used to collapse to a single chord.
+    #[test]
+    fn polyline_to_draws_its_vertices() {
+        let mut s = shape_at(1, (2.0, 2.0), 2.0, 1.0, 0.0);
+        let mut poly = geo_row(2, "PolylineTo", &[("X", 0.0), ("Y", 0.0)]);
+        poly.cells.push((
+            "A".into(),
+            Cell {
+                v: Some("POLYLINE(0, 0, 1,0, 1,1)".into()),
+                ..Cell::default()
+            },
+        ));
+        push_geo(
+            &mut s,
+            vec![geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]), poly],
+        );
+        let (doc, page) = page_fixture(vec![s]);
+        let svg = render_page(&doc, &page).unwrap();
+        // (1,0)·(2,1) → (2,0) and (1,1)·(2,1) → (2,1) (y flipped).
+        assert!(
+            svg.contains("L 2.00000 -0.00000 L 2.00000 -1.00000 L 0.00000 -0.00000"),
+            "{svg}"
+        );
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
