@@ -378,9 +378,14 @@ pub fn line_jumps(lines: &[JumpLine], (radius, radius_y): (f64, f64)) -> Vec<Jum
 }
 
 /// Parse a `#rrggbb` line-color cell into the overlay's (r, g, b).
+/// `color_value` hands a `#…` cell through verbatim, so the body is
+/// whatever the file carries: six BYTES need not be six hex digits.
+/// Anything else is `None`, and the caller's gray fallback answers
+/// (#333) — a multi-byte character straddling a slice offset used to
+/// panic here, taking the render and the reroute tail down with it.
 fn parse_hex_rgb(v: &str) -> Option<(u8, u8, u8)> {
     let hex = v.strip_prefix('#')?;
-    if hex.len() != 6 {
+    if hex.len() != 6 || !hex.is_ascii() {
         return None;
     }
     Some((
@@ -903,6 +908,83 @@ mod tests {
             "the axis line hops over the rotated one: dir {:?} under {:?}",
             j.dir,
             j.under
+        );
+    }
+
+    /// #333: `color_value` passes a `#…` LineColor through verbatim, so
+    /// a malformed one reaches the crossing set — and must land in the
+    /// gray fallback, never panic. `#aé000` is six bytes with `é`
+    /// straddling offset 2, `#000é0` straddles offset 4: the fixed
+    /// slices panicked inside the character on both.
+    #[test]
+    fn malformed_line_colors_fall_back_to_gray() {
+        for v in [
+            "#a\u{e9}000",
+            "#000\u{e9}0",
+            "#gggggg",
+            "#12345",
+            "ff0000",
+            "",
+        ] {
+            assert_eq!(parse_hex_rgb(v), None, "{v:?}");
+        }
+        assert_eq!(parse_hex_rgb("#ff0000"), Some((0xff, 0, 0)));
+        // Through the crossing set: the malformed connector is the
+        // jumper (it lies flatter), and both strokes of its hop
+        // resolve — its own to the gray fallback, the other's to its
+        // real color.
+        let connector = |id: i64, color: &str, from: (f64, f64), to: (f64, f64)| {
+            let (w, h) = (to.0 - from.0, to.1 - from.1);
+            let mut s = Shape {
+                id,
+                type_: Some("Shape".into()),
+                ..Shape::default()
+            };
+            for (n, v) in [
+                ("PinX", (from.0 + to.0) / 2.0),
+                ("PinY", (from.1 + to.1) / 2.0),
+                ("Width", w),
+                ("Height", h),
+                ("LocPinX", w / 2.0),
+                ("LocPinY", h / 2.0),
+                ("ObjType", 2.0),
+            ] {
+                s.sheet.set_cell(n, Cell::value(format!("{v}")));
+            }
+            s.sheet.set_cell("LineColor", Cell::value(color));
+            let row = |ix: i64, t: &str, x: f64, y: f64| Row {
+                t: Some(t.into()),
+                ix,
+                cells: vec![
+                    ("X".to_string(), Cell::value(format!("{x}"))),
+                    ("Y".to_string(), Cell::value(format!("{y}"))),
+                ],
+                ..Row::default()
+            };
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            sec.rows = vec![row(1, "MoveTo", 0.0, 0.0), row(2, "LineTo", w, h)];
+            s.sheet.children.push(SheetChild::Section(sec));
+            s
+        };
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        page.shapes
+            .push(connector(1, "#a\u{e9}000", (1.0, 1.0), (5.0, 1.0)));
+        page.shapes
+            .push(connector(2, "#ff0000", (3.0, 0.0), (3.0, 2.0)));
+        let doc = vsdx::Document::default();
+        let jumps = page_jumps(&doc, &page, &[]);
+        assert_eq!(jumps.len(), 1, "one crossing: {jumps:?}");
+        assert_eq!(
+            (jumps[0].jumper, jumps[0].color, jumps[0].under_color),
+            (1, (0x42, 0x42, 0x42), (0xff, 0, 0))
         );
     }
 }
