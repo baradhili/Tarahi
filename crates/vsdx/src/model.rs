@@ -51,6 +51,24 @@ impl Cell {
     pub fn is_inherited(&self) -> bool {
         self.f.as_deref() == Some("Inh")
     }
+    /// `V='Themed'`: the value comes from the document theme through the
+    /// style chain (`THEMEVAL()` on the Theme style, `F='Inh'` below
+    /// it). Without an evaluated theme it carries no value of its own —
+    /// resolution continues to the next style up, ending at the No Style
+    /// defaults (Visio 2021 witness: Basic/Network stencil masters
+    /// dropped into a theme-less drawing paint white fills and black
+    /// lines, never solid black).
+    pub fn is_themed(&self) -> bool {
+        self.v.as_deref().map(str::trim) == Some("Themed")
+    }
+    /// A Themed cell that EVALUATES the theme (`THEMEVAL()`, not `Inh`):
+    /// without an evaluated theme it takes the No Style value outright
+    /// — Visio 2021 paints a Box master (`FillForegnd=THEMEVAL()` on the
+    /// master shape, style "Block Normal" with a cached tint) plain
+    /// white in a theme-less drawing, never the style's tint.
+    pub fn is_theme_eval(&self) -> bool {
+        self.is_themed() && !self.is_inherited()
+    }
 }
 
 /// A row inside a section (optionally typed, e.g. `T='MoveTo'`).
@@ -464,7 +482,7 @@ impl Document {
             .find(|(n, _)| n == "LineStyle")
             .and_then(|(_, v)| v.parse::<i64>().ok())
             .unwrap_or(0);
-        self.stylesheet_cascade_cell(style_id, name, true)
+        self.stylesheet_cascade_cell(style_id, name)
     }
 
     /// The page's resolved `LineToLineX` (inches — the horizontal
@@ -585,69 +603,103 @@ impl Document {
             if c.v.is_some() && is_xform_cell(name) {
                 return Some(c.clone());
             }
-            if !c.is_inherited() {
+            if !c.is_inherited() && !c.is_themed() {
                 return Some(c.clone());
+            }
+            if c.is_theme_eval() {
+                return self.stylesheet_cascade_cell(0, name);
             }
         }
         if let Some(t) = self.instance_source(shape, ancestors) {
             if let Some(c) = t.sheet.cell(name) {
-                if !c.is_inherited() {
+                if !c.is_inherited() && !c.is_themed() {
                     return Some(c.clone());
+                }
+                if c.is_theme_eval() {
+                    return self.stylesheet_cascade_cell(0, name);
                 }
             }
         }
-        let style_id = match name {
-            n if n.starts_with("Line") => shape.line_style,
-            n if n.starts_with("Fill") => shape.fill_style,
+        let style_id = self.shape_style_for(shape, ancestors, name);
+        self.stylesheet_cascade_cell(style_id, name)
+    }
+
+    /// The stylesheet a shape's `name` cell cascades into: the shape's
+    /// own LineStyle/FillStyle/TextStyle attribute, else its master
+    /// source's — a master instance (or sub-shape) written without
+    /// style attributes uses the master shape's styles, not No Style
+    /// (Visio 2021 witness: network-stencil sub-shapes take their
+    /// gradient stops from "Tower Front" & co.).
+    pub fn shape_style_for(&self, shape: &Shape, ancestors: &[&Shape], name: &str) -> i64 {
+        let pick = |s: &Shape| match name {
+            n if n.starts_with("Line") => s.line_style,
+            n if n.starts_with("Fill") => s.fill_style,
             n if n.starts_with("Txt") | n.starts_with("Text") | is_text_block_cell(n) => {
-                shape.text_style
+                s.text_style
             }
-            _ => shape.line_style.or(shape.fill_style),
-        }
-        .unwrap_or(0);
-        self.stylesheet_cascade_cell(style_id, name, false)
+            _ => s.line_style.or(s.fill_style),
+        };
+        pick(shape)
+            .or_else(|| self.instance_source(shape, ancestors).and_then(pick))
+            .unwrap_or(0)
     }
 
     /// The shared stylesheet walk (GitHub #294): `start_id`'s sheet first,
-    /// then the chain of `LineStyle` links styles point at each other
-    /// with, 8 links deep. `follow_attr_parents` also reads the parent
-    /// from the style's `LineStyle` ATTRIBUTE when no linking cell
-    /// exists (the schema carries it in both places). Only the
-    /// page-layout resolution
-    /// ([`resolve_page_layout_cell`](Self::resolve_page_layout_cell))
-    /// sets it: page-layout cells are numeric layout constants, never
-    /// themed, so an attribute-only hop can't hijack the theme chain.
-    /// The SHAPE walk keeps the cell-only link — shipped stencils chain
-    /// Normal→Theme through attributes with `V="Themed"` cells, and a
-    /// theme-less document resolves those to plain black (the Basic
-    /// Shapes contact sheet filled `#FFFFFF` → `#000000`); honoring the
-    /// attribute link there needs theme-aware `Themed` handling first
-    /// (see the issue filed from the #294 review).
-    fn stylesheet_cascade_cell(
-        &self,
-        start_id: i64,
-        name: &str,
-        follow_attr_parents: bool,
-    ) -> Option<Cell> {
+    /// then up the style chain, 8 links deep — the linking `LineStyle`
+    /// cell when a style carries one, else the style's own parent
+    /// attribute for this kind of cell (`FillStyle` for Fill cells,
+    /// `TextStyle` for text-block cells, `LineStyle` otherwise; the
+    /// schema carries the link in both places). A `V='Themed'` value is
+    /// no value without an evaluated theme ([`Cell::is_themed`]), so the
+    /// walk continues past it — the shipped stencils chain
+    /// Normal → Theme → No Style through attributes, and the Theme
+    /// style's `THEMEVAL()` cells used to stop the walk (or, before the
+    /// attribute link was followed, the cell-only walk ended early) and
+    /// paint theme-less drawings solid black.
+    fn stylesheet_cascade_cell(&self, start_id: i64, name: &str) -> Option<Cell> {
         let mut cur = self.stylesheet(start_id)?;
+        // The style's own parent for THIS kind of cell (a style's
+        // FillStyle/LineStyle/TextStyle attributes name three parents).
+        let parent_attr = match name {
+            n if n.starts_with("Fill") => "FillStyle",
+            n if n.starts_with("Txt") | n.starts_with("Text") | is_text_block_cell(n) => {
+                "TextStyle"
+            }
+            _ => "LineStyle",
+        };
         for _ in 0..8 {
             if let Some(c) = cur.sheet.cell(name) {
-                if !c.is_inherited() {
+                if !c.is_inherited() && !c.is_themed() {
                     return Some(c.clone());
                 }
+                // THEMEVAL() with no evaluated theme: the No Style value.
+                if c.is_theme_eval() && cur.id != 0 {
+                    if let Some(no_style) = self.stylesheet(0) {
+                        if let Some(c) = no_style.sheet.cell(name) {
+                            if !c.is_themed() {
+                                return Some(c.clone());
+                            }
+                        }
+                    }
+                    return None;
+                }
             }
+            // A style without its own value — absent, `Inh`, or Themed
+            // with no evaluated theme — inherits from its parent style
+            // for this kind of cell: the linking cell when present,
+            // else the style's FillStyle/LineStyle/TextStyle attribute
+            // (the only link the stencils' Normal → Theme → No Style
+            // chain carries).
             let next_id = cur
                 .sheet
                 .cell("LineStyle")
                 .and_then(|c| c.numeric())
                 .map(|v| v as i64)
                 .or_else(|| {
-                    follow_attr_parents.then(|| {
-                        cur.attrs
-                            .iter()
-                            .find(|(n, _)| n == "LineStyle")
-                            .and_then(|(_, v)| v.parse::<i64>().ok())
-                    })?
+                    cur.attrs
+                        .iter()
+                        .find(|(n, _)| n == parent_attr)
+                        .and_then(|(_, v)| v.parse::<i64>().ok())
                 });
             match next_id {
                 Some(nid) if nid != cur.id => match self.stylesheet(nid) {
@@ -670,29 +722,31 @@ impl Document {
             if c.v.is_some() && is_xform_cell(name) {
                 return Some(c.clone());
             }
-            if !c.is_inherited() {
+            if !c.is_inherited() && !c.is_themed() {
                 return Some(c.clone());
+            }
+            if c.is_theme_eval() {
+                if let Some(c) = self.stylesheet_cascade_cell(0, name) {
+                    return Some(c);
+                }
             }
         }
         // Master inheritance.
         if let Some(t) = self.instance_source(shape, ancestors) {
             if let Some(c) = t.sheet.cell(name) {
-                if !c.is_inherited() {
+                if !c.is_inherited() && !c.is_themed() {
                     return Some(c.clone());
+                }
+                if c.is_theme_eval() {
+                    if let Some(c) = self.stylesheet_cascade_cell(0, name) {
+                        return Some(c);
+                    }
                 }
             }
         }
         // Stylesheet cascade.
-        let style_id = match name {
-            n if n.starts_with("Line") => shape.line_style,
-            n if n.starts_with("Fill") => shape.fill_style,
-            n if n.starts_with("Txt") | n.starts_with("Text") | is_text_block_cell(n) => {
-                shape.text_style
-            }
-            _ => shape.line_style.or(shape.fill_style),
-        }
-        .unwrap_or(0);
-        if let Some(c) = self.stylesheet_cascade_cell(style_id, name, false) {
+        let style_id = self.shape_style_for(shape, ancestors, name);
+        if let Some(c) = self.stylesheet_cascade_cell(style_id, name) {
             return Some(c);
         }
         if let Some(c) = self.sheet.cell(name) {
@@ -1244,6 +1298,88 @@ mod snap_glue_tests {
         bare.pages.push(bare_page);
         assert!((bare.page_line_to_line_x(&bare.pages[0]) - 0.125).abs() < 1e-9);
         assert!((bare.page_line_jump_factor(&bare.pages[0]) - 2.0 / 3.0).abs() < 1e-9);
+    }
+
+    /// Themed cells without an evaluated theme (Visio 2021 witness,
+    /// stencil masters dropped into a theme-less drawing):
+    /// - `F='Inh'` Themed inherits up the style chain, which follows each
+    ///   style's FillStyle/LineStyle attribute (Normal → Theme → No Style);
+    /// - `THEMEVAL()` Themed takes the No Style value outright;
+    /// - an instance without style attributes uses its master shape's
+    ///   styles, not No Style.
+    #[test]
+    fn themed_cells_and_master_styles_resolve_like_visio() {
+        let style = |id: i64, parent: Option<&str>, fill: Option<(&str, Option<&str>)>| {
+            let mut st = StyleSheet {
+                id,
+                ..Default::default()
+            };
+            if let Some(p) = parent {
+                for a in ["LineStyle", "FillStyle", "TextStyle"] {
+                    st.attrs.push((a.to_string(), p.to_string()));
+                }
+            }
+            if let Some((v, f)) = fill {
+                st.sheet.set_cell(
+                    "FillForegnd",
+                    Cell {
+                        v: Some(v.into()),
+                        f: f.map(Into::into),
+                        ..Cell::default()
+                    },
+                );
+            }
+            st
+        };
+        let mut doc = Document::default();
+        doc.stylesheets.extend([
+            style(0, None, Some(("1", None))),
+            style(6, Some("0"), Some(("Themed", Some("THEMEVAL()")))),
+            style(3, Some("6"), None),
+            style(22, Some("6"), Some(("#dde2cd", Some("THEMEGUARD(…)")))),
+            style(14, Some("6"), Some(("#cabb97", None))),
+        ]);
+        let shape = |fill_style: Option<i64>| Shape {
+            id: 1,
+            fill_style,
+            ..Shape::default()
+        };
+        // Normal → Theme (THEMEVAL) → No Style: white, never "Themed".
+        let normal = shape(Some(3));
+        let v = doc.resolve_cell(&normal, &[], "FillForegnd").unwrap().v;
+        assert_eq!(v.as_deref(), Some("1"));
+        // A master shape whose own cell is THEMEVAL(): No Style, not the
+        // style's cached tint.
+        let mut master_root = shape(Some(22));
+        master_root.sheet.set_cell(
+            "FillForegnd",
+            Cell {
+                v: Some("Themed".into()),
+                f: Some("THEMEVAL()".into()),
+                ..Cell::default()
+            },
+        );
+        // A master shape relying on its style: the style's value.
+        let tower = shape(Some(14));
+        for (id, root) in [(12, master_root), (13, tower)] {
+            doc.masters.push(Master {
+                id,
+                shapes: vec![root],
+                ..Master::default()
+            });
+        }
+        let mut box_inst = shape(None);
+        box_inst.master = Some(12);
+        let v = doc.resolve_cell(&box_inst, &[], "FillForegnd").unwrap().v;
+        assert_eq!(v.as_deref(), Some("1"), "THEMEVAL() → No Style");
+        let mut tower_inst = shape(None);
+        tower_inst.master = Some(13);
+        let v = doc.resolve_cell(&tower_inst, &[], "FillForegnd").unwrap().v;
+        assert_eq!(
+            v.as_deref(),
+            Some("#cabb97"),
+            "a style-less instance cascades into its master's FillStyle"
+        );
     }
 
     /// A minimal document carrying one verbatim `DocumentSettings`
