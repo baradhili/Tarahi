@@ -5026,8 +5026,10 @@ fn render_geometry(
         // unit-space parts (begin faces outward along the reversed
         // start tangent, end along the end tangent) — no marker defs,
         // so the size law holds without markerUnits scaling. #227: a
-        // CLOSED walk gets no frames — and so no heads — at all.
-        if let Some((begin, end)) = path_frames(&d) {
+        // CLOSED walk gets no frames — and so no heads — at all. A
+        // fully transparent line (LineColorTrans = 1) hides its heads
+        // with the shaft (Greptile on PR #327).
+        if let Some((begin, end)) = path_frames(&d).filter(|_| line_alpha > 0.0) {
             // LineColorTrans fades the heads with the shaft (the head
             // parts set no opacity of their own, so the group's
             // inherited fill-/stroke-opacity applies).
@@ -10294,6 +10296,44 @@ mod tests {
             ("FillBkgndTrans", "0.5"),
         ]);
         assert!(bk.contains(r#"fill-opacity="0.500""#), "{bk}");
+    }
+
+    /// LineColorTrans also applies to the arrowheads: a half
+    /// transparent line fades them, a fully transparent one hides them
+    /// with the shaft (Greptile on PR #327).
+    #[test]
+    fn line_transparency_fades_and_hides_arrowheads() {
+        let render = |trans: &str| {
+            let mut s = shape_at(1, (2.0, 2.0), 1.0, 0.0, 0.0);
+            push_geo(
+                &mut s,
+                vec![
+                    geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                    geo_row(2, "LineTo", &[("X", 1.0), ("Y", 0.0)]),
+                ],
+            );
+            s.sheet.set_cell("EndArrow", Cell::value("2"));
+            s.sheet.set_cell("LineColor", Cell::value("#00ff00"));
+            s.sheet.set_cell("LineColorTrans", Cell::value(trans));
+            let (doc, page) = page_fixture(vec![s]);
+            render_page(&doc, &page).unwrap()
+        };
+        let opaque = render("0");
+        assert!(
+            opaque.contains("dc-ah"),
+            "an opaque line draws its head: {opaque}"
+        );
+        let half = render("0.5");
+        assert!(
+            half.contains("dc-ah")
+                && half.contains(r#"<g fill-opacity="0.500" stroke-opacity="0.500">"#),
+            "a half transparent line fades its head: {half}"
+        );
+        let gone = render("1");
+        assert!(
+            !gone.contains("dc-ah") && !gone.contains("#00ff00"),
+            "a fully transparent line hides its head: {gone}"
+        );
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
