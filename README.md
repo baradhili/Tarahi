@@ -2,7 +2,7 @@
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-1.88%2B-orange?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![CI](https://img.shields.io/github/actions/workflow/status/baradhili/DiagramCraft/ci.yml?style=flat-square&label=CI)](https://github.com/baradhili/DiagramCraft/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/baradhili/Tarahi/ci.yml?style=flat-square&label=CI)](https://github.com/baradhili/Tarahi/actions/workflows/ci.yml)
 [![Powered by Z.ai GLM](https://img.shields.io/badge/Powered_by-Z.ai_GLM_5.x-0066FF?style=flat-square)](https://z.ai)
 [![AI harness: ZCode](https://img.shields.io/badge/AI_harness-ZCode-000000?style=flat-square)](https://z.ai)
 [![RE tooling: morluto/rea](https://img.shields.io/badge/RE_tooling-morluto/rea-555555?style=flat-square)](https://github.com/morluto/rea)
@@ -39,9 +39,9 @@ How can you help?
 
 2. Close issues - there are plenty now and I only have so much token quota
 
-2. Create PR - awesome! - but please keep the PRs on a narrow feature (no 10000 line PRs please!) and make sure they are at least checked by CodeRabbit - or better Greptile
+3. Create PR - awesome! - but please keep the PRs on a narrow feature (no 10000 line PRs please!) and make sure they are at least checked by CodeRabbit - or better Greptile
 
-3. Spread the word!
+4. Spread the word!
 
 ## Workspace
 
@@ -152,6 +152,13 @@ git config core.hooksPath .githooks
 
 Bypass a single commit with `COMMITLINT_SKIP=1`.
 
+## Requirements specification
+
+Development is governed by a GAMP 5 requirements pack managed in
+VeeTrace. The full specification — user requirements (URS), functional
+(FS) and design (DS) specs, and the IQ/OQ/PQ qualification levels — is
+published in the [project wiki](https://github.com/baradhili/Tarahi/wiki).
+
 ## Roadmap
 
 ### M1–M5 — Current
@@ -175,6 +182,39 @@ as v0.1.0 and has deepened through the 0.2.x waves:
   catalog (#87), and Quick Shapes (#88).
 - **0.2.4** — test-architecture wave (#97): de-duplicated and
   de-brittled suites across all four crates (#125).
+- **0.2.5** — WYSIWYG text editing, measured word-wrap, and the M5 text
+  wave (#21, #22, #151).
+- **0.2.6** — window-top chrome (#67), colours rebased on the theme
+  palette (#154), the craft-ui vendoring policy (#81), and the clippy
+  pre-push gate (#140).
+- **0.2.7** — group/container/geometry mechanics: member scaling (#69),
+  nesting and member handles (#95), Add-to-Underlying.
+- **0.2.8** — snap & glue engine (#109), drawing guides (#113),
+  connector authoring (#108), align/distribute (#110), and further
+  canvas extras (#163).
+- **0.2.9** — text-metrics fidelity (shaped measurement in lockstep
+  with the SVG rasterizer), stencils on disk, and the connector engine
+  wave (#164).
+- **0.2.10** — MDI shell, canvas remainders (lasso select, the full
+  0–45 arrow gallery #158, render-time line jumps, curved connectors,
+  background pages), and the resolved ShapeSheet (#189, #198).
+- **0.2.11** — sub-shape damage patching (#219) and Alt keytips (#184).
+- **0.2.12** — i18n framework on Fluent: English, German, and Persian
+  with RTL chrome (#246).
+- **0.2.13** — mini-toolbar restyle, arrow-key unglue, diamond trims,
+  master-chain seeding, Text color, stencils on disk.
+- **0.2.14** — harfrust 0.15 lockstep (#270), wave-3 render fidelity
+  (#227, #228, #233), empty-file-as-new-document (#279).
+- **0.2.15** — wave-4 text stack (#232, #234, #230, #229, #231), canvas
+  navigation (#283), title-tofu fix (#280), AppImage delta updates;
+  Español joins the language set (#282).
+- **0.2.16** — ShapeSheet fields with format pictures and the Insert
+  Field dialog (#267); 简体中文 (#282).
+- **0.2.17** — dialog-driven spell check over vendored hunspell
+  dictionaries (#121), line-jump semantics (#294, #293); 日本語 and
+  한국어 (#282).
+- **0.2.18** — connector reroute parity with Visio (#303, #301) and
+  Options follow-ups (#304).
 
 Open GUI depth (not yet scheduled to a release): full-screen
 presentation mode (#130), Change Shape (#131), freeform geometry
@@ -235,6 +275,17 @@ for Graphviz layout (untracked sample, like all of `Sample/`).
 
 - Language import-renderers with **configurable shape mapping** (bind language node/edge types to masters/stencil shapes): **d2**, **Graphviz DOT** (synergy: GraphVizio is a Graphviz add-in —
   its public behavior is a useful oracle), and **Mermaid**.
+
+## Contributors
+
+Built in the open by humans and agents:
+
+- **[baradhili](https://github.com/baradhili)** — bret watson (owner)
+- **[mk-git](https://github.com/mk-git)**
+- **[claude](https://github.com/claude)** — Claude Code
+- **[renovate[bot]](https://github.com/apps/renovate)** — dependency updates
+
+See the [full contributor graph](https://github.com/baradhili/Tarahi/graphs/contributors).
 
 ## License
 
