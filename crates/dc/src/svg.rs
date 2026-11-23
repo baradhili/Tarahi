@@ -4143,18 +4143,19 @@ fn render_geometry(
         .resolve_cell(s, chain, "LineWeight")
         .and_then(|c| cell_num(&c, env))
         .unwrap_or(0.0104);
-    // Visio never fills a 1-D shape (a line/arc has no interior): some
+    // A 1-D shape's OPEN path (a line, an arc) has no interior: some
     // line masters carry decorative FillPattern cells (28/30) that must
-    // be ignored, or the arc-chord region paints over everything.
+    // be ignored, or the arc-chord region paints over everything. Its
+    // CLOSED sections fill like any 2-D shape's — the block-arrow
+    // masters (Simple/Notched/Double Arrow) are 1-D shapes whose one
+    // closed outline Visio paints with FillForegnd (Visio 2021
+    // witness, t04). The open/closed gate sits at the fill join below.
     let one_d = doc.resolve_cell_explicit(s, chain, "BeginX").is_some()
         || doc.resolve_cell_explicit(s, chain, "EndX").is_some();
-    let fill_pattern = if one_d {
-        0.0
-    } else {
-        doc.resolve_cell_explicit(s, chain, "FillPattern")
-            .and_then(|c| cell_num(&c, env))
-            .unwrap_or(1.0)
-    };
+    let fill_pattern = doc
+        .resolve_cell_explicit(s, chain, "FillPattern")
+        .and_then(|c| cell_num(&c, env))
+        .unwrap_or(1.0);
     // Gradient fills: Visio theme fill patterns 24-40 are gradients
     // (FillForegnd → FillBkgnd along FillGradientAngle, default 90°
     // top-to-bottom). Everything else patterned >1.5 is a hatch: the
@@ -4727,8 +4728,16 @@ fn render_geometry(
         // path; NoFill sections opt out here, NoLine changes nothing
         // for the fill, and the implicit close SVG already applies to
         // open subpaths leaves the stroke open per section.
-        if !no_fill && fill != "none" {
-            paint.fill_d.push_str(&d);
+        // 1-D shapes fill their closed subpaths only (see `one_d`
+        // above); closure is judged per subpath, not per section
+        // (Greptile on PR #328).
+        let fill_part = if one_d {
+            closed_subpaths(&d)
+        } else {
+            d.clone()
+        };
+        if !no_fill && fill != "none" && !fill_part.trim().is_empty() {
+            paint.fill_d.push_str(&fill_part);
             paint.fill_d.push(' ');
             paint.fill = fill.clone();
         }
@@ -5775,6 +5784,71 @@ fn stroke_attr(no_line: bool, line_color: &str, line_weight: f64, dash: Option<&
             line_weight
         )
     }
+}
+
+/// The closed subpaths of a path in the renderer's own format
+/// (space-separated tokens, each subpath opened by `M`): a subpath is
+/// closed when it ends in `Z` or its last point returns to its `M`
+/// point. Any command closes, so a single curve that returns to its
+/// start counts. Open subpaths are dropped.
+fn closed_subpaths(d: &str) -> String {
+    let mut out = String::new();
+    let mut flush = |sub: &[&str]| {
+        if sub.len() < 4 {
+            return; // `M x y` alone draws nothing
+        }
+        let num = |t: &str| t.parse::<f64>().ok();
+        let closed = sub.last() == Some(&"Z")
+            || match (
+                num(sub[1]),
+                num(sub[2]),
+                num(sub[sub.len() - 2]),
+                num(sub[sub.len() - 1]),
+            ) {
+                (Some(x0), Some(y0), Some(x1), Some(y1)) => {
+                    (x0 - x1).abs() < 1e-4 && (y0 - y1).abs() < 1e-4
+                }
+                _ => false,
+            };
+        if closed {
+            out.push_str(&sub.join(" "));
+            out.push(' ');
+        }
+    };
+    // Command letters need not be space-separated: curve and arc rows
+    // trim their trailing space, so a following `M` lands glued to the
+    // last number (`… 0.00000M 1 2`). Split every command letter off
+    // as its own token (Greptile on PR #328); our numbers carry no
+    // exponent, so no letter is part of a number.
+    let toks: Vec<&str> = d
+        .split_whitespace()
+        .flat_map(|w| {
+            let mut parts = Vec::new();
+            let mut from = 0;
+            for (i, c) in w.char_indices() {
+                if c.is_ascii_alphabetic() {
+                    if i > from {
+                        parts.push(&w[from..i]);
+                    }
+                    parts.push(&w[i..i + 1]);
+                    from = i + 1;
+                }
+            }
+            if from < w.len() {
+                parts.push(&w[from..]);
+            }
+            parts
+        })
+        .collect();
+    let mut start = 0;
+    for (i, t) in toks.iter().enumerate() {
+        if *t == "M" && i > start {
+            flush(&toks[start..i]);
+            start = i;
+        }
+    }
+    flush(&toks[start..]);
+    out
 }
 
 fn style_attr(
@@ -9483,6 +9557,109 @@ mod tests {
             "the text style's TopMargin: {}",
             tb.insets.2
         );
+    }
+
+    /// 1-D shapes (BeginX/EndX) fill their CLOSED sections — the
+    /// block-arrow masters (Visio 2021 witness, t04) — while an open
+    /// path keeps ignoring a decorative FillPattern.
+    #[test]
+    fn one_d_shape_fills_closed_geometry_only() {
+        let render = |closed: bool| {
+            let mut s = shape_at(1, (2.0, 2.0), 3.0, 1.0, 0.0);
+            for (n, v) in [
+                ("BeginX", "0.5"),
+                ("BeginY", "2"),
+                ("EndX", "3.5"),
+                ("EndY", "2"),
+            ] {
+                s.sheet.set_cell(n, Cell::value(v));
+            }
+            s.sheet.set_cell("FillForegnd", Cell::value("#ed7d31"));
+            s.sheet.set_cell("FillPattern", Cell::value("1"));
+            let mut rows = vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.25)]),
+                geo_row(2, "LineTo", &[("X", 2.5), ("Y", 0.25)]),
+                geo_row(3, "LineTo", &[("X", 3.0), ("Y", 0.5)]),
+                geo_row(4, "LineTo", &[("X", 2.5), ("Y", 0.75)]),
+                geo_row(5, "LineTo", &[("X", 0.0), ("Y", 0.75)]),
+            ];
+            if closed {
+                rows.push(geo_row(6, "LineTo", &[("X", 0.0), ("Y", 0.25)]));
+            }
+            push_geo(&mut s, rows);
+            let (doc, page) = page_fixture(vec![s]);
+            render_page(&doc, &page).unwrap()
+        };
+        assert!(render(true).contains(r##"fill="#ed7d31""##));
+        assert!(!render(false).contains("#ed7d31"));
+    }
+
+    /// A closed curve followed by a second closed outline in the same
+    /// section still fills: the curve row ends without a space, so the
+    /// next `MoveTo` arrives glued to its last number (Greptile on PR
+    /// #328).
+    #[test]
+    fn one_d_shape_fills_a_closed_curve_before_another_outline() {
+        let mut s = shape_at(1, (2.0, 2.0), 3.0, 1.0, 0.0);
+        for (n, v) in [
+            ("BeginX", "0.5"),
+            ("BeginY", "2"),
+            ("EndX", "3.5"),
+            ("EndY", "2"),
+        ] {
+            s.sheet.set_cell(n, Cell::value(v));
+        }
+        s.sheet.set_cell("FillForegnd", Cell::value("#ed7d31"));
+        s.sheet.set_cell("FillPattern", Cell::value("1"));
+        push_geo(
+            &mut s,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.5)]),
+                geo_row(
+                    2,
+                    "QuadBezTo",
+                    &[("X", 1.0), ("Y", 0.5), ("A", 0.5), ("B", 1.0)],
+                ),
+                geo_row(
+                    3,
+                    "QuadBezTo",
+                    &[("X", 0.0), ("Y", 0.5), ("A", 0.5), ("B", 0.0)],
+                ),
+                geo_row(4, "MoveTo", &[("X", 2.0), ("Y", 0.25)]),
+                geo_row(5, "LineTo", &[("X", 3.0), ("Y", 0.25)]),
+                geo_row(6, "LineTo", &[("X", 3.0), ("Y", 0.75)]),
+                geo_row(7, "LineTo", &[("X", 2.0), ("Y", 0.25)]),
+            ],
+        );
+        let (doc, page) = page_fixture(vec![s]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(svg.contains(r##"fill="#ed7d31""##), "{svg}");
+    }
+
+    /// Closure is per subpath (Greptile on PR #328): two closed
+    /// outlines with different starts both fill, an open subpath next
+    /// to a closed one stays out of the fill, and a closed curve made
+    /// of a single row fills too.
+    #[test]
+    fn closed_subpaths_are_judged_one_by_one() {
+        let two = "M 0 0 L 1 0 L 1 1 L 0 0 M 5 5 L 6 5 L 6 6 L 5 5 ";
+        assert_eq!(closed_subpaths(two).split_whitespace().count(), 24);
+        let mixed = "M 0 0 L 1 0 L 1 1 M 5 5 L 6 5 L 6 6 L 5 5 ";
+        let f = closed_subpaths(mixed);
+        assert!(f.starts_with("M 5 5") && !f.contains("M 0 0"), "{f}");
+        let curve = "M 0 0 C 1 0 0 1 0 0 ";
+        assert_eq!(closed_subpaths(curve).trim(), curve.trim());
+        assert_eq!(closed_subpaths("M 0 0 L 1 1 Z").trim(), "M 0 0 L 1 1 Z");
+        assert!(closed_subpaths("M 0 0 L 1 0").is_empty());
+        assert!(closed_subpaths("M 0 0").is_empty());
+        // Curve rows end without a space, so the next `M` arrives
+        // glued to the last number; both outlines still close.
+        let glued = "M 0 0 C 1 0 0 1 0 0M 5 5 L 6 5 L 6 6 L 5 5 ";
+        let f = closed_subpaths(glued);
+        assert!(f.contains("M 0 0") && f.contains("M 5 5"), "{f}");
+        let open_after_curve = "M 0 0 C 1 0 0 1 0 0M 5 5 L 0 0";
+        let f = closed_subpaths(open_after_curve);
+        assert!(f.contains("M 0 0") && !f.contains("M 5 5"), "{f}");
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
