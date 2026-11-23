@@ -415,6 +415,21 @@ pub struct Document {
     pub package: Option<Package>,
 }
 
+/// Text Block Format cells without a `Txt`/`Text` prefix. They belong
+/// to the text style in Visio, so the style cascade must start at the
+/// shape's `TextStyle`, not its line or fill style.
+fn is_text_block_cell(name: &str) -> bool {
+    matches!(
+        name,
+        "VerticalAlign"
+            | "LeftMargin"
+            | "RightMargin"
+            | "TopMargin"
+            | "BottomMargin"
+            | "DefaultTabStop"
+    )
+}
+
 impl Document {
     pub fn master(&self, id: i64) -> Option<&Master> {
         self.masters.iter().find(|m| m.id == id)
@@ -584,7 +599,9 @@ impl Document {
         let style_id = match name {
             n if n.starts_with("Line") => shape.line_style,
             n if n.starts_with("Fill") => shape.fill_style,
-            n if n.starts_with("Txt") | n.starts_with("Text") => shape.text_style,
+            n if n.starts_with("Txt") | n.starts_with("Text") | is_text_block_cell(n) => {
+                shape.text_style
+            }
             _ => shape.line_style.or(shape.fill_style),
         }
         .unwrap_or(0);
@@ -669,7 +686,9 @@ impl Document {
         let style_id = match name {
             n if n.starts_with("Line") => shape.line_style,
             n if n.starts_with("Fill") => shape.fill_style,
-            n if n.starts_with("Txt") | n.starts_with("Text") => shape.text_style,
+            n if n.starts_with("Txt") | n.starts_with("Text") | is_text_block_cell(n) => {
+                shape.text_style
+            }
             _ => shape.line_style.or(shape.fill_style),
         }
         .unwrap_or(0);
