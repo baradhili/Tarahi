@@ -6231,28 +6231,37 @@ fn gradient_stops(doc: &Document, s: &Shape, chain: &[&Shape], prefix: &str) -> 
             _ => break,
         }
     }
-    let usable = |sec: &&vsdx::Section| {
-        sec.rows
-            .iter()
-            .any(|r| r.cell("GradientStopColor").is_some_and(|c| !c.is_themed()))
-    };
-    let Some(sec) = first(&s.sheet, &name)
-        .filter(usable)
-        .or(src.filter(usable))
-        .or(style)
-    else {
-        return Vec::new();
-    };
-    let mut stops: Vec<Stop> = sec
-        .rows
+    // Stop rows merge per IX across the layers — instance, master,
+    // style — and per CELL within a row: a master row that overrides
+    // only `GradientStopColor` keeps the style row's position (Visio
+    // 2021 witness: the Network-Locations cloud overrides stop 0's
+    // color and inherits stop 1 entirely from "3D Net Face"). A row
+    // deleted (`Del='1'`) in the topmost layer that mentions it is gone.
+    let layers: Vec<&vsdx::Section> = [first(&s.sheet, &name), src, style]
+        .into_iter()
+        .flatten()
+        .collect();
+    let mut ixs: Vec<i64> = layers
         .iter()
-        .filter(|r| !r.is_deleted())
-        .filter_map(|r| {
+        .flat_map(|sec| sec.rows.iter().map(|r| r.ix))
+        .collect();
+    ixs.sort_unstable();
+    ixs.dedup();
+    let mut stops: Vec<Stop> = ixs
+        .into_iter()
+        .filter_map(|ix| {
+            let rows: Vec<&vsdx::Row> = layers
+                .iter()
+                .filter_map(|sec| sec.rows.iter().find(|r| r.ix == ix))
+                .collect();
+            if rows.first().is_none_or(|r| r.is_deleted()) {
+                return None;
+            }
             let cell = |n: &str| {
-                r.cell(n).filter(|c| !c.is_inherited()).or_else(|| {
-                    src.and_then(|m| m.rows.iter().find(|mr| mr.ix == r.ix))
-                        .and_then(|mr| mr.cell(n))
-                })
+                rows.iter()
+                    .take_while(|r| !r.is_deleted())
+                    .filter_map(|r| r.cell(n))
+                    .find(|c| !c.is_inherited() && !c.is_themed())
             };
             let col = cell("GradientStopColor")?;
             let color = color_value(doc, col.v.as_deref().unwrap_or(""), col.f.as_deref());
