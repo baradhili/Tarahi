@@ -4703,12 +4703,12 @@ fn render_geometry(
                     // instance dims here too would square the stretch
                     // (#218 review round).
                     let fx = if f.x_type == 0.0 {
-                        width / scale.0.max(1e-12)
+                        frame_dim(width, scale.0)
                     } else {
                         1.0
                     };
                     let fy = if f.y_type == 0.0 {
-                        height / scale.1.max(1e-12)
+                        frame_dim(height, scale.1)
                     } else {
                         1.0
                     };
@@ -4760,12 +4760,12 @@ fn render_geometry(
                     .unwrap_or_default();
                 if let Some((xt, yt, pts)) = crate::curve::parse_polyline(&a_text) {
                     let fx = if xt == 0.0 {
-                        width / scale.0.max(1e-12)
+                        frame_dim(width, scale.0)
                     } else {
                         1.0
                     };
                     let fy = if yt == 0.0 {
-                        height / scale.1.max(1e-12)
+                        frame_dim(height, scale.1)
                     } else {
                         1.0
                     };
@@ -5986,6 +5986,19 @@ fn closed_subpaths(d: &str) -> String {
     }
     flush(&toks[start..]);
     out
+}
+
+/// The geometry frame's own size on one axis: `dim / scale` recovers
+/// the master's dimension from the instance's (`scale` = instance /
+/// master, so a negative instance size keeps its sign). A zero scale
+/// has no master dimension to recover and keeps `dim` (Greptile on
+/// PR #329: the old `scale.max(1e-12)` threw negative scales to 1e12).
+fn frame_dim(dim: f64, scale: f64) -> f64 {
+    if scale.abs() > 1e-12 {
+        dim / scale
+    } else {
+        dim
+    }
 }
 
 fn style_attr(
@@ -9856,6 +9869,18 @@ mod tests {
         let open_after_curve = "M 0 0 C 1 0 0 1 0 0M 5 5 L 0 0";
         let f = closed_subpaths(open_after_curve);
         assert!(f.contains("M 0 0") && !f.contains("M 5 5"), "{f}");
+    }
+
+    /// The geometry frame keeps the sign of a negative instance size:
+    /// master width 2, instance width −4 → scale −2 → frame 2, so a
+    /// fractional vertex at 0.5 lands at −2 after `emit_pt`'s scale,
+    /// not at 1e12 (Greptile on PR #329).
+    #[test]
+    fn frame_dim_keeps_negative_scales() {
+        assert!((frame_dim(-4.0, -2.0) - 2.0).abs() < 1e-12);
+        assert!((0.5 * frame_dim(-4.0, -2.0) * -2.0 - -2.0).abs() < 1e-12);
+        assert!((frame_dim(3.0, 1.5) - 2.0).abs() < 1e-12);
+        assert_eq!(frame_dim(3.0, 0.0), 3.0, "a zero scale keeps the dim");
     }
 
     /// PolylineTo walks its POLYLINE() vertices (Visio 2021 witness,
