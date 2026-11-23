@@ -2286,7 +2286,12 @@ pub(crate) fn resolve_text_block(
         .and_then(|r| r.cell("HorzAlign"))
         .and_then(|c| c.numeric())
         .unwrap_or(1.0) as i32;
-    let valign = get("VertAlign").unwrap_or(2.0) as i32;
+    // The ShapeSheet cell is `VerticalAlign` (Text Block Format
+    // section): 0 top, 1 middle (the Normal-style default), 2 bottom.
+    // The block keeps its own 1 top / 2 middle / 3 bottom encoding,
+    // so shift by one. (There is no `VertAlign` cell — reading that
+    // name always fell back to middle.)
+    let valign = get("VerticalAlign").map_or(2, |v| (v.round() as i32).clamp(0, 2) + 1);
 
     // Text-block insets (Visio defaults: 0.1 in left/right, 0.0555 in
     // top/bottom) and 120% line spacing.
@@ -9365,6 +9370,27 @@ mod tests {
         let (_, full) =
             render_shape_layer_opts(&doc, &page, 1, &[], bounds, None, None, None).unwrap();
         assert!(full.contains("#ff2200") && full.contains("#22cc00"));
+    }
+
+    /// The Text Block Format cell is `VerticalAlign` with 0 top,
+    /// 1 middle, 2 bottom (Visio 2021 witness: three boxes with 0/1/2
+    /// put the text top/middle/bottom). It maps onto the block's
+    /// 1/2/3 encoding; out-of-range values clamp.
+    #[test]
+    fn vertical_align_cell_maps_top_middle_bottom() {
+        let va = |v: Option<&str>| {
+            let mut s = shape_at(1, (4.0, 5.0), 2.0, 1.0, 0.0);
+            if let Some(v) = v {
+                s.sheet.set_cell("VerticalAlign", Cell::value(v));
+            }
+            let (doc, page) = page_fixture(vec![s]);
+            text_block(&doc, &page, 1).unwrap().valign
+        };
+        assert_eq!(va(Some("0")), 1, "0 = top");
+        assert_eq!(va(Some("1")), 2, "1 = middle");
+        assert_eq!(va(Some("2")), 3, "2 = bottom");
+        assert_eq!(va(None), 2, "absent = middle");
+        assert_eq!(va(Some("7")), 3, "clamped");
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
