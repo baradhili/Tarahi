@@ -14,7 +14,7 @@
 //! arc through [`is_stored_jump_arc`] here, and [`page_jumps_stripping`]
 //! walks the page's connectors through that same hit walk.
 
-use crate::geom::{geometry_hit_segments, hit_frame, is_connector};
+use crate::geom::{geometry_hit_segments_marked, hit_frame, is_connector};
 
 #[derive(Debug, Clone)]
 pub struct JumpLine {
@@ -27,6 +27,11 @@ pub struct JumpLine {
     /// page's `LineJumpStyle`, #324 phase 4).
     pub style: JumpStyle,
     pub pts: Vec<(f64, f64)>,
+    /// UNBRIDGED stroke breaks: pts indices a pen move OPENED (an
+    /// authored second stroke — the window pairing pts[k-1]→pts[k]
+    /// with k in breaks draws no ink and never crosses). A
+    /// RECOGNIZED stored gap slot bridges instead (#324 phase 5).
+    pub breaks: Vec<usize>,
 }
 
 /// A computed hop (#108): where the jumping line crosses the under
@@ -206,7 +211,11 @@ pub fn is_stored_jump_polyline(
     let Some((_, controls)) = parse_polyline_controls(a_text) else {
         return false;
     };
-    if controls.is_empty() || size.0 <= 0.0 || size.1 <= 0.0 {
+    // Degeneracy reads the ABSOLUTE dims; the fractions themselves
+    // denormalize against the SIGNED values the writer divided by (a
+    // reversed connector carries Width = −5 — its saved square must
+    // re-classify; #324 phase-5 review).
+    if controls.is_empty() || size.0.abs() <= 1e-9 || size.1.abs() <= 1e-9 {
         return false;
     }
     let len = chord.0.hypot(chord.1);
@@ -223,18 +232,46 @@ pub fn is_stored_jump_polyline(
     if radius <= 0.0 || (len - 2.0 * radius).abs() > (radius * 0.05).max(1e-6) {
         return false;
     }
-    // Every control inside the 2r × r box over the chord (a hair of
-    // writer rounding on each side). The fractions are of the WHOLE
-    // SHAPE, so each denormalized control is read relative to the
-    // chord's own start.
+    // Every control inside the 2r × r box over the chord AND the
+    // sequence matching a shape this engine generates: the single
+    // apex at the midpoint (Sides ≥ 2), or the flat top's two corners
+    // at the slot ends (Square). Arbitrary in-box polylines that
+    // double back match no generated hump and stay authored art
+    // (#324 phase-5 review). The fractions are of the WHOLE SHAPE, so
+    // each denormalized control is read relative to the chord's own
+    // start.
     let (ux, uy) = (chord.0 / len, chord.1 / len);
-    let (nx, ny) = (-uy, ux);
-    controls.iter().all(|(fx, fy)| {
+    let tol = (radius * 0.02).max(1e-6);
+    let rel = |fx: f64, fy: f64| {
         let (cx, cy) = (fx * size.0 - start.0, fy * size.1 - start.1);
-        let along = cx * ux + cy * uy;
-        let off = (cx * nx + cy * ny).abs();
-        along >= -radius * 0.1 && along <= len + radius * 0.1 && off <= radius * 1.1
-    })
+        (cx * ux + cy * uy, cy * ux - cx * uy)
+    };
+    let in_box = controls
+        .iter()
+        .all(|&(fx, fy)| rel(fx, fy).0 >= -radius * 0.1 && rel(fx, fy).0 <= len + radius * 0.1);
+    if !in_box {
+        return false;
+    }
+    match controls.as_slice() {
+        // Sides(2..): one apex at the crossing, a full r off the run.
+        [(fx, fy)] => {
+            let (along, off) = rel(*fx, *fy);
+            (along - len / 2.0).abs() <= tol && (off.abs() - radius).abs() <= tol
+        }
+        // Square: both corners AT the slot ends, a full r off the run.
+        [(ax, ay), (bx, by)] => {
+            let (aa, ao) = rel(*ax, *ay);
+            let (ba, bo) = rel(*bx, *by);
+            let (a_ok, b_ok) = (
+                (ao.abs() - radius).abs() <= tol,
+                (bo.abs() - radius).abs() <= tol,
+            );
+            (a_ok && b_ok)
+                && ((aa <= tol && ba >= len - tol) || (aa >= len - tol && ba <= tol))
+        }
+        // More controls than the writer ever emits for one hop.
+        _ => false,
+    }
 }
 
 /// A stored GAP hop (#324 phase 4): a mid-route `MoveTo` whose skip
@@ -328,13 +365,23 @@ pub fn is_stored_jump_arc(
         // Only the CHOSEN axis's radius must be positive: a FactorY=0
         // page still recognizes horizontal stored jumps (PR #299
         // round-3 review); a zero on the chosen axis never strips.
+        // A NEAR-DIAGONAL chord tests BOTH radii: the writer and this
+        // classifier pick the axis on an >= tie that six-decimal row
+        // rounding can flip across (a 45° run with unequal X/Y —
+        // #324 phase-5 review).
         && {
-            let radius = if chord.0.abs() >= chord.1.abs() {
-                radius_x
-            } else {
-                radius_y
+            let near_diagonal =
+                (chord.0.abs() - chord.1.abs()).abs() <= len * 0.02;
+            let pick = |radius: f64| {
+                radius > 0.0 && (a - radius).abs() <= (radius * 0.05).max(1e-6)
             };
-            radius > 0.0 && (a - radius).abs() <= (radius * 0.05).max(1e-6)
+            if near_diagonal {
+                pick(radius_x) || pick(radius_y)
+            } else if chord.0.abs() >= chord.1.abs() {
+                pick(radius_x)
+            } else {
+                pick(radius_y)
+            }
         }
 }
 
@@ -624,7 +671,15 @@ pub fn line_jumps_with(
             // screenshot). Clusters within the hop radius merge.
             let mut pair: Vec<Jump> = Vec::new();
             for (k1, w1) in pts[i].windows(2).enumerate() {
+                // A window that spans an unbridged stroke break draws
+                // no ink — never a crossing (#324 phase 5).
+                if lines[i].breaks.contains(&(k1 + 1)) {
+                    continue;
+                }
                 for (k2, w2) in pts[j].windows(2).enumerate() {
+                    if lines[j].breaks.contains(&(k2 + 1)) {
+                        continue;
+                    }
                     // #294 review: a crossing ON an interior vertex of
                     // either polyline (an elbow corner exactly on the
                     // other line) is a real crossing — the strict-
@@ -770,7 +825,17 @@ pub fn line_jumps_with(
                     // wins at a both-bend contact has no witness).
                     let same_point = dd < 1e-6;
                     if dd < reach && (c.jumper == jmp.jumper || same_point) {
-                        c.at = ((c.at.0 + jmp.at.0) / 2.0, (c.at.1 + jmp.at.1) / 2.0);
+                        // Average the positions only for crossings on
+                        // the SAME run (near-parallel directions) —
+                        // the centroid of crossings on two legs of a
+                        // bend sits on neither shaft, and neither the
+                        // painter nor the row writer can place a hop
+                        // there (#324 phase-5 review: keep the
+                        // cluster's own crossing instead).
+                        let same_run = (c.dir.0 * jmp.dir.0 + c.dir.1 * jmp.dir.1) > 0.99;
+                        if same_run || same_point {
+                            c.at = ((c.at.0 + jmp.at.0) / 2.0, (c.at.1 + jmp.at.1) / 2.0);
+                        }
                         hit = true;
                         break;
                     }
@@ -966,14 +1031,48 @@ pub fn page_jumps_stripping(
         // evidence is THIS page's resolved radius (the same value the
         // hop draws with) — or the caller's override, the #301
         // pre-edit radius when a jump-size edit just landed.
-        let segs = geometry_hit_segments(s, master_root, &frame, Some((strip_r, strip_ry)));
+        let segs = geometry_hit_segments_marked(s, master_root, &frame, Some((strip_r, strip_ry)));
         if segs.is_empty() {
             continue;
         }
-        // The polyline the crossing math walks: the segments' endpoints.
+        // The polyline the crossing math walks. A PEN-UP bridge
+        // segment (an authored stroke break) stays OUT: bridging it
+        // drew hops in blank space between unrelated strokes. The one
+        // bridged exception is a RECOGNIZED stored gap slot — the
+        // saved gap's own strokes must read as one run so the
+        // crossing inside the slot recomputes (the reconcile rewrites
+        // it; #324 phase 5).
         let mut pts: Vec<(f64, f64)> = Vec::with_capacity(segs.len() + 1);
-        pts.push(segs[0].0);
-        for (_, b) in &segs {
+        let mut breaks: Vec<usize> = Vec::new();
+        let unit = |a: (f64, f64), b: (f64, f64)| {
+            let d = (b.0 - a.0, b.1 - a.1);
+            let l = d.0.hypot(d.1).max(1e-9);
+            (d.0 / l, d.1 / l)
+        };
+        let mut prev_run: Option<(f64, f64)> = None;
+        for (k, (a, b, pen_up)) in segs.iter().enumerate() {
+            if k == 0 {
+                pts.push(*a);
+            }
+            if *pen_up {
+                // THIS segment is the bridge: a is the previous
+                // stroke's end, b the pen move's target — the skip is
+                // b − a. The run directions around it: the last real
+                // run INTO a, the first real run OUT of b.
+                let skip = (b.0 - a.0, b.1 - a.1);
+                let next_dir = segs.get(k + 1).map(|(_, nb, _)| unit(*b, *nb));
+                if !is_stored_jump_gap(skip, prev_run, next_dir, strip_r, strip_ry) {
+                    breaks.push(pts.len());
+                }
+            } else if k > 0 && !segs[k - 1].2 {
+                // The run INTO this segment's start is the PREVIOUS
+                // real segment's own direction (contiguous pts make
+                // prev.end == cur.start — the difference is zero).
+                let p = &segs[k - 1];
+                prev_run = Some(unit(p.0, p.1));
+            } else if k == 0 {
+                prev_run = Some(unit(*a, *b));
+            }
             pts.push(*b);
         }
         let weight = doc
@@ -1011,6 +1110,7 @@ pub fn page_jumps_stripping(
             color,
             style: line_jump_style(doc, &chain, s, page_style),
             pts,
+            breaks,
         });
     }
     line_jumps_with(&lines, (radius, radius_y), &rules)
@@ -1034,6 +1134,7 @@ mod tests {
             color: (0, 0, 0),
             style: JumpStyle::Arc,
             pts: pts.to_vec(),
+            breaks: Vec::new(),
         }
     }
 
@@ -1050,6 +1151,7 @@ mod tests {
             color: (0, 0, 0),
             style: JumpStyle::Arc,
             pts: pts.to_vec(),
+            breaks: Vec::new(),
         };
         // A shallow arc's belly cut by a horizontal just under its
         // apex: the line enters and leaves 0.05 in apart — well inside
@@ -1303,6 +1405,7 @@ mod tests {
                 color: (0, 0, 0),
                 style: JumpStyle::Arc,
                 pts: vec![(0.0, 1.0), (2.0, 1.0)],
+                breaks: Vec::new(),
             },
             // The crossed line: a U crossing the run TWICE — at x=1
             // and x=1.5. One pair, two crossings 0.5 in apart.
@@ -1313,6 +1416,7 @@ mod tests {
                 color: (0, 0, 0),
                 style: JumpStyle::Arc,
                 pts: vec![(1.0, 0.0), (1.0, 2.0), (1.5, 2.0), (1.5, 0.0)],
+                breaks: Vec::new(),
             },
         ];
         // X radius tiny, Y radius huge: the horizontal hops draw at
@@ -1354,6 +1458,7 @@ mod tests {
             color: (0, 0, 0),
             style: JumpStyle::Arc,
             pts: vec![(1.0, 0.5), (0.4, 0.5), (0.4, 1.0)],
+            breaks: Vec::new(),
         };
         let u = JumpLine {
             id: 2,
@@ -1362,6 +1467,7 @@ mod tests {
             color: (0, 0, 0),
             style: JumpStyle::Arc,
             pts: vec![(0.35, 0.578), (0.5, 0.428)],
+            breaks: Vec::new(),
         };
         // X radius 0 (no horizontal hops can draw), Y radius 0.05.
         let js = line_jumps_with(
@@ -1795,6 +1901,113 @@ mod tests {
             let js = page_jumps(&doc, &page, &[]);
             assert_eq!((js.len(), js[0].style), (1, want), "code {code}");
         }
+    }
+
+    /// Authored stroke breaks stay out of the crossing set, and a
+    /// stored GAP slot bridges (#324 phase 5): the hit walk marks the
+    /// pen-up bridge; page_jumps drops unrecognized bridges (a hop in
+    /// blank space between unrelated strokes) and keeps a recognized
+    /// 2r slot so the crossing inside it recomputes.
+    #[test]
+    fn page_jumps_skips_authored_breaks_and_bridges_stored_gaps() {
+        let connector = |id: i64, rows: &[(&str, f64, f64)]| {
+            let mut s = vsdx::model::Shape {
+                id,
+                type_: Some("Shape".into()),
+                ..vsdx::model::Shape::default()
+            };
+            for (n, v) in [
+                ("PinX", 2.5),
+                ("PinY", 3.0),
+                ("Width", 5.0),
+                ("Height", 0.0),
+                ("LocPinX", 2.5),
+                ("LocPinY", 0.0),
+                ("ObjType", 2.0),
+            ] {
+                s.sheet.set_cell(n, Cell::value(format!("{v}")));
+            }
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            sec.rows = rows
+                .iter()
+                .enumerate()
+                .map(|(k, (t, x, y))| Row {
+                    t: Some((*t).into()),
+                    ix: k as i64 + 1,
+                    cells: vec![
+                        ("X".to_string(), Cell::value(format!("{x}"))),
+                        ("Y".to_string(), Cell::value(format!("{y}"))),
+                    ],
+                    ..Row::default()
+                })
+                .collect();
+            s.sheet.children.push(SheetChild::Section(sec));
+            s
+        };
+        let v = connector(2, &[("MoveTo", 0.0, 0.0), ("LineTo", 0.0, 6.0)]);
+        let v = {
+            let mut s = v;
+            for (n, val) in [("PinX", 2.5), ("PinY", 3.0), ("Width", 0.0), ("Height", 6.0), ("LocPinX", 0.0), ("LocPinY", 3.0)] {
+                s.sheet.set_cell(n, Cell::value(format!("{val}")));
+            }
+            s
+        };
+        // Two disjoint strokes (x 0..1 and x 3..4 in local — page x
+        // 0..1 and 3..4 around pin 2.5... build with local rows): the
+        // vertical at local x 2 crosses ONLY the phantom bridge — no
+        // hop may appear.
+        let broken = connector(
+            1,
+            &[
+                ("MoveTo", 0.0, 0.0),
+                ("LineTo", 1.0, 0.0),
+                ("MoveTo", 3.0, 0.0),
+                ("LineTo", 4.0, 0.0),
+            ],
+        );
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        page.shapes.push(broken);
+        page.shapes.push(v.clone());
+        let doc = vsdx::Document::default();
+        assert!(
+            page_jumps(&doc, &page, &[]).is_empty(),
+            "no hop in blank space between unrelated strokes"
+        );
+        // A stored GAP slot: strokes ending/beginning 2r apart on one
+        // run — the vertical crossing INSIDE the slot recomputes (the
+        // reconcile rewrites the gap there).
+        let r = 0.125 * (2.0 / 3.0) / 2.0;
+        let gapped = connector(
+            1,
+            &[
+                ("MoveTo", 0.0, 0.0),
+                ("LineTo", 2.5 - r, 0.0),
+                ("MoveTo", 2.5 + r, 0.0),
+                ("LineTo", 5.0, 0.0),
+            ],
+        );
+        let mut page2 = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        page2.shapes.push(gapped);
+        page2.shapes.push(v);
+        let js = page_jumps(&doc, &page2, &[]);
+        assert_eq!(js.len(), 1, "the crossing inside the stored gap: {js:?}");
+        assert!(
+            (js[0].at.0 - 2.5).abs() < 1e-9,
+            "the hop sits at the slot's crossing: {:?}",
+            js[0].at
+        );
     }
 
     /// A shared-VERTEX contact seen through different window pairs

@@ -522,6 +522,24 @@ pub fn geometry_hit_segments(
     frame: &HitFrame,
     strip_stored_jumps: Option<(f64, f64)>,
 ) -> Vec<((f64, f64), (f64, f64))> {
+    geometry_hit_segments_marked(s, master_root, frame, strip_stored_jumps)
+        .into_iter()
+        .map(|(a, b, _)| (a, b))
+        .collect()
+}
+
+/// [`geometry_hit_segments`] with each PEN-UP BRIDGE segment marked
+/// `true` — a segment that exists only because a `MoveTo` jumped the
+/// pen between strokes, not drawn ink. The crossing set
+/// (`page_jumps_stripping`) bridges a break only when it is a
+/// RECOGNIZED stored gap slot; authored stroke breaks stay out of the
+/// crossing walk (#324 phase 5). Hit-testing keeps the unmarked form.
+pub fn geometry_hit_segments_marked(
+    s: &Shape,
+    master_root: Option<&Shape>,
+    frame: &HitFrame,
+    strip_stored_jumps: Option<(f64, f64)>,
+) -> Vec<MarkedSeg> {
     let mut sections: Vec<&Section> = s.sheet.sections_named("Geometry");
     // (owning width/height for Rel rows, x/y scale). The scale only
     // applies when the WHOLE section is the master's (its cached
@@ -595,6 +613,8 @@ pub fn geometry_hit_segments(
         )
     };
     let mut pts: Vec<(f64, f64)> = Vec::new();
+    // Stroke-break indices: pts positions a pen move OPENED (#324 phase 5).
+    let mut pen_up_before: Vec<usize> = Vec::new();
     // shape-local
     let mut cur: Option<(f64, f64)> = None;
     // The same pen in the UNSCALED row frame — stored-jump
@@ -700,6 +720,13 @@ pub fn geometry_hit_segments(
         let end = *end;
         match t {
             "MoveTo" | "RelMoveTo" => {
+                // A mid-route pen move records the STROKE BREAK: the
+                // segment pts.last()→this point is a phantom bridge
+                // the crossing set must not treat as ink (the marked
+                // variant's contract; #324 phase-5 review).
+                if !pts.is_empty() {
+                    pen_up_before.push(pts.len());
+                }
                 cur = Some(end);
                 cur_local = Some(end_local);
                 pts.push(to_page(end));
@@ -985,7 +1012,28 @@ pub fn geometry_hit_segments(
             }
         }
     }
-    pts.windows(2).map(|w| (w[0], w[1])).collect()
+    geometry_segments_from_pts(pts, &pen_up_before)
+}
+
+/// One hit-walk segment, with the PEN-UP BRIDGE flag (`true` = the
+/// segment exists only because a `MoveTo` jumped the pen).
+pub type MarkedSeg = ((f64, f64), (f64, f64), bool);
+
+/// The walk's polyline + stroke-break indices → segments, each bridge
+/// marked `true` (a segment that exists only because a pen move
+/// jumped the pen — NOT drawn ink). [`geometry_hit_segments`] drops
+/// the marks (hit-testing keeps its long-standing behavior); the
+/// crossing set keeps them and drops UNRECOGNIZED bridges
+/// (`page_jumps_stripping`, #324 phase 5).
+fn geometry_segments_from_pts(pts: Vec<(f64, f64)>, pen_up_before: &[usize]) -> Vec<MarkedSeg> {
+    pts.windows(2)
+        .enumerate()
+        .map(|(k, w)| {
+            let bridge = pen_up_before.contains(&(k + 1));
+            ((w[0], w[1]), bridge)
+        })
+        .map(|((a, b), bridge)| (a, b, bridge))
+        .collect()
 }
 
 #[cfg(test)]

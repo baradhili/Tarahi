@@ -867,12 +867,20 @@ pub fn plan_connector_frame(
     // reconcile stores hops on a master-based line connector, its
     // ArcTo rows must not push it onto the curve-translate path —
     // CodeRabbit on the #303 batch).
+    let conn_wh = (
+        doc.resolve_cell(conn, chain, "Width")
+            .and_then(|c| c.numeric())
+            .unwrap_or(1.0),
+        doc.resolve_cell(conn, chain, "Height")
+            .and_then(|c| c.numeric())
+            .unwrap_or(1.0),
+    );
     let line_frame = conn.master.is_some()
         && conn
             .sheet
             .sections_named("Geometry")
             .first()
-            .is_some_and(|g| route_owned_rows(g, &master_rows, jump_radii));
+            .is_some_and(|g| route_owned_rows(g, &master_rows, jump_radii, conn_wh));
     // #226 (MisterDiagram parity evidence): the CHORD-frame
     // masters — a master-based curve connector whose
     // inherited geometry rows derive their coordinates from
@@ -1167,7 +1175,7 @@ pub fn plan_connector_frame(
                 .sheet
                 .sections_named("Geometry")
                 .first()
-                .is_some_and(|g| route_owned_rows(g, &master_rows, jump_radii));
+                .is_some_and(|g| route_owned_rows(g, &master_rows, jump_radii, (w_new, h_new)));
         let grow = (route4 || overgrown)
             && !existing.is_empty()
             && rows_owned
@@ -1308,6 +1316,7 @@ fn route_owned_rows(
     g: &vsdx::model::Section,
     master_rows: &[vsdx::model::Row],
     radii: (f64, f64),
+    g_w_h: (f64, f64),
 ) -> bool {
     let live: Vec<&vsdx::model::Row> = g.rows.iter().filter(|r| !r.is_deleted()).collect();
     if live.is_empty() {
@@ -1372,6 +1381,65 @@ fn route_owned_rows(
                 return false;
             }
             continue;
+        }
+        if t == Some("PolylineTo") {
+            // A stored SQUARE/TRIANGLE/N-SIDES hop: the planner treats
+            // it exactly like a stored arc — replaceable route
+            // decoration (#324 phase-5 review). Authored polyline art
+            // keeps its rows (the evidence test below).
+            let (Some(a), Some(end)) = (
+                r.cell("A").and_then(|c| c.v.clone().or_else(|| c.f.clone())),
+                pt(r),
+            ) else {
+                return false;
+            };
+            let Some(start) = i.checked_sub(1).and_then(|p| pt(live[p])) else {
+                return false;
+            };
+            let mut prev_dir = None;
+            let mut p = i;
+            while p > 0 {
+                p -= 1;
+                if !straight(eff_t(live[p], master_rows)) {
+                    break;
+                }
+                let Some(q) = pt(live[p]) else {
+                    return false;
+                };
+                let d = (start.0 - q.0, start.1 - q.1);
+                if d.0.hypot(d.1) > 1e-9 {
+                    prev_dir = Some(d);
+                    break;
+                }
+            }
+            let mut next_dir = None;
+            let mut n = i + 1;
+            while n < live.len() {
+                if !straight(eff_t(live[n], master_rows)) {
+                    break;
+                }
+                let Some(q) = pt(live[n]) else {
+                    return false;
+                };
+                let d = (q.0 - end.0, q.1 - end.1);
+                if d.0.hypot(d.1) > 1e-9 {
+                    next_dir = Some(d);
+                    break;
+                }
+                n += 1;
+            }
+            let width = g_w_h.0;
+            let height = g_w_h.1;
+            return dc::jumps::is_stored_jump_polyline(
+                &a,
+                start,
+                (end.0 - start.0, end.1 - start.1),
+                prev_dir,
+                next_dir,
+                (width, height),
+                radii.0,
+                radii.1,
+            );
         }
         if t != Some("ArcTo") {
             return false;
@@ -2296,8 +2364,21 @@ impl Command for ReconcileLineJumps {
                 // tracking and must survive the rewrite.
                 let (x, y) = (lit(r, "X"), lit(r, "Y"));
                 let rel = t.is_some_and(|t| t.starts_with("Rel"));
+                // Relative rows in the OWNED section scale by the
+                // instance's own Width/Height — the same frame the
+                // geometry walk reads (msize is the MASTER's size; a
+                // masterless 5 in connector would measure its stored
+                // gap at one fifth; #324 phase-5 review).
+                let rel_size = (
+                    doc.resolve_cell(s, &chain, "Width")
+                        .and_then(|c| c.numeric())
+                        .unwrap_or(msize.0),
+                    doc.resolve_cell(s, &chain, "Height")
+                        .and_then(|c| c.numeric())
+                        .unwrap_or(msize.1),
+                );
                 let end = match (x, y) {
-                    (Some(x), Some(y)) if rel => Some((x * msize.0, y * msize.1)),
+                    (Some(x), Some(y)) if rel => Some((x * rel_size.0, y * rel_size.1)),
                     (Some(x), Some(y)) => Some((x, y)),
                     _ => None,
                 };
@@ -2377,13 +2458,13 @@ impl Command for ReconcileLineJumps {
             // into a single polyline — welding the strokes with LineTos
             // across gaps the original never drew (review on the #303
             // batch).
-            let stray_strokes = typed
+            let recognized_gaps = typed
                 .iter()
                 .enumerate()
                 .filter(|&(i, (t, _, _))| {
                     *t == "MoveTo"
                         && i > 0
-                        && !{
+                        && {
                             let skip = (
                                 typed[i].1 .0 - typed[i - 1].1 .0,
                                 typed[i].1 .1 - typed[i - 1].1 .1,
@@ -2393,6 +2474,16 @@ impl Command for ReconcileLineJumps {
                         }
                 })
                 .count();
+            // Every mid-route MoveTo is either a recognized gap hop
+            // (counts as a stored hop — hiding straightens it like an
+            // arc; #324 phase-5 review) or a stray authored stroke.
+            let stray_strokes = typed
+                .iter()
+                .enumerate()
+                .filter(|&(i, (t, _, _))| *t == "MoveTo" && i > 0)
+                .count()
+                - recognized_gaps;
+            styled_hops += recognized_gaps;
             // The initial MoveTo plus any number of RECOGNIZED gap
             // hops is fine (the gap writer itself emits that shape);
             // an unrecognized break is an authored second stroke.
@@ -2492,6 +2583,18 @@ impl Command for ReconcileLineJumps {
                                     < 1e-6
                             }
                             (Some("ArcTo"), None) => false,
+                            // A PolylineTo hop's controls ARE the
+                            // style: Square → 2 sides keeps X/Y and
+                            // changes A alone — the text compares
+                            // (normalized whitespace) so a style
+                            // change rewrites (#324 phase-5 review).
+                            (Some("PolylineTo"), _) => {
+                                let norm = |v: Option<&vsdx::model::Cell>| {
+                                    v.and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                                        .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+                                };
+                                norm(t.cell("A")) == norm(r.cell("A"))
+                            }
                             _ => true,
                         }
                 });
@@ -4859,6 +4962,61 @@ mod reconcile_jump_tests {
         let rows = rows_of(&ed, 5);
         let kinds: Vec<&str> = rows.iter().map(|r| r.t.as_deref().unwrap()).collect();
         assert_eq!(kinds, vec!["MoveTo", "LineTo"], "hidden straightens: {rows:?}");
+    }
+
+    /// A style change BETWEEN POLYLINE STYLES rewrites: Square →
+    /// 2 sides keeps X/Y and changes A alone — the no-op comparison
+    /// must read the controls, or the saved square would survive the
+    /// page setting change (#324 phase-5 review). And HIDING
+    /// straightens a stored GAP (the recognized gaps count as stored
+    /// hops).
+    #[test]
+    fn reconcile_polyline_style_change_and_gap_hide() {
+        let (mut ed, page_id) = witness_doc("3");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let square_a = rows_of(&ed, 5)[2]
+            .cell("A")
+            .and_then(|c| c.v.clone())
+            .unwrap();
+        assert!(square_a.matches(',').count() >= 2, "two corners: {square_a}");
+        // Square → 2 sides: same row types, different A.
+        ed.apply(dc_core::SetCell::new(
+            dc_core::Scope::PageSheet { page: page_id },
+            "LineJumpStyle",
+            VCell::value("4"),
+        ))
+        .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows[2].t.as_deref(), Some("PolylineTo"));
+        let tri_a = rows[2].cell("A").and_then(|c| c.v.clone()).unwrap();
+        assert!(
+            tri_a != square_a,
+            "the triangle's controls replaced the square's"
+        );
+        assert_eq!(
+            dc::jumps::parse_polyline_controls(&tri_a).unwrap().1.len(),
+            1,
+            "one apex pair: {tri_a}"
+        );
+        // Hide straightens a stored gap.
+        let (mut ed, page_id) = witness_doc("2");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        {
+            let rows = rows_of(&ed, 5);
+            let kinds: Vec<&str> = rows.iter().map(|r| r.t.as_deref().unwrap()).collect();
+            assert_eq!(kinds, vec!["MoveTo", "LineTo", "MoveTo", "LineTo"]);
+        }
+        ed.apply(dc_core::SetCell::new(
+            dc_core::Scope::PageSheet { page: page_id },
+            "LineJumpCode",
+            VCell::value("0"),
+        ))
+        .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        let kinds: Vec<&str> = rows.iter().map(|r| r.t.as_deref().unwrap()).collect();
+        assert_eq!(kinds, vec!["MoveTo", "LineTo"], "hidden straightens the gap");
     }
 
     /// The sagitta's SIGN follows the hop normal: an eastward run

@@ -1904,6 +1904,12 @@ impl App {
         self.reorder_open = false;
         self.comment_target = None;
         self.comment_edit = None;
+        // A drag gesturing the jump-size draft belongs to the page it
+        // started on — the replacement document keeps pagesetup_open,
+        // and releasing the control over the NEW page would write the
+        // old draft's value there (#324 phase-5 review).
+        self.line_jump_draft = None;
+        self.line_jump_draft_y = None;
         self.status = crate::i18n::strs().msg_new_blank_drawing_unsaved();
     }
 

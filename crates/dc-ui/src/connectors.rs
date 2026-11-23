@@ -1156,6 +1156,7 @@ mod tests {
             color: (0, 0, 0),
             style: dc::jumps::JumpStyle::Arc,
             pts: pts.to_vec(),
+            breaks: Vec::new(),
         };
         // H crosses V at (1, 1): H hops.
         let lines = [
