@@ -6664,9 +6664,7 @@ fn font_substitute(name: &str) -> Option<(&'static str, &'static str)> {
         // re-wrapped). Liberation Mono's 0.6 em advance matches Lucida
         // Console's; Consolas (0.55 em) is the closest the vendored
         // set offers.
-        "lucida console" | "consolas" | "lucida sans typewriter" => {
-            ("Liberation Mono", "monospace")
-        }
+        "lucida console" | "consolas" => ("Liberation Mono", "monospace"),
         _ => return None,
     })
 }
@@ -10620,6 +10618,11 @@ mod tests {
             assert_eq!(chain[1], "Liberation Mono", "{f}: {chain:?}");
             assert_eq!(chain.last().map(String::as_str), Some("monospace"));
         }
+        // Not a stock Visio font: it lays out as Calibri like any
+        // unknown family (Greptile on PR #332 found its old mapping
+        // unreachable).
+        let chain = family_chain(Some("Lucida Sans Typewriter"));
+        assert_eq!(chain[0], "Calibri", "{chain:?}");
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
