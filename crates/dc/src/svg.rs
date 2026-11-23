@@ -4143,18 +4143,19 @@ fn render_geometry(
         .resolve_cell(s, chain, "LineWeight")
         .and_then(|c| cell_num(&c, env))
         .unwrap_or(0.0104);
-    // Visio never fills a 1-D shape (a line/arc has no interior): some
+    // A 1-D shape's OPEN path (a line, an arc) has no interior: some
     // line masters carry decorative FillPattern cells (28/30) that must
-    // be ignored, or the arc-chord region paints over everything.
+    // be ignored, or the arc-chord region paints over everything. Its
+    // CLOSED sections fill like any 2-D shape's — the block-arrow
+    // masters (Simple/Notched/Double Arrow) are 1-D shapes whose one
+    // closed outline Visio paints with FillForegnd (Visio 2021
+    // witness, t04). The open/closed gate sits at the fill join below.
     let one_d = doc.resolve_cell_explicit(s, chain, "BeginX").is_some()
         || doc.resolve_cell_explicit(s, chain, "EndX").is_some();
-    let fill_pattern = if one_d {
-        0.0
-    } else {
-        doc.resolve_cell_explicit(s, chain, "FillPattern")
-            .and_then(|c| cell_num(&c, env))
-            .unwrap_or(1.0)
-    };
+    let fill_pattern = doc
+        .resolve_cell_explicit(s, chain, "FillPattern")
+        .and_then(|c| cell_num(&c, env))
+        .unwrap_or(1.0);
     // Gradient fills: Visio theme fill patterns 24-40 are gradients
     // (FillForegnd → FillBkgnd along FillGradientAngle, default 90°
     // top-to-bottom). Everything else patterned >1.5 is a hatch: the
@@ -4727,7 +4728,17 @@ fn render_geometry(
         // path; NoFill sections opt out here, NoLine changes nothing
         // for the fill, and the implicit close SVG already applies to
         // open subpaths leaves the stroke open per section.
-        if !no_fill && fill != "none" {
+        // 1-D shapes fill closed sections only (see `one_d` above).
+        let closed = || {
+            let first = evald.iter().find(|r| r.1 == "MoveTo" || r.1 == "RelMoveTo");
+            match (first, evald.last()) {
+                (Some(a), Some(b)) => {
+                    evald.len() > 2 && (a.2 .0 - b.2 .0).hypot(a.2 .1 - b.2 .1) < 1e-6
+                }
+                _ => false,
+            }
+        };
+        if !no_fill && fill != "none" && (!one_d || closed()) {
             paint.fill_d.push_str(&d);
             paint.fill_d.push(' ');
             paint.fill = fill.clone();
@@ -9483,6 +9494,41 @@ mod tests {
             "the text style's TopMargin: {}",
             tb.insets.2
         );
+    }
+
+    /// 1-D shapes (BeginX/EndX) fill their CLOSED sections — the
+    /// block-arrow masters (Visio 2021 witness, t04) — while an open
+    /// path keeps ignoring a decorative FillPattern.
+    #[test]
+    fn one_d_shape_fills_closed_geometry_only() {
+        let render = |closed: bool| {
+            let mut s = shape_at(1, (2.0, 2.0), 3.0, 1.0, 0.0);
+            for (n, v) in [
+                ("BeginX", "0.5"),
+                ("BeginY", "2"),
+                ("EndX", "3.5"),
+                ("EndY", "2"),
+            ] {
+                s.sheet.set_cell(n, Cell::value(v));
+            }
+            s.sheet.set_cell("FillForegnd", Cell::value("#ed7d31"));
+            s.sheet.set_cell("FillPattern", Cell::value("1"));
+            let mut rows = vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.25)]),
+                geo_row(2, "LineTo", &[("X", 2.5), ("Y", 0.25)]),
+                geo_row(3, "LineTo", &[("X", 3.0), ("Y", 0.5)]),
+                geo_row(4, "LineTo", &[("X", 2.5), ("Y", 0.75)]),
+                geo_row(5, "LineTo", &[("X", 0.0), ("Y", 0.75)]),
+            ];
+            if closed {
+                rows.push(geo_row(6, "LineTo", &[("X", 0.0), ("Y", 0.25)]));
+            }
+            push_geo(&mut s, rows);
+            let (doc, page) = page_fixture(vec![s]);
+            render_page(&doc, &page).unwrap()
+        };
+        assert!(render(true).contains(r##"fill="#ed7d31""##));
+        assert!(!render(false).contains("#ed7d31"));
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
