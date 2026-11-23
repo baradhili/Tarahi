@@ -189,35 +189,59 @@ fn seg_cross_open(
     Some(((a0.0 + t * r.0, a0.1 + t * r.1), t, u))
 }
 
-/// The sine of the angle between two runs below which they are the
-/// same line — a SHARED run (#334). Far above the floating-point noise
-/// two routes pick up reaching one vertex through their own frames
-/// (about 1e-12 even on a 0.01-in run), and far below any departure
-/// that draws as two lines (1e-9 rad is 1e-8 in across a 10-in page).
+/// A SHARED run — two routes running on along one line — is a merge,
+/// never a crossing (#334). It counts as shared only when the runs
+/// really are on ONE line, to within the floating-point noise of
+/// coordinates that reached the contact through two different frames:
+/// the sine of the angle between them is at most `SHARED_RUN_SIN`
+/// (noise is about 1e-12 even on a 0.01-in run), and they lie at most
+/// `SHARED_RUN_OFF_IN` apart across the line (about 1e-13 on a 100-in
+/// page). Both sit far under the contact tolerance, 1e-9 of a segment
+/// on each side of a vertex: a route that pierces the other line and
+/// runs on 5e-10 in beside it is a crossing, as it always was. Only a
+/// genuinely shared run is new.
 const SHARED_RUN_SIN: f64 = 1e-9;
+const SHARED_RUN_OFF_IN: f64 = 1e-11;
 
-/// The two directions lie along one line to within floating-point
-/// noise, whichever way each points. A degenerate direction is never
-/// shared.
-fn same_line(p: (f64, f64), q: (f64, f64)) -> bool {
+/// The sine of the angle between two directions — 1 when either is
+/// degenerate, so a degenerate direction never matches.
+fn sin_between(p: (f64, f64), q: (f64, f64)) -> f64 {
     let (lp, lq) = (p.0.hypot(p.1), q.0.hypot(q.1));
-    lp > 0.0 && lq > 0.0 && (p.0 * q.1 - p.1 * q.0).abs() <= SHARED_RUN_SIN * lp * lq
+    if lp > 0.0 && lq > 0.0 {
+        (p.0 * q.1 - p.1 * q.0) / (lp * lq)
+    } else {
+        1.0
+    }
 }
 
-/// Two rays leaving one vertex point the same way — the routes run on
-/// along the same line.
-fn same_ray(p: (f64, f64), q: (f64, f64)) -> bool {
-    same_line(p, q) && p.0 * q.0 + p.1 * q.1 > 0.0
+/// How far `p` lies from the line through `o` along `dir` (inches;
+/// infinite for a degenerate direction).
+fn off_line(dir: (f64, f64), o: (f64, f64), p: (f64, f64)) -> f64 {
+    let l = dir.0.hypot(dir.1);
+    if l > 0.0 {
+        (dir.0 * (p.1 - o.1) - dir.1 * (p.0 - o.0)).abs() / l
+    } else {
+        f64::INFINITY
+    }
+}
+
+/// The run from `p0` toward `p` and the run from `q0` toward `q` are
+/// ONE shared run: the same direction, leaving points on one line.
+fn same_run(p0: (f64, f64), p: (f64, f64), q0: (f64, f64), q: (f64, f64)) -> bool {
+    sin_between(p, q).abs() <= SHARED_RUN_SIN
+        && p.0 * q.0 + p.1 * q.1 > 0.0
+        && off_line(p, p0, q0) <= SHARED_RUN_OFF_IN
 }
 
 /// The two routes' runs at a SHARED contact vertex alternate around
 /// it (r1, r2, r1, r2 in angular order) — they cross; grouped-by-
 /// route rays mean the routes merely touch (#294 review). A ray one
 /// route SHARES with the other — it arrives or leaves along the
-/// other's own run — is a merge and never a crossing (#334). That is
-/// decided FIRST: equal angles tie in the sort, and whether the
-/// sequence then reads "alternating" depends only on where the other
-/// two rays fall (a join heading east hopped, westward did not).
+/// other's own run, on the same line — is a merge and never a crossing
+/// (#334). That is decided FIRST: equal angles tie in the sort, and
+/// whether the sequence then reads "alternating" depends only on where
+/// the other two rays fall (a join heading east hopped, westward did
+/// not).
 fn alternating(vi: usize, a: &[(f64, f64)], vj: usize, b: &[(f64, f64)]) -> bool {
     let (vx, vy) = a[vi];
     // Each route's two runs leave ITS OWN vertex, so the directions stay
@@ -228,7 +252,7 @@ fn alternating(vi: usize, a: &[(f64, f64)], vj: usize, b: &[(f64, f64)]) -> bool
     };
     if runs(a, vi)
         .iter()
-        .any(|p| runs(b, vj).iter().any(|q| same_ray(*p, *q)))
+        .any(|&p| runs(b, vj).iter().any(|&q| same_run(a[vi], p, b[vj], q)))
     {
         return false;
     }
@@ -257,12 +281,13 @@ fn merely_touches(vx: usize, pts: &[(f64, f64)], other: &[(f64, f64)]) -> bool {
     // Pure sign comparison — a magnitude cutoff would wave through
     // shallow same-side contacts on short segments (#294 review). A
     // run ON the line reads as side 0, which the product took for a
-    // crossing — every merge onto a through line hopped.
-    let v = pts[vx];
+    // crossing — every merge onto a through line hopped. The vertex is
+    // on the segment already (that is the contact), so the run is the
+    // segment's own when its far end lies on its line too.
     side(back) * side(fwd) > 0.0
         || [back, fwd]
             .iter()
-            .any(|&p| same_line(dir, (p.0 - v.0, p.1 - v.1)))
+            .any(|&p| off_line(dir, a, p) <= SHARED_RUN_OFF_IN)
 }
 
 /// The polyline index a crossing hugs, when it hugs a segment
@@ -438,20 +463,22 @@ pub fn line_jumps(lines: &[JumpLine], (radius, radius_y): (f64, f64)) -> Vec<Jum
 
 /// Parse a `#rrggbb` line-color cell into the overlay's (r, g, b).
 /// `color_value` hands a `#…` cell through verbatim, so the body is
-/// whatever the file carries: six BYTES need not be six hex digits.
-/// Anything else is `None`, and the caller's gray fallback answers
-/// (#333) — a multi-byte character straddling a slice offset used to
-/// panic here, taking the render and the reroute tail down with it.
+/// whatever the file carries — only six hex digits parse:
+/// - six BYTES need not be six digits. A multi-byte character
+///   straddling a slice offset used to panic here, taking the render
+///   and the reroute tail down with it (#333).
+/// - the integer parser accepts a sign: `#+0ff00` passed the byte
+///   checks and came out green instead of falling back.
+///
+/// Anything else is `None`, and the caller's gray fallback answers.
 fn parse_hex_rgb(v: &str) -> Option<(u8, u8, u8)> {
     let hex = v.strip_prefix('#')?;
-    if hex.len() != 6 || !hex.is_ascii() {
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
-    Some((
-        u8::from_str_radix(&hex[0..2], 16).ok()?,
-        u8::from_str_radix(&hex[2..4], 16).ok()?,
-        u8::from_str_radix(&hex[4..6], 16).ok()?,
-    ))
+    // Six ASCII digits: every offset is a character boundary.
+    let pair = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some((pair(0)?, pair(2)?, pair(4)?))
 }
 
 /// The page's connector crossings (#187 export parity): every
@@ -988,6 +1015,22 @@ mod tests {
             jline(2, 1, &[(0.0, 1.0), (0.0, 0.0), (0.99995, 0.01)]),
         ]);
         assert!(js.is_empty(), "a touch never hops: {js:?}");
+        // …and a crossing is not a shared run for running 5e-10 in
+        // BESIDE the other line. The contact tolerance reads the
+        // near-miss as a vertex contact, but the runs are on different
+        // lines: this hopped before #334, in both branches, and must
+        // keep hopping (CodeRabbit round on the fix).
+        let piercing = vec![(0.0, 1.0), (0.0, -5e-10), (1.0, -5e-10)];
+        for (k, through) in [
+            vec![(-2.0, 0.0), (2.0, 0.0)],
+            vec![(-2.0, 0.0), (0.0, 0.0), (2.0, 0.0)],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let js = hops(&[jline(1, 0, &through), jline(2, 1, &piercing)]);
+            assert_eq!(js.len(), 1, "a near-miss is a crossing, case {k}: {js:?}");
+        }
     }
 
     /// #187: two crossing connectors produce one hop; a rotated
@@ -1084,10 +1127,16 @@ mod tests {
             "#12345",
             "ff0000",
             "",
+            "#+0ff00",
+            "#ff00+0",
+            "#-0ff00",
+            "# 0ff00",
+            "#ff00 0",
         ] {
             assert_eq!(parse_hex_rgb(v), None, "{v:?}");
         }
         assert_eq!(parse_hex_rgb("#ff0000"), Some((0xff, 0, 0)));
+        assert_eq!(parse_hex_rgb("#00Ff0A"), Some((0x00, 0xff, 0x0a)));
         // Through the crossing set: the malformed connector is the
         // jumper (it lies flatter), and both strokes of its hop
         // resolve — its own to the gray fallback, the other's to its
