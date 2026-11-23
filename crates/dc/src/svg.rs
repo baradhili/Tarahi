@@ -1203,16 +1203,27 @@ fn render_page_full(
                 continue;
             }
         }
-        // A jumping connector renders inside a page-space clip that
-        // cuts it open around each of its hops (#324 phase 3).
+        // A jumping connector renders inside page-space clips that cut
+        // it open around its hops (#324 phase 3). One clip PER HOP,
+        // nested: clip groups INTERSECT, so two hops closer than their
+        // radii still open the shaft along both — a single even-odd
+        // path with overlapping slots would RE-KEEP the overlap
+        // (odd parity) and the shaft would reappear between the arcs
+        // (CodeRabbit round on #324 phase 3). The slot coordinates are
+        // page-space, so the groups wrap the shape OUTSIDE its
+        // transform.
         let cuts: Vec<&crate::jumps::Jump> =
             jumps.iter().filter(|j| j.jumper == shape.id).collect();
-        if !cuts.is_empty() {
-            let id = format!("dc-jumpcut{}", shape.id);
+        for (k, j) in cuts.iter().enumerate() {
+            let id = if k == 0 {
+                format!("dc-jumpcut{}", shape.id)
+            } else {
+                format!("dc-jumpcut{}-{}", shape.id, k)
+            };
             let _ = writeln!(
                 svg,
                 r#"<clipPath id="{id}"><path clip-rule="evenodd" d="{}"/></clipPath><g clip-path="url(#{id})">"#,
-                jump_cut_clip_d(&cuts, h, w, &hop_r)
+                jump_cut_clip_d(j, h, w, hop_r(j))
             );
         }
         render_shape(
@@ -1221,7 +1232,11 @@ fn render_page_full(
             h,
             &[],
             &page.part,
-            skip_text,
+            // A jumper renders WITHOUT its text inside the clips — the
+            // label re-renders below in a twin group outside every
+            // clip: the hop cuts the SHAFT, never the label's
+            // background or glyphs (CodeRabbit round on #324 phase 3).
+            skip_text.or_else(|| (!cuts.is_empty()).then_some(shape.id)),
             None,
             None,
             Some(&fields),
@@ -1236,20 +1251,50 @@ fn render_page_full(
             },
             &mut svg,
         );
-        if !cuts.is_empty() {
+        for _ in &cuts {
             let _ = writeln!(svg, "</g>");
         }
-    }
-    // The hop arcs bridge the cuts, above the ink (#187). The radius
-    // is the page's own LineToLineX/Y × LineJumpFactorX/Y / 2,
-    // resolved through the style chain — never the old 0.12 constant
-    // (#294).
-    if !jumps.is_empty() {
-        let _ = writeln!(svg, r#"<g data-dc="line-jumps">"#);
-        for j in &jumps {
-            append_jump_scaled(&mut svg, h, j, hop_r(j));
+        // The jumper's label, in an IDENTICAL transform group outside
+        // every clip — `emit_text` is coordinate-compatible with the
+        // shape's own transform (the same reads render_shape's head
+        // makes, factored into `shape_xform`).
+        if !cuts.is_empty() && skip_text != Some(shape.id) {
+            let xf = shape_xform(doc, shape, &[], h);
+            let _ = writeln!(
+                svg,
+                r#"<g transform="{t}">"#,
+                t = escape_attr(&xf.transform)
+            );
+            emit_text(
+                doc,
+                shape,
+                &[shape],
+                xf.width,
+                xf.height,
+                xf.sx,
+                xf.sy,
+                false,
+                None,
+                Some(&fields),
+                &mut svg,
+            );
+            let _ = writeln!(svg, "</g>");
         }
-        let _ = writeln!(svg, "</g>");
+        // The hop arcs bridge the cuts, painted WITH the connector —
+        // BEFORE later shapes, so an opaque shape above covers shaft
+        // and hop alike, exactly as it covers the connector's own ink
+        // (Visio's paint order; the old post-ink group floated arcs on
+        // top of everything — CodeRabbit round on #324 phase 3). The
+        // radius is the page's own LineToLineX/Y × LineJumpFactorX/Y /
+        // 2, resolved through the style chain — never the old 0.12
+        // constant (#294).
+        if !cuts.is_empty() {
+            let _ = writeln!(svg, r#"<g data-dc="line-jumps">"#);
+            for j in &cuts {
+                append_jump_scaled(&mut svg, h, j, hop_r(j));
+            }
+            let _ = writeln!(svg, "</g>");
+        }
     }
     let _ = writeln!(svg, "</svg>");
     Ok(svg)
@@ -1273,12 +1318,7 @@ pub fn jump_normal(dir: (f64, f64)) -> (f64, f64) {
 /// whole page plus, per hop, a slot across the line (2·r along it,
 /// generously wide across), combined even-odd so the slots are holes.
 /// Coordinates are page-space SVG (y down).
-fn jump_cut_clip_d(
-    cuts: &[&crate::jumps::Jump],
-    page_h: f64,
-    page_w: f64,
-    r_of: &dyn Fn(&crate::jumps::Jump) -> f64,
-) -> String {
+fn jump_cut_clip_d(j: &crate::jumps::Jump, page_h: f64, page_w: f64, r: f64) -> String {
     let pad = 4.0 * page_w.max(page_h).max(1.0);
     let mut d = format!(
         "M {:.4} {:.4} L {:.4} {:.4} L {:.4} {:.4} L {:.4} {:.4} Z ",
@@ -1291,27 +1331,77 @@ fn jump_cut_clip_d(
         -pad,
         page_h + pad
     );
-    for j in cuts {
-        let r = r_of(j);
-        let (dx, dy) = j.dir;
-        let n = (-dy, dx);
-        // Across the line: well past the stroke, short of the arc top.
-        let half_w = (j.weight * 2.0).max(r * 0.6);
-        let c = |a: f64, b: f64| {
-            let x = j.at.0 + dx * a + n.0 * b;
-            let y = j.at.1 + dy * a + n.1 * b;
-            format!("{:.5} {:.5}", x, page_h - y)
-        };
-        let _ = write!(
-            d,
-            "M {} L {} L {} L {} Z ",
-            c(-r, -half_w),
-            c(r, -half_w),
-            c(r, half_w),
-            c(-r, half_w)
-        );
-    }
+    let (dx, dy) = j.dir;
+    let n = (-dy, dx);
+    // Across the line: well past the stroke, short of the arc top.
+    let half_w = (j.weight * 2.0).max(r * 0.6);
+    let c = |a: f64, b: f64| {
+        let x = j.at.0 + dx * a + n.0 * b;
+        let y = j.at.1 + dy * a + n.1 * b;
+        format!("{:.5} {:.5}", x, page_h - y)
+    };
+    let _ = write!(
+        d,
+        "M {} L {} L {} L {} Z ",
+        c(-r, -half_w),
+        c(r, -half_w),
+        c(r, half_w),
+        c(-r, half_w)
+    );
     d.trim_end().to_string()
+}
+
+/// The page-level transform context `render_shape`'s head derives: the
+/// emitted `<g transform>` string plus the width/height and flip signs
+/// `emit_text` needs. Shared with `render_page_full`, which re-opens
+/// an identical group for a jumping connector's TEXT outside its jump
+/// clips (#324 phase-3 review: the clip cuts the shaft, never the
+/// label).
+struct ShapeXform {
+    transform: String,
+    width: f64,
+    height: f64,
+    sx: f64,
+    sy: f64,
+}
+
+fn shape_xform(doc: &Document, s: &Shape, chain: &[&Shape], page_h: f64) -> ShapeXform {
+    let mut chain: Vec<&Shape> = chain.to_vec();
+    chain.push(s);
+    let env = shape_env(doc, s, &chain);
+    let get = |n: &str| -> Option<f64> {
+        doc.resolve_cell(s, &chain, n)
+            .and_then(|c| cell_num(&c, &env))
+    };
+    let width = get("Width").unwrap_or(1.0);
+    let height = get("Height").unwrap_or(1.0);
+    let (sx, sy) = (
+        if get("FlipX").unwrap_or(0.0) != 0.0 {
+            -1.0
+        } else {
+            1.0
+        },
+        if get("FlipY").unwrap_or(0.0) != 0.0 {
+            -1.0
+        } else {
+            1.0
+        },
+    );
+    let transform = format!(
+        "translate({px:.6},{py:.6}) rotate({deg:.6}) scale({sx},{sy}) translate({lx:.6},{ly:.6})",
+        px = get("PinX").unwrap_or(0.0),
+        py = page_h - get("PinY").unwrap_or(0.0),
+        deg = -get("Angle").unwrap_or(0.0).to_degrees(),
+        lx = -get("LocPinX").unwrap_or(width / 2.0),
+        ly = get("LocPinY").unwrap_or(height / 2.0),
+    );
+    ShapeXform {
+        transform,
+        width,
+        height,
+        sx,
+        sy,
+    }
 }
 
 /// One hop's arc in page-space SVG (y-down: `sy = page_h − y`): a
@@ -1372,6 +1462,7 @@ pub fn backdrop_color_at(
     page: &vsdx::Page,
     at: (f64, f64),
     below: i64,
+    hidden: &[i64],
 ) -> (u8, u8, u8) {
     let page_h = num(page.sheet().and_then(|s| s.cell("PageHeight"))).unwrap_or(11.0);
     let pt = (at.0, page_h - at.1);
@@ -1418,11 +1509,49 @@ pub fn backdrop_color_at(
             }
         }
         let inside = pt.0 >= bx.0 && pt.0 <= bx.0 + bx.2 && pt.1 >= bx.1 && pt.1 <= bx.1 + bx.3;
-        if inside {
-            filled(doc, s, &chain)
-        } else {
-            None
+        if !inside {
+            return None;
         }
+        // The ink box only REJECTS — a triangle's empty corner is
+        // inside its box but outside its fill, and the gap would paint
+        // a color nothing draws there (CodeRabbit round on #324 phase
+        // 3). TOP-LEVEL shapes get the exact test: an even-odd ray
+        // cast over the same flattened geometry the crossing set
+        // walks. Group children keep the box alone — their frames are
+        // parent-local here, and panels behind hops are top-level.
+        if top {
+            let msize = s
+                .master
+                .and_then(|mid| doc.master(mid))
+                .and_then(|m| m.shapes.first())
+                .map(|root| {
+                    let g = |n: &str| {
+                        doc.resolve_cell(root, &[root], n)
+                            .and_then(|c| c.numeric())
+                            .unwrap_or(1.0)
+                    };
+                    (g("Width"), g("Height"))
+                })
+                .unwrap_or((1.0, 1.0));
+            let frame = crate::geom::hit_frame(doc, &chain, s, msize);
+            let segs = crate::geom::geometry_hit_segments(s, chain.get(1).copied(), &frame, None);
+            if !segs.is_empty() {
+                let q = (pt.0, page_h - pt.1); // the cast runs page y-up
+                let mut in_fill = false;
+                for (a, b) in &segs {
+                    if (a.1 > q.1) != (b.1 > q.1) {
+                        let x = a.0 + (q.1 - a.1) / (b.1 - a.1) * (b.0 - a.0);
+                        if x > q.0 {
+                            in_fill = !in_fill;
+                        }
+                    }
+                }
+                if !in_fill {
+                    return None;
+                }
+            }
+        }
+        filled(doc, s, &chain)
     }
     let upto = page
         .shapes
@@ -1431,6 +1560,13 @@ pub fn backdrop_color_at(
         .unwrap_or(page.shapes.len());
     for s in page.shapes[..upto].iter().rev() {
         if s.type_.as_deref() == Some("Guide") {
+            continue;
+        }
+        // Hidden layers leave the compositor — the export omits them,
+        // so a hidden panel must not color a gap either (CodeRabbit
+        // round on #324 phase 3: the canvas would paint a gray gap on
+        // a white page).
+        if s.sheet.cell("LayerMember").and_then(|c| c.numeric()).is_some_and(|m| hidden.contains(&(m as i64))) {
             continue;
         }
         if let Some(c) = walk(doc, s, &[], page_h, true, Affine::IDENTITY, pt) {
@@ -8606,9 +8742,9 @@ mod tests {
             "the stored jump arc renders as a straight run"
         );
         assert_eq!(
-            svg.matches(r#"<clipPath id="dc-jumpcut"#).count(),
+            svg.matches(r#"stroke-linejoin="round""#).count(),
             1,
-            "one jump at the crossing: the jumper is cut open"
+            "one hop arc at the crossing"
         );
         // The cut slot spans the crossing ± the page's resolved
         // radius (prefix match: the slot writes full-precision
@@ -8715,9 +8851,134 @@ mod tests {
         // The crossing hops once — the phantom jump the deleted row
         // fed is gone.
         assert_eq!(
-            svg.matches(r#"<clipPath id="dc-jumpcut"#).count(),
+            svg.matches(r#"stroke-linejoin="round""#).count(),
             1,
-            "one jump at the real crossing: the jumper is cut open"
+            "one hop ARC at the real crossing (a second crossing on the              same jumper would draw a second arc)"
+        );
+    }
+
+    /// Two hops closer together than their radii still open the shaft
+    /// along BOTH: the clips NEST one per hop (clip groups intersect),
+    /// where a single even-odd path with overlapping slots would
+    /// re-keep the overlap and the shaft would reappear between the
+    /// arcs (CodeRabbit round on #324 phase 3).
+    #[test]
+    fn export_cuts_overlapping_hop_slots_apart() {
+        let connector = |id: i64, pin: (f64, f64), w: f64, h: f64| {
+            let mut s = shape_at(id, pin, w, h, 0.0);
+            s.sheet.set_cell("ObjType", Cell::value("2"));
+            let line = |ix: i64, x: f64, y: f64| Row {
+                t: Some("LineTo".into()),
+                ix,
+                cells: vec![
+                    ("X".to_string(), Cell::value(format!("{x}"))),
+                    ("Y".to_string(), Cell::value(format!("{y}"))),
+                ],
+                ..Row::default()
+            };
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            sec.rows = vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: vec![
+                        ("X".to_string(), Cell::value("0")),
+                        ("Y".to_string(), Cell::value("0")),
+                    ],
+                    ..Row::default()
+                },
+                line(2, w, h),
+            ];
+            s.sheet.children.push(SheetChild::Section(sec));
+            s
+        };
+        // FactorX 0.8 → radius 0.05: two verticals 0.06 apart cross
+        // the horizontal jumper — the slots [2.95, 3.05] and [3.01,
+        // 3.11] overlap.
+        let (mut doc, mut page) = page_fixture(vec![
+            connector(1, (3.0, 5.0), 4.0, 0.0),
+            connector(2, (3.0, 5.0), 0.0, 4.0),
+            connector(3, (3.06, 5.0), 0.0, 4.0),
+        ]);
+        doc.pages[0].sheet_mut().unwrap().set_cell(
+            "LineJumpFactorX",
+            Cell::value("0.8"),
+        );
+        let _ = &mut page;
+        let svg = render_page(&doc, &page).unwrap();
+        assert_eq!(
+            svg.matches(r#"stroke-linejoin="round""#).count(),
+            2,
+            "two hop arcs: {svg}"
+        );
+        // The jumper's clips NEST: one group per hop (the outer id,
+        // then the -1 twin), so the intersection cuts both slots.
+        assert_eq!(
+            svg.matches(r#"<clipPath id="dc-jumpcut1""#).count(),
+            1,
+            "the outer clip"
+        );
+        assert_eq!(
+            svg.matches(r#"<clipPath id="dc-jumpcut1-1""#).count(),
+            1,
+            "the nested second-hop clip"
+        );
+    }
+
+    /// The backdrop's ink box only REJECTS: a point inside a
+    /// triangle's box but outside its fill is NOT the triangle's color
+    /// (the even-odd ray cast decides — CodeRabbit round on #324
+    /// phase 3).
+    #[test]
+    fn backdrop_reads_the_fill_not_the_ink_box() {
+        let mut t = shape_at(1, (2.0, 2.0), 2.0, 2.0, 0.0);
+        t.sheet.set_cell("FillForegnd", Cell::value("#ff0000"));
+        let mut sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        let row = |ix: i64, x: f64, y: f64| Row {
+            t: Some("LineTo".into()),
+            ix,
+            cells: vec![
+                ("X".to_string(), Cell::value(format!("{x}"))),
+                ("Y".to_string(), Cell::value(format!("{y}"))),
+            ],
+            ..Row::default()
+        };
+        sec.rows = vec![
+            Row {
+                t: Some("MoveTo".into()),
+                ix: 1,
+                cells: vec![
+                    ("X".to_string(), Cell::value("0")),
+                    ("Y".to_string(), Cell::value("0")),
+                ],
+                ..Row::default()
+            },
+            row(2, 2.0, 0.0),
+            row(3, 0.0, 2.0),
+        ];
+        t.sheet.children.push(SheetChild::Section(sec));
+        // A connector ABOVE the triangle (the `below` anchor).
+        let c = shape_at(2, (2.0, 2.0), 2.0, 0.0, 0.0);
+        let (doc, page) = page_fixture(vec![t, c]);
+        // (1.3, 1.3) page: inside the hypotenuse triangle; (2.7, 2.7)
+        // is inside its 2×2 box but outside the fill.
+        assert_eq!(
+            backdrop_color_at(&doc, &page, (1.3, 1.3), 2, &[]),
+            (0xff, 0, 0),
+            "a point inside the fill reads the fill"
+        );
+        assert_eq!(
+            backdrop_color_at(&doc, &page, (2.7, 2.7), 2, &[]),
+            (0xff, 0xff, 0xff),
+            "the box's empty corner reads the page's white"
         );
     }
 

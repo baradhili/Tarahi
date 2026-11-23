@@ -5771,7 +5771,8 @@ impl App {
                 // rasters, so this mimics the export's cut in the
                 // color that shows through it (#324 phase 3).
                 gap_color: {
-                    let (r, g, b) = dc::svg::backdrop_color_at(doc, page, j.at, j.jumper);
+                    let (r, g, b) =
+                        dc::svg::backdrop_color_at(doc, page, j.at, j.jumper, hidden);
                     Color32::from_rgb(r, g, b)
                 },
                 at: j.at,
@@ -18634,7 +18635,13 @@ mod tests {
                 ..vsdx::model::Row::default()
             },
         ];
-        panel.sheet.children.push(vsdx::model::SheetChild::Section(psec));
+        panel
+            .sheet
+            .children
+            .push(vsdx::model::SheetChild::Section(psec));
+        // Layer 7 carries the panel — invisible until something hides
+        // the layer (the gap assertions below hide it).
+        panel.sheet.set_cell("LayerMember", vsdx::Cell::value("7"));
         ed.doc.pages[0].shapes.insert(0, panel);
         let mut app = App::with_doc_opt(None);
         app.ed = Some(ed);
@@ -18664,6 +18671,20 @@ mod tests {
             bare_hop.gap_color,
             Color32::WHITE,
             "off every fill the gap is the page's white: {fx:?}"
+        );
+        // Hiding the panel's layer takes it out of the compositor —
+        // the export omits it, so the gap must fall back to page
+        // white, never a hidden panel's gray (CodeRabbit round on
+        // #324 phase 3).
+        let fx_hidden_panel = app.jump_fx(radius, &[7]);
+        let hidden_gap = fx_hidden_panel
+            .iter()
+            .find(|j| (j.at.0 - 7.0).abs() < 1e-9)
+            .expect("the palette crossing stays");
+        assert_eq!(
+            hidden_gap.gap_color,
+            Color32::WHITE,
+            "a hidden panel does not color the gap: {fx_hidden_panel:?}"
         );
         // Hiding layer 3 takes its connector out of the set — the
         // compositor hides those very shapes — so nothing crosses the

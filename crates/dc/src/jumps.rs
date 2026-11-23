@@ -576,7 +576,14 @@ pub fn line_jumps_with(
                 let mut hit = false;
                 for c in clustered.iter_mut() {
                     let dd = (c.at.0 - jmp.at.0).hypot(c.at.1 - jmp.at.1);
-                    if dd < reach {
+                    // Only hops of the SAME jumper merge: one pair can
+                    // yield hops with different jumpers (the L's
+                    // horizontal leg hops here, the other line hops
+                    // over its vertical leg there) — merging those
+                    // stole the second connector's hop and moved the
+                    // first's cut off its shaft (CodeRabbit round on
+                    // #324 phase 3).
+                    if dd < reach && c.jumper == jmp.jumper {
                         c.at = ((c.at.0 + jmp.at.0) / 2.0, (c.at.1 + jmp.at.1) / 2.0);
                         hit = true;
                         break;
@@ -698,6 +705,14 @@ pub fn page_jumps_stripping(
     // LineJumpFactorX/Y / 2, resolved through the style chain — the
     // X pair for a horizontal hop, the Y pair for a vertical one
     // (PR #299 review).
+    // The page's Show-Line-Jumps switch gates the crossing set AT THE
+    // SOURCE (#324 phase-3 review): a forced connector code (2) must
+    // not draw or save a hop on a page whose jumps are off — every
+    // consumer (export, canvas, reconcile) inherits this gate instead
+    // of each remembering its own.
+    if !page.line_jumps_shown() {
+        return Vec::new();
+    }
     let radius = jump_radius_in(doc, page);
     let radius_y = jump_radius_y_in(doc, page);
     let (strip_r, strip_ry) = strip.unwrap_or((radius, radius_y));
@@ -761,6 +776,17 @@ pub fn page_jumps_stripping(
         // over it (and it has no hop of its own to draw). Drop it
         // from the crossing set entirely.
         if weight == 0.0 {
+            continue;
+        }
+        // The renderer's stroke-visibility twin: `LinePattern = 0`
+        // hides the line entirely, so an invisible shaft must not
+        // make visible connectors hop over it either (#324 phase-3
+        // review — same parity as the zero-weight corollary above).
+        if doc
+            .resolve_cell(s, &chain, "LinePattern")
+            .and_then(|c| c.numeric())
+            .is_some_and(|p| p == 0.0)
+        {
             continue;
         }
         // Resolve like the renderer (#218 review): a legacy palette
@@ -1122,7 +1148,7 @@ mod tests {
         };
         // X radius 0 (no horizontal hops can draw), Y radius 0.05.
         let js = line_jumps_with(
-            &[j, u],
+            &[j.clone(), u.clone()],
             (0.0, 0.05),
             &JumpRules {
                 page_code: 1,
@@ -1132,6 +1158,21 @@ mod tests {
         assert_eq!(js.len(), 1, "the vertical-leg hop alone: {js:?}");
         assert!(js[0].dir.0.abs() < 1e-9, "the survivor is vertical: {js:?}");
         assert_eq!(js[0].jumper, 1);
+        // The same geometry under DEFAULT rules, both radii live: the
+        // L hops on its horizontal leg AND the other line hops over
+        // the L's vertical leg — one PAIR, two jumpers, 0.0396 in
+        // apart. The cluster must keep them apart (merging stole the
+        // second connector's hop and moved the first's cut off its
+        // shaft — CodeRabbit round on #324 phase 3).
+        let js = line_jumps(&[j.clone(), u.clone()], (0.05, 0.05));
+        let mut jumpers: Vec<i64> = js.iter().map(|x| x.jumper).collect();
+        jumpers.sort_unstable();
+        assert_eq!(jumpers, vec![1, 2], "each connector keeps its hop: {js:?}");
+        assert!(
+            js.iter().any(|x| x.jumper == 1 && x.dir.1.abs() < 1e-9)
+                && js.iter().any(|x| x.jumper == 2 && x.under.0.abs() < 1e-9),
+            "the L hops along its horizontal leg, the line over the L's vertical one: {js:?}"
+        );
     }
 
     /// #294 review: a crossing exactly ON an interior vertex of the
@@ -1186,15 +1227,22 @@ mod tests {
         );
         assert_eq!(js.len(), 0, "a two-corner touch never hops: {js:?}");
         // Two routes cornering THROUGH each other interleave — a real
-        // crossing hops.
+        // crossing hops ONCE. The vertical runs THROUGH the corner on
+        // both sides, so every window pair pairs one of the corner's
+        // runs against a vertical one and line 1 (the flatter on both
+        // its runs) is the jumper throughout — mirrored corner runs
+        // would hand each line one window pair and draw two hops on
+        // one crossing (the same-jumper cluster rule keeps them apart;
+        // #324 phase-3 review).
         let js = line_jumps(
             &[
                 jline(1, 0, &[(-1.0, 1.0), (0.0, 0.0), (1.0, 0.0)]),
-                jline(2, 1, &[(1.0, 1.0), (0.0, 0.0), (-1.0, 0.0)]),
+                jline(2, 1, &[(0.0, 1.0), (0.0, 0.0), (0.0, -1.0)]),
             ],
             (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         );
         assert_eq!(js.len(), 1, "interleaved corner runs cross: {js:?}");
+        assert_eq!(js[0].jumper, 1, "the cornering route hops: {js:?}");
     }
 
     /// #334: a connector that arrives at a vertex of another and leaves
@@ -1254,10 +1302,12 @@ mod tests {
             );
         }
         // Controls — what must not change. A real crossing at a vertex
-        // of both routes still hops…
+        // of both routes still hops once (the vertical runs through;
+        // the cornering route is flatter on both its runs — see the
+        // twin case in line_jumps_hop_at_interior_vertices…).
         let js = hops(&[
             jline(1, 0, &[(-1.0, 1.0), (0.0, 0.0), (1.0, 0.0)]),
-            jline(2, 1, &[(1.0, 1.0), (0.0, 0.0), (-1.0, 0.0)]),
+            jline(2, 1, &[(0.0, 1.0), (0.0, 0.0), (0.0, -1.0)]),
         ]);
         assert_eq!(js.len(), 1, "interleaved corner runs still cross: {js:?}");
         // …so does a line leaving A's run at a visible angle DOWNWARD
@@ -1440,6 +1490,51 @@ mod tests {
         assert!(
             page_jumps(&doc, &page, &[]).is_empty(),
             "an ObjType-0 glued line never joins the crossing set"
+        );
+    }
+
+    /// The page's Show-Line-Jumps switch gates the crossing set AT THE
+    /// SOURCE (#324 phase-3 review): a forced `ConLineJumpCode = 2`
+    /// must not draw or save a hop on a page whose jumps are off — and
+    /// a `LinePattern = 0` shaft paints nothing, so nothing hops over
+    /// it (the renderer's stroke-visibility twin of the zero-weight
+    /// corollary).
+    #[test]
+    fn page_jumps_gates_on_the_page_switch_and_invisible_shafts() {
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        let mut h = straight_connector(1, (1.0, 1.0), (5.0, 1.0), None);
+        h.sheet.set_cell("ConLineJumpCode", Cell::value("2"));
+        let mut v = straight_connector(2, (3.0, 0.0), (3.0, 2.0), None);
+        page.shapes.push(h);
+        page.shapes.push(v.clone());
+        let doc = vsdx::Document::default();
+        assert_eq!(page_jumps(&doc, &page, &[]).len(), 1, "forced hop on a default page");
+        // Jumps off (visPLOJumpNone): no hop survives the forced code.
+        let sheet = vsdx::model::Sheet::default();
+        page.children = vec![vsdx::model::IndexChild::Sheet {
+            tag: "PageSheet".into(),
+            sheet,
+        }];
+        page.sheet_mut()
+            .expect("page sheet")
+            .set_cell("LineJumpCode", Cell::value("0"));
+        assert!(
+            page_jumps(&doc, &page, &[]).is_empty(),
+            "the off switch beats the forced connector code"
+        );
+        // Back on, but the UNDER shaft paints nothing: no crossing.
+        page.sheet_mut()
+            .expect("page sheet")
+            .set_cell("LineJumpCode", Cell::value("1"));
+        v.sheet.set_cell("LinePattern", Cell::value("0"));
+        page.shapes[1] = v;
+        assert!(
+            page_jumps(&doc, &page, &[]).is_empty(),
+            "nothing hops over an invisible shaft"
         );
     }
 
