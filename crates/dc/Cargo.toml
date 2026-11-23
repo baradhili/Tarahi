@@ -34,7 +34,7 @@ resvg = "0.50.0"
 pdf-writer = "0.15"
 # Media XObjects: corpus picture shapes decode to raw RGB(A) for the
 # PDF image stream (JPEG can also embed DCT-direct).
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # Content/image stream compression.
 flate2 = "1"
 # Spell checking (#121): pure-Rust Hunspell-format checker (`check` +
