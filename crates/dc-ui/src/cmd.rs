@@ -1428,18 +1428,24 @@ fn route_owned_rows(
                 }
                 n += 1;
             }
-            let width = g_w_h.0;
-            let height = g_w_h.1;
-            return dc::jumps::is_stored_jump_polyline(
+            // Accept the hop and KEEP CHECKING the remaining rows —
+            // an early return here declared a section with a valid
+            // stored square followed by an authored curve fully
+            // replaceable, and the reroute erased the curve
+            // (CodeRabbit + Greptile on PR #339).
+            if !dc::jumps::is_stored_jump_polyline(
                 &a,
                 start,
                 (end.0 - start.0, end.1 - start.1),
                 prev_dir,
                 next_dir,
-                (width, height),
+                (g_w_h.0, g_w_h.1),
                 radii.0,
                 radii.1,
-            );
+            ) {
+                return false;
+            }
+            continue;
         }
         if t != Some("ArcTo") {
             return false;
@@ -2424,6 +2430,16 @@ impl Command for ReconcileLineJumps {
                     // controls inside the 2r × r box over the chord,
                     // the run continuing on both sides. Authored
                     // polyline art keeps its rows.
+                    //
+                    // A leading PolylineTo has no predecessor run: a
+                    // hop is MID-ROUTE by definition, so the section
+                    // is not route-owned (the checked lookup — a
+                    // typed[i−1] at i == 0 used to panic; CodeRabbit
+                    // + Greptile on PR #339).
+                    if i == 0 {
+                        owned = false;
+                        break;
+                    }
                     let Some(a) = a else {
                         owned = false;
                         break;
@@ -4962,6 +4978,142 @@ mod reconcile_jump_tests {
         let rows = rows_of(&ed, 5);
         let kinds: Vec<&str> = rows.iter().map(|r| r.t.as_deref().unwrap()).collect();
         assert_eq!(kinds, vec!["MoveTo", "LineTo"], "hidden straightens: {rows:?}");
+    }
+
+    /// PR #339 C: every 3–7-sided hop the writer emits must
+    /// RE-CLASSIFY — a later style change or hide rewrites it (the
+    /// matcher used to accept only the 1-control apex and the
+    /// 2-control square, leaving n≥3 hops stale forever).
+    #[test]
+    fn reconcile_round_trips_every_polygonal_style() {
+        for (style, controls) in [(5, 2), (6, 3), (7, 4), (8, 5), (9, 6)] {
+            let (mut ed, page_id) = witness_doc(&style.to_string());
+            ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+            let rows = rows_of(&ed, 5);
+            assert_eq!(
+                rows[2].t.as_deref(),
+                Some("PolylineTo"),
+                "style {style}: {rows:?}"
+            );
+            let a = rows[2].cell("A").and_then(|c| c.v.clone()).unwrap();
+            assert_eq!(
+                dc::jumps::parse_polyline_controls(&a).unwrap().1.len(),
+                controls,
+                "style {style} writes {controls} interior vertices: {a}"
+            );
+            // Style change to Arc: rewrites (the rows re-classified).
+            ed.apply(dc_core::SetCell::new(
+                dc_core::Scope::PageSheet { page: page_id },
+                "LineJumpStyle",
+                VCell::value("1"),
+            ))
+            .unwrap();
+            ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+            let rows = rows_of(&ed, 5);
+            assert_eq!(
+                rows[2].t.as_deref(),
+                Some("ArcTo"),
+                "style {style} re-classified and restyled: {rows:?}"
+            );
+            // And hide straightens.
+            ed.apply(dc_core::SetCell::new(
+                dc_core::Scope::PageSheet { page: page_id },
+                "LineJumpCode",
+                VCell::value("0"),
+            ))
+            .unwrap();
+            ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+            let rows = rows_of(&ed, 5);
+            assert_eq!(rows.len(), 2, "style {style} hidden straightens");
+        }
+    }
+
+    /// PR #339 review: a LEADING `PolylineTo` (imported geometry) must
+    /// not panic Pass B — the section is simply not route-owned and
+    /// keeps its rows.
+    #[test]
+    fn reconcile_leaves_a_leading_polylineto_alone() {
+        let (mut ed, page_id) = witness_doc("1");
+        {
+            let page = &mut ed.doc.pages[0];
+            let h = vsdx::model::find_shape_by_id_mut(&mut page.shapes, 5).unwrap();
+            let mut sec = h.sheet.sections_named("Geometry")[0].clone();
+            sec.rows = vec![
+                Row {
+                    t: Some("PolylineTo".into()),
+                    ix: 1,
+                    cells: {
+                        let mut c = xy(5.0, 0.125);
+                        c.push((
+                            "A".to_string(),
+                            VCell::value("POLYLINE(0, 0, 0.5,0.6666666666666666)"),
+                        ));
+                        c
+                    },
+                    ..Row::default()
+                },
+                lineto(2, 5.0, 0.125),
+            ];
+            // Write back through the section replace.
+            for child in h.sheet.children.iter_mut() {
+                if let vsdx::model::SheetChild::Section(g) = child {
+                    if g.name == "Geometry" {
+                        *g = sec.clone();
+                    }
+                }
+            }
+        }
+        // Must not panic; the rows survive verbatim.
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows[0].t.as_deref(), Some("PolylineTo"), "unchanged: {rows:?}");
+        assert_eq!(rows.len(), 2);
+    }
+
+    /// PR #339 review: a route with a valid stored square FOLLOWED by
+    /// an authored curve is not replaceable — the planner must keep
+    /// the curve (the early `return` declared the whole section
+    /// route-owned).
+    #[test]
+    fn reroute_keeps_a_curve_after_a_stored_square() {
+        let (mut ed, page_id) = witness_doc("3");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows[2].t.as_deref(), Some("PolylineTo"));
+        // Append an authored curve AFTER the stored square's
+        // continuing LineTo (a small authored zigzag).
+        {
+            let page = &mut ed.doc.pages[0];
+            let h = vsdx::model::find_shape_by_id_mut(&mut page.shapes, 5).unwrap();
+            let mut sec = h.sheet.sections_named("Geometry")[0].clone();
+            let n = sec.rows.len() as i64;
+            sec.rows.push(Row {
+                t: Some("SplineStart".into()),
+                ix: n + 1,
+                cells: {
+                    let mut c = xy(5.2, 0.125);
+                    c.push(("A".to_string(), VCell::value("0 0 1 1")));
+                    c
+                },
+                ..Row::default()
+            });
+            for child in h.sheet.children.iter_mut() {
+                if let vsdx::model::SheetChild::Section(g) = child {
+                    if g.name == "Geometry" {
+                        *g = sec.clone();
+                    }
+                }
+            }
+        }
+        // An endpoint move that would want a new route: the connector
+        // keeps its rows (the curve protects the section).
+        ed.apply(crate::cmd::MoveShape::new(page_id, 6, (5.0, 5.0)))
+            .unwrap();
+        let after = rows_of(&ed, 5);
+        assert!(
+            after.iter().any(|r| r.t.as_deref() == Some("SplineStart")),
+            "the authored curve survives: {after:?}"
+        );
     }
 
     /// A style change BETWEEN POLYLINE STYLES rewrites: Square →

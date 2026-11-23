@@ -4579,7 +4579,79 @@ fn render_geometry(
         }
         match *t {
             "MoveTo" | "RelMoveTo" => {
-                let _ = write!(d, "M {}", emit_pt((x, y)));
+                // A stored GAP hop (the witnessed `MoveTo(at+r)` form)
+                // WELDS when jump stripping is active: skipping the pen
+                // up makes the next LineTo draw the straight run
+                // through the slot — the same treatment the ArcTo arm
+                // gives a stored arc. The recognition mirrors the hit
+                // walk: the skip is collinear with the runs on both
+                // sides and ≈ 2·radius long. An AUTHORED stroke break
+                // keeps its M (PR #339 review: a stale gap used to
+                // linger in the export when the crossing moved away).
+                let (rx, ry) = jump_radius;
+                let active = rx > 0.0 || ry > 0.0;
+                let weld = if active {
+                    let (sx, sy) = cur;
+                    let skip = (x - sx, y - sy);
+                    if skip.0.hypot(skip.1) <= 1e-9 {
+                        false
+                    } else {
+                    let kind_of = |tt: &str| -> u8 {
+                        if tt == "MoveTo" || tt == "RelMoveTo" {
+                            0u8
+                        } else if tt == "LineTo" || tt == "RelLineTo" {
+                            1
+                        } else {
+                            2
+                        }
+                    };
+                    let t_of = |i: isize| -> &str {
+                        let idx = ri as isize + i;
+                        if idx < 0 || idx as usize >= evald.len() {
+                            return "";
+                        }
+                        evald[idx as usize].1
+                    };
+                    let mut prev_dir = None;
+                    let mut pi = ri as isize - 1;
+                    while pi >= 1 {
+                        let tp = t_of(pi);
+                        if kind_of(tp) != 1 {
+                            break; // a curve or pen-up ends the run context
+                        }
+                        let (qx, qy) = evald[pi as usize].2;
+                        let dvec = (sx - qx, sy - qy);
+                        if dvec.0.hypot(dvec.1) > 1e-9 {
+                            let l = dvec.0.hypot(dvec.1);
+                            prev_dir = Some((dvec.0 / l, dvec.1 / l));
+                            break;
+                        }
+                        pi -= 1;
+                    }
+                    let mut next_dir = None;
+                    let mut ni = ri as isize + 1;
+                    while (ni as usize) < evald.len() {
+                        let tn = t_of(ni);
+                        if kind_of(tn) != 1 {
+                            break;
+                        }
+                        let (qx, qy) = evald[ni as usize].2;
+                        let dvec = (qx - x, qy - y);
+                        if dvec.0.hypot(dvec.1) > 1e-9 {
+                            let l = dvec.0.hypot(dvec.1);
+                            next_dir = Some((dvec.0 / l, dvec.1 / l));
+                            break;
+                        }
+                        ni += 1;
+                    }
+                    crate::jumps::is_stored_jump_gap(skip, prev_dir, next_dir, rx, ry)
+                    }
+                } else {
+                    false
+                };
+                if !weld {
+                    let _ = write!(d, "M {}", emit_pt((x, y)));
+                }
                 cur = (x, y);
             }
             "LineTo" | "RelLineTo" => {
@@ -8910,6 +8982,65 @@ mod tests {
             svg.matches(r#"stroke-linejoin="round""#).count(),
             1,
             "one hop ARC at the real crossing (a second crossing on the              same jumper would draw a second arc)"
+        );
+    }
+
+    /// PR #339 G: a stored GAP welds in the ink when jump stripping
+    /// is active — the export's path keeps one continuous stroke
+    /// through the slot (the overlay owns the gap). An AUTHORED
+    /// stroke break of the wrong length keeps its M.
+    #[test]
+    fn export_welds_stored_gaps_keeps_authored_breaks() {
+        let r = 0.125 * (2.0 / 3.0) / 2.0;
+        let shape = |rows: &[(&str, f64, f64)]| {
+            let mut s = shape_at(1, (2.5, 5.0), 5.0, 0.0, 0.0);
+            s.sheet.set_cell("ObjType", Cell::value("2"));
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            sec.rows = rows
+                .iter()
+                .enumerate()
+                .map(|(k, (t, x, y))| Row {
+                    t: Some((*t).into()),
+                    ix: k as i64 + 1,
+                    cells: vec![
+                        ("X".to_string(), Cell::value(format!("{x}"))),
+                        ("Y".to_string(), Cell::value(format!("{y}"))),
+                    ],
+                    ..Row::default()
+                })
+                .collect();
+            s.sheet.children.push(SheetChild::Section(sec));
+            s
+        };
+        // A STORED gap on the run (MoveTo at +2r): welds.
+        let gapped = shape(&[
+            ("MoveTo", 0.0, 0.0),
+            ("LineTo", 2.5 - r, 0.0),
+            ("MoveTo", 2.5 + r, 0.0),
+            ("LineTo", 5.0, 0.0),
+        ]);
+        let (doc, page) = page_fixture(vec![gapped]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(
+            !svg.contains("M 5."),
+            "no mid-route pen up through the stored gap: {svg}"
+        );
+        // An AUTHORED break (a skip of the wrong length): keeps its M.
+        let authored = shape(&[
+            ("MoveTo", 0.0, 0.0),
+            ("LineTo", 1.0, 0.0),
+            ("MoveTo", 3.0, 0.0),
+            ("LineTo", 5.0, 0.0),
+        ]);
+        let (doc, page) = page_fixture(vec![authored]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(
+            svg.matches("M ").count() >= 2,
+            "the authored break keeps its pen up: {svg}"
         );
     }
 

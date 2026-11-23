@@ -755,12 +755,75 @@ fn num_of(page: &vsdx::Page, name: &str) -> Option<f64> {
 /// Depth-first emission in document order — the z-order the SVG
 /// raster paints, preserved exactly.
 fn walk_group(chunk: &mut Chunk, ctx: &mut PdfContext, content: &mut Content, group: &usvg::Group) {
+    // A clipped group (#324 phase 3 / PR #339 review): the jump cuts
+    // are SVG clip groups — the PDF writer used to walk straight
+    // through them and stroke the un-cut shaft, so every hop kept its
+    // straight line beneath (and a Gap hop vanished entirely). q /
+    // clip path / n / children / Q, the SVG clip model: the clip
+    // INTERSECTS for nested groups, exactly what the per-hop nested
+    // jump cuts rely on.
+    let clip = group.clip_path();
+    if let Some(clip) = clip {
+        content.save_state();
+        emit_clip_path(content, clip, group.abs_transform());
+    }
     for node in group.children() {
         match node {
             usvg::Node::Group(g) => walk_group(chunk, ctx, content, g),
             usvg::Node::Path(p) => emit_path(chunk, ctx, content, p),
             usvg::Node::Image(i) => emit_image(chunk, ctx, content, i),
             usvg::Node::Text(t) => emit_text(ctx, content, t),
+        }
+    }
+    if clip.is_some() {
+        content.restore_state();
+    }
+}
+
+/// One clip's geometry, in the coordinate space the CLIPPED group
+/// draws in: the clip subroot's own absolute transform, brought from
+/// its own space into the group's by the referencing group's abs
+/// transform (usvg bakes each subroot's root transform separately —
+/// "subroots have their own root transform, which isn't affected by
+/// the node that references this subroot"; the SVG spec's userSpace
+/// clip resolution needs our own composition). Nested clips intersect
+/// (emit recursively before this one — the clip of a clip).
+fn emit_clip_path(
+    content: &mut Content,
+    clip: &usvg::ClipPath,
+    group_abs: tiny_skia_path::Transform,
+) {
+    if let Some(inner) = clip.clip_path() {
+        emit_clip_path(content, inner, group_abs);
+    }
+    emit_clip_geometry(content, clip.root(), group_abs);
+    // usvg resolves clip-rule per PATH inside the subroot; our own
+    // generated cuts are even-odd (the page rect with the slot holes
+    // — the nesting handles the overlap union).
+    content.clip_even_odd();
+    content.end_path();
+}
+
+/// The clip subroot's own geometry, each path in the DRAWING space
+/// of the clipped group: `userSpaceOnUse` (the default, and what our
+/// generated cuts use) reads the clip's user space AS the
+/// referencing group's, so a path's total transform is its own
+/// subroot frame (usvg keeps subroot abs transforms separate from the
+/// referencing node) composed with the group's absolute — path first,
+/// then group (`pre_concat`).
+fn emit_clip_geometry(
+    content: &mut Content,
+    root: &usvg::Group,
+    group_abs: tiny_skia_path::Transform,
+) {
+    for node in root.children() {
+        match node {
+            usvg::Node::Group(g) => emit_clip_geometry(content, g, group_abs),
+            usvg::Node::Path(p) => {
+                content.transform(transform_matrix(p.abs_transform().pre_concat(group_abs)));
+                write_path_data(content, p.data());
+            }
+            _ => {}
         }
     }
 }
@@ -1414,6 +1477,37 @@ fn global_bbox(face: &ttf_parser::Face) -> pdf_writer::Rect {
 
 #[cfg(test)]
 mod tests {
+    /// PR #339 F: clipped groups emit PDF clip ops — the jump cuts
+    /// are SVG clip groups and the writer used to walk straight
+    /// through them (the PDF kept the un-cut shaft beneath every
+    /// hop). A tiny clipped SVG walks into a Content whose raw
+    /// operator stream must carry q … W* n … Q around the child.
+    #[test]
+    fn clipped_groups_emit_pdf_clip_ops() {
+        let db = crate::raster::font_db();
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+<clipPath id="cut"><path clip-rule="evenodd" d="M 0 0 L 100 0 L 100 100 L 0 100 Z M 40 45 L 60 45 L 60 55 L 40 55 Z"/></clipPath>
+<g clip-path="url(#cut)"><path d="M 0 50 L 100 50" stroke="#000000" stroke-width="1" fill="none"/></g>
+</svg>"##;
+        let tree = crate::raster::parse_svg(svg, &db).unwrap();
+        let mut pdf = Pdf::new();
+        let mut ctx = PdfContext::new(&db);
+        let mut content = Content::new();
+        walk_group(&mut pdf, &mut ctx, &mut content, tree.root());
+        let buf = content.finish();
+        let ops = String::from_utf8_lossy(buf.as_slice()).to_string();
+        assert!(ops.contains("q"), "a saved state opens the clip: {ops}");
+        assert!(ops.contains("W*"), "the even-odd clip op lands: {ops}");
+        assert!(ops.trim_end().ends_with('Q'), "the state restores: {ops}");
+        // The slot hole made it into the clip geometry (two m subpaths
+        // — the page rect and the slot quad).
+        assert!(
+            ops.matches('m').count() >= 2,
+            "the clip path carries both subpaths: {ops}"
+        );
+    }
+
+
     use super::*;
 
     /// A 2×2 RGBA PNG: row 0 (top) red, row 1 (bottom) blue.
