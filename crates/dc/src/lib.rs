@@ -6,6 +6,7 @@ pub mod edit;
 pub mod export;
 pub mod fields;
 pub mod geom;
+pub mod jumps;
 pub mod pdf;
 pub mod raster;
 pub mod spellcheck;

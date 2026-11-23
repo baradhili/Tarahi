@@ -6242,7 +6242,7 @@ impl App {
                 beg,
                 endp,
                 (ep.pre_beg, ep.pre_end),
-                dc::geom::jump_radii_in(&ep.doc, page2),
+                dc::jumps::jump_radii_in(&ep.doc, page2),
             )
         };
         // Apply the plan's writes to the snapshot (plain cache writes
@@ -6579,7 +6579,7 @@ impl App {
                 .pages
                 .iter()
                 .find(|p| p.id == page_id)
-                .map(|p| dc::geom::jump_radii_in(&ed.doc, p))
+                .map(|p| dc::jumps::jump_radii_in(&ed.doc, p))
         });
         let mut cmds: Vec<Box<dyn dc_core::Command>> = vec![Box::new(SetCell::new(
             Scope::PageSheet { page: page_id },

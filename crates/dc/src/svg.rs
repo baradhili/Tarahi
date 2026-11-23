@@ -1071,7 +1071,7 @@ fn render_shape_layer_inner(
             // top-level connectors (#294 review). The page's own
             // radii (X and Y — a stored jump on a vertical run was
             // authored at the Y spacing) are the stored-jump evidence.
-            crate::geom::jump_radii_in(doc, page),
+            crate::jumps::jump_radii_in(doc, page),
             &mut svg,
         );
     }
@@ -1187,7 +1187,7 @@ fn render_page_full(
             // but the ink strips with the page's radius either way: a
             // stored arc is stale decoration even in a scoped view.
             if only.is_none() {
-                crate::geom::jump_radii_in(doc, page)
+                crate::jumps::jump_radii_in(doc, page)
             } else {
                 (0.0, 0.0)
             },
@@ -1203,13 +1203,13 @@ fn render_page_full(
     // The page's Show-Line-Jumps switch gates the overlay (#251), and
     // a resolved radius of 0 (an explicit LineJumpFactorX=0, #294
     // review) draws nothing rather than degenerate zero-size hops.
-    let radius = crate::geom::jump_radius_in(doc, page);
-    let radius_y = crate::geom::jump_radius_y_in(doc, page);
+    let radius = crate::jumps::jump_radius_in(doc, page);
+    let radius_y = crate::jumps::jump_radius_y_in(doc, page);
     let jumps = if only.is_none()
         && page.line_jumps_shown()
         && (radius > 0.0 || radius_y > 0.0)
     {
-        crate::geom::page_jumps(doc, page, hidden)
+        crate::jumps::page_jumps(doc, page, hidden)
     } else {
         Vec::new()
     };
@@ -1259,7 +1259,7 @@ const JUMP_UNDER_EXT_IN: f64 = 1.0 / 96.0;
 /// page-up (`canvas.rs`'s screen-up flip, computed here in page
 /// space so rotated jumpers stay correct). `radius` is the page's
 /// resolved jump radius (#294 — LineToLineX × LineJumpFactorX / 2).
-fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::geom::Jump, radius: f64) {
+fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::jumps::Jump, radius: f64) {
     let (r, w, uw) = (radius, j.weight, j.under_weight);
     let sy = |y: f64| page_h - y;
     let pt = |p: (f64, f64)| format!("{:.5} {:.5}", p.0, sy(p.1));
@@ -1561,7 +1561,7 @@ fn render_shape<'a>(
     greek: Option<&GreekCtx>,
     cull: Option<&InkCull>,
     fields: Option<&crate::fields::FieldsCtx<'_>>,
-    // The page's own jump radius (`geom::jump_radius_in`) in page
+    // The page's own jump radius (`jumps::jump_radius_in`) in page
     // inches — the stored-jump evidence (#294; 0 = never strip: master
     // contact sheets carry no page context, and an authored arc that
     // matches no radius is preserved).
@@ -4344,7 +4344,7 @@ fn render_geometry(
                     // Connector-ness gates the kind: artwork arcs never
                     // strip even with a resolved radius (#294 review).
                     && crate::geom::is_connector_in(doc, chain, s)
-                    && crate::geom::is_stored_jump_arc(
+                    && crate::jumps::is_stored_jump_arc(
                         h,
                         (x - sx, y - sy),
                         prev_dir,

@@ -795,7 +795,7 @@ pub struct FramePlan {
 /// page-space endpoints). `pre` is the PRE-drag pose
 /// ((begin, end)) — the #218 literal-row translation delta — and
 /// `jump_radii` is the page's resolved hop radii
-/// (`dc::geom::jump_radii_in`): the grow path's stored-jump allowance
+/// (`dc::jumps::jump_radii_in`): the grow path's stored-jump allowance
 /// classifies `ArcTo` rows at the same evidence the renderer strips
 /// with.
 pub fn plan_connector_frame(
@@ -1296,7 +1296,7 @@ pub fn plan_connector_frame(
 /// geometry rows wholesale? True when every live row is a straight
 /// run, or an `ArcTo` that classifies as a STORED JUMP at `radii` —
 /// the same evidence the renderer's strip uses
-/// (`dc::geom::is_stored_jump_arc`). Straight rows are replaceable
+/// (`dc::jumps::is_stored_jump_arc`). Straight rows are replaceable
 /// wherever their literals live (the per-row path rewrites them
 /// equally — the corpus instances carry PARTIAL rows with per-cell
 /// inheritance, e.g. a MoveTo with only X local); an `ArcTo` reads
@@ -1416,7 +1416,7 @@ fn route_owned_rows(
             }
             n += 1;
         }
-        if !dc::geom::is_stored_jump_arc(
+        if !dc::jumps::is_stored_jump_arc(
             a,
             (end.0 - start.0, end.1 - start.1),
             prev_dir,
@@ -1528,7 +1528,7 @@ impl Command for RerouteConnectors {
             // #303: the grow gate's stored-jump evidence — the page's
             // resolved hop radii, the same values the renderer strips
             // with.
-            let jump_radii = dc::geom::jump_radii_in(doc, page_ref);
+            let jump_radii = dc::jumps::jump_radii_in(doc, page_ref);
             for (conn_id, recs) in candidates {
                 let Some(conn) = vsdx::model::find_shape_by_id(page_shapes, conn_id) else {
                     continue;
@@ -1788,7 +1788,7 @@ fn reconciled_rows(
     shown: bool,
     frame: &dc::geom::HitFrame,
     pts: &[(f64, f64)],
-    hops: &[dc::geom::Jump],
+    hops: &[dc::jumps::Jump],
     first_row: Option<&vsdx::model::Row>,
 ) -> Vec<vsdx::model::Row> {
     let to_local = |p: (f64, f64)| frame.to_local(p);
@@ -2008,7 +2008,7 @@ impl Command for ReconcileLineJumps {
         let Some(page) = doc.pages.iter().find(|p| p.id == self.page) else {
             return Ok(());
         };
-        let radii = dc::geom::jump_radii_in(doc, page);
+        let radii = dc::jumps::jump_radii_in(doc, page);
         let strip = self.strip.unwrap_or(radii);
         let shown = page.line_jumps_shown();
         // The hops compute at the CURRENT radius with the override's
@@ -2023,7 +2023,7 @@ impl Command for ReconcileLineJumps {
         // fail plain==stripped on their own, so Hide Line Jumps still
         // straightens them (review on the #303 batch).
         let hops = if shown {
-            dc::geom::page_jumps_stripping(doc, page, &[], self.strip)
+            dc::jumps::page_jumps_stripping(doc, page, &[], self.strip)
         } else {
             Vec::new()
         };
@@ -2232,7 +2232,7 @@ impl Command for ReconcileLineJumps {
             // hops land on this connector — the rows are already the
             // truth, and rewriting them would only churn the file
             // (collapsing a straight route's degenerate elbows).
-            let my_hops: Vec<dc::geom::Jump> =
+            let my_hops: Vec<dc::jumps::Jump> =
                 hops.iter().filter(|j| j.jumper == s.id).copied().collect();
             if plain.len() == stripped.len() && my_hops.is_empty() {
                 continue;

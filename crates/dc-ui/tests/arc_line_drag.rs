@@ -254,7 +254,7 @@ fn preview_planner_matches_the_commit_reroute() {
             begin,
             drop,
             (pre_beg, pre_end),
-            dc::geom::jump_radii_in(&ed.doc, page),
+            dc::jumps::jump_radii_in(&ed.doc, page),
         )
     };
     {
