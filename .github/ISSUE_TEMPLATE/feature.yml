@@ -1,0 +1,29 @@
+name: Feature request
+description: A new capability — follow the issue-first workflow's feature shape (request, reference/evidence, proposed approach). New features target the M5 GUI milestone unless decided otherwise.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: request
+    attributes:
+      label: Request
+      description: What you want the app to do, stated as user-visible behavior.
+      placeholder: "The canvas should … (e.g. AutoConnect arrows on hover over a connection point)"
+    validations:
+      required: true
+  - type: textarea
+    id: reference
+    attributes:
+      label: Reference / evidence
+      description: |
+        What anchors the design — observed Visio 2016 behavior, a corpus file that demonstrates it, or an existing issue it extends.
+        Studying the shipped app and quoting observed behavior is fair game; copying Microsoft content/assets is not (cleanroom policy).
+      placeholder: "Visio 2016 shows … (observed via …); see also #NNN"
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Proposed approach
+      description: Sketch of the implementation — which crate/module it touches, data model or render changes, and what stays open for later.
+    validations:
+      required: false

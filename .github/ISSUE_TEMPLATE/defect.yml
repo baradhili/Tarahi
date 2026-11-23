@@ -1,0 +1,46 @@
+name: Defect report
+description: Something is broken — follow the issue-first workflow's defect shape (symptom, evidence, root cause, proposed fix).
+labels: ["bug"]
+body:
+  - type: textarea
+    id: symptom
+    attributes:
+      label: Symptom
+      description: What is wrong, observed from the outside — which crate, command, or dialog, and what happens vs. what should happen.
+      placeholder: "`dc edit …` drops the connector's `<Connect>` part when …"
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: |
+        How you saw it: repro steps, the exact command line, input file, command output, failing test, or log.
+        Synthetic fixtures only — never attach Microsoft content (icons, artwork, XML blobs, binaries).
+      placeholder: |
+        1. `cargo run -p dc -- edit Sample/… --cell …`
+        2. `cargo run -p dc -- roundtrip out.vsdx --verify` fails with …
+    validations:
+      required: true
+  - type: textarea
+    id: root-cause
+    attributes:
+      label: Root cause
+      description: If diagnosed — where the defect lives (`file:line`) and why it happens. Leave open with your hypothesis if not yet diagnosed.
+    validations:
+      required: false
+  - type: textarea
+    id: proposed-fix
+    attributes:
+      label: Proposed fix
+      description: The intended approach, and any tests that should pin the behavior.
+    validations:
+      required: false
+  - type: checkboxes
+    id: cleanroom
+    attributes:
+      label: Cleanroom check
+      description: The cleanroom reference policy forbids copying Microsoft content/assets into this repo or its tests.
+      options:
+        - label: Any attachments or quoted XML in this issue contain no Microsoft content/assets
+          required: true
