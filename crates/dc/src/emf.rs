@@ -149,6 +149,11 @@ impl Rd<'_> {
     fn i32(&self, o: usize) -> Option<i32> {
         self.u32(o).map(|v| v as i32)
     }
+    fn u16(&self, o: usize) -> Option<u16> {
+        self.0
+            .get(o..o + 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+    }
     fn i16(&self, o: usize) -> Option<i16> {
         self.0
             .get(o..o + 2)
@@ -159,6 +164,12 @@ impl Rd<'_> {
     }
     fn color(&self, o: usize) -> Option<(u8, u8, u8)> {
         self.0.get(o..o + 3).map(|b| (b[0], b[1], b[2]))
+    }
+    /// `n` items of `step` bytes from `off`, capped at what the record
+    /// actually holds: counts come from the file and must not drive
+    /// loops or allocations past its bytes (Greptile on PR #331).
+    fn fit(&self, off: usize, n: usize, step: usize) -> usize {
+        n.min(self.0.len().saturating_sub(off) / step.max(1))
     }
     fn xform(&self, o: usize) -> Option<Xf> {
         Some(Xf {
@@ -188,6 +199,9 @@ struct Player {
     dev_to_box: Xf,
     dev_px_per_mm: (f64, f64),
     clip_seq: usize,
+    /// The object table size: EMF `nHandles` from the header (a u16),
+    /// so object numbers can never exceed it.
+    max_objs: usize,
 }
 
 impl Player {
@@ -331,8 +345,8 @@ impl Player {
 
     /// Points of a poly record: count at `cnt_off`, data at `pts_off`.
     fn points(r: &Rd, cnt_off: usize, pts_off: usize, short: bool) -> Vec<(f64, f64)> {
-        let n = r.u32(cnt_off).unwrap_or(0) as usize;
         let step = if short { 4 } else { 8 };
+        let n = r.fit(pts_off, r.u32(cnt_off).unwrap_or(0) as usize, step);
         (0..n)
             .filter_map(|i| {
                 let o = pts_off + i * step;
@@ -439,34 +453,43 @@ impl Player {
         self.dc.clip = Some(id);
     }
 
-    fn bitmap(
-        &mut self,
-        rec: &Rd,
-        off_bmi: usize,
-        cb_bmi: usize,
-        off_bits: usize,
-        cb_bits: usize,
-        dest: [f64; 4],
-    ) {
+    /// `dib` = the record's `[offBmi, cbBmi, offBits, cbBits]`.
+    fn bitmap(&mut self, rec: &Rd, dib: [usize; 4], dest: [f64; 4], src: Option<[i32; 4]>) {
+        let [off_bmi, cb_bmi, off_bits, cb_bits] = dib;
         let (Some(bmi), Some(bits)) = (
             rec.0.get(off_bmi..off_bmi + cb_bmi),
             rec.0.get(off_bits..off_bits + cb_bits),
         ) else {
             return;
         };
-        let Some(png) = dib_to_png(bmi, bits) else {
+        let Some(png) = dib_to_png_cropped(bmi, bits, src) else {
             return;
         };
-        let t = self.total();
-        let a = t.apply((dest[0], dest[1]));
-        let b = t.apply((dest[0] + dest[2], dest[1] + dest[3]));
-        let (x, y) = (a.0.min(b.0), a.1.min(b.1));
-        let (w, h) = ((a.0 - b.0).abs(), (a.1 - b.1).abs());
+        // The unit image → the destination rect → the full transform,
+        // so rotation, shear and reflection survive (Greptile on PR
+        // #331: two transformed corners made an upright, possibly
+        // zero-width rect). The clip wraps the image: on the element
+        // itself it would be read in the transformed user space.
+        let m = Xf {
+            m11: dest[2],
+            m12: 0.0,
+            m21: 0.0,
+            m22: dest[3],
+            dx: dest[0],
+            dy: dest[1],
+        }
+        .then(&self.total());
         let _ = writeln!(
             self.out,
-            r#"<image x="{x:.4}" y="{y:.4}" width="{w:.4}" height="{h:.4}" preserveAspectRatio="none" href="data:image/png;base64,{}"{}/>"#,
-            crate::svg::base64(&png),
-            self.clip_attr()
+            r#"<g{}><image x="0" y="0" width="1" height="1" preserveAspectRatio="none" transform="matrix({:.6} {:.6} {:.6} {:.6} {:.4} {:.4})" href="data:image/png;base64,{}"/></g>"#,
+            self.clip_attr(),
+            m.m11,
+            m.m12,
+            m.m21,
+            m.m22,
+            m.dx,
+            m.dy,
+            crate::svg::base64(&png)
         );
     }
 
@@ -548,6 +571,31 @@ impl Player {
     }
 }
 
+/// [`dib_to_png`] showing only the record's source rect `[x, y, cx,
+/// cy]` (DIB pixels; a bottom-up DIB, positive `biHeight`, counts `y`
+/// from its bottom row). STRETCHDIBITS may select part of a larger
+/// bitmap (Greptile on PR #331). A rect covering the whole bitmap, or
+/// one that does not fit, keeps the whole image.
+fn dib_to_png_cropped(bmi: &[u8], bits: &[u8], src: Option<[i32; 4]>) -> Option<Vec<u8>> {
+    let png = dib_to_png(bmi, bits)?;
+    let Some([x, y, cx, cy]) = src else {
+        return Some(png);
+    };
+    let img = image::load_from_memory_with_format(&png, image::ImageFormat::Png).ok()?;
+    let (w, h) = (img.width() as i64, img.height() as i64);
+    let (x, y, cx, cy) = (i64::from(x), i64::from(y), i64::from(cx), i64::from(cy));
+    let bottom_up = Rd(bmi).i32(8).is_some_and(|bh| bh > 0);
+    let top = if bottom_up { h - y - cy } else { y };
+    let whole = x == 0 && top == 0 && cx == w && cy == h;
+    if whole || cx <= 0 || cy <= 0 || x < 0 || top < 0 || x + cx > w || top + cy > h {
+        return Some(png);
+    }
+    let cut = img.crop_imm(x as u32, top as u32, cx as u32, cy as u32);
+    let mut out = std::io::Cursor::new(Vec::new());
+    cut.write_to(&mut out, image::ImageFormat::Png).ok()?;
+    Some(out.into_inner())
+}
+
 /// A packed DIB (BITMAPINFO + bits) → PNG bytes, through the BMP codec.
 fn dib_to_png(bmi: &[u8], bits: &[u8]) -> Option<Vec<u8>> {
     let mut bmp = Vec::with_capacity(14 + bmi.len() + bits.len());
@@ -621,6 +669,10 @@ pub fn emf_to_svg(data: &[u8], w: f64, h: f64) -> Option<String> {
         dev_to_box,
         dev_px_per_mm: ppmm,
         clip_seq: 0,
+        max_objs: match r.u16(48) {
+            Some(n) if n > 0 => usize::from(n),
+            _ => usize::from(u16::MAX),
+        },
     };
     let mut off = 0usize;
     let mut guard = 0usize;
@@ -680,8 +732,12 @@ fn play(p: &mut Player, ty: u32, r: &Rd) {
         33 => p.saved.push(p.dc.clone()),
         34 => {
             let rel = r.i32(8).unwrap_or(-1);
-            let n = if rel < 0 { (-rel) as usize } else { 1 };
-            for _ in 1..n {
+            let n = if rel < 0 {
+                rel.unsigned_abs() as usize
+            } else {
+                1
+            };
+            for _ in 1..n.min(p.saved.len() + 1) {
                 p.saved.pop();
             }
             if let Some(d) = p.saved.pop() {
@@ -766,6 +822,12 @@ fn play(p: &mut Player, ty: u32, r: &Rd) {
                     }
                 }
             };
+            // The index comes from the file: stay inside the header's
+            // object table (Greptile on PR #331: a huge index made
+            // `resize` allocate billions of slots).
+            if ih >= p.max_objs {
+                return;
+            }
             if p.objs.len() <= ih {
                 p.objs.resize(ih + 1, None);
             }
@@ -862,7 +924,7 @@ fn play(p: &mut Player, ty: u32, r: &Rd) {
         // PolyPolygon / PolyPolyline: Bounds, nPolys, cpts, counts, points.
         7 | 8 | 90 | 91 => {
             let short = ty >= 90;
-            let n = r.u32(24).unwrap_or(0) as usize;
+            let n = r.fit(32, r.u32(24).unwrap_or(0) as usize, 4);
             let counts: Vec<usize> = (0..n)
                 .filter_map(|i| r.u32(32 + i * 4).map(|c| c as usize))
                 .collect();
@@ -871,6 +933,7 @@ fn play(p: &mut Player, ty: u32, r: &Rd) {
             let close = matches!(ty, 8 | 91);
             let mut d = String::new();
             for c in counts {
+                let c = r.fit(o, c, step);
                 let pts: Vec<(f64, f64)> = (0..c)
                     .filter_map(|i| {
                         let q = o + i * step;
@@ -924,7 +987,9 @@ fn play(p: &mut Player, ty: u32, r: &Rd) {
                 f64::from(r.i32(76).unwrap_or(0)),
             ];
             let g = |o| r.u32(o).unwrap_or(0) as usize;
-            p.bitmap(r, g(48), g(52), g(56), g(60), dest);
+            // xSrc, ySrc, cxSrc, cySrc: the part of the bitmap shown.
+            let src = [32, 36, 40, 44].map(|o| r.i32(o).unwrap_or(0));
+            p.bitmap(r, [g(48), g(52), g(56), g(60)], dest, Some(src));
         }
         76 => {
             // BITBLT: a bitmap, or (no source) a pattern fill of the rect.
@@ -936,7 +1001,7 @@ fn play(p: &mut Player, ty: u32, r: &Rd) {
             ];
             let g = |o| r.u32(o).unwrap_or(0) as usize;
             if g(88) > 0 {
-                p.bitmap(r, g(84), g(88), g(92), g(96), dest);
+                p.bitmap(r, [g(84), g(88), g(92), g(96)], dest, None);
             } else if r.u32(40) == Some(0x00F0_0021) {
                 let (a, b) = ((dest[0], dest[1]), (dest[0] + dest[2], dest[1] + dest[3]));
                 let d = p.poly_d(&[a, (b.0, a.1), b, (a.0, b.1)], true);
@@ -1012,6 +1077,9 @@ pub fn wmf_to_svg(data: &[u8], w: f64, h: f64) -> Option<String> {
         },
         dev_px_per_mm: (3.78, 3.78),
         clip_seq: 0,
+        // WMF objects take the lowest free slot (`new_obj`), bounded
+        // by the record count.
+        max_objs: usize::from(u16::MAX),
     };
     for (func, o, size) in recs {
         play_wmf(&mut p, func, &Rd(&data[o..o + size]));
@@ -1081,8 +1149,12 @@ fn play_wmf(p: &mut Player, func: u16, r: &Rd) {
         0x001E => p.saved.push(p.dc.clone()),
         0x0127 => {
             let rel = w(0) as i64;
-            let n = if rel < 0 { (-rel) as usize } else { 1 };
-            for _ in 1..n {
+            let n = if rel < 0 {
+                rel.unsigned_abs() as usize
+            } else {
+                1
+            };
+            for _ in 1..n.min(p.saved.len() + 1) {
                 p.saved.pop();
             }
             if let Some(d) = p.saved.pop() {
@@ -1094,7 +1166,9 @@ fn play_wmf(p: &mut Player, func: u16, r: &Rd) {
             Some(Obj::Pen {
                 null: (w(0) as i64) & 0xF == 5,
                 width: w(1),
-                color: r.color(10).unwrap_or((0, 0, 0)),
+                // LogPen: style (6), width x/y (8, 10), COLORREF at 12
+                // (Greptile on PR #331: byte 10 is the unused y width).
+                color: r.color(12).unwrap_or((0, 0, 0)),
                 cosmetic: w(1) <= 1.0,
                 cap: "round",
                 join: "round",
@@ -1149,18 +1223,19 @@ fn play_wmf(p: &mut Player, func: u16, r: &Rd) {
             p.dc.cur = to;
         }
         0x0324 | 0x0325 => {
-            let n = w(0) as usize;
+            let n = r.fit(8, w(0) as usize, 4);
             let pts: Vec<(f64, f64)> = (0..n).map(|i| (w(1 + i * 2), w(2 + i * 2))).collect();
             let close = func == 0x0324;
             let d = p.poly_d(&pts, close);
             p.emit(&d, close, true);
         }
         0x0538 => {
-            let n = w(0) as usize;
+            let n = r.fit(8, w(0) as usize, 2);
             let counts: Vec<usize> = (0..n).map(|i| w(1 + i) as usize).collect();
             let mut k = 1 + n;
             let mut d = String::new();
             for c in counts {
+                let c = r.fit(6 + k * 2, c, 4);
                 let pts: Vec<(f64, f64)> =
                     (0..c).map(|i| (w(k + i * 2), w(k + 1 + i * 2))).collect();
                 k += c * 2;
@@ -1267,6 +1342,158 @@ mod tests {
             svg.contains("M 0.0000 -1.0000 L 2.0000 -1.0000 L 2.0000 0.0000 Z"),
             "{svg}"
         );
+    }
+
+    /// An EMF with `tiny_emf`'s header (frame 1000 × 1000 hundredths
+    /// of a mm on a 10 px/mm device) and the given records, then EOF.
+    fn emf_with(records: &[(u32, Vec<u8>)]) -> Vec<u8> {
+        let mut d = tiny_emf();
+        d.truncate(d.len() - 20); // drop the EOF record
+        for (ty, body) in records {
+            d.extend_from_slice(&ty.to_le_bytes());
+            d.extend_from_slice(&((8 + body.len()) as u32).to_le_bytes());
+            d.extend_from_slice(body);
+        }
+        d.extend_from_slice(&14u32.to_le_bytes());
+        d.extend_from_slice(&20u32.to_le_bytes());
+        d.extend_from_slice(&[0u8; 12]);
+        d
+    }
+
+    /// Counts and object numbers come from the file: absurd values
+    /// must neither loop billions of times nor allocate billions of
+    /// slots (Greptile on PR #331). The records below claim ~4e9
+    /// points, polygons, saved states and an object slot near
+    /// u32::MAX while holding a few bytes.
+    #[test]
+    fn absurd_counts_stay_within_the_record() {
+        let mut poly = vec![0u8; 16];
+        poly.extend_from_slice(&u32::MAX.to_le_bytes());
+        poly.extend_from_slice(&[0u8; 12]);
+        let mut polypoly = vec![0u8; 16];
+        polypoly.extend_from_slice(&u32::MAX.to_le_bytes()); // nPolys
+        polypoly.extend_from_slice(&u32::MAX.to_le_bytes()); // cpts
+        polypoly.extend_from_slice(&u32::MAX.to_le_bytes()); // count 0
+        let mut brush = Vec::new();
+        brush.extend_from_slice(&0xFFFF_FFF0u32.to_le_bytes()); // ihBrush
+        brush.extend_from_slice(&[0u8; 12]);
+        let restore = i32::MIN.to_le_bytes().to_vec();
+        let t = std::time::Instant::now();
+        let svg = emf_to_svg(
+            &emf_with(&[(86, poly), (91, polypoly), (39, brush), (34, restore)]),
+            2.0,
+            1.0,
+        )
+        .expect("an EMF");
+        assert!(t.elapsed().as_secs_f64() < 2.0, "took {:?}", t.elapsed());
+        assert!(svg.len() < 100_000, "{} bytes", svg.len());
+    }
+
+    /// A 2×1 bottom-up 24-bit DIB: red pixel, then blue.
+    fn red_blue_dib() -> (Vec<u8>, Vec<u8>) {
+        let mut bmi = vec![0u8; 40];
+        bmi[0..4].copy_from_slice(&40u32.to_le_bytes());
+        bmi[4..8].copy_from_slice(&2i32.to_le_bytes());
+        bmi[8..12].copy_from_slice(&1i32.to_le_bytes());
+        bmi[12..14].copy_from_slice(&1u16.to_le_bytes());
+        bmi[14..16].copy_from_slice(&24u16.to_le_bytes());
+        let bits = vec![0, 0, 255, 255, 0, 0, 0, 0]; // BGR BGR + pad
+        (bmi, bits)
+    }
+
+    /// STRETCHDIBITS shows only its source rect (Greptile on PR #331).
+    #[test]
+    fn stretch_dibits_crops_to_the_source_rect() {
+        let (bmi, bits) = red_blue_dib();
+        let pixel = |src: Option<[i32; 4]>| {
+            let png = dib_to_png_cropped(&bmi, &bits, src).unwrap();
+            let img = image::load_from_memory(&png).unwrap().to_rgb8();
+            (img.width(), img.get_pixel(0, 0).0)
+        };
+        assert_eq!(pixel(None), (2, [255, 0, 0]), "whole bitmap");
+        assert_eq!(pixel(Some([1, 0, 1, 1])), (1, [0, 0, 255]), "right pixel");
+        assert_eq!(pixel(Some([0, 0, 2, 1])).0, 2, "a full rect keeps it");
+        assert_eq!(pixel(Some([5, 0, 1, 1])).0, 2, "a rect outside keeps it");
+    }
+
+    /// A rotated world transform rotates the bitmap instead of
+    /// collapsing it to an upright (here zero-width) rect (Greptile on
+    /// PR #331).
+    #[test]
+    fn rotated_bitmaps_keep_their_transform() {
+        let (bmi, bits) = red_blue_dib();
+        let mut world = Vec::new();
+        for v in [0.0f32, 1.0, -1.0, 0.0, 50.0, 0.0] {
+            world.extend_from_slice(&v.to_le_bytes());
+        }
+        // STRETCHDIBITS fields at their record offsets: dest (0, 0),
+        // source rect (0, 0, 2, 1), BITMAPINFO at 80 (40 bytes), bits
+        // at 120 (8 bytes), dest size 40 × 20.
+        let mut rec = vec![0u8; 72];
+        for (o, v) in [
+            (40, 2i32),
+            (44, 1),
+            (48, 80),
+            (52, 40),
+            (56, 120),
+            (60, 8),
+            (72, 40),
+            (76, 20),
+        ] {
+            rec[o - 8..o - 4].copy_from_slice(&v.to_le_bytes());
+        }
+        rec.extend_from_slice(&bmi);
+        rec.extend_from_slice(&bits);
+        let svg = emf_to_svg(&emf_with(&[(35, world), (81, rec)]), 2.0, 1.0).expect("an EMF");
+        let i = svg
+            .find("transform=\"matrix(")
+            .unwrap_or_else(|| panic!("{svg}"));
+        let m: Vec<f64> = svg[i + 18..]
+            .split(')')
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .map(|t| t.parse().unwrap())
+            .collect();
+        assert!(
+            m[0].abs() < 1e-6 && m[3].abs() < 1e-6,
+            "rotated by 90°: {m:?}"
+        );
+        assert!(
+            m[1].abs() > 1e-3 && m[2].abs() > 1e-3,
+            "rotated by 90°: {m:?}"
+        );
+    }
+
+    /// The WMF pen color sits at byte 12, after the style and both
+    /// width coordinates (Greptile on PR #331).
+    #[test]
+    fn wmf_pen_color_is_read_after_both_widths() {
+        let mut d: Vec<u8> = Vec::new();
+        for v in [1u16, 9, 0x0300] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        d.extend_from_slice(&0u32.to_le_bytes());
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&0u32.to_le_bytes());
+        d.extend_from_slice(&0u16.to_le_bytes());
+        let mut rec = |func: u16, params: &[i16]| {
+            let words = 3 + params.len() as u32;
+            d.extend_from_slice(&words.to_le_bytes());
+            d.extend_from_slice(&func.to_le_bytes());
+            for p in params {
+                d.extend_from_slice(&p.to_le_bytes());
+            }
+        };
+        rec(0x020B, &[0, 0]);
+        rec(0x020C, &[50, 100]);
+        // pen: solid, width (1, 0), COLORREF bytes FF 00 00 00 → red
+        rec(0x02FA, &[0, 1, 0, 0x00FF, 0]);
+        rec(0x012D, &[0]);
+        rec(0x0325, &[2, 0, 0, 100, 50]); // polyline
+        rec(0x0000, &[]);
+        let svg = wmf_to_svg(&d, 2.0, 1.0).expect("a WMF");
+        assert!(svg.contains(r##"stroke="#ff0000""##), "{svg}");
     }
 
     #[test]
