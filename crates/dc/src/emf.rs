@@ -193,8 +193,12 @@ struct Player {
     dc: Dc,
     saved: Vec<Dc>,
     objs: Vec<Option<Obj>>,
-    /// The open path bracket (box coordinates), if any.
+    /// The path bracket (box coordinates), if any: open between
+    /// BEGINPATH and ENDPATH, then kept for FILLPATH/STROKEPATH/
+    /// SELECTCLIPPATH.
     path: Option<String>,
+    /// Drawing records still add to `path` (BEGINPATH … ENDPATH).
+    path_open: bool,
     /// Device rect of the picture frame → the target box.
     dev_to_box: Xf,
     dev_px_per_mm: (f64, f64),
@@ -424,8 +428,19 @@ impl Player {
         d
     }
 
+    /// The path that drawing records add to: only while the bracket is
+    /// open (after ENDPATH they draw on their own — Greptile on
+    /// PR #331).
+    fn open_path(&mut self) -> Option<&mut String> {
+        if self.path_open {
+            self.path.as_mut()
+        } else {
+            None
+        }
+    }
+
     fn add_path_or_draw(&mut self, d: String, fill: bool, stroke: bool) {
-        if let Some(p) = self.path.as_mut() {
+        if let Some(p) = self.open_path() {
             p.push_str(&d);
         } else {
             self.emit(&d, fill, stroke);
@@ -558,7 +573,7 @@ impl Player {
             r#"<text x="{:.4}" y="{:.4}" font-family="{}, sans-serif" font-size="{size:.4}"{}{} text-anchor="{anchor}" fill="{}"{rot_attr}{} xml:space="preserve">{esc}</text>"#,
             p.0,
             p.1 + dy,
-            face.replace('"', ""),
+            crate::svg::escape_attr(&face),
             if bold { r#" font-weight="bold""# } else { "" },
             if italic {
                 r#" font-style="italic""#
@@ -666,6 +681,7 @@ pub fn emf_to_svg(data: &[u8], w: f64, h: f64) -> Option<String> {
         saved: Vec::new(),
         objs: Vec::new(),
         path: None,
+        path_open: false,
         dev_to_box,
         dev_px_per_mm: ppmm,
         clip_seq: 0,
@@ -725,7 +741,7 @@ fn play(p: &mut Player, ty: u32, r: &Rd) {
         27 => {
             p.dc.cur = ip(8);
             let m = format!("M {} ", p.pt(p.dc.cur));
-            if let Some(path) = p.path.as_mut() {
+            if let Some(path) = p.open_path() {
                 path.push_str(&m);
             }
         }
@@ -839,18 +855,28 @@ fn play(p: &mut Player, ty: u32, r: &Rd) {
                 *o = None;
             }
         }
-        59 => p.path = Some(String::new()),
-        60 => {}
+        59 => {
+            p.path = Some(String::new());
+            p.path_open = true;
+        }
+        60 => p.path_open = false,
         61 => {
-            if let Some(d) = p.path.as_mut() {
+            if let Some(d) = p.open_path() {
                 d.push_str("Z ");
             }
         }
         62..=64 => {
+            p.path_open = false;
             let d = p.path.take().unwrap_or_default();
             p.emit(&d, ty != 64, ty != 62);
         }
+        68 => {
+            // ABORTPATH discards the bracket.
+            p.path = None;
+            p.path_open = false;
+        }
         67 => {
+            p.path_open = false;
             let d = p.path.take().unwrap_or_default();
             if !d.trim().is_empty() {
                 p.select_clip(&d);
@@ -870,7 +896,7 @@ fn play(p: &mut Player, ty: u32, r: &Rd) {
         54 => {
             let to = ip(8);
             let seg = format!("L {} ", p.pt(to));
-            if let Some(path) = p.path.as_mut() {
+            if let Some(path) = p.open_path() {
                 path.push_str(&seg);
             } else {
                 let d = format!("M {} L {} ", p.pt(p.dc.cur), p.pt(to));
@@ -903,7 +929,7 @@ fn play(p: &mut Player, ty: u32, r: &Rd) {
             if pts.is_empty() {
                 return;
             }
-            let in_path = p.path.is_some();
+            let in_path = p.path_open && p.path.is_some();
             let start = if in_path { None } else { Some(p.dc.cur) };
             let d = match ty {
                 5 | 88 => p.bezier_d(start, &pts),
@@ -1019,9 +1045,9 @@ fn play(p: &mut Player, ty: u32, r: &Rd) {
 
 /// Replay a Windows Metafile (WMF — Visio stores some legacy stencil
 /// icons as WMF bytes under `ForeignType='EnhMetaFile'`) into the box
-/// `(0,-h)…(w,0)`. The FIRST window origin/extent defines the picture
-/// frame (the player's fixed viewport); later SETWINDOW* records rescale
-/// against it, as GDI playback does.
+/// `(0,-h)…(w,0)`. The FIRST viewport origin/extent (else the first
+/// window) defines the picture frame in device space; later SETWINDOW*
+/// and SETVIEWPORT* records rescale against it, as GDI playback does.
 pub fn wmf_to_svg(data: &[u8], w: f64, h: f64) -> Option<String> {
     let r = Rd(data);
     let mut start = 0usize;
@@ -1041,7 +1067,10 @@ pub fn wmf_to_svg(data: &[u8], w: f64, h: f64) -> Option<String> {
     };
     let (org, ext) = (first(0x020B), first(0x020C));
     let (org, ext) = (org.unwrap_or((0.0, 0.0)), ext?);
-    if ext.0.abs() < 1e-9 || ext.1.abs() < 1e-9 {
+    // A file that sets a viewport maps its window onto it: that first
+    // viewport is the device frame (Greptile on PR #331).
+    let (vorg, vext) = (first(0x020D).unwrap_or(org), first(0x020E).unwrap_or(ext));
+    if ext.0.abs() < 1e-9 || ext.1.abs() < 1e-9 || vext.0.abs() < 1e-9 || vext.1.abs() < 1e-9 {
         return None;
     }
     let mut p = Player {
@@ -1052,8 +1081,8 @@ pub fn wmf_to_svg(data: &[u8], w: f64, h: f64) -> Option<String> {
             map_mode: 8,
             win_org: org,
             win_ext: ext,
-            vp_org: org,
-            vp_ext: ext,
+            vp_org: vorg,
+            vp_ext: vext,
             pen: stock(7)?,
             brush: stock(0)?,
             font: default_font(),
@@ -1066,14 +1095,16 @@ pub fn wmf_to_svg(data: &[u8], w: f64, h: f64) -> Option<String> {
         saved: Vec::new(),
         objs: Vec::new(),
         path: None,
-        // Device space = the first window: map it onto the box.
+        path_open: false,
+        // The device frame (first viewport, else first window) onto
+        // the box.
         dev_to_box: Xf {
-            m11: w / ext.0,
+            m11: w / vext.0,
             m12: 0.0,
             m21: 0.0,
-            m22: h / ext.1,
-            dx: -org.0 * w / ext.0,
-            dy: -h - org.1 * h / ext.1,
+            m22: h / vext.1,
+            dx: -vorg.0 * w / vext.0,
+            dy: -h - vorg.1 * h / vext.1,
         },
         dev_px_per_mm: (3.78, 3.78),
         clip_seq: 0,
@@ -1143,6 +1174,9 @@ fn play_wmf(p: &mut Player, func: u16, r: &Rd) {
     match func {
         0x020B => p.dc.win_org = yx(0),
         0x020C => p.dc.win_ext = yx(0),
+        // SETVIEWPORTORG / SETVIEWPORTEXT (Greptile on PR #331).
+        0x020D => p.dc.vp_org = yx(0),
+        0x020E => p.dc.vp_ext = yx(0),
         0x0106 => p.dc.even_odd = w(0) as i64 != 2,
         0x0209 => p.dc.text_color = r.color(6).unwrap_or((0, 0, 0)),
         0x012E => p.dc.text_align = w(0) as u32,
@@ -1494,6 +1528,121 @@ mod tests {
         rec(0x0000, &[]);
         let svg = wmf_to_svg(&d, 2.0, 1.0).expect("a WMF");
         assert!(svg.contains(r##"stroke="#ff0000""##), "{svg}");
+    }
+
+    /// A WMF header followed by the given (function, parameters)
+    /// records and EOF.
+    fn wmf_with(records: &[(u16, &[i16])]) -> Vec<u8> {
+        let mut d: Vec<u8> = Vec::new();
+        for v in [1u16, 9, 0x0300] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        d.extend_from_slice(&0u32.to_le_bytes());
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&0u32.to_le_bytes());
+        d.extend_from_slice(&0u16.to_le_bytes());
+        for (func, params) in records.iter().chain([(0x0000u16, &[][..])].iter()) {
+            let words = 3 + params.len() as u32;
+            d.extend_from_slice(&words.to_le_bytes());
+            d.extend_from_slice(&func.to_le_bytes());
+            for p in params.iter() {
+                d.extend_from_slice(&p.to_le_bytes());
+            }
+        }
+        d
+    }
+
+    /// SETVIEWPORTORG/SETVIEWPORTEXT are replayed: the first viewport
+    /// is the picture frame, and a later viewport change rescales what
+    /// follows (Greptile on PR #331).
+    #[test]
+    fn wmf_viewport_changes_rescale_the_picture() {
+        let full: &[i16] = &[3, 0, 0, 100, 0, 100, 100];
+        let svg = wmf_to_svg(
+            &wmf_with(&[
+                (0x020B, &[0, 0]),
+                (0x020C, &[100, 100]),
+                (0x020E, &[400, 400]), // the device frame: 400 × 400
+                (0x02FC, &[0, -256, 0, 0]),
+                (0x012D, &[0]),
+                (0x0324, full),
+                (0x020E, &[200, 200]), // half the viewport
+                (0x0324, full),
+            ]),
+            2.0,
+            1.0,
+        )
+        .expect("a WMF");
+        assert!(
+            svg.contains("M 0.0000 -1.0000 L 2.0000 -1.0000 L 2.0000 0.0000 Z"),
+            "the first viewport frames the window: {svg}"
+        );
+        assert!(
+            svg.contains("M 0.0000 -1.0000 L 1.0000 -1.0000 L 1.0000 -0.5000 Z"),
+            "the halved viewport halves the picture: {svg}"
+        );
+    }
+
+    /// An EXTCREATEFONTINDIRECTW face with XML metacharacters is
+    /// escaped in the SVG attribute (Greptile on PR #331).
+    #[test]
+    fn font_names_are_escaped() {
+        let mut font = vec![0u8; 32 + 64];
+        font[0..4].copy_from_slice(&1u32.to_le_bytes()); // ihFont
+        font[4..8].copy_from_slice(&(-12i32).to_le_bytes()); // height
+        for (i, c) in "A&B<C\"D".encode_utf16().enumerate() {
+            font[32 + i * 2..34 + i * 2].copy_from_slice(&c.to_le_bytes());
+        }
+        let mut text = vec![0u8; 68];
+        text[28..32].copy_from_slice(&10i32.to_le_bytes()); // x
+        text[32..36].copy_from_slice(&50i32.to_le_bytes()); // y
+        text[36..40].copy_from_slice(&2u32.to_le_bytes()); // nChars
+        text[40..44].copy_from_slice(&76u32.to_le_bytes()); // offString
+        for c in "hi".encode_utf16() {
+            text.extend_from_slice(&c.to_le_bytes());
+        }
+        let svg = emf_to_svg(
+            &emf_with(&[(82, font), (37, 1u32.to_le_bytes().to_vec()), (84, text)]),
+            2.0,
+            1.0,
+        )
+        .expect("an EMF");
+        assert!(
+            svg.contains(r#"font-family="A&amp;B&lt;C&quot;D, sans-serif""#),
+            "{svg}"
+        );
+    }
+
+    /// After ENDPATH the bracket keeps its path for FILLPATH, but new
+    /// drawing records draw on their own (Greptile on PR #331).
+    #[test]
+    fn endpath_closes_the_path_bracket() {
+        let pt = |x: i32, y: i32| [x.to_le_bytes(), y.to_le_bytes()].concat();
+        let svg = emf_to_svg(
+            &emf_with(&[
+                (59, Vec::new()),    // BEGINPATH
+                (27, pt(0, 0)),      // MOVETOEX
+                (54, pt(50, 0)),     // LINETO
+                (54, pt(50, 50)),    // LINETO
+                (61, Vec::new()),    // CLOSEFIGURE
+                (60, Vec::new()),    // ENDPATH
+                (54, pt(0, 100)),    // drawn on its own
+                (62, vec![0u8; 16]), // FILLPATH
+            ]),
+            2.0,
+            1.0,
+        )
+        .expect("an EMF");
+        let filled = svg
+            .lines()
+            .find(|l| l.contains("L 1.0000 -0.5000"))
+            .expect("the bracket's path");
+        assert!(!filled.contains("L 0.0000 0.0000"), "{svg}");
+        assert!(
+            svg.lines()
+                .any(|l| l.contains("L 0.0000 0.0000") && !l.contains("L 1.0000 -1.0000")),
+            "the late LINETO draws on its own: {svg}"
+        );
     }
 
     #[test]
