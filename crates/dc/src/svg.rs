@@ -1631,7 +1631,7 @@ fn render_shape<'a>(
     if !multi_root {
         render_all_geometry(doc, s, &chain, width, height, jump_radius, out);
         // Embedded image (ForeignData → media part via this part's rels).
-        if let Some(uri) = foreign_image_uri(doc, part, s) {
+        if let Some(uri) = foreign_image_uri(doc, part, s, &chain) {
             let _ = writeln!(
                 out,
                 r#"<image x="0" y="{y:.5}" width="{w:.5}" height="{h:.5}" href="{u}" preserveAspectRatio="none"/>"#,
@@ -1640,6 +1640,8 @@ fn render_shape<'a>(
                 h = height,
                 u = escape_attr(&uri),
             );
+        } else if let Some(pic) = foreign_emf_svg(doc, part, s, &chain, width, height) {
+            out.push_str(&pic);
         }
     }
     // Sub-shapes of a group live in the parent's local frame.
@@ -1708,7 +1710,7 @@ fn render_shape_local<'a>(
         // (page_jumps collects top-level connectors only, #294
         // review): their stored jump arcs keep rendering as ink.
         render_all_geometry(doc, s, &chain, width, height, (0.0, 0.0), out);
-        if let Some(uri) = foreign_image_uri(doc, part, s) {
+        if let Some(uri) = foreign_image_uri(doc, part, s, &chain) {
             let _ = writeln!(
                 out,
                 r#"<image x="0" y="{y:.5}" width="{w:.5}" height="{h:.5}" href="{u}" preserveAspectRatio="none"/>"#,
@@ -1717,6 +1719,8 @@ fn render_shape_local<'a>(
                 h = height,
                 u = escape_attr(&uri),
             );
+        } else if let Some(pic) = foreign_emf_svg(doc, part, s, &chain, width, height) {
+            out.push_str(&pic);
         }
     }
     for sub in &s.sub_shapes {
@@ -3629,7 +3633,13 @@ fn bullet_glyph_svg(kind: u8, x: f64, y: f64, size: f64, color: &str) -> String 
 /// Data URI for a shape's embedded image (`ForeignData`), resolved through
 /// the owning part's relationships to the media part. EMF/WMF cannot be
 /// embedded in SVG and are skipped.
-fn foreign_image_uri(doc: &Document, part: &str, s: &Shape) -> Option<String> {
+fn foreign_image_uri(doc: &Document, part: &str, s: &Shape, chain: &[&Shape]) -> Option<String> {
+    // A master instance carries no ForeignData of its own: the picture
+    // lives on the master shape, its media relationship on the MASTER
+    // part (the network LLDs' icons — every one of them).
+    let (src_shape, part) = foreign_data_owner(doc, part, s, chain)?;
+    let s = src_shape;
+    let part = part.as_str();
     let attr = |n: &str| -> Option<&str> {
         s.raw_children
             .iter()
@@ -3646,7 +3656,10 @@ fn foreign_image_uri(doc: &Document, part: &str, s: &Shape) -> Option<String> {
         Some("PNG") => "image/png",
         Some("JPEG") | Some("JPG") => "image/jpeg",
         Some("GIF") => "image/gif",
-        _ => return None, // EMF/WMF and unknowns stay unrendered
+        // No CompressionType: a plain BMP (Visio 2021 witness b03) —
+        // re-encoded as PNG below, SVG viewers cannot show BMP.
+        None | Some("BMP") | Some("DIB") => "image/bmp",
+        _ => return None, // TIFF and unknowns stay unrendered
     };
     let fd = s.raw_children.iter().find(|r| r.name == "ForeignData")?;
     // The rel id lives either on ForeignData itself or in a <Rel r:id=…/>
@@ -3690,7 +3703,76 @@ fn foreign_image_uri(doc: &Document, part: &str, s: &Shape) -> Option<String> {
                 .find(|m| m.part == name)
                 .map(|m| m.bytes.as_slice())
         })?;
+    if mime == "image/bmp" {
+        let png = crate::emf::bmp_to_png(bytes)?;
+        return Some(format!("data:image/png;base64,{}", base64(&png)));
+    }
     Some(format!("data:{mime};base64,{}", base64(bytes)))
+}
+
+/// A shape's embedded EMF picture (`ForeignType='EnhMetaFile'`) replayed
+/// as SVG elements in the box `(0,-h)…(w,0)` — network-stencil icons and
+/// pasted clip art (Visio 2021 witness b03; ~150 icons in the network
+/// LLDs rendered empty).
+fn foreign_emf_svg(
+    doc: &Document,
+    part: &str,
+    s: &Shape,
+    chain: &[&Shape],
+    w: f64,
+    h: f64,
+) -> Option<String> {
+    let (s, part) = foreign_data_owner(doc, part, s, chain)?;
+    let part = part.as_str();
+    let fd = s.raw_children.iter().find(|r| r.name == "ForeignData")?;
+    let ty = fd
+        .attrs
+        .iter()
+        .find(|(k, _)| k == "ForeignType")
+        .map(|(_, v)| v.as_str());
+    if ty != Some("EnhMetaFile") {
+        return None;
+    }
+    let rid = fd
+        .attrs
+        .iter()
+        .find(|(k, _)| k == "r:id")
+        .map(|(_, v)| v.clone())
+        .or_else(|| extract_rid(&fd.inner))?;
+    let pkg = doc.package.as_ref()?;
+    let target = pkg
+        .relationships(part)
+        .into_iter()
+        .find(|(id, ty, _)| id == &rid && ty.ends_with("/image"))
+        .map(|(_, _, t)| t)?;
+    let bytes = pkg.part(target.trim_start_matches('/'))?;
+    // Legacy stencils store WMF bytes under the EnhMetaFile type (the
+    // network LLDs' bridge/ONT icons).
+    crate::emf::emf_to_svg(bytes, w, h).or_else(|| crate::emf::wmf_to_svg(bytes, w, h))
+}
+
+/// The shape that owns a picture's `ForeignData` and the package part
+/// whose relationships resolve its media: the shape itself on `part`, or
+/// — for a master instance without its own ForeignData — the master
+/// shape on the master's part.
+fn foreign_data_owner<'a>(
+    doc: &'a Document,
+    part: &str,
+    s: &'a Shape,
+    chain: &[&'a Shape],
+) -> Option<(&'a Shape, String)> {
+    if s.raw_children.iter().any(|r| r.name == "ForeignData") {
+        return Some((s, part.to_string()));
+    }
+    let src = doc.instance_source(s, chain)?;
+    if !src.raw_children.iter().any(|r| r.name == "ForeignData") {
+        return None;
+    }
+    let mid = s
+        .master
+        .or_else(|| chain.iter().rev().find_map(|a| a.master))?;
+    let m = doc.master(mid)?;
+    Some((src, m.part.clone()))
 }
 
 /// `<Rel r:id='rId9'/>` → `rId9` (both quote styles).
@@ -5624,7 +5706,7 @@ fn emit_arrow_head(
     );
 }
 /// Tiny FNV-1a for stable marker-id hashing (no external deps).
-fn fnv(s: &str) -> u64 {
+pub(crate) fn fnv(s: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.bytes() {
         h ^= b as u64;
@@ -6578,7 +6660,7 @@ pub fn shape_env(doc: &Document, s: &Shape, chain: &[&Shape]) -> vsdx::formula::
     env
 }
 
-fn escape_attr(s: &str) -> String {
+pub(crate) fn escape_attr(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
