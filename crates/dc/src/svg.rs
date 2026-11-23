@@ -4956,13 +4956,20 @@ fn render_geometry(
     // #228: the section's own element is STROKE-only (fill
     // participation joins the shape's one even-odd path — Ellipse rows
     // included).
+    // LineCap: 0 round (Visio's default — round ends AND round
+    // corners), 1 flat at the endpoint, 2 square-extended (Visio 2021
+    // witness, b04: 12 pt lines and corners).
+    let line_cap = doc
+        .resolve_cell(s, chain, "LineCap")
+        .and_then(|c| cell_num(&c, env))
+        .map_or(0, |v| v.round() as i64);
     let stroke_a = stroke_attr(
         no_line,
         &stroke_paint,
         line_weight,
         dash.as_deref(),
         line_alpha,
-    );
+    ) + cap_attr(line_cap, dash.is_some()).as_str();
 
     // Master-space (unscaled) path state: geometry rows are authored in the
     // master's local units and scaled to the instance afterwards.
@@ -5609,7 +5616,7 @@ fn render_geometry(
             let _ = writeln!(
                 paint.strokes,
                 r#"<path d="{}" fill="none" {stroke_a}/>"#,
-                escape_attr(shaft.trim())
+                escape_attr(close_returning_path(shaft.trim()).trim())
             );
         }
         // Heads as inline translate·rotate·scale groups of the
@@ -7058,6 +7065,52 @@ fn refs_own_size(f: &str) -> bool {
                 && !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_')
         })
     })
+}
+
+/// The stroke's end caps and corner joins for a LineCap value. Dashed
+/// strokes keep the round caps their dash table assumes (#235).
+fn cap_attr(cap: i64, dashed: bool) -> String {
+    match (cap, dashed) {
+        (1, false) => r#" stroke-linecap="butt" stroke-linejoin="miter""#.into(),
+        (2, false) => r#" stroke-linecap="square" stroke-linejoin="miter""#.into(),
+        (_, true) => r#" stroke-linejoin="round""#.into(),
+        _ => r#" stroke-linecap="round" stroke-linejoin="round""#.into(),
+    }
+}
+
+/// Close a single-subpath stroke that returns to its start (`Z`), so
+/// the start corner joins like every other corner instead of showing
+/// two butt ends (Visio 2021 witness, b04's rectangle).
+fn close_returning_path(d: &str) -> String {
+    let t = d.trim_end();
+    if t.ends_with('Z') || t.matches('M').count() != 1 {
+        return d.to_string();
+    }
+    let nums: Vec<f64> = t
+        .split(|c: char| c.is_whitespace() || c.is_ascii_alphabetic())
+        .filter_map(|x| x.parse().ok())
+        .collect();
+    let first = t
+        .trim_start()
+        .strip_prefix('M')
+        .map(|r| {
+            r.split_whitespace()
+                .take(2)
+                .filter_map(|x| x.parse::<f64>().ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    match (first.as_slice(), nums.len()) {
+        ([x0, y0], n) if n >= 6 => {
+            let (x1, y1) = (nums[n - 2], nums[n - 1]);
+            if (x1 - x0).hypot(y1 - y0) < 1e-6 {
+                format!("{t} Z")
+            } else {
+                d.to_string()
+            }
+        }
+        _ => d.to_string(),
+    }
 }
 
 /// The closed subpaths of a path in the renderer's own format
@@ -11890,6 +11943,31 @@ mod tests {
         assert!(!refs_own_size("Sheet.5!Width*1"));
         assert!(!refs_own_size("TxtHeight*0.5"));
         assert!(!refs_own_size("Controls.Row_1"));
+    }
+
+    /// LineCap (Visio 2021 witness, b04): 0 round ends and corners
+    /// (the default), 1 flat, 2 square-extended; a walk that returns to
+    /// its start closes with `Z` so the start corner joins too.
+    #[test]
+    fn line_cap_and_closed_corner() {
+        assert!(cap_attr(0, false).contains(r#"stroke-linecap="round""#));
+        assert!(cap_attr(1, false).contains(r#"stroke-linecap="butt""#));
+        assert!(cap_attr(2, false).contains(r#"stroke-linecap="square""#));
+        assert!(
+            !cap_attr(1, true).contains("linecap"),
+            "dashes keep #235's caps"
+        );
+        assert!(close_returning_path("M 0 0 L 1 0 L 1 1 L 0 0").ends_with(" Z"));
+        assert_eq!(
+            close_returning_path("M 0 0 L 1 0 L 1 1"),
+            "M 0 0 L 1 0 L 1 1"
+        );
+        let mut s = rect_shape(1, (2.0, 2.0));
+        s.sheet.set_cell("LineCap", Cell::value("2"));
+        let (doc, page) = page_fixture(vec![s]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(svg.contains(r#"Z" fill="none""#), "{svg}");
+        assert!(svg.contains(r#"stroke-linecap="square""#), "{svg}");
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
