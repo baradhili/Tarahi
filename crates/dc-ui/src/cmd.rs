@@ -1787,21 +1787,28 @@ impl ReconcileLineJumps {
 /// `None` when no such neighbor runs.
 type RunDir = Option<(f64, f64)>;
 
-fn neighbor_dirs(typed: &[(&str, (f64, f64))], i: usize) -> (RunDir, RunDir) {
+/// The straight-run directions LEAVING and ENTERING typed-row index
+/// `i`'s segment — `None` when no such STRAIGHT neighbor run exists
+/// (another pen move draws no line and never supplies a direction;
+/// CodeRabbit round on #324 phase 4).
+fn neighbor_dirs(typed: &[(&str, (f64, f64), Option<String>)], i: usize) -> (RunDir, RunDir) {
     let dir_of = |a: (f64, f64), b: (f64, f64)| {
         let d = (b.0 - a.0, b.1 - a.1);
         let l = d.0.hypot(d.1);
         (l > 1e-9).then(|| (d.0 / l, d.1 / l))
     };
+    let straight = |t: &str| t == "LineTo" || t == "ArcTo" || t == "PolylineTo";
     let mut prev = None;
-    if i >= 2 {
-        // The run INTO typed[i−1] (skipping a MoveTo at i−1... the
-        // stored-hop forms always neighbor straight runs).
+    if i >= 2 && straight(typed[i - 1].0) {
         prev = dir_of(typed[i - 2].1, typed[i - 1].1);
     }
+    // The outgoing run LEAVES row i's own end toward row i+1's — the
+    // hop row is typically the penultimate row, so i+2 often does not
+    // exist at all (the first cut of this helper read i+1→i+2 and
+    // rejected every written hop row).
     let mut next = None;
-    if i + 2 < typed.len() {
-        next = dir_of(typed[i + 1].1, typed[i + 2].1);
+    if i + 1 < typed.len() && straight(typed[i + 1].0) {
+        next = dir_of(typed[i].1, typed[i + 1].1);
     }
     (prev, next)
 }
@@ -1957,23 +1964,60 @@ fn reconciled_rows(
             if !write_hops || t - r <= cursor + 2e-6 || t + r >= len - 1e-9 {
                 continue; // overlapping or no room — a plain crossing
             }
+            // The POLYLINE styles fraction their controls by the
+            // shape's Width/Height — a degenerate axis cannot encode
+            // them, and a half-written split (the slot's start line
+            // with nothing after) would strand the route: such a hop
+            // stays a plain crossing, cursor unmoved (CodeRabbit
+            // round on #324 phase 4).
+            let frame_ok = match hop_style {
+                dc::jumps::JumpStyle::Square | dc::jumps::JumpStyle::Sides(_) => {
+                    frame.size.0.abs() > 1e-9 && frame.size.1.abs() > 1e-9
+                }
+                _ => true,
+            };
+            if !frame_ok {
+                continue;
+            }
             cursor = t + r;
             let p0 = (a.0 + dir.0 * (t - r), a.1 + dir.1 * (t - r));
             let p1 = (a.0 + dir.0 * (t + r), a.1 + dir.1 * (t + r));
             push_line(&mut rows, to_local(p0));
             let ix = rows.len() as i64 + 1;
             let end = to_local(p1);
+            // The hop's page-space normal and tangent, rotated into
+            // the ROW-LOCAL frame through the rigid to_local — the
+            // writer's rows live there, and a rotated connector's
+            // local axes are NOT the page's (CodeRabbit round on #324
+            // phase 4).
+            let at_l = to_local((a.0 + dir.0 * t, a.1 + dir.1 * t));
+            let n_p = dc::svg::jump_normal(dir);
+            // The probes a full r out, so the local differences ARE
+            // the unit local vectors.
+            let n_anchor = to_local((a.0 + dir.0 * t + n_p.0 * r, a.1 + dir.1 * t + n_p.1 * r));
+            let d_anchor = to_local((a.0 + dir.0 * (t + r), a.1 + dir.1 * (t + r)));
+            let nl = ((n_anchor.0 - at_l.0) / r, (n_anchor.1 - at_l.1) / r);
+            let dl = ((d_anchor.0 - at_l.0) / r, (d_anchor.1 - at_l.1) / r);
             match hop_style {
                 dc::jumps::JumpStyle::Arc => {
+                    // The sagitta's SIGN follows the desired normal:
+                    // a positive A bulges RIGHT of travel, so A takes
+                    // −r exactly when the normal is NOT right of
+                    // travel (the eastward corpus rows; westward runs
+                    // flip — CodeRabbit round on #324 phase 4).
+                    let right = (dl.1, -dl.0);
+                    let a_val = if nl.0 * right.0 + nl.1 * right.1 > 0.0 {
+                        r
+                    } else {
+                        -r
+                    };
                     rows.push(vsdx::model::Row {
                         t: Some("ArcTo".into()),
                         ix,
                         cells: vec![
                             ("X".to_string(), Cell::value(format!("{:.6}", end.0))),
                             ("Y".to_string(), Cell::value(format!("{:.6}", end.1))),
-                            // The corpus form: A = −radius (#294's
-                            // pinned row).
-                            ("A".to_string(), Cell::value(format!("{:.6}", -r))),
+                            ("A".to_string(), Cell::value(format!("{:.6}", a_val))),
                         ],
                         ..Default::default()
                     });
@@ -1995,36 +2039,22 @@ fn reconciled_rows(
                     // The witnessed POLYLINE form: percentages of the
                     // shape's Width/Height, the square's top corners
                     // a full r above the feet, the n-sided hump's
-                    // vertices inscribed in the semicircle.
+                    // vertices inscribed in the semicircle — all in
+                    // ROW-LOCAL coordinates (dl/nl above).
                     let (w_in, h_in) = frame.size;
-                    if w_in <= 0.0 || h_in <= 0.0 {
-                        continue; // no sane frame — a plain crossing
-                    }
-                    let at_l = to_local((a.0 + dir.0 * t, a.1 + dir.1 * t));
-                    // The bump's page-space normal, rotated into the
-                    // row-local frame through the rigid to_local.
-                    let n_p = dc::svg::jump_normal(dir);
-                    // The probe a full r out along the normal, so the
-                    // local difference IS the unit local normal.
-                    let n_anchor = to_local((
-                        a.0 + dir.0 * t + n_p.0 * r,
-                        a.1 + dir.1 * t + n_p.1 * r,
-                    ));
-                    let nl = ((n_anchor.0 - at_l.0) / r, (n_anchor.1 - at_l.1) / r);
-                    let d = (dir.0, dir.1); // the run's page unit, rigid in local
                     let verts: Vec<(f64, f64)> = match hop_style {
                         dc::jumps::JumpStyle::Square => {
                             vec![
-                                (at_l.0 - d.0 * r + nl.0 * r, at_l.1 - d.1 * r + nl.1 * r),
-                                (at_l.0 + d.0 * r + nl.0 * r, at_l.1 + d.1 * r + nl.1 * r),
+                                (at_l.0 - dl.0 * r + nl.0 * r, at_l.1 - dl.1 * r + nl.1 * r),
+                                (at_l.0 + dl.0 * r + nl.0 * r, at_l.1 + dl.1 * r + nl.1 * r),
                             ]
                         }
                         dc::jumps::JumpStyle::Sides(ns) => (1..ns)
                             .map(|k| {
                                 let ang = std::f64::consts::PI * k as f64 / ns as f64;
                                 (
-                                    at_l.0 - d.0 * r * ang.cos() + nl.0 * r * ang.sin(),
-                                    at_l.1 - d.1 * r * ang.cos() + nl.1 * r * ang.sin(),
+                                    at_l.0 - dl.0 * r * ang.cos() + nl.0 * r * ang.sin(),
+                                    at_l.1 - dl.1 * r * ang.cos() + nl.1 * r * ang.sin(),
                                 )
                             })
                             .collect(),
@@ -2241,13 +2271,17 @@ impl Command for ReconcileLineJumps {
                 }
             };
             let mut arctos = 0usize;
-            let mut movetos = 0usize;
+            let mut styled_hops = 0usize;
             let mut owned = true;
-            // The typed, literal rows with their endpoints — the
-            // stored styled-hop forms (a mid-route MoveTo gap, a
-            // PolylineTo hop) are recognized with neighbor context
-            // (#324 phase 4).
-            let mut typed: Vec<(&str, (f64, f64))> = Vec::with_capacity(live.len());
+            // PASS A — collect every typed, literal row with its
+            // endpoint first: the stored styled-hop forms (a mid-route
+            // MoveTo gap, a PolylineTo hop) are classified with
+            // neighbor context, and the OUTGOING neighbor only exists
+            // once the whole route is collected (CodeRabbit round on
+            // #324 phase 4: classifying mid-collection left the
+            // outgoing run None and rejected the very rows this
+            // command writes).
+            let mut typed: Vec<(&str, (f64, f64), Option<String>)> = Vec::with_capacity(live.len());
             for r in &live {
                 // The EFFECTIVE type (a typeless local row inherits
                 // its master row's type — a None-`T` override over a
@@ -2267,75 +2301,69 @@ impl Command for ReconcileLineJumps {
                     (Some(x), Some(y)) => Some((x, y)),
                     _ => None,
                 };
-                match t {
-                    Some("MoveTo") | Some("RelMoveTo") => {
-                        movetos += 1;
-                        if end.is_none() {
-                            owned = false;
-                            break;
-                        }
-                        typed.push(("MoveTo", end.unwrap()));
-                    }
-                    Some("LineTo") | Some("RelLineTo") => {
-                        if end.is_none() {
-                            owned = false;
-                            break;
-                        }
-                        typed.push(("LineTo", end.unwrap()));
-                    }
-                    Some("ArcTo") => {
-                        arctos += 1;
-                        if lit(r, "A").is_none() || end.is_none() {
-                            owned = false;
-                            break;
-                        }
-                        typed.push(("ArcTo", end.unwrap()));
-                    }
-                    Some("PolylineTo") => {
-                        // The stored SQUARE/TRIANGLE/N-SIDES hop form
-                        // — controls inside the 2r × r box over the
-                        // chord, the run continuing on both sides.
-                        // Authored polyline art keeps its rows.
-                        let (Some(end), Some(a)) = (end, r.cell("A").and_then(|c| c.v.clone().or_else(|| c.f.clone()))) else {
-                            owned = false;
-                            break;
-                        };
-                        let (prev, next) = neighbor_dirs(&typed, typed.len());
-                        let chord = (
-                            end.0 - typed.last().map(|(_, p)| p.0).unwrap_or(end.0),
-                            end.1 - typed.last().map(|(_, p)| p.1).unwrap_or(end.1),
-                        );
-                        let width = doc
-                            .resolve_cell(s, &chain, "Width")
-                            .and_then(|c| c.numeric())
-                            .unwrap_or(1.0);
-                        let height = doc
-                            .resolve_cell(s, &chain, "Height")
-                            .and_then(|c| c.numeric())
-                            .unwrap_or(1.0);
-                        let start = typed
-                            .last()
-                            .map(|(_, p)| *p)
-                            .unwrap_or(end);
-                        if !dc::jumps::is_stored_jump_polyline(
-                            &a,
-                            start,
-                            chord,
-                            prev,
-                            next,
-                            (width, height),
-                            strip.0,
-                            strip.1,
-                        ) {
-                            owned = false;
-                            break;
-                        }
-                        typed.push(("PolylineTo", end));
-                    }
+                let t = match t {
+                    Some("MoveTo") | Some("RelMoveTo") => "MoveTo",
+                    Some("LineTo") | Some("RelLineTo") => "LineTo",
+                    Some("ArcTo") | Some("RelArcTo") => "ArcTo",
+                    Some("PolylineTo") => "PolylineTo",
                     _ => {
                         owned = false;
                         break;
                     }
+                };
+                let a = r
+                    .cell("A")
+                    .and_then(|c| c.v.clone().or_else(|| c.f.clone()));
+                if end.is_none() || (t == "ArcTo" && a.as_deref().and_then(|a| a.parse::<f64>().ok()).is_none() && lit(r, "A").is_none())
+                {
+                    owned = false;
+                    break;
+                }
+                if t == "ArcTo" {
+                    arctos += 1;
+                }
+                typed.push((t, end.unwrap(), a));
+            }
+            if !owned {
+                continue;
+            }
+            // PASS B — classify the stored styled-hop forms with the
+            // complete route in hand.
+            let width = doc
+                .resolve_cell(s, &chain, "Width")
+                .and_then(|c| c.numeric())
+                .unwrap_or(1.0);
+            let height = doc
+                .resolve_cell(s, &chain, "Height")
+                .and_then(|c| c.numeric())
+                .unwrap_or(1.0);
+            for (i, (t, end, a)) in typed.iter().enumerate() {
+                if *t == "PolylineTo" {
+                    // The stored SQUARE/TRIANGLE/N-SIDES hop form —
+                    // controls inside the 2r × r box over the chord,
+                    // the run continuing on both sides. Authored
+                    // polyline art keeps its rows.
+                    let Some(a) = a else {
+                        owned = false;
+                        break;
+                    };
+                    let start = typed[i - 1].1;
+                    let chord = (end.0 - start.0, end.1 - start.1);
+                    let (prev, next) = neighbor_dirs(&typed, i);
+                    if !dc::jumps::is_stored_jump_polyline(
+                        a,
+                        start,
+                        chord,
+                        prev,
+                        next,
+                        (width, height),
+                        strip.0,
+                        strip.1,
+                    ) {
+                        owned = false;
+                        break;
+                    }
+                    styled_hops += 1;
                 }
             }
             if !owned {
@@ -2352,20 +2380,23 @@ impl Command for ReconcileLineJumps {
             let stray_strokes = typed
                 .iter()
                 .enumerate()
-                .filter(|(i, (t, _))| {
+                .filter(|&(i, (t, _, _))| {
                     *t == "MoveTo"
-                        && *i > 0
+                        && i > 0
                         && !{
                             let skip = (
-                                typed[*i].1 .0 - typed[*i - 1].1 .0,
-                                typed[*i].1 .1 - typed[*i - 1].1 .1,
+                                typed[i].1 .0 - typed[i - 1].1 .0,
+                                typed[i].1 .1 - typed[i - 1].1 .1,
                             );
-                            let (prev, next) = neighbor_dirs(&typed, *i);
+                            let (prev, next) = neighbor_dirs(&typed, i);
                             dc::jumps::is_stored_jump_gap(skip, prev, next, strip.0, strip.1)
                         }
                 })
                 .count();
-            if stray_strokes > 0 || movetos > stray_strokes + 1 {
+            // The initial MoveTo plus any number of RECOGNIZED gap
+            // hops is fine (the gap writer itself emits that shape);
+            // an unrecognized break is an authored second stroke.
+            if stray_strokes > 0 {
                 continue;
             }
             // No live master-only rows: they render through
@@ -2397,7 +2428,7 @@ impl Command for ReconcileLineJumps {
             // (collapsing a straight route's degenerate elbows).
             let my_hops: Vec<dc::jumps::Jump> =
                 hops.iter().filter(|j| j.jumper == s.id).copied().collect();
-            if plain.len() == stripped.len() && my_hops.is_empty() {
+            if plain.len() == stripped.len() && my_hops.is_empty() && styled_hops == 0 {
                 continue;
             }
             let mut pts: Vec<(f64, f64)> = Vec::with_capacity(stripped.len() + 1);
@@ -4771,6 +4802,109 @@ mod reconcile_jump_tests {
         assert_eq!(kinds, vec!["MoveTo", "LineTo", "MoveTo", "LineTo"], "{rows:?}");
         assert!((cell(&rows[1], "X") - (2.5 - R)).abs() < 1e-6);
         assert!((cell(&rows[2], "X") - (2.5 + R)).abs() < 1e-6);
+    }
+
+    /// Stored STYLED rows stay eligible (CodeRabbit round on #324
+    /// phase 4 caught the mid-collection classification rejecting
+    /// them): after the square/gap rows are written, a MOVE that
+    /// shifts the crossing rewrites them — and hiding the page's
+    /// jumps straightens them like arcs.
+    #[test]
+    fn reconcile_rewrites_and_straightens_stored_styled_rows() {
+        // Square rows written, then the vertical moves: the stored
+        // square at the OLD crossing must give way to one at the new.
+        let (mut ed, page_id) = witness_doc("3");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows[2].t.as_deref(), Some("PolylineTo"));
+        ed.apply(crate::cmd::MoveShape::new(page_id, 6, (5.0, 5.0)))
+            .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows.len(), 4, "still the square form: {rows:?}");
+        assert_eq!(rows[2].t.as_deref(), Some("PolylineTo"));
+        // The witness geometry's crossing sat at local x 2.5; the
+        // vertical now crosses at page x 5 → local 3.5.
+        assert!(
+            (cell(&rows[1], "X") - (3.5 - R)).abs() < 1e-6,
+            "the slot followed the crossing: {}",
+            cell(&rows[1], "X")
+        );
+        // Gap rows: same move, same rewrite.
+        let (mut ed, page_id) = witness_doc("2");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        ed.apply(crate::cmd::MoveShape::new(page_id, 6, (5.0, 5.0)))
+            .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        let kinds: Vec<&str> = rows.iter().map(|r| r.t.as_deref().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            vec!["MoveTo", "LineTo", "MoveTo", "LineTo"],
+            "the gap form rewrote at the new crossing: {rows:?}"
+        );
+        assert!((cell(&rows[1], "X") - (3.5 - R)).abs() < 1e-6);
+        // Hidden straightens the stored square: the fast path must
+        // not skip it (the walks agree on PolylineTo chords — the
+        // recognized-hop count drives the rewrite).
+        let (mut ed, page_id) = witness_doc("3");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        ed.apply(dc_core::SetCell::new(
+            dc_core::Scope::PageSheet { page: page_id },
+            "LineJumpCode",
+            VCell::value("0"),
+        ))
+        .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        let kinds: Vec<&str> = rows.iter().map(|r| r.t.as_deref().unwrap()).collect();
+        assert_eq!(kinds, vec!["MoveTo", "LineTo"], "hidden straightens: {rows:?}");
+    }
+
+    /// The sagitta's SIGN follows the hop normal: an eastward run
+    /// writes A = −r (the corpus witness), a WESTWARD one writes +r —
+    /// both bulge up (CodeRabbit round on #324 phase 4).
+    #[test]
+    fn reconcile_chooses_the_sagitta_sign_from_the_normal() {
+        // The witness geometry, mirrored: the horizontal runs
+        // right-to-left (Begin at the right).
+        let (mut ed, page_id) = witness_doc("1");
+        {
+            let page = &mut ed.doc.pages[0];
+            let h = vsdx::model::find_shape_by_id_mut(&mut page.shapes, 5).unwrap();
+            for (n, v) in [
+                ("BeginX", 6.5),
+                ("EndX", 1.5),
+                ("PinX", 4.0),
+            ] {
+                h.sheet.set_cell(n, VCell::value(format!("{v}")));
+            }
+            set_geo_rows(
+                h,
+                vec![
+                    Row {
+                        t: Some("MoveTo".into()),
+                        ix: 1,
+                        cells: xy(5.0, 0.125),
+                        ..Row::default()
+                    },
+                    lineto(2, 0.0, 0.125),
+                ],
+            );
+        }
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows[2].t.as_deref(), Some("ArcTo"));
+        assert!(
+            cell(&rows[2], "A") > 0.0,
+            "the westward run's arc bulges up: A = {}",
+            cell(&rows[2], "A")
+        );
+        // The eastward twin (the untouched witness doc) writes −r.
+        let (mut ed, page_id) = witness_doc("1");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert!((cell(&rows[2], "A") + R).abs() < 1e-6);
     }
 
     /// Idempotence per style (I1/I2): a second reconcile after the

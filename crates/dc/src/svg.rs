@@ -1236,7 +1236,16 @@ fn render_page_full(
             // label re-renders below in a twin group outside every
             // clip: the hop cuts the SHAFT, never the label's
             // background or glyphs (CodeRabbit round on #324 phase 3).
-            skip_text.or_else(|| (!cuts.is_empty()).then_some(shape.id)),
+            // When some OTHER shape's text is being edited, that id
+            // must not survive here: this call renders only THIS
+            // shape's subtree, and keeping the edit id would let the
+            // jumper's own label render inside the clip AND again in
+            // the twin (CodeRabbit round on #324 phase 4).
+            if cuts.is_empty() {
+                skip_text
+            } else {
+                Some(shape.id)
+            },
             None,
             None,
             Some(&fields),
@@ -1252,6 +1261,23 @@ fn render_page_full(
             &mut svg,
         );
         for _ in &cuts {
+            let _ = writeln!(svg, "</g>");
+        }
+        // The hop arcs bridge the cuts, painted WITH the connector —
+        // BEFORE the label (an opaque label background sits above
+        // connector geometry, Visio's order) and before later
+        // shapes, so an opaque shape above covers shaft and hop
+        // alike, exactly as it covers the connector's own ink (the
+        // old post-ink group floated arcs on top of everything —
+        // CodeRabbit rounds on #324 phases 3–4). The radius is the
+        // page's own LineToLineX/Y × LineJumpFactorX/Y / 2, resolved
+        // through the style chain — never the old 0.12 constant
+        // (#294).
+        if !cuts.is_empty() {
+            let _ = writeln!(svg, r#"<g data-dc="line-jumps">"#);
+            for j in &cuts {
+                append_jump_scaled(&mut svg, h, j, hop_r(j));
+            }
             let _ = writeln!(svg, "</g>");
         }
         // The jumper's label, in an IDENTICAL transform group outside
@@ -1278,21 +1304,6 @@ fn render_page_full(
                 Some(&fields),
                 &mut svg,
             );
-            let _ = writeln!(svg, "</g>");
-        }
-        // The hop arcs bridge the cuts, painted WITH the connector —
-        // BEFORE later shapes, so an opaque shape above covers shaft
-        // and hop alike, exactly as it covers the connector's own ink
-        // (Visio's paint order; the old post-ink group floated arcs on
-        // top of everything — CodeRabbit round on #324 phase 3). The
-        // radius is the page's own LineToLineX/Y × LineJumpFactorX/Y /
-        // 2, resolved through the style chain — never the old 0.12
-        // constant (#294).
-        if !cuts.is_empty() {
-            let _ = writeln!(svg, r#"<g data-dc="line-jumps">"#);
-            for j in &cuts {
-                append_jump_scaled(&mut svg, h, j, hop_r(j));
-            }
             let _ = writeln!(svg, "</g>");
         }
     }
@@ -1470,7 +1481,11 @@ fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::jumps::Jump, rad
         path.push_str(" L ");
         path.push_str(&pt(p));
     }
-    path.push_str(&format!(" L {} L {}", pt(bump(std::f64::consts::PI)), pt(lead(1.0))));
+    path.push_str(&format!(
+        " L {} L {}",
+        pt(bump(std::f64::consts::PI)),
+        pt(lead(1.0))
+    ));
     let _ = writeln!(
         svg,
         r#"<path d="{}" fill="none" stroke="{c}" stroke-width="{w:.4}" stroke-linejoin="round"/>"#,
@@ -1569,13 +1584,23 @@ pub fn backdrop_color_at(
             if !segs.is_empty() {
                 let q = (pt.0, page_h - pt.1); // the cast runs page y-up
                 let mut in_fill = false;
-                for (a, b) in &segs {
+                let mut cross = |a: (f64, f64), b: (f64, f64)| {
                     if (a.1 > q.1) != (b.1 > q.1) {
                         let x = a.0 + (q.1 - a.1) / (b.1 - a.1) * (b.0 - a.0);
                         if x > q.0 {
                             in_fill = !in_fill;
                         }
                     }
+                };
+                for (a, b) in &segs {
+                    cross(*a, *b);
+                }
+                // The renderer FILLS open contours closed — include
+                // the implicit closing edge of the (top-level shapes
+                // here are single-subpath) contour (CodeRabbit round
+                // on #324 phase 4).
+                if let (Some(first), Some(last)) = (segs.first(), segs.last()) {
+                    cross(last.1, first.0);
                 }
                 if !in_fill {
                     return None;
@@ -9025,16 +9050,16 @@ mod tests {
         // FactorX 0.8 → radius 0.05: two verticals 0.06 apart cross
         // the horizontal jumper — the slots [2.95, 3.05] and [3.01,
         // 3.11] overlap.
-        let (mut doc, mut page) = page_fixture(vec![
+        let (doc, mut page) = page_fixture(vec![
             connector(1, (3.0, 5.0), 4.0, 0.0),
             connector(2, (3.0, 5.0), 0.0, 4.0),
             connector(3, (3.06, 5.0), 0.0, 4.0),
         ]);
-        doc.pages[0].sheet_mut().unwrap().set_cell(
-            "LineJumpFactorX",
-            Cell::value("0.8"),
-        );
-        let _ = &mut page;
+        // FactorX on the page that renders (page_fixture's clone is a
+        // different object — CodeRabbit round on #324 phase 4).
+        page.sheet_mut()
+            .unwrap()
+            .set_cell("LineJumpFactorX", Cell::value("0.8"));
         let svg = render_page(&doc, &page).unwrap();
         assert_eq!(
             svg.matches(r#"stroke-linejoin="round""#).count(),

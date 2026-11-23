@@ -469,11 +469,17 @@ fn merely_touches(vx: usize, pts: &[(f64, f64)], other: &[(f64, f64)]) -> bool {
     // end graze the line while the vertex, and the route, crossed:
     // CodeRabbit round on #324 phase 2 — [(0,−1),(0,5e−10),(0.01,
     // 5e−12)] over a horizontal used to merge away a real crossing).
+    // The shared-run arm also needs ANGULAR agreement on the leg that
+    // lies on the line: a leg that merely GRAZES it (a hair-short
+    // outgoing stub at a shallow angle) passes the offset test but
+    // the route crossed for real — only a leg actually running ALONG
+    // the line is a merge (CodeRabbit round on #324 phase 4).
+    let on_line = |p: (f64, f64)| {
+        off_line(dir, a, p) <= SHARED_RUN_OFF_IN
+            && sin_between((p.0 - pts[vx].0, p.1 - pts[vx].1), dir).abs() <= SHARED_RUN_SIN
+    };
     side(back) * side(fwd) > 0.0
-        || (off_line(dir, a, pts[vx]) <= SHARED_RUN_OFF_IN
-            && [back, fwd]
-                .iter()
-                .any(|&p| off_line(dir, a, p) <= SHARED_RUN_OFF_IN))
+        || (off_line(dir, a, pts[vx]) <= SHARED_RUN_OFF_IN && (on_line(back) || on_line(fwd)))
 }
 
 /// The polyline index a crossing hugs, when it hugs a segment
@@ -748,14 +754,22 @@ pub fn line_jumps_with(
                 let mut hit = false;
                 for c in clustered.iter_mut() {
                     let dd = (c.at.0 - jmp.at.0).hypot(c.at.1 - jmp.at.1);
-                    // Only hops of the SAME jumper merge: one pair can
-                    // yield hops with different jumpers (the L's
-                    // horizontal leg hops here, the other line hops
-                    // over its vertical leg there) — merging those
-                    // stole the second connector's hop and moved the
-                    // first's cut off its shaft (CodeRabbit round on
-                    // #324 phase 3).
-                    if dd < reach && c.jumper == jmp.jumper {
+                    // Only hops of the SAME jumper merge — one pair
+                    // can yield hops with different jumpers at
+                    // DISTINCT crossings (the L's horizontal leg hops
+                    // here, the other line hops over its vertical leg
+                    // there); merging those stole the second
+                    // connector's hop and moved the first's cut off
+                    // its shaft (CodeRabbit round on #324 phase 3).
+                    // Two candidates at the SAME point (a shared-
+                    // vertex contact seen through different window
+                    // pairs, each picking its own jumper) are ONE
+                    // crossing though: they merge to the first
+                    // candidate's hop — one crossing, one hop
+                    // (CodeRabbit round on #324 phase 4; which jumper
+                    // wins at a both-bend contact has no witness).
+                    let same_point = dd < 1e-6;
+                    if dd < reach && (c.jumper == jmp.jumper || same_point) {
                         c.at = ((c.at.0 + jmp.at.0) / 2.0, (c.at.1 + jmp.at.1) / 2.0);
                         hit = true;
                         break;
@@ -881,8 +895,16 @@ pub fn page_jumps_stripping(
     // SOURCE (#324 phase-3 review): a forced connector code (2) must
     // not draw or save a hop on a page whose jumps are off — every
     // consumer (export, canvas, reconcile) inherits this gate instead
-    // of each remembering its own.
-    if !page.line_jumps_shown() {
+    // of each remembering its own. The read is the STYLE-RESOLVED
+    // cell (a page can inherit `LineJumpCode 0` from its LineStyle
+    // chain — the local-only `line_jumps_shown` would miss it;
+    // CodeRabbit round on #324 phase 4); absent anywhere still shows
+    // (#251's corpus rule).
+    let switch_off = doc
+        .resolve_page_layout_cell(page, "LineJumpCode")
+        .and_then(|c| c.numeric())
+        .is_some_and(|v| v == 0.0 || v == 6.0);
+    if switch_off || !page.line_jumps_shown() {
         return Vec::new();
     }
     let radius = jump_radius_in(doc, page);
@@ -919,6 +941,21 @@ pub fn page_jumps_stripping(
             })
             .unwrap_or((1.0, 1.0));
         if !is_jump_candidate(doc, &chain, s) {
+            continue;
+        }
+        // The renderer's section-visibility twin: a connector whose
+        // EVERY Geometry section carries `NoShow = 1` paints no
+        // stroke, so nothing hops over it and it hops over nothing
+        // (whole-shape gate — a connector with any visible section
+        // stays; CodeRabbit round on #324 phase 4).
+        let geos = s.sheet.sections_named("Geometry");
+        if !geos.is_empty()
+            && geos.iter().all(|g| {
+                g.cell("NoShow")
+                    .and_then(|c| c.numeric())
+                    .is_some_and(|v| v != 0.0)
+            })
+        {
             continue;
         }
         let frame = hit_frame(doc, &chain, s, msize);
@@ -1758,6 +1795,33 @@ mod tests {
             let js = page_jumps(&doc, &page, &[]);
             assert_eq!((js.len(), js[0].style), (1, want), "code {code}");
         }
+    }
+
+    /// A shared-VERTEX contact seen through different window pairs
+    /// (each route bends at the contact, each picking its own jumper
+    /// per pair of legs) is ONE crossing: the candidates at the same
+    /// point merge to one hop, whichever jumper's window came first
+    /// (no witness for the choice; CodeRabbit round on #324 phase 4).
+    #[test]
+    fn shared_vertex_contacts_hop_once() {
+        // A: (-1, 0.5) → (0, 0) → (1, -3); B: (-0.5, -1) → (0, 0) →
+        // (0.5, 1) — both bend through the origin.
+        let js = line_jumps(
+            &[
+                jline(1, 0, &[(-1.0, 0.5), (0.0, 0.0), (1.0, -3.0)]),
+                jline(2, 1, &[(-0.5, -1.0), (0.0, 0.0), (0.5, 1.0)]),
+            ],
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
+        );
+        assert!(
+            js.iter().map(|j| j.at).all(|a| {
+                js.iter()
+                    .filter(|k| (k.at.0 - a.0).hypot(k.at.1 - a.1) < 1e-6)
+                    .count()
+                    == 1
+            }) && !js.is_empty(),
+            "one hop per contact point: {js:?}"
+        );
     }
 
     /// The stored styled-hop recognition (#324 phase 4): the
