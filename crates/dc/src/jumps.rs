@@ -89,19 +89,22 @@ fn run_continues(dir: Option<(f64, f64)>, chord: (f64, f64)) -> bool {
 }
 
 /// A stored line-jump arc (#294): Visio saves a connector's jump as an
-/// `ArcTo` row ON the orthogonal run — the chord lies along one axis,
+/// `ArcTo` row ON the run — the chord lies along the run, AT ANY
+/// ANGLE (a `ShapeRouteStyle 16` network link stores its hop on a
+/// 60° run: `LineTo · ArcTo(A = radius) · LineTo`, the d04 witness),
 /// the arc is a SEMICIRCLE over the gap (`|A| = radius = chord / 2`
 /// exactly; the #294 repro's row: chord 0.0833, A −0.0416667 — the
 /// band admits writer rounding), and the route continues collinear on
 /// both sides (`prev_dir`/`next_dir`: the neighboring segments'
-/// directions; `None` = no such run). Corner arcs cut ACROSS the run
-/// (a diagonal chord), authored shallow bumps fall far below the
-/// band, and whole-route semicircles have no continuing runs — all
-/// stay curves. The callers additionally gate on connector-ness so
-/// artwork arcs never strip. Once stripped, the route is straight at
-/// the old arc and the jump overlay draws the ONE arc at the current
-/// crossing with the page's own radius — a stored arc stops lingering
-/// after a move (#294).
+/// directions; `None` = no such run). The collinear runs on BOTH
+/// sides are the evidence against everything else: a corner arc's
+/// chord cuts ACROSS its runs and fails, authored shallow bumps fall
+/// far below the band, and whole-route semicircles have no continuing
+/// runs — all stay curves. The callers additionally gate on
+/// connector-ness so artwork arcs never strip. Once stripped, the
+/// route is straight at the old arc and the jump overlay draws the
+/// ONE arc at the current crossing with the page's own radius — a
+/// stored arc stops lingering after a move (#294).
 ///
 /// `radius_x`/`radius_y` are the page's own jump radii
 /// ([`jump_radii_in`]), passed UNCONVERTED. Every geometry frame is
@@ -134,13 +137,17 @@ pub fn is_stored_jump_arc(
     // No absolute size cap: the radius is LineToLineX ×
     // LineJumpFactorX / 2 and LineJumpFactorX=10 is documented-valid
     // (a 0.625 in semicircle at the default spacing) — the semicircle
-    // band, the axis-aligned chord, the straight-run context, the
-    // connector gate and the page-radius evidence already separate
-    // jumps from artwork (#294 review).
+    // band, the straight-run context, the connector gate and the
+    // page-radius evidence already separate jumps from artwork (#294
+    // review). No axis-aligned-chord requirement either: Visio stores
+    // jumps on DIAGONAL straight connectors too (ShapeRouteStyle 16
+    // network links — `LineTo · ArcTo(A = radius) · LineTo` along a
+    // 60° run, the d04 witness); the collinear runs on BOTH sides are
+    // the evidence, and a rounded corner's chord cuts across its runs
+    // and fails it (#324 phase 3).
     len > 1e-9
         && a >= 0.4 * len
         && a <= 0.6 * len
-        && chord.0.abs().min(chord.1.abs()) <= len * 0.02
         && run_continues(prev_dir, chord)
         && run_continues(next_dir, chord)
         // The arc's own axis picks the evidence radius: Visio authors
@@ -886,6 +893,30 @@ mod tests {
             Some((0.0, 1.0)),
             0.041_666_7,
             0.041_666_7,
+        ));
+        // A stored jump on a DIAGONAL run — the d04 witness (a 60°
+        // network link's `ArcTo`, chord along the run, |A| = the
+        // page radius): the collinear runs on both sides are the
+        // evidence now that the axis-aligned chord is gone (#324
+        // phase 3). cos 60° = 0.5, sin 60° = √3/2.
+        let (c60, s60) = (0.5_f64, 0.866_025_4_f64);
+        assert!(is_stored_jump_arc(
+            -0.032_808_4,
+            (2.0 * 0.032_808_4 * c60, 2.0 * 0.032_808_4 * s60),
+            Some((c60, s60)),
+            Some((c60, s60)),
+            0.032_808_4,
+            0.032_808_4,
+        ));
+        // The same diagonal arc OFF the page radius stays authored
+        // ink, exactly like the axis-aligned twin.
+        assert!(!is_stored_jump_arc(
+            -0.05,
+            (2.0 * 0.05 * c60, 2.0 * 0.05 * s60),
+            Some((c60, s60)),
+            Some((c60, s60)),
+            0.032_808_4,
+            0.032_808_4,
         ));
         // An authored shallow bump (the #294 review's control) is a
         // curve: |A| ≪ the semicircle band.

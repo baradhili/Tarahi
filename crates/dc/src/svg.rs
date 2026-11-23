@@ -1157,6 +1157,37 @@ fn render_page_full(
     // per-shape context rebuilt it for every root — the quadratic
     // cost the shared layer exists to remove.
     let fields = crate::fields::FieldsCtx::for_page(doc, page);
+    // #187: line jumps — computed BEFORE the ink so each jumping
+    // connector can be cut where it hops: the line is clipped open
+    // around every hop and the arc alone bridges the gap, exactly
+    // like Visio's own jump geometry (I3: the hop is part of the
+    // line — the background shows through beneath it, no paper-white
+    // gap painted, no under-line redraw; the old overlay's white dash
+    // sat on every non-white background, #322). Scoped renders
+    // (`only`) draw one shape's subtree — page-wide jumps would drag
+    // in crossings from connectors outside the scope. The page's
+    // Show-Line-Jumps switch gates them (#251), and a resolved radius
+    // of 0 (an explicit LineJumpFactorX=0, #294 review) computes no
+    // hops at all.
+    let radius = crate::jumps::jump_radius_in(doc, page);
+    let radius_y = crate::jumps::jump_radius_y_in(doc, page);
+    let jumps = if only.is_none() && page.line_jumps_shown() && (radius > 0.0 || radius_y > 0.0) {
+        crate::jumps::page_jumps(doc, page, hidden)
+    } else {
+        Vec::new()
+    };
+    // Per-crossing hop radius: the jumping SEGMENT's own axis (the
+    // more-horizontal line may hop on a vertical leg — Visio sizes
+    // that with the Y cells, PR #299 review). A zero on that axis
+    // never reaches here: the engine drops zero-axis hops before
+    // they can cluster (#324 phase-2 review).
+    let hop_r = |j: &crate::jumps::Jump| {
+        if j.dir.0.abs() >= j.dir.1.abs() {
+            radius
+        } else {
+            radius_y
+        }
+    };
     for shape in &page.shapes {
         if hidden_member(shape) {
             continue;
@@ -1171,6 +1202,18 @@ fn render_page_full(
             if shape.id != only {
                 continue;
             }
+        }
+        // A jumping connector renders inside a page-space clip that
+        // cuts it open around each of its hops (#324 phase 3).
+        let cuts: Vec<&crate::jumps::Jump> =
+            jumps.iter().filter(|j| j.jumper == shape.id).collect();
+        if !cuts.is_empty() {
+            let id = format!("dc-jumpcut{}", shape.id);
+            let _ = writeln!(
+                svg,
+                r#"<clipPath id="{id}"><path clip-rule="evenodd" d="{}"/></clipPath><g clip-path="url(#{id})">"#,
+                jump_cut_clip_d(&cuts, h, w, &hop_r)
+            );
         }
         render_shape(
             doc,
@@ -1193,54 +1236,18 @@ fn render_page_full(
             },
             &mut svg,
         );
+        if !cuts.is_empty() {
+            let _ = writeln!(svg, "</g>");
+        }
     }
-    // #187: line jumps — Visio prints hops. The export appends the
-    // same treatment the canvas paints (white gap, under redraw, hop
-    // arc) as a page-space group above the ink. The gap/extension
-    // paddings pin the canvas's screen-px extras at 96 dpi. Scoped
-    // renders (`only`) draw one shape's subtree — page-wide jumps
-    // would drag in crossings from connectors outside the scope.
-    // The page's Show-Line-Jumps switch gates the overlay (#251), and
-    // a resolved radius of 0 (an explicit LineJumpFactorX=0, #294
-    // review) draws nothing rather than degenerate zero-size hops.
-    let radius = crate::jumps::jump_radius_in(doc, page);
-    let radius_y = crate::jumps::jump_radius_y_in(doc, page);
-    let jumps = if only.is_none()
-        && page.line_jumps_shown()
-        && (radius > 0.0 || radius_y > 0.0)
-    {
-        crate::jumps::page_jumps(doc, page, hidden)
-    } else {
-        Vec::new()
-    };
-    // Per-crossing hop radius: the jumping SEGMENT's own axis (the
-    // more-horizontal line may hop on a vertical leg — Visio sizes
-    // that with the Y cells, PR #299 review). An explicit Factor=0 on
-    // that axis is a zero-size hop — the crossing draws no arc at all,
-    // never a degenerate one (#294 review); a page whose every hop is
-    // zero-sized draws no group.
-    let jumps: Vec<_> = jumps
-        .into_iter()
-        .filter(|j| {
-            if j.dir.0.abs() >= j.dir.1.abs() {
-                radius > 0.0
-            } else {
-                radius_y > 0.0
-            }
-        })
-        .collect();
+    // The hop arcs bridge the cuts, above the ink (#187). The radius
+    // is the page's own LineToLineX/Y × LineJumpFactorX/Y / 2,
+    // resolved through the style chain — never the old 0.12 constant
+    // (#294).
     if !jumps.is_empty() {
-        // #294: the hop radius is the page's own LineToLineX/Y ×
-        // LineJumpFactorX/Y / 2, resolved through the style chain —
-        // never the old 0.12 constant.
         let _ = writeln!(svg, r#"<g data-dc="line-jumps">"#);
         for j in &jumps {
-            let r = if j.dir.0.abs() >= j.dir.1.abs() {
-                radius
-            } else {
-                radius_y
-            };
-            append_jump_scaled(&mut svg, h, j, r);
+            append_jump_scaled(&mut svg, h, j, hop_r(j));
         }
         let _ = writeln!(svg, "</g>");
     }
@@ -1248,79 +1255,189 @@ fn render_page_full(
     Ok(svg)
 }
 
-/// The page-space paddings of the canvas overlay's screen-px extras
-/// (2 px gap weight, 1 px under extension), pinned at 96 dpi.
-const JUMP_GAP_EXTRA_IN: f64 = 2.0 / 96.0;
-const JUMP_UNDER_EXT_IN: f64 = 1.0 / 96.0;
-
-/// One hop in page-space SVG (y-down: `sy = page_h − y`), the canvas
-/// overlay's three strokes — the white gap across the jumper, the
-/// under line redrawn straight through it, and the hop arc bulging
-/// page-up (`canvas.rs`'s screen-up flip, computed here in page
-/// space so rotated jumpers stay correct). `radius` is the page's
-/// resolved jump radius (#294 — LineToLineX × LineJumpFactorX / 2).
-fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::jumps::Jump, radius: f64) {
-    let (r, w, uw) = (radius, j.weight, j.under_weight);
-    let sy = |y: f64| page_h - y;
-    let pt = |p: (f64, f64)| format!("{:.5} {:.5}", p.0, sy(p.1));
-    let hex = |c: (u8, u8, u8)| format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2);
-    // 1. the gap — paper-white, slightly wider than the jumper.
-    let g1 = (j.at.0 - j.dir.0 * r, j.at.1 - j.dir.1 * r);
-    let g2 = (j.at.0 + j.dir.0 * r, j.at.1 + j.dir.1 * r);
-    let white = "#ffffff";
-    let _ = writeln!(
-        svg,
-        r#"<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{white}" stroke-width="{gw:.4}"/>"#,
-        x1 = g1.0,
-        y1 = sy(g1.1),
-        x2 = g2.0,
-        y2 = sy(g2.1),
-        gw = w + JUMP_GAP_EXTRA_IN,
-    );
-    // 2. the under line passes straight through the gap.
-    let ext = r + uw + JUMP_UNDER_EXT_IN;
-    let u1 = (j.at.0 - j.under.0 * ext, j.at.1 - j.under.1 * ext);
-    let u2 = (j.at.0 + j.under.0 * ext, j.at.1 + j.under.1 * ext);
-    let _ = writeln!(
-        svg,
-        r#"<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{c}" stroke-width="{uw:.4}"/>"#,
-        x1 = u1.0,
-        y1 = sy(u1.1),
-        x2 = u2.0,
-        y2 = sy(u2.1),
-        c = hex(j.under_color),
-        uw = uw,
-    );
-    // 3. the hop arc — a 9-point semicircle from g1 around to g2
-    // through at + n·r. Visio's default hop directions
-    // (PageLineJumpDirX/Y = 0): a horizontal-class jumper bulges UP,
-    // a vertical-class one bulges LEFT (the b01 witness) — flipping
-    // toward page-up alone drew sideways zigzags on steep lines
-    // (#322).
-    let mut n = (-j.dir.1, j.dir.0);
-    let horizontal = j.dir.0.abs() >= j.dir.1.abs();
+/// The hop arc's normal for a jumper direction (page space, y up):
+/// Visio's default hop directions (PageLineJumpDirX/Y = 0) — a
+/// horizontal-class jumper bulges UP, a vertical-class one bulges LEFT
+/// (the b01 witness; "up" alone flipped arbitrarily on steep lines and
+/// drew the sideways zigzags, #322). Shared with the canvas overlay.
+pub fn jump_normal(dir: (f64, f64)) -> (f64, f64) {
+    let mut n = (-dir.1, dir.0);
+    let horizontal = dir.0.abs() >= dir.1.abs();
     if (horizontal && n.1 < 0.0) || (!horizontal && n.0 > 0.0) {
         n = (-n.0, -n.1);
     }
-    let mut path = String::new();
-    for k in 0..=8 {
-        let t = k as f64 / 8.0;
+    n
+}
+
+/// The clip that cuts a jumping connector open around its hops: the
+/// whole page plus, per hop, a slot across the line (2·r along it,
+/// generously wide across), combined even-odd so the slots are holes.
+/// Coordinates are page-space SVG (y down).
+fn jump_cut_clip_d(
+    cuts: &[&crate::jumps::Jump],
+    page_h: f64,
+    page_w: f64,
+    r_of: &dyn Fn(&crate::jumps::Jump) -> f64,
+) -> String {
+    let pad = 4.0 * page_w.max(page_h).max(1.0);
+    let mut d = format!(
+        "M {:.4} {:.4} L {:.4} {:.4} L {:.4} {:.4} L {:.4} {:.4} Z ",
+        -pad,
+        -pad,
+        page_w + pad,
+        -pad,
+        page_w + pad,
+        page_h + pad,
+        -pad,
+        page_h + pad
+    );
+    for j in cuts {
+        let r = r_of(j);
+        let (dx, dy) = j.dir;
+        let n = (-dy, dx);
+        // Across the line: well past the stroke, short of the arc top.
+        let half_w = (j.weight * 2.0).max(r * 0.6);
+        let c = |a: f64, b: f64| {
+            let x = j.at.0 + dx * a + n.0 * b;
+            let y = j.at.1 + dy * a + n.1 * b;
+            format!("{:.5} {:.5}", x, page_h - y)
+        };
+        let _ = write!(
+            d,
+            "M {} L {} L {} L {} Z ",
+            c(-r, -half_w),
+            c(r, -half_w),
+            c(r, half_w),
+            c(-r, half_w)
+        );
+    }
+    d.trim_end().to_string()
+}
+
+/// One hop's arc in page-space SVG (y-down: `sy = page_h − y`): a
+/// semicircle from `at − dir·r` to `at + dir·r` bulging along
+/// [`jump_normal`], in the jumper's own color and weight. The jumper
+/// itself is cut open beneath it ([`jump_cut_clip_d`]) and the arc
+/// feet lead half a pen INTO the un-cut run so the joint closes — no
+/// paper gap or under-line redraw is needed (the hop is part of the
+/// line, #322/#324 phase 3). `radius` is the page's resolved jump
+/// radius (#294 — LineToLineX × LineJumpFactorX / 2).
+fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::jumps::Jump, radius: f64) {
+    let (r, w) = (radius, j.weight);
+    let sy = |y: f64| page_h - y;
+    let pt = |p: (f64, f64)| format!("{:.5} {:.5}", p.0, sy(p.1));
+    let hex = |c: (u8, u8, u8)| format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2);
+    let n = jump_normal(j.dir);
+    // The arc overlaps the cut line ends by half a pen so the joint
+    // closes (round join, no notch at the arc's foot).
+    let lead = |s: f64| {
+        (
+            j.at.0 + j.dir.0 * s * (r + w * 0.5),
+            j.at.1 + j.dir.1 * s * (r + w * 0.5),
+        )
+    };
+    let mut path = format!("M {} ", pt(lead(-1.0)));
+    for k in 0..=12 {
+        let t = k as f64 / 12.0;
         let ang = std::f64::consts::PI * t;
         let local = (
             -j.dir.0 * r * ang.cos() + n.0 * r * ang.sin(),
             -j.dir.1 * r * ang.cos() + n.1 * r * ang.sin(),
         );
         let p = (j.at.0 + local.0, j.at.1 + local.1);
-        path.push_str(if k == 0 { "M " } else { "L " });
+        path.push_str("L ");
         path.push_str(&pt(p));
         path.push(' ');
     }
+    path.push_str(&format!("L {}", pt(lead(1.0))));
     let _ = writeln!(
         svg,
-        r#"<path d="{path}" fill="none" stroke="{c}" stroke-width="{w:.4}"/>"#,
+        r#"<path d="{}" fill="none" stroke="{c}" stroke-width="{w:.4}" stroke-linejoin="round"/>"#,
+        path.trim_end(),
         c = hex(j.color),
         w = w,
     );
+}
+
+/// The color visible BEHIND a jumping connector at page point `at`
+/// (y up): the fill of the topmost filled shape painted before the
+/// connector (`below` = the connector's shape id) whose ink box holds
+/// the point, else the page's white. The canvas paints its hop gaps in
+/// this color — it composites cached per-shape rasters, so it cannot
+/// cut the connector's own ink the way the export does (#324 phase 3;
+/// the old paper-white gap dashed every hop over a gray chassis
+/// panel, #322).
+pub fn backdrop_color_at(
+    doc: &Document,
+    page: &vsdx::Page,
+    at: (f64, f64),
+    below: i64,
+) -> (u8, u8, u8) {
+    let page_h = num(page.sheet().and_then(|s| s.cell("PageHeight"))).unwrap_or(11.0);
+    let pt = (at.0, page_h - at.1);
+    fn filled(doc: &Document, s: &Shape, chain: &[&Shape]) -> Option<String> {
+        let sheet = doc.effective_sheet(s, chain);
+        let geos = sheet.sections_named("Geometry");
+        let any_fill = geos.iter().any(|g| {
+            g.cell("NoFill")
+                .and_then(|c| c.numeric())
+                .is_none_or(|v| v == 0.0)
+                && g.rows.iter().any(|r| r.t.is_some())
+        });
+        if !any_fill {
+            return None;
+        }
+        let num_cell = |n: &str| doc.resolve_cell(s, chain, n).and_then(|c| c.numeric());
+        let pattern = num_cell("FillPattern").unwrap_or(1.0);
+        if pattern == 0.0 || num_cell("FillForegndTrans").unwrap_or(0.0) >= 0.5 {
+            return None;
+        }
+        let cell = if pattern > 1.5 && !(24.0..=40.0).contains(&pattern) {
+            "FillBkgnd"
+        } else {
+            "FillForegnd"
+        };
+        Some(themed_color_string(doc, s, chain, cell))
+    }
+    fn walk(
+        doc: &Document,
+        s: &Shape,
+        chain: &[&Shape],
+        page_h: f64,
+        top: bool,
+        to_page: Affine,
+        pt: (f64, f64),
+    ) -> Option<String> {
+        let mut chain: Vec<&Shape> = chain.to_vec();
+        chain.push(s);
+        let (bx, a) = node_ink_box(doc, s, &chain, page_h, top, to_page);
+        // Later children paint over earlier ones and over the parent.
+        for sub in s.sub_shapes.iter().rev() {
+            if let Some(c) = walk(doc, sub, &chain, page_h, false, a, pt) {
+                return Some(c);
+            }
+        }
+        let inside = pt.0 >= bx.0 && pt.0 <= bx.0 + bx.2 && pt.1 >= bx.1 && pt.1 <= bx.1 + bx.3;
+        if inside {
+            filled(doc, s, &chain)
+        } else {
+            None
+        }
+    }
+    let upto = page
+        .shapes
+        .iter()
+        .position(|s| s.id == below)
+        .unwrap_or(page.shapes.len());
+    for s in page.shapes[..upto].iter().rev() {
+        if s.type_.as_deref() == Some("Guide") {
+            continue;
+        }
+        if let Some(c) = walk(doc, s, &[], page_h, true, Affine::IDENTITY, pt) {
+            return hex_rgb(&c);
+        }
+    }
+    (0xff, 0xff, 0xff)
 }
 
 /// An SVG-order affine: `x' = a·x + c·y + e`, `y' = b·x + d·y + f`
@@ -8223,8 +8340,8 @@ mod tests {
 
     /// A minimal page: PageWidth/Height sheet plus `shapes`.
     /// #187: the export draws line jumps — a crossing fixture's page
-    /// SVG carries the jump group with the white gap, the under
-    /// redraw, and an arc that bulges page-up (smaller SVG y).
+    /// SVG cuts the jumper open around the hop and bridges it with an
+    /// arc that bulges page-up (smaller SVG y).
     #[test]
     fn export_renders_line_jumps() {
         let connector = |id: i64, pin: (f64, f64), w: f64, h: f64| {
@@ -8270,9 +8387,17 @@ mod tests {
             svg.contains(r#"data-dc="line-jumps""#),
             "the jump overlay group is present"
         );
+        // The jumper is CUT open (no paper-white gap painted over the
+        // background — the hop is part of the line, #322/#324 phase
+        // 3): connector 1 renders inside its jump clip, and no white
+        // stroke is drawn.
         assert!(
-            svg.contains(r##"stroke="#ffffff""##),
-            "the white gap stroke is present"
+            svg.contains(r#"<g clip-path="url(#dc-jumpcut1)">"#),
+            "the jumping connector is clipped open: {svg}"
+        );
+        assert!(
+            !svg.contains(r##"stroke="#ffffff""##),
+            "no white gap stroke"
         );
         // The arc bulges page-UP: the apex sits at a SMALLER SVG y
         // than the crossing's (page y 5 → SVG y 6 on an 11in page).
@@ -8481,15 +8606,16 @@ mod tests {
             "the stored jump arc renders as a straight run"
         );
         assert_eq!(
-            svg.matches(r##"stroke="#ffffff""##).count(),
+            svg.matches(r#"<clipPath id="dc-jumpcut"#).count(),
             1,
-            "one jump at the crossing"
+            "one jump at the crossing: the jumper is cut open"
         );
-        // The gap spans the crossing ± the page's resolved radius
-        // (prefix match: the gap line writes full-precision floats).
+        // The cut slot spans the crossing ± the page's resolved
+        // radius (prefix match: the slot writes full-precision
+        // floats, page x first).
         assert!(
-            svg.contains(r#"x1="2.95833"#) && svg.contains(r#"x2="3.04166"#),
-            "the gap is LineToLineX × factor / 2 wide"
+            svg.contains("M 2.95833 ") && svg.contains("L 3.04167 "),
+            "the cut is LineToLineX × factor / 2 to each side: {svg}"
         );
         // The stale case: the stored arc sits at page x = 3 while the
         // crossing moved to x = 4.5 — the arc vanishes, one hop at the
@@ -8504,7 +8630,7 @@ mod tests {
             "the stale stored arc does not render"
         );
         assert!(
-            svg.contains(r#"x1="4.45833"#) && !svg.contains(r#"x1="2.95833"#),
+            svg.contains("M 4.45833 ") && !svg.contains("M 2.95833 "),
             "one hop at the current crossing, nothing at the stale arc"
         );
     }
@@ -8589,9 +8715,9 @@ mod tests {
         // The crossing hops once — the phantom jump the deleted row
         // fed is gone.
         assert_eq!(
-            svg.matches(r##"stroke="#ffffff""##).count(),
+            svg.matches(r#"<clipPath id="dc-jumpcut"#).count(),
             1,
-            "one jump at the real crossing"
+            "one jump at the real crossing: the jumper is cut open"
         );
     }
 

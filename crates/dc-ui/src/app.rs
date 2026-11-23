@@ -5765,6 +5765,15 @@ impl App {
         dc::jumps::page_jumps_stripping(doc, page, hidden, None)
             .into_iter()
             .map(|j| canvas::JumpFx {
+                // The gap paints the BACKDROP — the fill of the
+                // topmost filled shape beneath the connector at the
+                // hop, else page white: the canvas cannot cut cached
+                // rasters, so this mimics the export's cut in the
+                // color that shows through it (#324 phase 3).
+                gap_color: {
+                    let (r, g, b) = dc::svg::backdrop_color_at(doc, page, j.at, j.jumper);
+                    Color32::from_rgb(r, g, b)
+                },
                 at: j.at,
                 dir: j.dir,
                 under: j.under,
@@ -18560,6 +18569,73 @@ mod tests {
         ed.doc.pages[0]
             .shapes
             .push(connector(5, (7.0, 3.0), 0.0, 2.0, None));
+        // A FILLED panel beneath the palette-index crossing (lowest z,
+        // not a connector — it changes no crossing): the canvas cannot
+        // cut cached rasters, so that hop's gap must paint the panel's
+        // fill, never paper white (#324 phase 3).
+        let mut panel = vsdx::model::Shape {
+            id: 6,
+            type_: Some("Shape".into()),
+            ..vsdx::model::Shape::default()
+        };
+        for (n, v) in [
+            ("PinX", 6.5),
+            ("PinY", 3.0),
+            ("Width", 3.0),
+            ("Height", 2.0),
+            ("LocPinX", 1.5),
+            ("LocPinY", 1.0),
+        ] {
+            panel.sheet.set_cell(n, vsdx::Cell::value(format!("{v}")));
+        }
+        panel
+            .sheet
+            .set_cell("FillForegnd", vsdx::Cell::value("#4080ff"));
+        let mut psec = vsdx::model::Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..vsdx::model::Section::default()
+        };
+        psec.rows = vec![
+            vsdx::model::Row {
+                t: Some("MoveTo".into()),
+                ix: 1,
+                cells: vec![
+                    ("X".to_string(), vsdx::Cell::value("0")),
+                    ("Y".to_string(), vsdx::Cell::value("0")),
+                ],
+                ..vsdx::model::Row::default()
+            },
+            vsdx::model::Row {
+                t: Some("LineTo".into()),
+                ix: 2,
+                cells: vec![
+                    ("X".to_string(), vsdx::Cell::value("3")),
+                    ("Y".to_string(), vsdx::Cell::value("0")),
+                ],
+                ..vsdx::model::Row::default()
+            },
+            vsdx::model::Row {
+                t: Some("LineTo".into()),
+                ix: 3,
+                cells: vec![
+                    ("X".to_string(), vsdx::Cell::value("3")),
+                    ("Y".to_string(), vsdx::Cell::value("2")),
+                ],
+                ..vsdx::model::Row::default()
+            },
+            vsdx::model::Row {
+                t: Some("LineTo".into()),
+                ix: 4,
+                cells: vec![
+                    ("X".to_string(), vsdx::Cell::value("0")),
+                    ("Y".to_string(), vsdx::Cell::value("2")),
+                ],
+                ..vsdx::model::Row::default()
+            },
+        ];
+        panel.sheet.children.push(vsdx::model::SheetChild::Section(psec));
+        ed.doc.pages[0].shapes.insert(0, panel);
         let mut app = App::with_doc_opt(None);
         app.ed = Some(ed);
         app.page_idx = 0;
@@ -18574,6 +18650,20 @@ mod tests {
             palette_hop.color,
             Color32::from_rgb(0xff, 0, 0),
             "the hop takes its line's palette color, not the gray fallback: {fx:?}"
+        );
+        assert_eq!(
+            palette_hop.gap_color,
+            Color32::from_rgb(0x40, 0x80, 0xff),
+            "the gap over the panel paints the panel's fill: {fx:?}"
+        );
+        let bare_hop = fx
+            .iter()
+            .find(|j| (j.at.0 - 3.0).abs() < 1e-9)
+            .expect("the crossing over bare page");
+        assert_eq!(
+            bare_hop.gap_color,
+            Color32::WHITE,
+            "off every fill the gap is the page's white: {fx:?}"
         );
         // Hiding layer 3 takes its connector out of the set — the
         // compositor hides those very shapes — so nothing crosses the

@@ -27,6 +27,10 @@ const C02: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/c02-jumpcodes.vsdx"
 );
+const D04: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/d04-jumps-panel.vsdx"
+);
 
 fn open(path: &str) -> vsdx::Document {
     vsdx::parse::parse(std::path::Path::new(path))
@@ -77,5 +81,96 @@ fn c02_connector_codes_pick_visio_stored_jumpers() {
         jumpers(&doc, &doc.pages[0]),
         vec![2, 5, 8, 11, 14, 17, 20, 23, 29, 33],
         "the ConFixedCode row hops throughout; ConLineJumpCode 1/4 rows do not"
+    );
+}
+
+/// d04 (Visio-authored, #322): the 60° link carries Visio's stored
+/// hop ON ITS OWN DIAGONAL RUN — with the classifier's
+/// axis-aligned-chord condition gone (#324 phase 3) the arc strips
+/// from the walk and the recomputed hop lands at the true crossing
+/// with the same jumper (the 60° link is flatter than the 84° one);
+/// the mirrored X (equally steep) draws nothing; and a hop over the
+/// gray chassis panel reads the PANEL's fill as its backdrop — the
+/// canvas's gap color, where paper white used to dash (#322).
+#[test]
+fn d04_diagonal_stored_hop_strips_and_the_backdrop_is_the_panel() {
+    let doc = open(D04);
+    let page = &doc.pages[0];
+    assert_eq!(dc::jumps::page_jump_rules(&doc, page).page_code, 1);
+    // Visio's own stored arcs sit on shapes 3 and 5 — the crossing
+    // set picks the same jumpers.
+    let js = dc::jumps::page_jumps(&doc, page, &[]);
+    let mut got: Vec<i64> = js.iter().map(|j| j.jumper).collect();
+    got.sort_unstable();
+    assert_eq!(got, vec![3, 5], "{js:?}");
+    // The 60°×84° hop sits at the geometric crossing of the two
+    // links' endpoints, running along the 60° line.
+    let j5 = js.iter().find(|j| j.jumper == 5).unwrap();
+    assert!(
+        (j5.at.0 - 4.119_06).abs() < 1e-3 && (j5.at.1 - 2.045_55).abs() < 1e-3,
+        "the hop sits at the 60°×84° crossing (the endpoints' intersection,          to the frame walk's rounding): {:?}",
+        j5.at
+    );
+    assert!(
+        (j5.dir.0 - 0.5).abs() < 1e-6,
+        "the hop runs along the 60° link: {:?}",
+        j5.dir
+    );
+    // The stored arc on the diagonal run STRIPPED: every endpoint of
+    // the strip-aware walk lies on the straight Begin→End line — the
+    // control walk (no strip radii) keeps the arc's bulging samples.
+    let s5 = vsdx::model::find_shape_by_id(&page.shapes, 5).unwrap();
+    let root = s5
+        .master
+        .and_then(|mid| doc.master(mid))
+        .and_then(|m| m.shapes.first())
+        .unwrap();
+    let chain = vec![s5, root];
+    let g = |n: &str| {
+        doc.resolve_cell(root, &[root], n)
+            .and_then(|c| c.numeric())
+            .unwrap_or(1.0)
+    };
+    let frame = dc::geom::hit_frame(&doc, &chain, s5, (g("Width"), g("Height")));
+    let begin = (3.4, 0.8);
+    let end = (4.554_700_5, 2.8);
+    let off_line = |p: (f64, f64)| {
+        ((end.0 - begin.0) * (p.1 - begin.1) - (end.1 - begin.1) * (p.0 - begin.0)).abs()
+            / (end.0 - begin.0).hypot(end.1 - begin.1)
+    };
+    let segs = dc::geom::geometry_hit_segments(
+        s5,
+        Some(root),
+        &frame,
+        Some(dc::jumps::jump_radii_in(&doc, page)),
+    );
+    assert!(
+        !segs.is_empty()
+            && segs
+                .iter()
+                .flat_map(|(a, b)| [*a, *b])
+                .all(|p| off_line(p) < 1e-6),
+        "the diagonal stored arc strips to the straight run"
+    );
+    let raw = dc::geom::geometry_hit_segments(s5, Some(root), &frame, None);
+    assert!(
+        raw.iter()
+            .flat_map(|(a, b)| [*a, *b])
+            .any(|p| off_line(p) > 0.01),
+        "the control walk keeps the arc's bulge"
+    );
+    // The hop over the panel reads the PANEL's fill as its backdrop
+    // (never paper white); below a page point with nothing filled,
+    // white.
+    let j3 = js.iter().find(|j| j.jumper == 3).unwrap();
+    assert_eq!(
+        dc::svg::backdrop_color_at(&doc, page, j3.at, 3),
+        (0xbf, 0xbf, 0xbf),
+        "the gap over the gray panel paints the panel's fill"
+    );
+    assert_eq!(
+        dc::svg::backdrop_color_at(&doc, page, (7.8, 4.6), 8),
+        (0xff, 0xff, 0xff),
+        "off the panel the backdrop is the page's white"
     );
 }
