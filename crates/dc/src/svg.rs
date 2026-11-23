@@ -804,6 +804,28 @@ fn node_ink_box(
         // escape rotates with the block.
         let (x0, y0) = (tx - tlx, -(ty - tly + th));
         let tb = resolve_text_block(doc, s, chain, width, height);
+        // Text taller than its frame overflows on the side opposite
+        // the alignment: down for top, up for bottom, both ways for
+        // middle. Bound the laid-out height (TEXTHEIGHT, the same
+        // slots emit_text paints), not just the frame (CodeRabbit on
+        // PR #325).
+        let (ty0, ty1) = {
+            let text = crate::fields::substituted_text(doc, s, chain, None)
+                .or_else(|| s.sheet.text.clone())
+                .unwrap_or_default();
+            let m = crate::textfunc::SheetTextMeasure::new(doc, s, chain, text.clone());
+            let h = {
+                use vsdx::formula::TextMeasure as _;
+                m.text_height(&text, tw)
+            }
+            .unwrap_or(th)
+            .max(th);
+            match tb.valign {
+                1 => (y0, y0 + h),
+                3 => (y0 + th - h, y0 + th),
+                _ => (y0 + (th - h) / 2.0, y0 + (th + h) / 2.0),
+            }
+        };
         let bullet_escape = tb.bullet.as_ref().map_or(0.0, |b| {
             let escape = tb.insets.0 + tb.ind_first;
             if escape < 0.0 {
@@ -845,9 +867,9 @@ fn node_ink_box(
             // rotated page coordinates around a shape-local pivot,
             // landing the hull far from the shape (Greptile round 9).
             let a_text = a.then(&text_tf);
-            box_union(x0 - bullet_escape, y0, x0 + tw, y0 + th, &a_text, &mut u);
+            box_union(x0 - bullet_escape, ty0, x0 + tw, ty1, &a_text, &mut u);
         } else {
-            box_union(x0 - bullet_escape, y0, x0 + tw, y0 + th, &a, &mut u);
+            box_union(x0 - bullet_escape, ty0, x0 + tw, ty1, &a, &mut u);
         }
     }
     (u.acc.unwrap_or((0.0, 0.0, 0.0, 0.0)), a)
@@ -2286,7 +2308,12 @@ pub(crate) fn resolve_text_block(
         .and_then(|r| r.cell("HorzAlign"))
         .and_then(|c| c.numeric())
         .unwrap_or(1.0) as i32;
-    let valign = get("VertAlign").unwrap_or(2.0) as i32;
+    // The ShapeSheet cell is `VerticalAlign` (Text Block Format
+    // section): 0 top, 1 middle (the Normal-style default), 2 bottom.
+    // The block keeps its own 1 top / 2 middle / 3 bottom encoding,
+    // so shift by one. (There is no `VertAlign` cell — reading that
+    // name always fell back to middle.)
+    let valign = get("VerticalAlign").map_or(2, |v| (v.round() as i32).clamp(0, 2) + 1);
 
     // Text-block insets (Visio defaults: 0.1 in left/right, 0.0555 in
     // top/bottom) and 120% line spacing.
@@ -8970,6 +8997,39 @@ mod tests {
 
     const PAD: f64 = 0.08;
 
+    /// Text taller than its frame: the ink box covers the overflow on
+    /// the side the alignment pushes it to (CodeRabbit on PR #325).
+    /// Top-aligned overflows downward only, bottom-aligned upward only.
+    #[test]
+    fn ink_bounds_cover_aligned_text_overflow() {
+        let bounds = |va: &str| {
+            let mut s = shape_at(1, (4.0, 5.0), 1.0, 1.0, 0.0);
+            s.sheet.text = Some("1\n2\n3\n4\n5\n6\n7".into());
+            s.sheet.set_cell("VerticalAlign", Cell::value(va));
+            let (doc, page) = page_fixture(vec![s]);
+            let (_x, y, _w, h) = shape_ink_bounds(&doc, &page, 1).unwrap();
+            (y, y + h)
+        };
+        // The frame spans y 5.5..6.5 (page_h 11, y-down).
+        let (t0, t1) = bounds("0");
+        assert!(
+            (t0 - (5.5 - PAD)).abs() < 1e-9,
+            "top stays at the frame: {t0}"
+        );
+        assert!(t1 > 6.5 + PAD + 0.1, "top-aligned overflow below: {t1}");
+        let (b0, b1) = bounds("2");
+        assert!(b0 < 5.5 - PAD - 0.1, "bottom-aligned overflow above: {b0}");
+        assert!(
+            (b1 - (6.5 + PAD)).abs() < 1e-9,
+            "bottom stays at the frame: {b1}"
+        );
+        let (m0, m1) = bounds("1");
+        assert!(
+            ((5.5 - m0) - (m1 - 6.5)).abs() < 1e-9 && m1 > 6.5 + PAD,
+            "middle overflows both ways evenly: {m0}..{m1}"
+        );
+    }
+
     #[test]
     fn ink_bounds_cover_rotation() {
         // 2×1 shape rotated 90° about its pin (the Angle cell is
@@ -9365,6 +9425,62 @@ mod tests {
         let (_, full) =
             render_shape_layer_opts(&doc, &page, 1, &[], bounds, None, None, None).unwrap();
         assert!(full.contains("#ff2200") && full.contains("#22cc00"));
+    }
+
+    /// The Text Block Format cell is `VerticalAlign` with 0 top,
+    /// 1 middle, 2 bottom (Visio 2021 witness: three boxes with 0/1/2
+    /// put the text top/middle/bottom). It maps onto the block's
+    /// 1/2/3 encoding; out-of-range values clamp.
+    #[test]
+    fn vertical_align_cell_maps_top_middle_bottom() {
+        let va = |v: Option<&str>| {
+            let mut s = shape_at(1, (4.0, 5.0), 2.0, 1.0, 0.0);
+            if let Some(v) = v {
+                s.sheet.set_cell("VerticalAlign", Cell::value(v));
+            }
+            let (doc, page) = page_fixture(vec![s]);
+            text_block(&doc, &page, 1).unwrap().valign
+        };
+        assert_eq!(va(Some("0")), 1, "0 = top");
+        assert_eq!(va(Some("1")), 2, "1 = middle");
+        assert_eq!(va(Some("2")), 3, "2 = bottom");
+        assert_eq!(va(None), 2, "absent = middle");
+        assert_eq!(va(Some("7")), 3, "clamped");
+    }
+
+    /// Text Block Format cells come from the TEXT style. A shape with
+    /// a different line style must still pick up the text style's
+    /// `VerticalAlign` and margins (Greptile/CodeRabbit on PR #325).
+    #[test]
+    fn text_block_cells_resolve_through_the_text_style() {
+        let style = |id: i64, cells: &[(&str, &str)]| {
+            let mut sh = Sheet::default();
+            for (n, v) in cells {
+                sh.set_cell(n, Cell::value(*v));
+            }
+            vsdx::model::StyleSheet {
+                id,
+                name_u: None,
+                attrs: Vec::new(),
+                sheet: sh,
+            }
+        };
+        let mut doc = Document::default();
+        doc.stylesheets.push(style(3, &[("LineWeight", "0.02")]));
+        doc.stylesheets
+            .push(style(4, &[("VerticalAlign", "0"), ("TopMargin", "0.2")]));
+        let mut s = shape_at(1, (4.0, 5.0), 2.0, 1.0, 0.0);
+        s.sheet.text = Some("styled".into());
+        s.line_style = Some(3);
+        s.fill_style = Some(3);
+        s.text_style = Some(4);
+        let tb = resolve_text_block(&doc, &s, &[&s], 2.0, 1.0);
+        assert_eq!(tb.valign, 1, "the text style's VerticalAlign=0 is top");
+        assert!(
+            (tb.insets.2 - 0.2).abs() < 1e-12,
+            "the text style's TopMargin: {}",
+            tb.insets.2
+        );
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
