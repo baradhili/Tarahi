@@ -4596,55 +4596,55 @@ fn render_geometry(
                     if skip.0.hypot(skip.1) <= 1e-9 {
                         false
                     } else {
-                    let kind_of = |tt: &str| -> u8 {
-                        if tt == "MoveTo" || tt == "RelMoveTo" {
-                            0u8
-                        } else if tt == "LineTo" || tt == "RelLineTo" {
-                            1
-                        } else {
-                            2
+                        // Neighbor context from the ROWS directly (PR
+                        // #339 round 2: an earlier cut read absolute
+                        // indices through an offset helper that added
+                        // `ri` AGAIN — both lookups landed outside the
+                        // table and the weld never fired). The run INTO
+                        // the gap start: the nearest PRIOR row endpoint
+                        // off the start (duplicates skip), every row in
+                        // between a straight LineTo. The run OUT of the
+                        // MoveTo target: the same, forward.
+                        let straight = |i: usize| {
+                            let t = evald[i].1;
+                            t == "LineTo" || t == "RelLineTo"
+                        };
+                        // The segment INTO cur is row ri−1's (its
+                        // END is cur — at a MoveTo the previous row's
+                        // endpoint IS the pen's position): probe the
+                        // far endpoint evald[k−1].2 with row k
+                        // straight, duplicates skipping down.
+                        let mut prev_dir = None;
+                        let mut k = ri.saturating_sub(1);
+                        while k >= 1 {
+                            if !straight(k) {
+                                break; // a curve or pen-up ends the run
+                            }
+                            let (qx, qy) = evald[k - 1].2;
+                            let dvec = (sx - qx, sy - qy);
+                            if dvec.0.hypot(dvec.1) > 1e-9 {
+                                let l = dvec.0.hypot(dvec.1);
+                                prev_dir = Some((dvec.0 / l, dvec.1 / l));
+                                break;
+                            }
+                            k -= 1; // a duplicate endpoint — skip it
                         }
-                    };
-                    let t_of = |i: isize| -> &str {
-                        let idx = ri as isize + i;
-                        if idx < 0 || idx as usize >= evald.len() {
-                            return "";
+                        let mut next_dir = None;
+                        let mut m = ri + 1;
+                        while m < evald.len() {
+                            if !straight(m) {
+                                break;
+                            }
+                            let (qx, qy) = evald[m].2;
+                            let dvec = (qx - x, qy - y);
+                            if dvec.0.hypot(dvec.1) > 1e-9 {
+                                let l = dvec.0.hypot(dvec.1);
+                                next_dir = Some((dvec.0 / l, dvec.1 / l));
+                                break;
+                            }
+                            m += 1;
                         }
-                        evald[idx as usize].1
-                    };
-                    let mut prev_dir = None;
-                    let mut pi = ri as isize - 1;
-                    while pi >= 1 {
-                        let tp = t_of(pi);
-                        if kind_of(tp) != 1 {
-                            break; // a curve or pen-up ends the run context
-                        }
-                        let (qx, qy) = evald[pi as usize].2;
-                        let dvec = (sx - qx, sy - qy);
-                        if dvec.0.hypot(dvec.1) > 1e-9 {
-                            let l = dvec.0.hypot(dvec.1);
-                            prev_dir = Some((dvec.0 / l, dvec.1 / l));
-                            break;
-                        }
-                        pi -= 1;
-                    }
-                    let mut next_dir = None;
-                    let mut ni = ri as isize + 1;
-                    while (ni as usize) < evald.len() {
-                        let tn = t_of(ni);
-                        if kind_of(tn) != 1 {
-                            break;
-                        }
-                        let (qx, qy) = evald[ni as usize].2;
-                        let dvec = (qx - x, qy - y);
-                        if dvec.0.hypot(dvec.1) > 1e-9 {
-                            let l = dvec.0.hypot(dvec.1);
-                            next_dir = Some((dvec.0 / l, dvec.1 / l));
-                            break;
-                        }
-                        ni += 1;
-                    }
-                    crate::jumps::is_stored_jump_gap(skip, prev_dir, next_dir, rx, ry)
+                        crate::jumps::is_stored_jump_gap(skip, prev_dir, next_dir, rx, ry)
                     }
                 } else {
                     false
@@ -8995,11 +8995,15 @@ mod tests {
         let shape = |rows: &[(&str, f64, f64)]| {
             let mut s = shape_at(1, (2.5, 5.0), 5.0, 0.0, 0.0);
             s.sheet.set_cell("ObjType", Cell::value("2"));
+            // A real connector carries NoFill — without it the render
+            // emits a fill path beside the stroke and doubles every M
+            // count.
             let mut sec = Section {
                 name: "Geometry".into(),
                 ix: 0,
                 ..Section::default()
             };
+            sec.cells.push(("NoFill".to_string(), Cell::value("1")));
             sec.rows = rows
                 .iter()
                 .enumerate()
@@ -9016,7 +9020,10 @@ mod tests {
             s.sheet.children.push(SheetChild::Section(sec));
             s
         };
-        // A STORED gap on the run (MoveTo at +2r): welds.
+        // A STORED gap on the run (MoveTo at +2r): welds — exactly
+        // ONE pen up in the whole export (the route's start). The
+        // count is the discriminator (a substring check on the target
+        // coordinate was vacuous; PR #339 round 2).
         let gapped = shape(&[
             ("MoveTo", 0.0, 0.0),
             ("LineTo", 2.5 - r, 0.0),
@@ -9025,9 +9032,26 @@ mod tests {
         ]);
         let (doc, page) = page_fixture(vec![gapped]);
         let svg = render_page(&doc, &page).unwrap();
-        assert!(
-            !svg.contains("M 5."),
-            "no mid-route pen up through the stored gap: {svg}"
+        assert_eq!(
+            svg.matches("M ").count(),
+            1,
+            "the stored gap welds to one stroke: {svg}"
+        );
+        // A duplicate endpoint right before the gap: still welds (the
+        // zero-length run must not clobber the incoming direction).
+        let dup = shape(&[
+            ("MoveTo", 0.0, 0.0),
+            ("LineTo", 2.5 - r, 0.0),
+            ("LineTo", 2.5 - r, 0.0),
+            ("MoveTo", 2.5 + r, 0.0),
+            ("LineTo", 5.0, 0.0),
+        ]);
+        let (doc, page) = page_fixture(vec![dup]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert_eq!(
+            svg.matches("M ").count(),
+            1,
+            "a duplicate endpoint before the gap still welds: {svg}"
         );
         // An AUTHORED break (a skip of the wrong length): keeps its M.
         let authored = shape(&[

@@ -1121,8 +1121,13 @@ pub fn page_jumps_stripping(
                 // BEFORE the break, and saving the previous segment's
                 // direction at each step left it one behind after a
                 // bend (a stored gap after a corner was rejected; PR
-                // #339 review).
-                prev_run = Some(unit(*a, *b));
+                // #339 review). A ZERO-LENGTH segment (a collapsed
+                // elbow row) records nothing — a (0,0) direction
+                // failed run_continues and killed the gap after it
+                // (PR #339 round 2); the last real direction stands.
+                if (a.0 - b.0).hypot(a.1 - b.1) > 1e-9 {
+                    prev_run = Some(unit(*a, *b));
+                }
             }
             pts.push(*b);
         }
@@ -1952,6 +1957,84 @@ mod tests {
             let js = page_jumps(&doc, &page, &[]);
             assert_eq!((js.len(), js[0].style), (1, want), "code {code}");
         }
+    }
+
+    /// PR #339 round 2: a duplicate endpoint right before a stored
+    /// gap must not clobber the incoming direction — the crossing
+    /// inside the slot still bridges.
+    #[test]
+    fn pr339_duplicate_endpoint_before_a_gap_keeps_the_bridge() {
+        let r = 0.125 * (2.0 / 3.0) / 2.0;
+        let rows = |rows: &[(&str, f64, f64)]| {
+            let mut s = vsdx::model::Shape {
+                id: 1,
+                type_: Some("Shape".into()),
+                ..vsdx::model::Shape::default()
+            };
+            for (n, v) in [
+                ("PinX", 0.0),
+                ("PinY", 0.0),
+                ("Width", 2.0),
+                ("Height", 3.0),
+                ("LocPinX", 0.0),
+                ("LocPinY", 0.0),
+                ("ObjType", 2.0),
+            ] {
+                s.sheet.set_cell(n, Cell::value(format!("{v}")));
+            }
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            sec.rows = rows
+                .iter()
+                .enumerate()
+                .map(|(k, (t, x, y))| Row {
+                    t: Some((*t).into()),
+                    ix: k as i64 + 1,
+                    cells: vec![
+                        ("X".to_string(), Cell::value(format!("{x}"))),
+                        ("Y".to_string(), Cell::value(format!("{y}"))),
+                    ],
+                    ..Row::default()
+                })
+                .collect();
+            s.sheet.children.push(SheetChild::Section(sec));
+            s
+        };
+        // A northward run with a DUPLICATE endpoint just before the
+        // stored gap's MoveTo.
+        let gapped = rows(&[
+            ("MoveTo", 1.0, 0.0),
+            ("LineTo", 1.0, 1.0),
+            ("LineTo", 1.0, 1.0 - r),
+            ("LineTo", 1.0, 1.0 - r), // duplicate
+            ("MoveTo", 1.0, 1.0 + r),
+            ("LineTo", 1.0, 3.0),
+        ]);
+        let mut v = rows(&[("MoveTo", 0.0, 1.0), ("LineTo", 2.0, 1.0)]);
+        v.id = 2;
+        for (n, val) in [
+            ("PinX", 0.0),
+            ("PinY", 1.0),
+            ("Width", 2.0),
+            ("Height", 0.0),
+            ("LocPinX", 0.0),
+            ("LocPinY", 0.0),
+        ] {
+            v.sheet.set_cell(n, Cell::value(format!("{val}")));
+        }
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        page.shapes.push(gapped);
+        page.shapes.push(v);
+        let doc = vsdx::Document::default();
+        let js = page_jumps(&doc, &page, &[]);
+        assert_eq!(js.len(), 1, "the duplicate does not kill the gap: {js:?}");
     }
 
     /// PR #339 E: a stored gap on the run AFTER a corner bridges in

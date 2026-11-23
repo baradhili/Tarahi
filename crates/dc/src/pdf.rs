@@ -810,7 +810,11 @@ fn emit_clip_path(
 /// referencing group's, so a path's total transform is its own
 /// subroot frame (usvg keeps subroot abs transforms separate from the
 /// referencing node) composed with the group's absolute — path first,
-/// then group (`pre_concat`).
+/// then group (`pre_concat`; the same composition resvg's clip
+/// applier uses). The transform goes into the PATH DATA, never a
+/// `cm`: PDF `cm` operators compose, and a leftover clip `cm` inside
+/// the q…Q scope would double-transform every child (the connector
+/// scaled ~96× again and vanished off the page; PR #339 round 2).
 fn emit_clip_geometry(
     content: &mut Content,
     root: &usvg::Group,
@@ -820,8 +824,12 @@ fn emit_clip_geometry(
         match node {
             usvg::Node::Group(g) => emit_clip_geometry(content, g, group_abs),
             usvg::Node::Path(p) => {
-                content.transform(transform_matrix(p.abs_transform().pre_concat(group_abs)));
-                write_path_data(content, p.data());
+                let total = p.abs_transform().pre_concat(group_abs);
+                if let Some(t) = p.data().clone().transform(total) {
+                    write_path_data(content, &t);
+                } else {
+                    write_path_data(content, p.data());
+                }
             }
             _ => {}
         }
@@ -1504,6 +1512,22 @@ mod tests {
         assert!(
             ops.matches('m').count() >= 2,
             "the clip path carries both subpaths: {ops}"
+        );
+        // No cm LEAKS out of the clip into the children (PR #339
+        // round 2): after the clip's `W* n`, the next operator must be
+        // the child's own `q` — any `cm` in between would compose onto
+        // the child's transform (the ~96× double-scale that vanished
+        // connectors off the page).
+        let after_clip = ops.split("W*").nth(1).unwrap_or("");
+        let next_op = after_clip.split_whitespace().next().unwrap_or("");
+        assert_eq!(
+            next_op, "n",
+            "the clip ends with end-path, then the child opens: {ops}"
+        );
+        let after_n = after_clip.split("n").nth(1).unwrap_or("").trim_start();
+        assert!(
+            after_n.starts_with('q'),
+            "the child's own state opens immediately (no leaked cm): {ops}"
         );
     }
 
