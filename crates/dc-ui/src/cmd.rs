@@ -5105,14 +5105,20 @@ mod reconcile_jump_tests {
                 }
             }
         }
-        // An endpoint move that would want a new route: the connector
-        // keeps its rows (the curve protects the section).
-        ed.apply(crate::cmd::MoveShape::new(page_id, 6, (5.0, 5.0)))
-            .unwrap();
+        // A replan that COVERS connector 5 (a bare MoveShape of the
+        // crossed shape writes only its own pin — the planner never
+        // evaluates 5's section, and the assertion passed vacuously;
+        // CodeRabbit, PR #339 round 3): the connector keeps its rows
+        // (the curve protects the section).
+        ed.apply(crate::cmd::RerouteConnectors::new_including(
+            page_id,
+            vec![5],
+        ))
+        .unwrap();
         let after = rows_of(&ed, 5);
         assert!(
             after.iter().any(|r| r.t.as_deref() == Some("SplineStart")),
-            "the authored curve survives: {after:?}"
+            "the authored curve survives the replan: {after:?}"
         );
     }
 

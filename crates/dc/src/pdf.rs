@@ -1507,10 +1507,14 @@ mod tests {
         assert!(ops.contains("q"), "a saved state opens the clip: {ops}");
         assert!(ops.contains("W*"), "the even-odd clip op lands: {ops}");
         assert!(ops.trim_end().ends_with('Q'), "the state restores: {ops}");
-        // The slot hole made it into the clip geometry (two m subpaths
-        // — the page rect and the slot quad).
-        assert!(
-            ops.matches('m').count() >= 2,
+        // The slot hole made it into the clip GEOMETRY: exactly two
+        // move-tos before the first W* (the page rect and the slot
+        // quad — counting past W* would let the child's own m satisfy
+        // the check; CodeRabbit, PR #339 round 3).
+        let clip_ops = ops.split("W*").next().unwrap_or("");
+        assert_eq!(
+            clip_ops.matches('m').count(),
+            2,
             "the clip path carries both subpaths: {ops}"
         );
         // No cm LEAKS out of the clip into the children (PR #339

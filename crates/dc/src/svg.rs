@@ -4589,7 +4589,13 @@ fn render_geometry(
                 // keeps its M (PR #339 review: a stale gap used to
                 // linger in the export when the crossing moved away).
                 let (rx, ry) = jump_radius;
-                let active = rx > 0.0 || ry > 0.0;
+                // The same CANDIDACY gate the ArcTo strip applies:
+                // welding is for stored hops on jump candidates — an
+                // authored break on plain artwork must keep its pen up
+                // even when the gap happens to sit ~2r from the last
+                // stroke (both bots, PR #339 round 3).
+                let active =
+                    (rx > 0.0 || ry > 0.0) && crate::jumps::is_jump_candidate(doc, chain, s);
                 let weld = if active {
                     let (sx, sy) = cur;
                     let skip = (x - sx, y - sy);
@@ -8982,6 +8988,46 @@ mod tests {
             svg.matches(r#"stroke-linejoin="round""#).count(),
             1,
             "one hop ARC at the real crossing (a second crossing on the              same jumper would draw a second arc)"
+        );
+    }
+
+    /// PR #339 round 3: gap welding is for JUMP CANDIDATES — plain
+    /// artwork with two collinear strokes ~2r apart keeps its pen up
+    /// (both bots).
+    #[test]
+    fn export_keeps_artwork_breaks_without_objtype() {
+        let r = 0.125 * (2.0 / 3.0) / 2.0;
+        let mut s = shape_at(1, (2.5, 5.0), 5.0, 0.0, 0.0);
+        // NO ObjType — artwork, not a connector.
+        let mut sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec.cells.push(("NoFill".to_string(), Cell::value("1")));
+        let row = |k: i64, t: &str, x: f64, y: f64| Row {
+            t: Some(t.into()),
+            ix: k,
+            cells: vec![
+                ("X".to_string(), Cell::value(format!("{x}"))),
+                ("Y".to_string(), Cell::value(format!("{y}"))),
+            ],
+            ..Row::default()
+        };
+        // Two collinear strokes with a ~2r break.
+        sec.rows = vec![
+            row(1, "MoveTo", 0.0, 0.0),
+            row(2, "LineTo", 2.5 - r, 0.0),
+            row(3, "MoveTo", 2.5 + r, 0.0),
+            row(4, "LineTo", 5.0, 0.0),
+        ];
+        s.sheet.children.push(SheetChild::Section(sec));
+        let (doc, page) = page_fixture(vec![s]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert_eq!(
+            svg.matches("M ").count(),
+            2,
+            "artwork keeps its authored break: {svg}"
         );
     }
 

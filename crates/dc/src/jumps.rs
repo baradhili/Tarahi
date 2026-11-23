@@ -266,11 +266,19 @@ pub fn is_stored_jump_polyline(
     // out; PR #339 review caught the early return stranding 3-sided
     // hops.)
     if controls.len() == 2 {
+        // The corners FOLLOW the run (first near the start, second
+        // near the end — the writer's emission order) and sit on the
+        // SAME side (either bulge direction). A reversed pair or a
+        // straddle is not a hop the writer emits (PR #339 round 3).
+        // (Two controls can ALSO be Sides(3)'s inscribed pair — the
+        // square check failing falls THROUGH to the polygonal check.)
         let (aa, ao) = rel(controls[0].0, controls[0].1);
         let (ba, bo) = rel(controls[1].0, controls[1].1);
         if near(ao.abs(), radius)
             && near(bo.abs(), radius)
-            && ((aa <= tol && ba >= len - tol) || (aa >= len - tol && ba <= tol))
+            && aa <= tol
+            && ba >= len - tol
+            && ao.signum() == bo.signum()
         {
             return true;
         }
@@ -702,10 +710,16 @@ pub fn line_jumps_with(
             // A break before original index i lands before the KEPT
             // position that index i maps to (kept's binary-search
             // slot); the phantom window pairing across it skips.
+            // A break maps to its MoveTo point's KEPT position — and
+            // VANISHES when the pen-up move itself was zero-length
+            // (the MoveTo point deduplicated into its predecessor:
+            // no bridge segment exists to suppress, and shifting the
+            // break onto the next real segment suppressed INK instead;
+            // PR #339 round 3).
             let breaks = l
                 .breaks
                 .iter()
-                .filter_map(|b| kept.iter().position(|&k| k >= *b))
+                .filter_map(|b| kept.iter().position(|&k| k == *b))
                 .collect();
             NormLine { pts: v, breaks }
         })
@@ -1114,6 +1128,11 @@ pub fn page_jumps_stripping(
                 let next_dir = segs.get(k + 1).map(|(_, nb, _)| unit(*b, *nb));
                 if !is_stored_jump_gap(skip, prev_run, next_dir, strip_r, strip_ry) {
                     breaks.push(pts.len());
+                    // A NEW STROKE begins — the saved direction belongs
+                    // to the old one. Keeping it let a later pen move
+                    // borrow the first stroke's direction and bridge a
+                    // blank span (PR #339 round 3).
+                    prev_run = None;
                 }
             } else {
                 // EVERY real segment records its OWN direction — the
@@ -2003,17 +2022,20 @@ mod tests {
             s.sheet.children.push(SheetChild::Section(sec));
             s
         };
-        // A northward run with a DUPLICATE endpoint just before the
-        // stored gap's MoveTo.
+        // A NORTHBOUND run with a DUPLICATE endpoint just before the
+        // stored gap's MoveTo, and the probe THROUGH the gap's
+        // interior (page y = 1 — the slot spans 1−r..1+r; the old
+        // fixture's probe landed on the solid run at page y = 2 and
+        // its incoming run read southbound, so the assertion passed
+        // either way; CodeRabbit, PR #339 round 3).
         let gapped = rows(&[
             ("MoveTo", 1.0, 0.0),
-            ("LineTo", 1.0, 1.0),
             ("LineTo", 1.0, 1.0 - r),
             ("LineTo", 1.0, 1.0 - r), // duplicate
             ("MoveTo", 1.0, 1.0 + r),
             ("LineTo", 1.0, 3.0),
         ]);
-        let mut v = rows(&[("MoveTo", 0.0, 1.0), ("LineTo", 2.0, 1.0)]);
+        let mut v = rows(&[("MoveTo", 0.0, 0.0), ("LineTo", 2.0, 0.0)]);
         v.id = 2;
         for (n, val) in [
             ("PinX", 0.0),
@@ -2035,6 +2057,108 @@ mod tests {
         let doc = vsdx::Document::default();
         let js = page_jumps(&doc, &page, &[]);
         assert_eq!(js.len(), 1, "the duplicate does not kill the gap: {js:?}");
+    }
+
+    /// PR #339 round 3: a COLLAPSED pen-up move (the MoveTo point
+    /// duplicates its predecessor) dedups away — its break must
+    /// VANISH, not shift onto the next inked segment (a crossing on
+    /// that segment keeps its hop).
+    #[test]
+    fn pr339_collapsed_break_drops_not_shifts() {
+        let r = (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS);
+        let collapsed = JumpLine {
+            id: 1,
+            z: 0,
+            weight: 0.01,
+            color: (0, 0, 0),
+            style: JumpStyle::Arc,
+            pts: vec![(0.0, 1.0), (1.0, 1.0), (1.0, 1.0), (2.0, 1.0)],
+            breaks: vec![2],
+        };
+        let v = jline(2, 1, &[(1.5, 0.0), (1.5, 2.0)]);
+        let js = line_jumps(&[collapsed, v], r);
+        assert_eq!(
+            js.len(),
+            1,
+            "the crossing on the REAL segment (1,1)->(2,1) hops: {js:?}"
+        );
+        assert!((js[0].at.0 - 1.5).abs() < 1e-9, "{js:?}");
+    }
+
+    /// PR #339 round 3: a pen move to a NEW stroke clears the saved
+    /// direction — a later gap cannot borrow the first stroke's run
+    /// and bridge a blank span (Greptile's scenario: M(0,0) L(1,0) |
+    /// M(3,0) L(3,0) | M(3+2r,0) L(5,0)).
+    #[test]
+    fn pr339_pen_move_clears_the_saved_direction() {
+        let r = 0.125 * (2.0 / 3.0) / 2.0;
+        let rows = |rows: &[(&str, f64, f64)]| {
+            let mut s = vsdx::model::Shape {
+                id: 1,
+                type_: Some("Shape".into()),
+                ..vsdx::model::Shape::default()
+            };
+            for (n, v) in [
+                ("PinX", 0.0),
+                ("PinY", 0.0),
+                ("Width", 5.0),
+                ("Height", 0.0),
+                ("LocPinX", 0.0),
+                ("LocPinY", 0.0),
+                ("ObjType", 2.0),
+            ] {
+                s.sheet.set_cell(n, Cell::value(format!("{v}")));
+            }
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            sec.rows = rows
+                .iter()
+                .enumerate()
+                .map(|(k, (t, x, y))| Row {
+                    t: Some((*t).into()),
+                    ix: k as i64 + 1,
+                    cells: vec![
+                        ("X".to_string(), Cell::value(format!("{x}"))),
+                        ("Y".to_string(), Cell::value(format!("{y}"))),
+                    ],
+                    ..Row::default()
+                })
+                .collect();
+            s.sheet.children.push(SheetChild::Section(sec));
+            s
+        };
+        let gapped = rows(&[
+            ("MoveTo", 0.0, 0.0),
+            ("LineTo", 1.0, 0.0),
+            ("MoveTo", 3.0, 0.0),
+            ("LineTo", 3.0, 0.0),
+            ("MoveTo", 3.0 + 2.0 * r, 0.0),
+            ("LineTo", 5.0, 0.0),
+        ]);
+        // The probe crosses the PHANTOM span (3, 3+2r) — blank ink.
+        // With the borrowed direction it hopped here; with the clear
+        // the window is suppressed and nothing else crosses (the real
+        // final segment starts at 3+2r).
+        let mut v = rows(&[
+            ("MoveTo", 3.0 + r, -1.0),
+            ("LineTo", 3.0 + r, 1.0),
+        ]);
+        v.id = 2;
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        page.shapes.push(gapped);
+        page.shapes.push(v);
+        let doc = vsdx::Document::default();
+        assert!(
+            page_jumps(&doc, &page, &[]).is_empty(),
+            "the +2r pen move does not borrow the first stroke's direction"
+        );
     }
 
     /// PR #339 E: a stored gap on the run AFTER a corner bridges in
@@ -2091,10 +2215,10 @@ mod tests {
             ("MoveTo", 1.0, 1.0 + r),
             ("LineTo", 1.0, 3.0),
         ]);
-        let mut v = rows(&[
-            ("MoveTo", 0.0, 1.0),
-            ("LineTo", 2.0, 1.0),
-        ]);
+        // The probe passes through the GAP's interior (page y = 1 —
+        // the slot spans 1−r..1+r; the old probe landed at page y = 2
+        // on the solid run; CodeRabbit, PR #339 round 3).
+        let mut v = rows(&[("MoveTo", 0.0, 0.0), ("LineTo", 2.0, 0.0)]);
         v.id = 2;
         for (n, val) in [
             ("PinX", 0.0),
@@ -2146,26 +2270,31 @@ mod tests {
             "the real crossing on the final segment: {js:?}"
         );
         assert!((js[0].at.0 - 3.5).abs() < 1e-9, "{js:?}");
-        // And nothing hops on the blank bridge at x 1..3.
+        // And nothing hops on the blank bridge at x 1..3 — with the
+        // control: WITHOUT the break the same crossing produces a hop
+        // (the assertion discriminates; CodeRabbit, PR #339 round 3).
         let v_early = jline(2, 1, &[(2.0, 0.0), (2.0, 2.0)]);
+        let broken_line = JumpLine {
+            id: 1,
+            z: 0,
+            weight: 0.01,
+            color: (0, 0, 0),
+            style: JumpStyle::Arc,
+            pts: vec![(0.0, 1.0), (1.0, 1.0), (1.0, 1.0), (3.0, 1.0), (4.0, 1.0)],
+            breaks: vec![3],
+        };
         assert!(
-            line_jumps(
-                &[
-                    JumpLine {
-                        id: 1,
-                        z: 0,
-                        weight: 0.01,
-                        color: (0, 0, 0),
-                        style: JumpStyle::Arc,
-                        pts: vec![(0.0, 1.0), (1.0, 1.0), (1.0, 1.0), (3.0, 1.0), (4.0, 1.0)],
-                        breaks: vec![3],
-                    },
-                    v_early
-                ],
-                r
-            )
-            .is_empty(),
+            line_jumps(&[broken_line.clone(), v_early.clone()], r).is_empty(),
             "no hop in blank space after the dedup"
+        );
+        let whole = JumpLine {
+            breaks: Vec::new(),
+            ..broken_line
+        };
+        assert_eq!(
+            line_jumps(&[whole, v_early], r).len(),
+            1,
+            "the control: without the break the crossing hops"
         );
         // E: a stored gap on the run AFTER a corner — the run INTO the
         // gap is the vertical leg (the horizontal used to win and the
