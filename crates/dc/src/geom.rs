@@ -352,14 +352,27 @@ pub fn arc_row(s: &Shape, master_root: Option<&Shape>, frame: &HitFrame) -> Opti
     walk.retain(|(row, _)| !row.is_deleted());
     walk.sort_by_key(|(row, _)| row.ix);
     let cell = |row: &Row, master: Option<&Row>, name: &str| -> Option<f64> {
-        let axis = if name == "X" || name == "A" { scale.0 } else { scale.1 };
-        row_cell_value(row.cell(name), master.and_then(|m| m.cell(name)), axis, &frame.env)
+        let axis = if name == "X" || name == "A" {
+            scale.0
+        } else {
+            scale.1
+        };
+        row_cell_value(
+            row.cell(name),
+            master.and_then(|m| m.cell(name)),
+            axis,
+            &frame.env,
+        )
     };
     // The hit walk's endpoint placement: Rel rows resolve ×own size,
     // then master-section caches scale into instance units.
     let placed = |v: (f64, f64), rel: bool| -> (f64, f64) {
         let v = if rel { (v.0 * own.0, v.1 * own.1) } else { v };
-        if scale != (1.0, 1.0) { (v.0 * scale.0, v.1 * scale.1) } else { v }
+        if scale != (1.0, 1.0) {
+            (v.0 * scale.0, v.1 * scale.1)
+        } else {
+            v
+        }
     };
     let mut cur: Option<(f64, f64)> = None;
     for (row, master) in &walk {
@@ -398,9 +411,11 @@ pub fn arc_row(s: &Shape, master_root: Option<&Shape>, frame: &HitFrame) -> Opti
                 // A/B ride `cell` alone — the hit walk applies no rel
                 // or post-scale to the on-curve control.
                 return match (cell(row, *master, "A"), cell(row, *master, "B"), cur) {
-                    (Some(a), Some(b), Some(start)) => {
-                        Some(ArcRow { start, end, on_curve: (a, b) })
-                    }
+                    (Some(a), Some(b), Some(start)) => Some(ArcRow {
+                        start,
+                        end,
+                        on_curve: (a, b),
+                    }),
                     _ => None,
                 };
             }
@@ -534,10 +549,7 @@ pub fn geometry_hit_segments(
         if sections.is_empty() {
             return Vec::new();
         }
-        (
-            frame.master_size,
-            master_ratio.unwrap_or((1.0, 1.0)),
-        )
+        (frame.master_size, master_ratio.unwrap_or((1.0, 1.0)))
     } else {
         (frame.size, (1.0, 1.0))
     };
@@ -566,14 +578,15 @@ pub fn geometry_hit_segments(
     // `Geometry1.X2+…` controls kept the hit walk at the authored pose
     // while the SVG walked the resized route).
     let mut env = frame.env.clone();
-    let cell = |env: &vsdx::formula::Env, row: &Row, master: Option<&Row>, name: &str| -> Option<f64> {
-        row_cell_value(
-            row.cell(name),
-            master.and_then(|m| m.cell(name)),
-            axis_scale(name),
-            env,
-        )
-    };
+    let cell =
+        |env: &vsdx::formula::Env, row: &Row, master: Option<&Row>, name: &str| -> Option<f64> {
+            row_cell_value(
+                row.cell(name),
+                master.and_then(|m| m.cell(name)),
+                axis_scale(name),
+                env,
+            )
+        };
     let to_page = |p: (f64, f64)| -> (f64, f64) { frame.to_page(p) };
     let quad = |c0: (f64, f64), ctrl: (f64, f64), c1: (f64, f64), u: f64| -> (f64, f64) {
         (
@@ -582,15 +595,16 @@ pub fn geometry_hit_segments(
         )
     };
     let mut pts: Vec<(f64, f64)> = Vec::new();
-    let mut cur: Option<(f64, f64)> = None; // shape-local
+    // shape-local
+    let mut cur: Option<(f64, f64)> = None;
     // The same pen in the UNSCALED row frame — stored-jump
     // classification classifies there, matching the ink path (#294
     // review).
     let mut cur_local: Option<(f64, f64)> = None;
-                                            // #188: the spline accumulator — SplineStart opens, SplineKnot
-                                            // rows extend, anything else flushes; NURBSTo rows evaluate
-                                            // standalone. The flattened samples ARE the hit polyline, so
-                                            // hit-testing agrees with the rendered ink (crate::curve::flatten).
+    // #188: the spline accumulator — SplineStart opens, SplineKnot
+    // rows extend, anything else flushes; NURBSTo rows evaluate
+    // standalone. The flattened samples ARE the hit polyline, so
+    // hit-testing agrees with the rendered ink (crate::curve::flatten).
     let mut spline_acc: Option<crate::curve::SplineAcc> = None;
     // The ordered walk: the instance's rows, then master-only rows
     // (by ix) the instance never overrode. Each row carries its
@@ -759,9 +773,7 @@ pub fn geometry_hit_segments(
                     // radius. The comparison is authored inches against
                     // page inches in every frame.
                     let stored_jump = match strip_stored_jumps {
-                        Some(r) => {
-                            is_stored_jump_arc(raw_a, d_class, prev_dir, next_dir, r.0, r.1)
-                        }
+                        Some(r) => is_stored_jump_arc(raw_a, d_class, prev_dir, next_dir, r.0, r.1),
                         None => false,
                     };
                     if !stored_jump {
@@ -846,12 +858,12 @@ pub fn geometry_hit_segments(
                 Some(acc) => {
                     acc.knot(end, (*ca).unwrap_or(0.0));
                     cur = Some(end);
-                cur_local = Some(end_local);
+                    cur_local = Some(end_local);
                 }
                 None => {
                     pts.push(to_page(end));
                     cur = Some(end);
-                cur_local = Some(end_local);
+                    cur_local = Some(end_local);
                 }
             },
             "NURBSTo" => {
@@ -884,8 +896,16 @@ pub fn geometry_hit_segments(
                     // scale. An inherited resized master keeps the
                     // hit polyline ON the rendered curve.
                     let (fx, fy) = (
-                        if f.x_type == 0.0 { frame.size.0 } else { scale.0 },
-                        if f.y_type == 0.0 { frame.size.1 } else { scale.1 },
+                        if f.x_type == 0.0 {
+                            frame.size.0
+                        } else {
+                            scale.0
+                        },
+                        if f.y_type == 0.0 {
+                            frame.size.1
+                        } else {
+                            scale.1
+                        },
                     );
                     let start = cur.unwrap_or(end);
                     let mut points = vec![start];
@@ -915,14 +935,14 @@ pub fn geometry_hit_segments(
                             pts.push(to_page(p));
                         }
                         cur = Some(end);
-                cur_local = Some(end_local);
+                        cur_local = Some(end_local);
                         drew = true;
                     }
                 }
                 if !drew {
                     pts.push(to_page(end));
                     cur = Some(end);
-                cur_local = Some(end_local);
+                    cur_local = Some(end_local);
                 }
             }
             _ if t.ends_with("To") || t.contains("Spline") || t == "InfiniteLine" => {
@@ -1159,10 +1179,7 @@ mod tests {
     fn stored_jumps_survive_degenerate_neighbor_rows() {
         let mut rows = jump_rows();
         // A collapsed elbow between the arc and the continuing run.
-        rows.insert(
-            3,
-            mrow(4, "LineTo", &[("X", 1.083_333_3), ("Y", 0.0)]),
-        );
+        rows.insert(3, mrow(4, "LineTo", &[("X", 1.083_333_3), ("Y", 0.0)]));
         rows[4].ix = 5;
         let s = conn_shape(7, 3.0, 0.25, rows);
         let doc = vsdx::Document::default();
@@ -1194,12 +1211,10 @@ mod tests {
             let doc = vsdx::Document::default();
             let chain = vec![&inst, &root];
             let frame = hit_frame(&doc, &chain, &inst, (2.0, 0.5));
-            let segs = geometry_hit_segments(&inst, Some(&root), &frame, Some((0.041_666_7, 0.041_666_7)));
+            let segs =
+                geometry_hit_segments(&inst, Some(&root), &frame, Some((0.041_666_7, 0.041_666_7)));
             assert!(!segs.is_empty());
-            assert!(
-                flat(&segs),
-                "the arc strips at instance scale ({iw}, {ih})"
-            );
+            assert!(flat(&segs), "the arc strips at instance scale ({iw}, {ih})");
         }
     }
 
@@ -1278,7 +1293,11 @@ mod tests {
             rows: vec![
                 mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
                 mrow(2, "LineTo", &[("X", 1.4583), ("Y", 0.0)]),
-                mrow(3, "ArcTo", &[("X", 1.5417), ("Y", 0.0), ("A", -0.041_666_7)]),
+                mrow(
+                    3,
+                    "ArcTo",
+                    &[("X", 1.5417), ("Y", 0.0), ("A", -0.041_666_7)],
+                ),
                 mrow(4, "LineTo", &[("X", 3.0), ("Y", 0.0)]),
             ],
             ..Section::default()
@@ -1319,10 +1338,7 @@ mod tests {
                 Row {
                     t: Some("ArcTo".into()),
                     ix: 3,
-                    cells: vec![
-                        ("X".to_string(), inh()),
-                        ("A".to_string(), inh()),
-                    ],
+                    cells: vec![("X".to_string(), inh()), ("A".to_string(), inh())],
                     ..Row::default()
                 },
                 Row {
@@ -1344,7 +1360,8 @@ mod tests {
         // polyline keeps the bump exactly like the ink does (the old
         // code retained it here while the ink stripped — or vice versa
         // — depending on the scale).
-        let segs = geometry_hit_segments(&inst, Some(&root), &frame, Some((0.041_666_7, 0.041_666_7)));
+        let segs =
+            geometry_hit_segments(&inst, Some(&root), &frame, Some((0.041_666_7, 0.041_666_7)));
         assert!(!segs.is_empty());
         assert!(
             !flat(&segs),
@@ -1578,62 +1595,64 @@ mod tests {
 
         // A zero-weight connector is excluded from the crossing set:
         // the horizontal axis line no longer hops over it.
-        let connector = |id: i64, pin: (f64, f64), w: f64, h: f64, angle: f64, weight: Option<f64>| {
-            let mut c = Shape {
-                id,
-                type_: Some("Shape".into()),
-                ..Shape::default()
-            };
-            for (n, v) in [
-                ("PinX", pin.0),
-                ("PinY", pin.1),
-                ("Width", w),
-                ("Height", h),
-                ("LocPinX", w / 2.0),
-                ("LocPinY", h / 2.0),
-                ("Angle", angle),
-                ("ObjType", 2.0),
-            ] {
-                c.sheet.set_cell(n, Cell::value(format!("{v}")));
-            }
-            if let Some(wt) = weight {
-                c.sheet.set_cell("LineWeight", Cell::value(format!("{wt}")));
-            }
-            let row = |ix: i64, x: f64, y: f64| Row {
-                t: Some("LineTo".into()),
-                ix,
-                cells: vec![
-                    ("X".to_string(), Cell::value(format!("{x}"))),
-                    ("Y".to_string(), Cell::value(format!("{y}"))),
-                ],
-                ..Row::default()
-            };
-            let mut sec = Section {
-                name: "Geometry".into(),
-                ix: 0,
-                ..Section::default()
-            };
-            sec.rows = vec![
-                Row {
-                    t: Some("MoveTo".into()),
-                    ix: 1,
+        let connector =
+            |id: i64, pin: (f64, f64), w: f64, h: f64, angle: f64, weight: Option<f64>| {
+                let mut c = Shape {
+                    id,
+                    type_: Some("Shape".into()),
+                    ..Shape::default()
+                };
+                for (n, v) in [
+                    ("PinX", pin.0),
+                    ("PinY", pin.1),
+                    ("Width", w),
+                    ("Height", h),
+                    ("LocPinX", w / 2.0),
+                    ("LocPinY", h / 2.0),
+                    ("Angle", angle),
+                    ("ObjType", 2.0),
+                ] {
+                    c.sheet.set_cell(n, Cell::value(format!("{v}")));
+                }
+                if let Some(wt) = weight {
+                    c.sheet.set_cell("LineWeight", Cell::value(format!("{wt}")));
+                }
+                let row = |ix: i64, x: f64, y: f64| Row {
+                    t: Some("LineTo".into()),
+                    ix,
                     cells: vec![
-                        ("X".to_string(), Cell::value("0")),
-                        ("Y".to_string(), Cell::value("0")),
+                        ("X".to_string(), Cell::value(format!("{x}"))),
+                        ("Y".to_string(), Cell::value(format!("{y}"))),
                     ],
                     ..Row::default()
-                },
-                row(2, w, h),
-            ];
-            c.sheet.children.push(SheetChild::Section(sec));
-            c
-        };
+                };
+                let mut sec = Section {
+                    name: "Geometry".into(),
+                    ix: 0,
+                    ..Section::default()
+                };
+                sec.rows = vec![
+                    Row {
+                        t: Some("MoveTo".into()),
+                        ix: 1,
+                        cells: vec![
+                            ("X".to_string(), Cell::value("0")),
+                            ("Y".to_string(), Cell::value("0")),
+                        ],
+                        ..Row::default()
+                    },
+                    row(2, w, h),
+                ];
+                c.sheet.children.push(SheetChild::Section(sec));
+                c
+            };
         let mut page = vsdx::Page {
             id: 0,
             name: "T".into(),
             ..vsdx::Page::default()
         };
-        page.shapes.push(connector(1, (3.0, 1.0), 4.0, 0.0, 0.0, Some(0.0)));
+        page.shapes
+            .push(connector(1, (3.0, 1.0), 4.0, 0.0, 0.0, Some(0.0)));
         page.shapes.push(connector(
             2,
             (3.0, 1.0),
