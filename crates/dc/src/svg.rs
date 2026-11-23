@@ -5815,7 +5815,31 @@ fn closed_subpaths(d: &str) -> String {
             out.push(' ');
         }
     };
-    let toks: Vec<&str> = d.split_whitespace().collect();
+    // Command letters need not be space-separated: curve and arc rows
+    // trim their trailing space, so a following `M` lands glued to the
+    // last number (`… 0.00000M 1 2`). Split every command letter off
+    // as its own token (Greptile on PR #328); our numbers carry no
+    // exponent, so no letter is part of a number.
+    let toks: Vec<&str> = d
+        .split_whitespace()
+        .flat_map(|w| {
+            let mut parts = Vec::new();
+            let mut from = 0;
+            for (i, c) in w.char_indices() {
+                if c.is_ascii_alphabetic() {
+                    if i > from {
+                        parts.push(&w[from..i]);
+                    }
+                    parts.push(&w[i..i + 1]);
+                    from = i + 1;
+                }
+            }
+            if from < w.len() {
+                parts.push(&w[from..]);
+            }
+            parts
+        })
+        .collect();
     let mut start = 0;
     for (i, t) in toks.iter().enumerate() {
         if *t == "M" && i > start {
@@ -9570,6 +9594,48 @@ mod tests {
         assert!(!render(false).contains("#ed7d31"));
     }
 
+    /// A closed curve followed by a second closed outline in the same
+    /// section still fills: the curve row ends without a space, so the
+    /// next `MoveTo` arrives glued to its last number (Greptile on PR
+    /// #328).
+    #[test]
+    fn one_d_shape_fills_a_closed_curve_before_another_outline() {
+        let mut s = shape_at(1, (2.0, 2.0), 3.0, 1.0, 0.0);
+        for (n, v) in [
+            ("BeginX", "0.5"),
+            ("BeginY", "2"),
+            ("EndX", "3.5"),
+            ("EndY", "2"),
+        ] {
+            s.sheet.set_cell(n, Cell::value(v));
+        }
+        s.sheet.set_cell("FillForegnd", Cell::value("#ed7d31"));
+        s.sheet.set_cell("FillPattern", Cell::value("1"));
+        push_geo(
+            &mut s,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.5)]),
+                geo_row(
+                    2,
+                    "QuadBezTo",
+                    &[("X", 1.0), ("Y", 0.5), ("A", 0.5), ("B", 1.0)],
+                ),
+                geo_row(
+                    3,
+                    "QuadBezTo",
+                    &[("X", 0.0), ("Y", 0.5), ("A", 0.5), ("B", 0.0)],
+                ),
+                geo_row(4, "MoveTo", &[("X", 2.0), ("Y", 0.25)]),
+                geo_row(5, "LineTo", &[("X", 3.0), ("Y", 0.25)]),
+                geo_row(6, "LineTo", &[("X", 3.0), ("Y", 0.75)]),
+                geo_row(7, "LineTo", &[("X", 2.0), ("Y", 0.25)]),
+            ],
+        );
+        let (doc, page) = page_fixture(vec![s]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(svg.contains(r##"fill="#ed7d31""##), "{svg}");
+    }
+
     /// Closure is per subpath (Greptile on PR #328): two closed
     /// outlines with different starts both fill, an open subpath next
     /// to a closed one stays out of the fill, and a closed curve made
@@ -9586,6 +9652,14 @@ mod tests {
         assert_eq!(closed_subpaths("M 0 0 L 1 1 Z").trim(), "M 0 0 L 1 1 Z");
         assert!(closed_subpaths("M 0 0 L 1 0").is_empty());
         assert!(closed_subpaths("M 0 0").is_empty());
+        // Curve rows end without a space, so the next `M` arrives
+        // glued to the last number; both outlines still close.
+        let glued = "M 0 0 C 1 0 0 1 0 0M 5 5 L 6 5 L 6 6 L 5 5 ";
+        let f = closed_subpaths(glued);
+        assert!(f.contains("M 0 0") && f.contains("M 5 5"), "{f}");
+        let open_after_curve = "M 0 0 C 1 0 0 1 0 0M 5 5 L 0 0";
+        let f = closed_subpaths(open_after_curve);
+        assert!(f.contains("M 0 0") && !f.contains("M 5 5"), "{f}");
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
