@@ -182,11 +182,49 @@ fn seg_cross_open(
     Some(((a0.0 + t * r.0, a0.1 + t * r.1), t, u))
 }
 
+/// The sine of the angle between two runs below which they are the
+/// same line — a SHARED run (#334). Far above the floating-point noise
+/// two routes pick up reaching one vertex through their own frames
+/// (about 1e-12 even on a 0.01-in run), and far below any departure
+/// that draws as two lines (1e-9 rad is 1e-8 in across a 10-in page).
+const SHARED_RUN_SIN: f64 = 1e-9;
+
+/// The two directions lie along one line to within floating-point
+/// noise, whichever way each points. A degenerate direction is never
+/// shared.
+fn same_line(p: (f64, f64), q: (f64, f64)) -> bool {
+    let (lp, lq) = (p.0.hypot(p.1), q.0.hypot(q.1));
+    lp > 0.0 && lq > 0.0 && (p.0 * q.1 - p.1 * q.0).abs() <= SHARED_RUN_SIN * lp * lq
+}
+
+/// Two rays leaving one vertex point the same way — the routes run on
+/// along the same line.
+fn same_ray(p: (f64, f64), q: (f64, f64)) -> bool {
+    same_line(p, q) && p.0 * q.0 + p.1 * q.1 > 0.0
+}
+
 /// The two routes' runs at a SHARED contact vertex alternate around
 /// it (r1, r2, r1, r2 in angular order) — they cross; grouped-by-
-/// route rays mean the routes merely touch (#294 review).
+/// route rays mean the routes merely touch (#294 review). A ray one
+/// route SHARES with the other — it arrives or leaves along the
+/// other's own run — is a merge and never a crossing (#334). That is
+/// decided FIRST: equal angles tie in the sort, and whether the
+/// sequence then reads "alternating" depends only on where the other
+/// two rays fall (a join heading east hopped, westward did not).
 fn alternating(vi: usize, a: &[(f64, f64)], vj: usize, b: &[(f64, f64)]) -> bool {
     let (vx, vy) = a[vi];
+    // Each route's two runs leave ITS OWN vertex, so the directions stay
+    // exact even when the two contact vertices differ a little.
+    let runs = |pts: &[(f64, f64)], v: usize| {
+        let d = |p: (f64, f64)| (p.0 - pts[v].0, p.1 - pts[v].1);
+        [d(pts[v - 1]), d(pts[v + 1])]
+    };
+    if runs(a, vi)
+        .iter()
+        .any(|p| runs(b, vj).iter().any(|q| same_ray(*p, *q)))
+    {
+        return false;
+    }
     let ray = |p: (f64, f64)| (p.0 - vx).atan2(p.1 - vy);
     let mut angs = [
         (ray(a[vi - 1]), 0u8),
@@ -199,17 +237,25 @@ fn alternating(vi: usize, a: &[(f64, f64)], vj: usize, b: &[(f64, f64)]) -> bool
     seq.windows(2).all(|w| w[0] != w[1]) && seq[0] != seq[3]
 }
 
-/// The two runs at the INTERIOR vertex `vx` sit on the same side of
-/// the other segment's line — the polyline touches it and bounces
-/// back (a tangency), it does not cross (#294 review).
-fn same_side(vx: usize, pts: &[(f64, f64)], other: &[(f64, f64)]) -> bool {
+/// The two runs at the INTERIOR vertex `vx` do not straddle the other
+/// segment's line, so the polyline does not cross it there (#294
+/// review): either both sit on the same side — it touches the line and
+/// bounces back (a tangency) — or one lies ALONG the segment, a shared
+/// run: the route merges onto it or off it (#334).
+fn merely_touches(vx: usize, pts: &[(f64, f64)], other: &[(f64, f64)]) -> bool {
     let (a, b) = (other[0], other[1]);
     let dir = (b.0 - a.0, b.1 - a.1);
     let side = |p: (f64, f64)| dir.0 * (p.1 - a.1) - dir.1 * (p.0 - a.0);
-    let (s1, s2) = (side(pts[vx - 1]), side(pts[vx + 1]));
+    let (back, fwd) = (pts[vx - 1], pts[vx + 1]);
     // Pure sign comparison — a magnitude cutoff would wave through
-    // shallow same-side contacts on short segments (#294 review).
-    s1 * s2 > 0.0
+    // shallow same-side contacts on short segments (#294 review). A
+    // run ON the line reads as side 0, which the product took for a
+    // crossing — every merge onto a through line hopped.
+    let v = pts[vx];
+    side(back) * side(fwd) > 0.0
+        || [back, fwd]
+            .iter()
+            .any(|&p| same_line(dir, (p.0 - v.0, p.1 - v.1)))
 }
 
 /// The polyline index a crossing hugs, when it hugs a segment
@@ -226,6 +272,9 @@ fn hugged_vertex(t: f64, window_index: usize) -> Option<usize> {
 
 /// Every crossing hop among the lines (#108): pairwise proper
 /// segment intersections; the more-horizontal segment jumps.
+/// A contact where the two routes SHARE a run — one arrives at the
+/// other's vertex and continues along it — is a merge, not a crossing
+/// (#334).
 /// `radius` is the page's resolved jump radius (inches —
 /// [`jump_radius_in`]): it sizes the hop arc and bounds what counts
 /// as one crossing REGION (#251) when converging crossings cluster.
@@ -289,7 +338,10 @@ pub fn line_jumps(lines: &[JumpLine], (radius, radius_y): (f64, f64)) -> Vec<Jum
                     // review). When BOTH routes turn at the contact,
                     // the four incident runs must alternate by route
                     // around the vertex; grouped-by-route rays mean
-                    // the routes merely touch.
+                    // the routes merely touch. And a run the two
+                    // routes SHARE — one arrives or leaves along the
+                    // other's own run — is a merge, never a crossing
+                    // (#334).
                     let vi = hugged_vertex(t, k1).filter(|&ix| ix > 0 && ix + 1 < pts[i].len());
                     let vj = hugged_vertex(u, k2).filter(|&ix| ix > 0 && ix + 1 < pts[j].len());
                     match (vi, vj) {
@@ -299,12 +351,12 @@ pub fn line_jumps(lines: &[JumpLine], (radius, radius_y): (f64, f64)) -> Vec<Jum
                             }
                         }
                         (Some(vi), None) => {
-                            if same_side(vi, &pts[i], w2) {
+                            if merely_touches(vi, &pts[i], w2) {
                                 continue;
                             }
                         }
                         (None, Some(vj)) => {
-                            if same_side(vj, &pts[j], w1) {
+                            if merely_touches(vj, &pts[j], w1) {
                                 continue;
                             }
                         }
@@ -831,6 +883,84 @@ mod tests {
             (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         );
         assert_eq!(js.len(), 1, "interleaved corner runs cross: {js:?}");
+    }
+
+    /// #334: a connector that arrives at a vertex of another and leaves
+    /// ALONG its run — or runs in along it and leaves — MERGES; it never
+    /// crosses. The contact used to hop whenever the tie between the
+    /// two shared rays happened to sort into an "alternating" order (a
+    /// join heading east hopped, westward did not), and the one-vertex
+    /// branch — a route meeting a line that runs straight through —
+    /// hopped every time. Genuine crossings at a vertex keep hopping.
+    #[test]
+    fn shared_runs_merge_without_a_hop() {
+        let hops = |lines: &[JumpLine]| line_jumps(lines, (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS));
+        let a = vec![(-1.0, 0.0), (0.0, 0.0), (1.0, 0.0)];
+        // Both routes turn at the contact.
+        for (k, b) in [
+            // arrives from the north, joins eastward
+            vec![(0.0, 1.0), (0.0, 0.0), (1.0, 0.0)],
+            // … westward
+            vec![(0.0, 1.0), (0.0, 0.0), (-1.0, 0.0)],
+            // runs in along A from the east, leaves north
+            vec![(1.0, 0.0), (0.0, 0.0), (0.0, 1.0)],
+            // … from the west
+            vec![(-1.0, 0.0), (0.0, 0.0), (0.0, 1.0)],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let js = hops(&[jline(1, 0, &a), jline(2, 1, &b)]);
+            assert!(js.is_empty(), "merge {k} is not a crossing: {js:?}");
+        }
+        // Floating-point noise on the shared run — it reached the
+        // vertex through the other route's own frame — must not reopen
+        // the hop; one sign of the skew sorted into a hop before.
+        for skew in [1e-13_f64, -1e-13_f64] {
+            let (s, c) = skew.to_radians().sin_cos();
+            let b = vec![(0.0, 1.0), (0.0, 0.0), (c, s)];
+            let js = hops(&[jline(1, 0, &a), jline(2, 1, &b)]);
+            assert!(js.is_empty(), "noise on a shared run (skew {skew}): {js:?}");
+        }
+        // Only ONE route turns at the contact; the other runs straight
+        // through it. A plain T-junction — and this branch always hopped.
+        let east = vec![(0.0, -1.0), (0.0, 0.0), (1.0, 0.0)];
+        let west = vec![(0.0, -1.0), (0.0, 0.0), (-1.0, 0.0)];
+        for (k, lines) in [
+            [jline(1, 0, &east), jline(2, 1, &[(-1.0, 0.0), (2.0, 0.0)])],
+            [jline(1, 0, &east), jline(2, 1, &[(2.0, 0.0), (-1.0, 0.0)])],
+            [jline(1, 0, &west), jline(2, 1, &[(-2.0, 0.0), (2.0, 0.0)])],
+            [jline(1, 0, &[(-2.0, 0.0), (2.0, 0.0)]), jline(2, 1, &east)],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let js = hops(&lines);
+            assert!(
+                js.is_empty(),
+                "merge {k} onto a through line is not a crossing: {js:?}"
+            );
+        }
+        // Controls — what must not change. A real crossing at a vertex
+        // of both routes still hops…
+        let js = hops(&[
+            jline(1, 0, &[(-1.0, 1.0), (0.0, 0.0), (1.0, 0.0)]),
+            jline(2, 1, &[(1.0, 1.0), (0.0, 0.0), (-1.0, 0.0)]),
+        ]);
+        assert_eq!(js.len(), 1, "interleaved corner runs still cross: {js:?}");
+        // …so does a line leaving A's run at a visible angle DOWNWARD
+        // (it passes through to A's other side)…
+        let js = hops(&[
+            jline(1, 0, &a),
+            jline(2, 1, &[(0.0, 1.0), (0.0, 0.0), (0.99995, -0.01)]),
+        ]);
+        assert_eq!(js.len(), 1, "a shallow real crossing still hops: {js:?}");
+        // …while its mirror image, leaving upward, only touches.
+        let js = hops(&[
+            jline(1, 0, &a),
+            jline(2, 1, &[(0.0, 1.0), (0.0, 0.0), (0.99995, 0.01)]),
+        ]);
+        assert!(js.is_empty(), "a touch never hops: {js:?}");
     }
 
     #[test]
