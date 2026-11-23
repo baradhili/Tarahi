@@ -4436,7 +4436,12 @@ fn render_geometry(
                     cur = (x, y);
                     continue;
                 }
-                let ratio = d_cell.unwrap_or(1.0).abs().max(1e-6);
+                // D is the ratio of the axis ALONG C to the axis across
+                // it ([MS-VSDX] EllipticalArcTo; Visio 2021 witness t14:
+                // through (0,.5)-(1,1)-(2,.5) in a 2×1 box, D=2 draws the
+                // flat half-ellipse the box encloses, D=0.5 a tall one).
+                // The solver takes across/along.
+                let ratio = 1.0 / d_cell.unwrap_or(1.0).abs().max(1e-6);
                 // Sane bounds: the arc must fit (loosely) inside the
                 // shape's scaled extent — a solved ellipse or on-arc point
                 // far outside means the numeric solver diverged on a tiny
@@ -5698,9 +5703,15 @@ fn solve_ellipse_arc(
     }
     let large = delta.abs() > std::f64::consts::PI;
 
-    // Sweep flag: path frame is Y-mirrored, so CCW (y-up) → 0.
+    // Sweep flag from the traversal s → m → e: the path frame is
+    // Y-mirrored and displayed y-down, so a counter-clockwise turn in
+    // the y-up frame stays counter-clockwise on the page — SVG's
+    // negative-angle direction (sweep 0); a clockwise one is sweep 1.
+    // (The old `cross * dir` product was positive for every well-formed
+    // arc, so clockwise arcs bulged to the wrong side of their chord —
+    // Visio 2021 witness t14.)
     let cross = (m.0 - s.0) * (e.1 - m.1) - (m.1 - s.1) * (e.0 - m.0);
-    let sweep = if cross * dir > 0.0 { 0 } else { 1 };
+    let sweep = if cross > 0.0 { 0 } else { 1 };
 
     // Scale the ellipse anisotropically to the instance frame.
     let (rx2, ry2, ang2) = transform_ellipse(rx, k, c_ang, scale);
@@ -7953,18 +7964,77 @@ mod tests {
         assert!(text_wrapper_transform(1.0, 1.0, 0.0).is_none());
     }
 
+    /// D is the ratio of the axis along C to the axis across it
+    /// (Visio 2021 witness t14, Greptile on PR #330): through
+    /// (0,.5)-(1,1)-(2,.5) in a 2×1 box with C = 0, D = 2 draws the
+    /// flat half-ellipse (along 1, across 0.5), D = 0.5 a tall one.
+    /// The ratio-1 solver tests alone would not catch an inverted D.
+    #[test]
+    fn elliptical_arc_d_is_along_over_across() {
+        let arc = |d: f64| {
+            let mut s = shape_at(1, (2.0, 2.0), 2.0, 1.0, 0.0);
+            push_geo(
+                &mut s,
+                vec![
+                    geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.5)]),
+                    geo_row(
+                        2,
+                        "EllipticalArcTo",
+                        &[
+                            ("X", 2.0),
+                            ("Y", 0.5),
+                            ("A", 1.0),
+                            ("B", 1.0),
+                            ("C", 0.0),
+                            ("D", d),
+                        ],
+                    ),
+                ],
+            );
+            let (doc, page) = page_fixture(vec![s]);
+            let svg = render_page(&doc, &page).unwrap();
+            let i = svg.find(" A ").unwrap_or_else(|| panic!("no arc: {svg}"));
+            let v: Vec<f64> = svg[i + 3..]
+                .split_whitespace()
+                .take(3)
+                .map(|t| t.parse().unwrap())
+                .collect();
+            // (along C, across C): rx/ry, swapped when the solver
+            // reports the axes rotated by 90°.
+            let rot = v[2].rem_euclid(180.0);
+            if (rot - 90.0).abs() < 1e-3 {
+                (v[1], v[0])
+            } else {
+                assert!(rot.abs() < 1e-3 || (rot - 180.0).abs() < 1e-3, "rot {rot}");
+                (v[0], v[1])
+            }
+        };
+        let (along, across) = arc(2.0);
+        assert!(
+            (along - 1.0).abs() < 1e-4 && (across - 0.5).abs() < 1e-4,
+            "D=2: the flat half-ellipse ({along}, {across})"
+        );
+        let (along, across) = arc(0.5);
+        assert!(
+            (along / across - 0.5).abs() < 1e-4,
+            "D=0.5: along/across = 0.5 ({along}, {across})"
+        );
+    }
+
     #[test]
     fn elliptical_arc_half_circle() {
         // Upper half of the unit circle: start (-1,0), on-arc top (0,1),
         // end (1,0), axis angle 0, ratio 1 → rx = ry = 1, minor arc,
-        // counter-clockwise in the y-up frame (sweep 0 after mirroring).
+        // CLOCKWISE in the y-up frame (over the top, left → right),
+        // which stays clockwise on the y-down page: sweep 1 (Visio 2021
+        // witness t14 draws this arc above its chord).
         let (rx, ry, rot, large, sweep) =
             solve_ellipse_arc((-1.0, 0.0), (0.0, 1.0), (1.0, 0.0), 0.0, 1.0, (1.0, 1.0)).unwrap();
         assert!((rx - 1.0).abs() < 1e-9);
         assert!((ry - 1.0).abs() < 1e-9);
         assert!(rot.abs() < 1e-9);
         assert!(!large);
-        assert_eq!(sweep, 0);
+        assert_eq!(sweep, 1);
     }
 
     /// The junction-circle specimen from Analysis/06: MoveTo(0, W/2) then
@@ -7989,7 +8059,7 @@ mod tests {
         );
         assert!((rx - w / 2.0).abs() < 1e-9, "rx={rx} expected={}", w / 2.0);
         assert!(!large, "exact half arc");
-        assert_eq!(sweep, 0);
+        assert_eq!(sweep, 1, "over the top, left → right: clockwise");
         // Row 3 closes the circle back to (0, W/2) via (W/2, 0).
         let (rx2, ry2, _, large2, sweep2) = solve_ellipse_arc(
             (w, w / 2.0),
@@ -8003,7 +8073,7 @@ mod tests {
         assert!((rx2 - w / 2.0).abs() < 1e-9);
         assert!((ry2 - w / 2.0).abs() < 1e-9);
         assert!(!large2);
-        assert_eq!(sweep2, 0);
+        assert_eq!(sweep2, 1, "under the bottom, right → left: clockwise");
     }
 
     #[test]
