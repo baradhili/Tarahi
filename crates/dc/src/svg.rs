@@ -7068,14 +7068,22 @@ fn refs_own_size(f: &str) -> bool {
 }
 
 /// The stroke's end caps and corner joins for a LineCap value. Dashed
-/// strokes keep the round caps their dash table assumes (#235).
+/// strokes keep the round caps their dash table assumes (#235), but
+/// the join still follows LineCap: flat and extended caps miter their
+/// corners also when dashed (CodeRabbit on PR #342).
 fn cap_attr(cap: i64, dashed: bool) -> String {
-    match (cap, dashed) {
-        (1, false) => r#" stroke-linecap="butt" stroke-linejoin="miter""#.into(),
-        (2, false) => r#" stroke-linecap="square" stroke-linejoin="miter""#.into(),
-        (_, true) => r#" stroke-linejoin="round""#.into(),
-        _ => r#" stroke-linecap="round" stroke-linejoin="round""#.into(),
-    }
+    let join = if matches!(cap, 1 | 2) {
+        "miter"
+    } else {
+        "round"
+    };
+    let cap = match (cap, dashed) {
+        (_, true) => String::new(),
+        (1, false) => r#" stroke-linecap="butt""#.into(),
+        (2, false) => r#" stroke-linecap="square""#.into(),
+        _ => r#" stroke-linecap="round""#.into(),
+    };
+    format!(r#"{cap} stroke-linejoin="{join}""#)
 }
 
 /// Close a single-subpath stroke that returns to its start (`Z`), so
@@ -11957,6 +11965,11 @@ mod tests {
             !cap_attr(1, true).contains("linecap"),
             "dashes keep #235's caps"
         );
+        // The join still follows LineCap when dashed (CodeRabbit on PR
+        // #342).
+        assert!(cap_attr(1, true).contains(r#"stroke-linejoin="miter""#));
+        assert!(cap_attr(2, true).contains(r#"stroke-linejoin="miter""#));
+        assert!(cap_attr(0, true).contains(r#"stroke-linejoin="round""#));
         assert!(close_returning_path("M 0 0 L 1 0 L 1 1 L 0 0").ends_with(" Z"));
         assert_eq!(
             close_returning_path("M 0 0 L 1 0 L 1 1"),
