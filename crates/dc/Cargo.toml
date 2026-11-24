@@ -18,7 +18,7 @@ ttf-parser = "0.25"
 # (#270): harfrust 0.15 is usvg 0.50's shaper; it moves ONLY when the
 # in-tree usvg's own dependency does — never via a standalone bump
 # (Renovate's harfrust-only PRs are superseded until then).
-harfrust = "0.15"
+harfrust = "0.16"
 unicode-bidi = "0.3"
 # The spellcheck tokenizer (Mn marks join decomposed words) and its NFC
 # lookup — the general-category crate is already in the graph via the
