@@ -1921,6 +1921,10 @@ impl App {
         self.tex.clear();
         self.layers.clear();
         self.page_states.clear();
+        // The jump overlay belongs to the outgoing document: a switch
+        // keeps `version`, so the cache key alone would serve its hops
+        // for the incoming one (Greptile on PR #347).
+        self.jump_fx_cache = None;
         self.tab_menu = None;
         self.tab_rename = None;
         self.reorder_open = false;
@@ -5797,9 +5801,11 @@ impl App {
         if !shown {
             return Vec::new();
         }
-        // One backdrop index per pass: every hop's gap color is a
-        // lookup, not a walk over the whole page (PR #339).
-        let backdrop = dc::svg::BackdropIndex::new(doc, page);
+        // One backdrop index per pass, built when the first drawable
+        // hop needs a gap color: every hop's color is then a lookup, not
+        // a walk over the whole page (PR #339), and a page without hops
+        // builds none (Greptile on PR #347).
+        let backdrop = std::cell::OnceCell::new();
         dc::jumps::page_jumps_stripping(doc, page, hidden, None)
             .into_iter()
             // A hop with no room on its own run (a corner-adjacent
@@ -5842,7 +5848,9 @@ impl App {
                 // rasters, so this mimics the export's cut in the
                 // color that shows through it (#324 phase 3).
                 gap_color: {
-                    let (r, g, b) = backdrop.color_at(j.at, j.jumper, hidden);
+                    let (r, g, b) = backdrop
+                        .get_or_init(|| dc::svg::BackdropIndex::new(doc, page))
+                        .color_at(j.at, j.jumper, hidden);
                     Color32::from_rgb(r, g, b)
                 },
                 style: j.style,
@@ -17611,6 +17619,10 @@ impl App {
         self.tex.clear();
         self.layers.clear();
         self.page_states.clear();
+        // The jump overlay belongs to the outgoing document: a switch
+        // keeps `version`, so the cache key alone would serve its hops
+        // for the incoming one (Greptile on PR #347).
+        self.jump_fx_cache = None;
         let name = self
             .path
             .file_name()
@@ -17639,6 +17651,10 @@ impl App {
         self.tex.clear();
         self.layers.clear();
         self.page_states.clear();
+        // The jump overlay belongs to the outgoing document: a switch
+        // keeps `version`, so the cache key alone would serve its hops
+        // for the incoming one (Greptile on PR #347).
+        self.jump_fx_cache = None;
         self.tab_menu = None;
         self.tab_rename = None;
         self.reorder_open = false;
@@ -19256,6 +19272,25 @@ mod tests {
             Some(Color32::WHITE),
             "an edit recomputes the hops"
         );
+        // Switching drawings keeps `version`, so the switch itself
+        // drops the cache (Greptile on PR #347): a blank drawing with
+        // no crossings sits in the inactive set…
+        let hops = app.jump_fx_cached(radius, &[]).len();
+        assert!(hops > 0);
+        let active = app.ed.take();
+        app.ed = Some(Editor::new_blank());
+        app.stash_active_doc();
+        app.ed = active;
+        assert_eq!(app.jump_fx_cached(radius, &[]).len(), hops);
+        // …activating it shows its (no) hops, not the previous drawing's…
+        app.activate_doc(0);
+        assert!(
+            app.jump_fx_cached(radius, &[]).is_empty(),
+            "the activated drawing's hops"
+        );
+        // …and closing it promotes the first drawing with its own hops.
+        app.close_doc();
+        assert_eq!(app.jump_fx_cached(radius, &[]).len(), hops);
     }
 
 
