@@ -4267,6 +4267,7 @@ fn render_geometry(
     // The cached V already lives in that frame; evaluating a formula in
     // the WRONG frame (e.g. master rows against instance Width) skews
     // rectangles into triangles.
+    let inherited_frame = matches!(frame, Frame::Master(_));
     let mut inst_env;
     let env: &mut vsdx::formula::Env = match frame {
         Frame::Instance => {
@@ -4926,6 +4927,48 @@ fn render_geometry(
     }
     // A spline open through the section's end flushes here.
     flush_spline_tail!();
+    // Rounding (Line Format): Visio rounds every corner of a straight
+    // polyline walk with this radius — rounded boxes, pill-shaped
+    // container headings, connector bends (Visio 2021 witness, t06).
+    // `Rounding` is a shape-level cell, so a formula evaluates in the
+    // INSTANCE env even when the rows come from the master: the path is
+    // already in instance units (Greptile on PR #344). Rows that sample
+    // a curve into `L` segments (NURBS, splines) are curves, not
+    // corners, and stay as drawn.
+    let own_env;
+    let rounding_env: &vsdx::formula::Env = if inherited_frame {
+        own_env = shape_env(doc, s, chain);
+        &own_env
+    } else {
+        env
+    };
+    // Deleted rows draw nothing, so they never block the rounding
+    // (Greptile on PR #344).
+    let sampled_curve = rows.iter().any(|r| {
+        !r.is_deleted()
+            && matches!(
+                r.t.as_deref(),
+                Some("NURBSTo" | "SplineStart" | "SplineKnot")
+            )
+    });
+    // Formula first: an inherited cell's cached value is the MASTER's
+    // (`Width/10` cached as 0.1 on a 1 in master), so the instance env
+    // decides and the cache is only the fallback (Greptile on PR #344).
+    let rounding = doc
+        .resolve_cell(s, chain, "Rounding")
+        .and_then(|c| {
+            c.f.as_deref()
+                .filter(|f| *f != "Inh" && *f != "No Formula")
+                .and_then(|f| vsdx::formula::eval(f, rounding_env).ok())
+                .and_then(|v| v.as_f64())
+                .or_else(|| cell_num(&c, rounding_env))
+        })
+        .filter(|r| r.is_finite() && *r > 0.0 && !sampled_curve);
+    if let Some(r) = rounding {
+        if let Some(rounded) = round_corners(&d, r) {
+            d = rounded;
+        }
+    }
     if !d.is_empty() {
         // Connector arrowheads: BeginArrow/EndArrow cells (0 = none, ≥1 an
         // arrow; sizes 0–6, 2 = medium).
@@ -6086,6 +6129,115 @@ fn stroke_attr(
             opacity_attr("stroke-opacity", alpha)
         )
     }
+}
+
+/// Round the corners of a straight-line path (`M`/`L`/`Z` only, the
+/// renderer's own number format) with radius `r`, the way Visio's
+/// Rounding cell does: each corner is replaced by a circular arc
+/// tangent to both legs, the tangent length clamped to half of the
+/// shorter leg so neighboring arcs never overlap. A walk that returns
+/// to its start rounds that corner too. `None` (path unchanged) for
+/// any path with curves — those keep their authored shape — or with
+/// more than one subpath.
+fn round_corners(d: &str, r: f64) -> Option<String> {
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    let mut toks = d.split_whitespace();
+    let mut moves = 0;
+    while let Some(t) = toks.next() {
+        match t {
+            "M" | "L" => {
+                if t == "M" {
+                    moves += 1;
+                }
+                let x: f64 = toks.next()?.parse().ok()?;
+                let y: f64 = toks.next()?.parse().ok()?;
+                if pts
+                    .last()
+                    .is_none_or(|p: &(f64, f64)| (p.0 - x).hypot(p.1 - y) > 1e-9)
+                {
+                    pts.push((x, y));
+                }
+            }
+            "Z" => {}
+            _ => return None,
+        }
+    }
+    if moves != 1 || pts.len() < 3 {
+        return None;
+    }
+    let closed = {
+        let (a, b) = (pts[0], pts[pts.len() - 1]);
+        (a.0 - b.0).hypot(a.1 - b.1) < 1e-6
+    };
+    if closed {
+        pts.pop();
+        if pts.len() < 3 {
+            return None;
+        }
+    }
+    let n = pts.len();
+    // The corner at pts[i] between its neighbors: (T1, T2, radius,
+    // sweep) or None for a straight/degenerate corner.
+    // (tangent point on the incoming leg, on the outgoing leg, arc
+    // radius, SVG sweep flag)
+    type Corner = ((f64, f64), (f64, f64), f64, u8);
+    let corner = |i: usize| -> Option<Corner> {
+        let p = pts[i];
+        let a = pts[(i + n - 1) % n];
+        let b = pts[(i + 1) % n];
+        let (la, lb) = ((a.0 - p.0).hypot(a.1 - p.1), (b.0 - p.0).hypot(b.1 - p.1));
+        if la < 1e-9 || lb < 1e-9 {
+            return None;
+        }
+        let u = ((a.0 - p.0) / la, (a.1 - p.1) / la);
+        let v = ((b.0 - p.0) / lb, (b.1 - p.1) / lb);
+        let theta = (u.0 * v.0 + u.1 * v.1).clamp(-1.0, 1.0).acos();
+        if theta < 1e-6 || (std::f64::consts::PI - theta) < 1e-6 {
+            return None;
+        }
+        let half_tan = (theta / 2.0).tan();
+        let t = (r / half_tan).min(la / 2.0).min(lb / 2.0);
+        let rr = t * half_tan;
+        let t1 = (p.0 + u.0 * t, p.1 + u.1 * t);
+        let t2 = (p.0 + v.0 * t, p.1 + v.1 * t);
+        // Incoming direction (a→p) × outgoing (p→b): the turn's side
+        // in the y-down frame picks the arc's sweep.
+        let cross = (p.0 - a.0) * (b.1 - p.1) - (p.1 - a.1) * (b.0 - p.0);
+        Some((t1, t2, rr, u8::from(cross > 0.0)))
+    };
+    let mut out = String::new();
+    let arc_to = |out: &mut String, c: Corner| {
+        let ((x1, y1), (x2, y2), rr, sw) = c;
+        let _ = write!(
+            out,
+            "L {x1:.5} {y1:.5} A {rr:.5} {rr:.5} 0 0 {sw} {x2:.5} {y2:.5} "
+        );
+    };
+    if closed {
+        let start = corner(0).map_or(pts[0], |c| c.1);
+        let _ = write!(out, "M {:.5} {:.5} ", start.0, start.1);
+        for i in (1..n).chain(std::iter::once(0)) {
+            match corner(i) {
+                Some(c) => arc_to(&mut out, c),
+                None => {
+                    let _ = write!(out, "L {:.5} {:.5} ", pts[i].0, pts[i].1);
+                }
+            }
+        }
+        out.push_str("Z ");
+    } else {
+        let _ = write!(out, "M {:.5} {:.5} ", pts[0].0, pts[0].1);
+        for (i, p) in pts.iter().enumerate().take(n - 1).skip(1) {
+            match corner(i) {
+                Some(c) => arc_to(&mut out, c),
+                None => {
+                    let _ = write!(out, "L {:.5} {:.5} ", p.0, p.1);
+                }
+            }
+        }
+        let _ = write!(out, "L {:.5} {:.5} ", pts[n - 1].0, pts[n - 1].1);
+    }
+    Some(out)
 }
 
 /// The closed subpaths of a path in the renderer's own format
@@ -10348,6 +10500,136 @@ mod tests {
             "rect + ellipse contours: {fill}"
         );
         assert_eq!(fill.matches(" A ").count(), 2, "two half arcs: {fill}");
+    }
+
+    /// Rounding (Visio 2021 witness, t06): every corner of a straight
+    /// walk becomes a tangent arc of the cell's radius, clamped to half
+    /// the shorter leg; curved paths keep their authored shape.
+    #[test]
+    fn rounding_rounds_polyline_corners() {
+        let sq = "M 0 0 L 2 0 L 2 -1 L 0 -1 L 0 0 ";
+        let r = round_corners(sq, 0.25).expect("straight walk rounds");
+        assert_eq!(r.matches(" A 0.25000 0.25000").count(), 4, "{r}");
+        assert!(
+            r.starts_with("M 0.25000 0.00000") && r.ends_with("Z "),
+            "{r}"
+        );
+        // A radius larger than half the short leg clamps to it.
+        let big = round_corners(sq, 5.0).unwrap();
+        assert!(big.contains(" A 0.50000 0.50000"), "{big}");
+        // An open walk keeps its endpoints and rounds the interior.
+        let open = round_corners("M 0 0 L 1 0 L 1 -1 ", 0.25).unwrap();
+        assert!(open.starts_with("M 0.00000 0.00000") && open.ends_with("L 1.00000 -1.00000 "));
+        assert_eq!(open.matches(" A ").count(), 1);
+        assert!(round_corners("M 0 0 C 1 1 2 2 3 3 ", 0.25).is_none());
+        // Through the renderer: the cell reaches the stroked outline.
+        let mut s = rect_shape(1, (2.0, 2.0));
+        s.sheet.set_cell("Rounding", Cell::value("0.125"));
+        let (doc, page) = page_fixture(vec![s]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert_eq!(
+            svg.matches(" A 0.12500 0.12500").count(),
+            8,
+            "fill + stroke"
+        );
+    }
+
+    /// A spline samples into `L` segments but is a curve: a positive
+    /// `Rounding` leaves it as drawn (Greptile on PR #344).
+    #[test]
+    fn rounding_leaves_sampled_splines_alone() {
+        let render = |rounding: Option<&str>| {
+            let mut s = shape_at(1, (2.0, 2.0), 4.0, 2.0, 0.0);
+            push_geo(
+                &mut s,
+                vec![
+                    geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                    geo_row(
+                        2,
+                        "SplineStart",
+                        &[
+                            ("X", 1.0),
+                            ("Y", 1.5),
+                            ("A", 0.3),
+                            ("B", 0.0),
+                            ("C", 1.0),
+                            ("D", 3.0),
+                        ],
+                    ),
+                    geo_row(3, "SplineKnot", &[("X", 2.5), ("Y", 0.4), ("A", 0.6)]),
+                    geo_row(4, "SplineKnot", &[("X", 4.0), ("Y", 2.0), ("A", 1.0)]),
+                ],
+            );
+            if let Some(r) = rounding {
+                s.sheet.set_cell("Rounding", Cell::value(r));
+            }
+            let (doc, page) = page_fixture(vec![s]);
+            render_page(&doc, &page).unwrap()
+        };
+        assert_eq!(render(Some("0.125")), render(None));
+    }
+
+    /// A formula-only `Rounding` on an instance of a resized master
+    /// evaluates with the INSTANCE's size: `Width/10` on a 4 in wide
+    /// instance is 0.4, not the 1 in master's 0.1 (Greptile on PR #344).
+    #[test]
+    fn rounding_formulas_use_the_instance_size() {
+        // A formula-only cell on the instance, and the master's cell with
+        // the master's cache `V='0.1'` (Greptile on PR #344, twice): both
+        // evaluate with the instance's size.
+        for on_master in [false, true] {
+            let mut master = rect_shape(1, (1.0, 1.0));
+            master.sheet.set_cell("Width", Cell::value("1"));
+            master.sheet.set_cell("Height", Cell::value("1"));
+            let mut inst = shape_at(1, (4.0, 5.0), 4.0, 4.0, 0.0);
+            inst.master = Some(7);
+            let cell = Cell {
+                v: on_master.then(|| "0.1".to_string()),
+                f: Some("Width/10".into()),
+                ..Cell::default()
+            };
+            if on_master {
+                master.sheet.set_cell("Rounding", cell);
+            } else {
+                inst.sheet.set_cell("Rounding", cell);
+            }
+            let (mut doc, page) = page_fixture(vec![inst]);
+            doc.masters.push(vsdx::model::Master {
+                id: 7,
+                shapes: vec![master],
+                ..vsdx::model::Master::default()
+            });
+            let svg = render_page(&doc, &page).unwrap();
+            assert!(
+                svg.contains(" A 0.40000 0.40000"),
+                "on_master={on_master}: {svg}"
+            );
+            assert!(
+                !svg.contains(" A 0.10000 0.10000"),
+                "on_master={on_master}: {svg}"
+            );
+        }
+    }
+
+    /// A deleted spline row draws nothing and does not block the
+    /// rounding of the straight walk that remains (Greptile on PR #344).
+    #[test]
+    fn deleted_curve_rows_do_not_block_rounding() {
+        let mut s = rect_shape(1, (2.0, 2.0));
+        s.sheet.set_cell("Rounding", Cell::value("0.125"));
+        let mut gone = geo_row(6, "SplineKnot", &[("X", 0.5), ("Y", 0.5), ("A", 1.0)]);
+        gone.attrs.push(("Del".into(), "1".into()));
+        if let Some(SheetChild::Section(sec)) = s
+            .sheet
+            .children
+            .iter_mut()
+            .find(|c| matches!(c, SheetChild::Section(sec) if sec.name == "Geometry"))
+        {
+            sec.rows.push(gone);
+        }
+        let (doc, page) = page_fixture(vec![s]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(svg.contains(" A 0.12500 0.12500"), "{svg}");
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
