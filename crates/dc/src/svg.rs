@@ -1178,15 +1178,22 @@ fn render_page_full(
     };
     // Per-crossing hop radius: the jumping SEGMENT's own axis (the
     // more-horizontal line may hop on a vertical leg — Visio sizes
-    // that with the Y cells, PR #299 review). A zero on that axis
-    // never reaches here: the engine drops zero-axis hops before
-    // they can cluster (#324 phase-2 review).
+    // that with the Y cells, PR #299 review), capped to the straight
+    // run's own room around the crossing (`Jump.cap`) — the slot,
+    // the bridge and the canvas gap may not reach past a turn or the
+    // route's end; a corner-adjacent hop once cut into the NEXT leg
+    // and disconnected the route (PR #339 round 5). The feet lead
+    // half a pen beyond r. A room smaller than one pen-width drops
+    // the hop to a plain crossing (the row writer's own room rule).
+    // A zero axis never reaches here: the engine drops zero-axis
+    // hops before they can cluster (#324 phase-2 review).
     let hop_r = |j: &crate::jumps::Jump| {
-        if j.dir.0.abs() >= j.dir.1.abs() {
+        let axis = if j.dir.0.abs() >= j.dir.1.abs() {
             radius
         } else {
             radius_y
-        }
+        };
+        axis.min((j.cap - j.weight * 0.5).max(0.0))
     };
     for shape in &page.shapes {
         if hidden_member(shape) {
@@ -1212,8 +1219,10 @@ fn render_page_full(
         // (CodeRabbit round on #324 phase 3). The slot coordinates are
         // page-space, so the groups wrap the shape OUTSIDE its
         // transform.
-        let cuts: Vec<&crate::jumps::Jump> =
-            jumps.iter().filter(|j| j.jumper == shape.id).collect();
+        let cuts: Vec<&crate::jumps::Jump> = jumps
+            .iter()
+            .filter(|j| j.jumper == shape.id && hop_r(j) > j.weight)
+            .collect();
         for (k, j) in cuts.iter().enumerate() {
             let id = if k == 0 {
                 format!("dc-jumpcut{}", shape.id)
@@ -1344,8 +1353,14 @@ fn jump_cut_clip_d(j: &crate::jumps::Jump, page_h: f64, page_w: f64, r: f64) -> 
     );
     let (dx, dy) = j.dir;
     let n = (-dy, dx);
-    // Across the line: well past the stroke, short of the arc top.
-    let half_w = (j.weight * 2.0).max(r * 0.6);
+    // Across the line: two pen-widths — well past the stroke the cut
+    // removes (the strip already straightened any stored hop, so the
+    // ink inside the slot is the shaft's own band), without reaching
+    // a NEIGHBORING run of the same shape: the radius-proportional
+    // slack once cut a parallel return run 0.04 in off the crossing
+    // run and Gap style showed a second break where nothing crossed
+    // (PR #339 round 5).
+    let half_w = j.weight * 2.0;
     let c = |a: f64, b: f64| {
         let x = j.at.0 + dx * a + n.0 * b;
         let y = j.at.1 + dy * a + n.1 * b;
@@ -1498,7 +1513,14 @@ fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::jumps::Jump, rad
 /// A section-level geometry flag read the RENDERER's way: formula
 /// first, cached V as fallback (the row-cell convention — the
 /// master's cache reflects its default style while the formula
-/// re-evaluates per instance). `true` = the flag is ON.
+/// re-evaluates per instance), and the formula evaluated in the SAME
+/// FRAME `render_geometry` picks — the shape's own geometry against
+/// the instance's dims, INHERITED geometry against the master
+/// source's prepared env. Evaluating an inherited flag against the
+/// instance once disagreed with the paint path (`NoShow = Width>3`
+/// with a wider instance painted the section while the crossing
+/// engine dropped the connector — PR #339 round 5). `true` = the
+/// flag is ON.
 pub fn geometry_flag_on(
     doc: &Document,
     s: &Shape,
@@ -1509,19 +1531,84 @@ pub fn geometry_flag_on(
     let Some(c) = section.cell(name) else {
         return false;
     };
-    let env = shape_env(doc, s, chain);
     let by_formula = c
         .f
         .as_deref()
         .and_then(|f| {
             if f == "Inh" || f == "No Formula" {
-                None
-            } else {
-                vsdx::formula::eval(f, &env).ok().and_then(|v| v.as_f64())
+                return None;
             }
-        })
-        .filter(|v| v.is_finite());
+            let v = if !s.sheet.sections_named("Geometry").is_empty() {
+                // Instance frame: the shape's OWN geometry, its own
+                // dims (render_geometry's Frame::Instance).
+                let env = shape_env_for(doc, s, chain, &section.rows);
+                vsdx::formula::eval(f, &env).ok().and_then(|v| v.as_f64())
+            } else {
+                match doc.instance_source(s, chain) {
+                    // Master frame: the inherited sections evaluate
+                    // against the master source (Frame::Master).
+                    Some(src) => {
+                        let menv = prepared_master_env(doc, s, chain, src);
+                        vsdx::formula::eval(f, &menv).ok().and_then(|v| v.as_f64())
+                    }
+                    None => {
+                        let env = shape_env(doc, s, chain);
+                        vsdx::formula::eval(f, &env).ok().and_then(|v| v.as_f64())
+                    }
+                }
+            };
+            v.filter(|v| v.is_finite())
+        });
     by_formula.or_else(|| c.numeric()).is_some_and(|v| v != 0.0)
+}
+
+/// The master-side formula env `render_geometry`'s inherited branch
+/// builds (`Frame::Master`): the MASTER SOURCE's own cells, the
+/// INSTANCE's glued Begin/End over them, and the master's
+/// Scratch/Controls re-evaluated against those — the band masters
+/// derive their whole vertical span from them (`Scratch.Y2 =
+/// ABS(BeginY-EndY)`, #249). Shared by the paint path and the flag
+/// readers so the two never disagree on an inherited formula (PR
+/// #339 round 5).
+fn prepared_master_env(
+    doc: &Document,
+    s: &Shape,
+    chain: &[&Shape],
+    src: &Shape,
+) -> vsdx::formula::Env {
+    let mut menv = shape_env(doc, src, &[]);
+    for n in ["BeginX", "BeginY", "EndX", "EndY"] {
+        if let Some(v) = doc.resolve_cell(s, chain, n).and_then(|c| c.numeric()) {
+            menv.insert(n.to_string(), v);
+        }
+    }
+    for sec_name in ["Scratch", "Controls"] {
+        for sec in src.sheet.sections_named(sec_name) {
+            for row in &sec.rows {
+                for (name, cell) in &row.cells {
+                    let key = match sec_name {
+                        "Scratch" => format!("Scratch.{}{}", name, row.ix + 1),
+                        _ => {
+                            let rn = row.n.clone().unwrap_or_else(|| format!("Row_{}", row.ix));
+                            format!("Controls.{}.{}", rn, name)
+                        }
+                    };
+                    let v = cell
+                        .f
+                        .as_deref()
+                        .filter(|f| *f != "Inh" && *f != "No Formula")
+                        .and_then(|f| vsdx::formula::eval(f, &menv).ok())
+                        .and_then(|v| v.as_f64())
+                        .filter(|v| v.is_finite())
+                        .or_else(|| cell.numeric());
+                    if let Some(v) = v {
+                        menv.insert(key, v);
+                    }
+                }
+            }
+        }
+    }
+    menv
 }
 
 /// The color visible BEHIND a jumping connector at page point `at`
@@ -4311,43 +4398,10 @@ fn render_all_geometry(
         mh.map_or(1.0, |mh| height / mh),
     );
     // The master env builds ONCE for all sections (knee rows
-    // cross-reference sibling sections) and RE-EVALUATES the master's
-    // Scratch/Controls against the instance's glued Begin/End — their
-    // cached V is the authored pose, and the band masters derive
-    // their whole vertical span from them (`Scratch.Y2 =
-    // ABS(BeginY-EndY)`, #249).
-    let mut menv = shape_env(doc, src, &[]);
-    for n in ["BeginX", "BeginY", "EndX", "EndY"] {
-        if let Some(v) = doc.resolve_cell(s, chain, n).and_then(|c| c.numeric()) {
-            menv.insert(n.to_string(), v);
-        }
-    }
-    for sec_name in ["Scratch", "Controls"] {
-        for sec in src.sheet.sections_named(sec_name) {
-            for row in &sec.rows {
-                for (name, cell) in &row.cells {
-                    let key = match sec_name {
-                        "Scratch" => format!("Scratch.{}{}", name, row.ix + 1),
-                        _ => {
-                            let rn = row.n.clone().unwrap_or_else(|| format!("Row_{}", row.ix));
-                            format!("Controls.{}.{}", rn, name)
-                        }
-                    };
-                    let v = cell
-                        .f
-                        .as_deref()
-                        .filter(|f| *f != "Inh" && *f != "No Formula")
-                        .and_then(|f| vsdx::formula::eval(f, &menv).ok())
-                        .and_then(|v| v.as_f64())
-                        .filter(|v| v.is_finite())
-                        .or_else(|| cell.numeric());
-                    if let Some(v) = v {
-                        menv.insert(key, v);
-                    }
-                }
-            }
-        }
-    }
+    // cross-reference sibling sections) — the shared prepared env
+    // (`prepared_master_env`), which re-evaluates the master's
+    // Scratch/Controls against the instance's glued Begin/End.
+    let mut menv = prepared_master_env(doc, s, chain, src);
     for (i, geo) in src.sheet.sections_named("Geometry").into_iter().enumerate() {
         // Master frame: rows are master-local; their formulas reference
         // the MASTER's dims and must not be re-evaluated in instance
@@ -12211,6 +12265,318 @@ mod tests {
         assert!(
             svg.contains(">1<"),
             "PAGENUMBER renders the 1-based position: {svg}"
+        );
+    }
+
+    /// PR #339 round 5: the hop slot shrinks to the crossing's own
+    /// straight run — a corner-adjacent hop once clipped past the turn
+    /// and cut into the connector's NEXT leg — and a room smaller
+    /// than one pen-width draws a plain crossing (no cut, no bridge).
+    #[test]
+    fn export_shrinks_a_corner_adjacent_hop_to_its_run() {
+        let r = 0.125 * (2.0 / 3.0) / 2.0;
+        // An L jumper: horizontal (3,5)→(4,5), vertical (4,5)→(4,8).
+        let mut l = shape_at(1, (3.0, 5.0), 1.0, 3.0, 0.0);
+        l.sheet.set_cell("LocPinX", Cell::value("0"));
+        l.sheet.set_cell("LocPinY", Cell::value("0"));
+        l.sheet.set_cell("ObjType", Cell::value("2"));
+        push_geo(
+            &mut l,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 1.0), ("Y", 0.0)]),
+                geo_row(3, "LineTo", &[("X", 1.0), ("Y", 3.0)]),
+            ],
+        );
+        // The vertical lines hop (page LineJumpCode 2).
+        let (_doc, mut page) = page_fixture(vec![l.clone()]);
+        page.sheet_mut()
+            .unwrap()
+            .set_cell("LineJumpCode", Cell::value("2"));
+        // Crossed 0.02 above the corner: the room is 0.02, the feet
+        // lead half a pen (0.005) — the hop draws at 0.015, not the
+        // page radius 0.0417 whose slot would run past the turn.
+        let mut b = shape_at(2, (4.0, 5.02), 1.0, 0.0, 0.0);
+        b.sheet.set_cell("LocPinX", Cell::value("0.5"));
+        b.sheet.set_cell("LocPinY", Cell::value("0"));
+        b.sheet.set_cell("ObjType", Cell::value("2"));
+        push_geo(
+            &mut b,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 1.0), ("Y", 0.0)]),
+            ],
+        );
+        page.shapes.push(b);
+        let doc = Document {
+            pages: vec![page.clone()],
+            ..Document::default()
+        };
+        let svg = render_page(&doc, &page).unwrap();
+        // The shrunken apex: r_eff = 0.02 − half the default pen
+        // (0.0104) = 0.0148 → page 5.0348 → SVG y 5.96521.
+        assert!(
+            svg.contains("5.96521"),
+            "the hop shrinks to its run room: {svg}"
+        );
+        assert!(
+            !svg.contains("5.93833"),
+            "the full-radius apex (11 − (5.02 + r)) never draws: {svg}"
+        );
+        // STARVED: crossed 0.004 above the corner — under one pen —
+        // the crossing draws plain (no cut, no hop path).
+        let (_doc, mut page) = page_fixture(vec![l.clone()]);
+        page.sheet_mut()
+            .unwrap()
+            .set_cell("LineJumpCode", Cell::value("2"));
+        let mut b = shape_at(2, (4.0, 5.004), 1.0, 0.0, 0.0);
+        b.sheet.set_cell("LocPinX", Cell::value("0.5"));
+        b.sheet.set_cell("LocPinY", Cell::value("0"));
+        b.sheet.set_cell("ObjType", Cell::value("2"));
+        push_geo(
+            &mut b,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 1.0), ("Y", 0.0)]),
+            ],
+        );
+        page.shapes.push(b);
+        let doc = Document {
+            pages: vec![page.clone()],
+            ..Document::default()
+        };
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(
+            !svg.contains("dc-jumpcut"),
+            "a room under one pen-width draws a plain crossing: {svg}"
+        );
+        assert_eq!(
+            svg.matches(r#"stroke-linejoin="round""#).count(),
+            0,
+            "no hop path either"
+        );
+        let _ = r;
+    }
+
+    /// PR #339 round 5: a 90°-rotated band's saved gap still bridges —
+    /// the gap's skip is measured row-locally while the neighbor runs
+    /// were once compared page-space, and a rotated connector's own
+    /// saved gap read as an authored break (its crossing vanished).
+    #[test]
+    fn a_rotated_connectors_saved_gap_still_bridges() {
+        let r = 0.125 * (2.0 / 3.0) / 2.0;
+        // A 6 × 0.25 band rotated to run page-VERTICAL, its line at
+        // local H/2, a stored gap centered at local x = 3 (page
+        // (4,5) under pin (4,5), LocPin (3, 0.125), Angle π/2).
+        let mut band = shape_at(1, (4.0, 5.0), 6.0, 0.25, std::f64::consts::FRAC_PI_2);
+        band.sheet.set_cell("ObjType", Cell::value("2"));
+        push_geo(
+            &mut band,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.125)]),
+                geo_row(2, "LineTo", &[("X", 3.0 - r), ("Y", 0.125)]),
+                geo_row(3, "MoveTo", &[("X", 3.0 + r), ("Y", 0.125)]),
+                geo_row(4, "LineTo", &[("X", 6.0), ("Y", 0.125)]),
+            ],
+        );
+        // A horizontal crossing INSIDE the gap slot.
+        let mut cross = shape_at(2, (4.0, 5.0), 6.0, 0.0, 0.0);
+        cross.sheet.set_cell("LocPinX", Cell::value("3"));
+        cross.sheet.set_cell("LocPinY", Cell::value("0"));
+        cross.sheet.set_cell("ObjType", Cell::value("2"));
+        push_geo(
+            &mut cross,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 6.0), ("Y", 0.0)]),
+            ],
+        );
+        let (doc, page) = page_fixture(vec![band, cross]);
+        let js = crate::jumps::page_jumps(&doc, &page, &[]);
+        assert_eq!(
+            js.len(),
+            1,
+            "the crossing inside the rotated band's saved gap counts: {js:?}"
+        );
+        assert_eq!(js[0].jumper, 2, "the horizontal hops (page code 1)");
+    }
+
+    /// PR #339 round 5: per-SECTION visibility in the crossing set — a
+    /// connector may carry several Geometry sections, and one with
+    /// NoShow (or NoLine) paints no stroke, contributes no crossings,
+    /// and nothing hops over it; its VISIBLE siblings stay.
+    #[test]
+    fn hidden_and_unstroked_sections_leave_the_crossing_set() {
+        let mut conn = shape_at(1, (4.0, 4.5), 6.0, 2.0, 0.0);
+        conn.sheet.set_cell("ObjType", Cell::value("2"));
+        // Two runs: local y 1.5 (page 5) and local y 0.5 (page 4).
+        let mut sec1 = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec1.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 1.5)]),
+            geo_row(2, "LineTo", &[("X", 6.0), ("Y", 1.5)]),
+        ];
+        let vertical = |mut c: Shape, cell: Option<&str>| {
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 1,
+                ..Section::default()
+            };
+            sec.rows = vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.5)]),
+                geo_row(2, "LineTo", &[("X", 6.0), ("Y", 0.5)]),
+            ];
+            if let Some(cell) = cell {
+                sec.cells
+                    .push((cell.to_string(), Cell::value("1".to_string())));
+            }
+            c.sheet.children.push(SheetChild::Section(sec));
+            c
+        };
+        conn.sheet.children.push(SheetChild::Section(sec1));
+        let mut v = shape_at(3, (4.0, 4.5), 0.0, 5.0, 0.0);
+        v.sheet.set_cell("LocPinY", Cell::value("2.5"));
+        v.sheet.set_cell("ObjType", Cell::value("2"));
+        push_geo(
+            &mut v,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 0.0), ("Y", 5.0)]),
+            ],
+        );
+        // CONTROL: both sections visible — TWO crossings.
+        let (doc, page) = page_fixture(vec![vertical(conn.clone(), None), v.clone()]);
+        let js = crate::jumps::page_jumps(&doc, &page, &[]);
+        assert_eq!(js.len(), 2, "both visible sections cross: {js:?}");
+        // NoShow on the lower section: only the visible one crosses.
+        let (doc, page) = page_fixture(vec![vertical(conn.clone(), Some("NoShow")), v.clone()]);
+        let js = crate::jumps::page_jumps(&doc, &page, &[]);
+        assert_eq!(js.len(), 1, "the NoShow section contributes nothing: {js:?}");
+        assert!((js[0].at.1 - 5.0).abs() < 1e-9, "the visible run's crossing");
+        // NoLine behaves the same (fill only — no stroke to hop over).
+        let (doc, page) = page_fixture(vec![vertical(conn, Some("NoLine")), v]);
+        let js = crate::jumps::page_jumps(&doc, &page, &[]);
+        assert_eq!(js.len(), 1, "the NoLine section contributes nothing: {js:?}");
+    }
+
+    /// PR #339 round 5: the marked walk keeps Geometry SECTIONS
+    /// separate — two sections each carrying IX 1/2 once interleaved
+    /// under the global ix sort into M-M-L-L, and the pen drew a
+    /// phantom span from section 2's start onto section 1's LineTo
+    /// endpoint (the crossing set treated that span as ink).
+    #[test]
+    fn the_marked_walk_keeps_sections_separate() {
+        let mut s = shape_at(1, (3.0, 0.5), 6.0, 1.0, 0.0);
+        let mut sec1 = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec1.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "LineTo", &[("X", 2.0), ("Y", 0.0)]),
+        ];
+        let mut sec2 = Section {
+            name: "Geometry".into(),
+            ix: 1,
+            ..Section::default()
+        };
+        sec2.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 4.0), ("Y", 0.0)]),
+            geo_row(2, "LineTo", &[("X", 6.0), ("Y", 0.0)]),
+        ];
+        s.sheet.children.push(SheetChild::Section(sec1));
+        s.sheet.children.push(SheetChild::Section(sec2));
+        let (doc, page) = page_fixture(vec![s]);
+        let s = &doc.pages[0].shapes[0];
+        let chain = [s];
+        let frame = crate::geom::hit_frame(&doc, &chain, s, (1.0, 1.0));
+        let segs = crate::geom::geometry_hit_segments_marked(s, None, &frame, None, &[]);
+        assert_eq!(
+            segs,
+            vec![
+                ((0.0, 0.0), (2.0, 0.0), false),
+                ((2.0, 0.0), (4.0, 0.0), true),
+                ((4.0, 0.0), (6.0, 0.0), false),
+            ],
+            "each section's own run, one pen-up bridge between: {segs:?}"
+        );
+        let _ = &page;
+    }
+
+    /// PR #339 round 5: an INHERITED section's flag formula evaluates
+    /// in the MASTER's frame, exactly like the paint path — a 2-wide
+    /// master's `NoShow = Width>3` instanced at 4 with no local
+    /// geometry paints (2 > 3 is false), and the crossing engine's
+    /// flag reader must agree. Evaluating against the INSTANCE once
+    /// hid a visible connector and dropped its crossings.
+    #[test]
+    fn inherited_geometry_flags_evaluate_in_the_master_frame() {
+        let grow = |ix: i64, t: &str, x: f64, y: f64| Row {
+            ix,
+            t: Some(t.into()),
+            cells: vec![
+                ("X".into(), Cell::value(format!("{x}"))),
+                ("Y".into(), Cell::value(format!("{y}"))),
+            ],
+            ..Row::default()
+        };
+        let mut msh = Shape {
+            id: 8,
+            ..Shape::default()
+        };
+        msh.sheet.set_cell("Width", Cell::value("2.0"));
+        msh.sheet.set_cell("Height", Cell::value("0.25"));
+        msh.sheet.children.push(SheetChild::Section(Section {
+            name: "Geometry".into(),
+            ix: 0,
+            cells: vec![(
+                "NoShow".into(),
+                Cell {
+                    v: Some("0".into()),
+                    f: Some("Width>3".into()),
+                    ..Cell::default()
+                },
+            )],
+            rows: vec![grow(1, "MoveTo", 0.0, 0.125), grow(2, "LineTo", 2.0, 0.125)],
+            ..Section::default()
+        }));
+        let doc = Document {
+            masters: vec![vsdx::Master {
+                id: 42,
+                shapes: vec![msh],
+                ..Default::default()
+            }],
+            ..Document::default()
+        };
+        let mut inst = Shape {
+            id: 30,
+            master: Some(42),
+            master_shape: Some(8),
+            ..Shape::default()
+        };
+        inst.sheet.set_cell("Width", Cell::value("4.0"));
+        inst.sheet.set_cell("Height", Cell::value("0.25"));
+        // The paint path draws the inherited section (the master's
+        // Width answers the formula).
+        let mut out = String::new();
+        render_all_geometry(&doc, &inst, &[], 4.0, 0.25, (0.0, 0.0), &mut out);
+        assert!(
+            out.contains("<path"),
+            "the master-frame evaluation paints the section: {out}"
+        );
+        // The flag reader agrees — the instance-frame read once said
+        // hidden (4 > 3) and dropped the connector's crossings.
+        let root = &doc.masters[0].shapes[0];
+        let chain = [&inst, root];
+        let eff = doc.effective_sheet(&inst, &chain);
+        let sec = eff.sections_named("Geometry").remove(0);
+        assert!(
+            !geometry_flag_on(&doc, &inst, &chain, sec, "NoShow"),
+            "the inherited flag answers in the master's frame"
         );
     }
 }

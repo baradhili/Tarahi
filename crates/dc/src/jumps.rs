@@ -57,6 +57,16 @@ pub struct Jump {
     /// The JUMPER's resolved hop style (#324 phase 4 — the row writer
     /// and both painters read it).
     pub style: JumpStyle,
+    /// The straight-run room AROUND the crossing on the jumper's own
+    /// polyline, page inches — the distance from the crossing to the
+    /// nearer end of its continuing run (a turn, an unbridged stroke
+    /// break, or the route's end). The cut slot, the bridge and the
+    /// canvas gap may not reach past it: a hop against a corner once
+    /// clipped into the connector's NEXT leg and disconnected the
+    /// route (PR #339 round 5). Painters shrink the hop to the room;
+    /// a room smaller than a pen-width drops the hop to a plain
+    /// crossing (the row writer's own room check, `reconciled_rows`).
+    pub cap: f64,
 }
 
 /// Visio's jump radius (#294): `LineToLineX × LineJumpFactorX / 2`,
@@ -179,8 +189,8 @@ pub fn parse_polyline_controls(a: &str) -> Option<PolylineControls> {
         return None;
     }
     let types = (nums[0], nums[1]);
-    if types != (0.0, 0.0) {
-        return None; // local-coordinate controls are not the stored form
+    if types != (0.0, 0.0) && types != (1.0, 1.0) {
+        return None; // mixed/unknown type flags are not a stored form
     }
     let pairs: Vec<(f64, f64)> = nums[2..]
         .as_chunks::<2>()
@@ -208,14 +218,24 @@ pub fn is_stored_jump_polyline(
     radius_x: f64,
     radius_y: f64,
 ) -> bool {
-    let Some((_, controls)) = parse_polyline_controls(a_text) else {
+    let Some((types, controls)) = parse_polyline_controls(a_text) else {
         return false;
     };
-    // Degeneracy reads the ABSOLUTE dims; the fractions themselves
-    // denormalize against the SIGNED values the writer divided by (a
-    // reversed connector carries Width = −5 — its saved square must
-    // re-classify; #324 phase-5 review).
-    if controls.is_empty() || size.0.abs() <= 1e-9 || size.1.abs() <= 1e-9 {
+    // [MS-Learn] POLYLINE type flags: (0, 0) percentages of the shape's
+    // Width/Height, (1, 1) local coordinates. The LOCAL form is the
+    // degenerate-frame encoding — the Connector tool's own horizontal
+    // and vertical shapes carry Height/Width = 0 and cannot fraction
+    // (PR #339 round 5: such hops once drew on canvas but never
+    // saved). Only the FRACTION form divides by the shape's dims, so
+    // only it reads them (absolute — the fractions denormalize against
+    // the SIGNED values the writer divided by; a reversed connector
+    // carries Width = −5 and its saved square must re-classify, #324
+    // phase-5 review).
+    let local_coords = types == (1.0, 1.0);
+    if controls.is_empty() {
+        return false;
+    }
+    if !local_coords && (size.0.abs() <= 1e-9 || size.1.abs() <= 1e-9) {
         return false;
     }
     let len = chord.0.hypot(chord.1);
@@ -223,13 +243,27 @@ pub fn is_stored_jump_polyline(
         return false;
     }
     // The chord IS the slot: ≈ 2· the radius, the axis picked by the
-    // chord's class (the arc row's rule).
-    let radius = if chord.0.abs() >= chord.1.abs() {
+    // chord's class (the arc row's rule). A NEAR-DIAGONAL chord takes
+    // whichever axis's radius matches — the >= tie flips across
+    // six-decimal row rounding exactly as the arc classifier's does
+    // (PR #339 round 5: a 45° run saved at the X radius was once
+    // re-read against Y and rejected).
+    let near_diagonal = (chord.0.abs() - chord.1.abs()).abs() <= len * 0.02;
+    let band = |radius: f64| {
+        radius > 0.0 && (len - 2.0 * radius).abs() <= (radius * 0.05).max(1e-6)
+    };
+    let radius = if near_diagonal {
+        if band(radius_x) {
+            radius_x
+        } else {
+            radius_y
+        }
+    } else if chord.0.abs() >= chord.1.abs() {
         radius_x
     } else {
         radius_y
     };
-    if radius <= 0.0 || (len - 2.0 * radius).abs() > (radius * 0.05).max(1e-6) {
+    if !band(radius) {
         return false;
     }
     // Every control inside the 2r × r box over the chord AND the
@@ -243,7 +277,11 @@ pub fn is_stored_jump_polyline(
     let (ux, uy) = (chord.0 / len, chord.1 / len);
     let tol = (radius * 0.02).max(1e-6);
     let rel = |fx: f64, fy: f64| {
-        let (cx, cy) = (fx * size.0 - start.0, fy * size.1 - start.1);
+        let (cx, cy) = if local_coords {
+            (fx - start.0, fy - start.1)
+        } else {
+            (fx * size.0 - start.0, fy * size.1 - start.1)
+        };
         (cx * ux + cy * uy, cy * ux - cx * uy)
     };
     let in_box = controls
@@ -325,12 +363,22 @@ pub fn is_stored_jump_gap(
     if len <= 1e-9 || !run_continues(prev_dir, skip) || !run_continues(next_dir, skip) {
         return false;
     }
-    let radius = if skip.0.abs() >= skip.1.abs() {
-        radius_x
-    } else {
-        radius_y
+    // The skip's own axis picks the evidence radius — and a
+    // NEAR-DIAGONAL skip tests BOTH, the arc classifier's rule: the
+    // >= tie flips across six-decimal row rounding and a 45° run
+    // saved at one axis's radius was once re-read against the other
+    // (PR #339 round 5).
+    let near_diagonal = (skip.0.abs() - skip.1.abs()).abs() <= len * 0.02;
+    let pick = |radius: f64| {
+        radius > 0.0 && (len - 2.0 * radius).abs() <= (radius * 0.05).max(1e-6)
     };
-    radius > 0.0 && (len - 2.0 * radius).abs() <= (radius * 0.05).max(1e-6)
+    if near_diagonal {
+        pick(radius_x) || pick(radius_y)
+    } else if skip.0.abs() >= skip.1.abs() {
+        pick(radius_x)
+    } else {
+        pick(radius_y)
+    }
 }
 
 /// A stored line-jump arc (#294): Visio saves a connector's jump as an
@@ -829,6 +877,11 @@ pub fn line_jumps_with(
                         color: jmp.color,
                         under_color: und.color,
                         style: jmp.style,
+                        cap: if i_jumps {
+                            run_extent(&norm[i].pts, &norm[i].breaks, k1, t)
+                        } else {
+                            run_extent(&norm[j].pts, &norm[j].breaks, k2, u)
+                        },
                     });
                 }
             }
@@ -901,6 +954,10 @@ pub fn line_jumps_with(
                         if same_run || same_point {
                             c.at = ((c.at.0 + jmp.at.0) / 2.0, (c.at.1 + jmp.at.1) / 2.0);
                         }
+                        // The merged hop must fit the room of BOTH
+                        // candidates — the conservative min keeps a
+                        // shrunken hop inside the run (PR #339 round 5).
+                        c.cap = c.cap.min(jmp.cap);
                         hit = true;
                         break;
                     }
@@ -913,6 +970,55 @@ pub fn line_jumps_with(
         }
     }
     out
+}
+
+/// The straight-run room around the crossing at parameter `t` of
+/// polyline segment `k` (window `pts[k] → pts[k+1]`): the distance to
+/// the nearer end of the run the crossing sits on. The run extends
+/// through COLLINEAR same-direction neighbors — a stored hop itself
+/// splits its run into rows, so a row boundary is NOT a turn — and
+/// stops at a bend, an unbridged stroke break (`breaks` holds the
+/// phantom window's opening index), or the route's end (PR #339
+/// round 5: the hop slot once ran past a corner and cut the next
+/// leg).
+fn run_extent(pts: &[(f64, f64)], breaks: &[usize], k: usize, t: f64) -> f64 {
+    let seg = (pts[k + 1].0 - pts[k].0, pts[k + 1].1 - pts[k].1);
+    let len = seg.0.hypot(seg.1);
+    let continues = |d: (f64, f64)| {
+        let dl = d.0.hypot(d.1);
+        dl > 1e-9
+            && (d.0 * seg.1 - d.1 * seg.0).abs() <= 1e-6 * dl * len
+            && d.0 * seg.0 + d.1 * seg.1 > 0.0
+    };
+    let mut back = t * len;
+    let mut m = k;
+    while m > 0 && !breaks.contains(&m) {
+        let prev = (pts[m].0 - pts[m - 1].0, pts[m].1 - pts[m - 1].1);
+        if prev.0.hypot(prev.1) <= 1e-9 {
+            m -= 1; // a collapsed segment — skip it
+            continue;
+        }
+        if !continues(prev) {
+            break;
+        }
+        back += prev.0.hypot(prev.1);
+        m -= 1;
+    }
+    let mut fwd = (1.0 - t) * len;
+    let mut n = k;
+    while n + 1 < pts.len() && !breaks.contains(&(n + 1)) {
+        let next = (pts[n + 1].0 - pts[n].0, pts[n + 1].1 - pts[n].1);
+        if next.0.hypot(next.1) <= 1e-9 {
+            n += 1;
+            continue;
+        }
+        if !continues(next) {
+            break;
+        }
+        fwd += next.0.hypot(next.1);
+        n += 1;
+    }
+    back.min(fwd)
 }
 
 /// Parse a `#rrggbb` line-color cell into the overlay's (r, g, b).
@@ -1094,6 +1200,31 @@ pub fn page_jumps_stripping(
         }
         let frame = hit_frame(doc, &chain, s, msize);
         let master_root = chain.get(1).copied();
+        // The renderer's per-SECTION visibility twin (PR #339 round
+        // 5): a connector may carry several Geometry sections, and
+        // one with NoShow or NoLine paints no stroke — it contributes
+        // no crossings and nothing hops over it, while its VISIBLE
+        // siblings stay eligible. The flags read the RENDERER's way
+        // and in the SAME frame the ink path evaluates them
+        // (`geometry_flag_on`); the whole-shape all-NoShow gate above
+        // stays as the fast path. The skip set names the sections the
+        // walk itself will read — own merged sections when the shape
+        // has them, else the master root's.
+        let walk_secs: Vec<&vsdx::model::Section> = if s.sheet.sections_named("Geometry").is_empty()
+        {
+            master_root
+                .map(|r| r.sheet.sections_named("Geometry"))
+                .unwrap_or_default()
+        } else {
+            s.sheet.sections_named("Geometry")
+        };
+        let hidden_secs: Vec<&vsdx::model::Section> = walk_secs
+            .into_iter()
+            .filter(|g| {
+                crate::svg::geometry_flag_on(doc, s, &chain, g, "NoShow")
+                    || crate::svg::geometry_flag_on(doc, s, &chain, g, "NoLine")
+            })
+            .collect();
         // Everything reaching here is a connector (the gate above), so
         // stored jump arcs strip from the polyline (#294) — the hop
         // computes on the straight run, never on a stale arc. The
@@ -1108,7 +1239,13 @@ pub fn page_jumps_stripping(
         // crossing vanished). The bridge classification below reads
         // the skip back through the frame's to_local, matching the
         // writer's frame (PR #339 round 4).
-        let segs = geometry_hit_segments_marked(s, master_root, &frame, Some((strip_r, strip_ry)));
+        let segs = geometry_hit_segments_marked(
+            s,
+            master_root,
+            &frame,
+            Some((strip_r, strip_ry)),
+            &hidden_secs,
+        );
         if segs.is_empty() {
             continue;
         }
@@ -1159,7 +1296,30 @@ pub fn page_jumps_stripping(
                     }
                     n += 1; // a collapsed drawn segment — skip it
                 }
-                if !is_stored_jump_gap(skip_local, prev_run, next_dir, strip_r, strip_ry) {
+                // The gap's three vectors share ONE frame: the skip is
+                // measured row-locally, so the neighbor directions
+                // rotate into the same local frame through the rigid
+                // to_local difference — a rotated connector's
+                // page-space runs once rejected its own saved gap
+                // (PR #339 round 5).
+                let dir_local = |d: (f64, f64)| {
+                    let o = frame.to_local((0.0, 0.0));
+                    let e = frame.to_local(d);
+                    let v = (e.0 - o.0, e.1 - o.1);
+                    let l = v.0.hypot(v.1);
+                    if l > 1e-12 {
+                        (v.0 / l, v.1 / l)
+                    } else {
+                        (0.0, 0.0)
+                    }
+                };
+                if !is_stored_jump_gap(
+                    skip_local,
+                    prev_run.map(dir_local),
+                    next_dir.map(dir_local),
+                    strip_r,
+                    strip_ry,
+                ) {
                     breaks.push(pts.len());
                     // A NEW STROKE begins — the saved direction belongs
                     // to the old one. Keeping it let a later pen move
@@ -2891,4 +3051,84 @@ mod tests {
             "nothing hops over a hidden connector"
         );
     }
+    /// PR #339 round 5: a NEAR-DIAGONAL stored slot's axis pick can
+    /// flip across six-decimal row rounding — the styled classifiers
+    /// take the arc classifier's both-radii rule instead of the `>=`
+    /// tie (a 45° run saved at the X radius was once re-read against
+    /// Y and rejected).
+    #[test]
+    fn near_diagonal_styled_slots_match_either_axis_radius() {
+        // A 45° skip whose dy edges out dx: the >= tie picks Y, but the
+        // slot was WRITTEN at the X radius; the Y cells match nothing.
+        let (dx, dy): (f64, f64) = (0.0707106781186547, 0.070710678118655);
+        let skip = (dx, dy);
+        let len = dx.hypot(dy);
+        let rx = len / 2.0; // the writer's slot
+        let ry = 0.10; // the axis the tie would pick — off-band
+        let dir = (dx / len, dy / len);
+        assert!(
+            is_stored_jump_gap(skip, Some(dir), Some(dir), rx, ry),
+            "the near-diagonal gap classifies at the radius that wrote it"
+        );
+        assert!(
+            !is_stored_jump_gap(skip, Some(dir), Some(dir), 0.07, 0.10),
+            "off-band on both axes still rejects"
+        );
+        // The polyline twin: a Sides(2) apex written at rx over the
+        // same chord, fractions of a 1 × 1 frame.
+        let start = (0.2, 0.1);
+        let u = (dx / len, dy / len);
+        let n = (-u.1, u.0);
+        let apex = (
+            start.0 + u.0 * len / 2.0 + n.0 * rx,
+            start.1 + u.1 * len / 2.0 + n.1 * rx,
+        );
+        let a = format!("POLYLINE(0, 0, {},{})", apex.0, apex.1);
+        assert!(
+            is_stored_jump_polyline(&a, start, skip, Some(dir), Some(dir), (1.0, 1.0), rx, ry),
+            "the near-diagonal polygon classifies at the radius that wrote it"
+        );
+        assert!(
+            !is_stored_jump_polyline(&a, start, skip, Some(dir), Some(dir), (1.0, 1.0), 0.07, 0.10),
+            "off-band on both axes still rejects"
+        );
+    }
+
+    /// PR #339 round 5: the hop carries its run's own room (`Jump.cap`)
+    /// — a crossing 0.05 above an L's corner caps the slot at 0.05 so
+    /// the cut and the bridge stay on the crossing leg; a mid-run
+    /// crossing carries the full room to both ends.
+    #[test]
+    fn a_corner_adjacent_crossing_carries_its_run_room() {
+        let rules = JumpRules {
+            page_code: 2, // vertical lines jump — the L's steep leg hops
+            con_codes: std::collections::HashMap::new(),
+        };
+        let l = jline(1, 0, &[(0.0, 1.0), (1.0, 1.0), (1.0, 3.0)]);
+        let near = jline(2, 1, &[(0.5, 1.05), (1.5, 1.05)]);
+        let js = line_jumps_with(&[l, near], (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS), &rules);
+        assert_eq!(js.len(), 1);
+        assert_eq!(js[0].jumper, 1);
+        assert!(
+            (js[0].cap - 0.05).abs() < 1e-9,
+            "the room stops at the corner: {:?}",
+            js[0].cap
+        );
+        // A collinear row boundary is NOT a turn: the room runs
+        // through the split (a stored hop itself splits its run).
+        let split = jline(
+            1,
+            0,
+            &[(0.0, 1.0), (1.0, 1.0), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0)],
+        );
+        let mid = jline(2, 1, &[(0.5, 2.2), (1.5, 2.2)]);
+        let js = line_jumps_with(&[split, mid], (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS), &rules);
+        assert_eq!(js.len(), 1);
+        assert!(
+            (js[0].cap - 1.2).abs() < 1e-9,
+            "the room spans the collinear rows to the corner: {:?}",
+            js[0].cap
+        );
+    }
 }
+

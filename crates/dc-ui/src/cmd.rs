@@ -1169,14 +1169,28 @@ pub fn plan_connector_frame(
         // line_frame's route_owned_rows call already decided this
         // (a master-based line connector is route-owned by
         // definition); a synthetic connector is owned when its rows
-        // are straight-or-stored-jump.
-        let rows_owned = line_frame
-            || conn
-                .sheet
-                .sections_named("Geometry")
-                .first()
-                .is_some_and(|g| route_owned_rows(g, &master_rows, jump_radii, (w_new, h_new)));
-        let grow = (route4 || overgrown)
+        // are straight-or-stored-jump. The stored hops' fractions and
+        // skips describe the CURRENT dims — decoding them against the
+        // post-reroute frame misread the saved slots and rejected
+        // valid routes (PR #339 round 5); the replacement geometry
+        // alone uses the new dims.
+        let conn_wh = (get("Width").unwrap_or(1.0), get("Height").unwrap_or(1.0));
+        let detailed = conn
+            .sheet
+            .sections_named("Geometry")
+            .first()
+            .map(|g| route_owned_rows_detailed(g, &master_rows, jump_radii, conn_wh))
+            .unwrap_or((false, false));
+        let (rows_owned, stored_hops) = if line_frame {
+            (true, detailed.1)
+        } else {
+            detailed
+        };
+        // A route carrying a RECOGNIZED stored hop replaces wholesale
+        // even when the new route needs no MORE rows — the per-row
+        // plan once mapped the bare route's single corner onto row 2
+        // of a saved gap's set and corrupted it (PR #339 round 5).
+        let grow = (route4 || overgrown || stored_hops)
             && !existing.is_empty()
             && rows_owned
             && frame_spans;
@@ -1318,10 +1332,77 @@ fn route_owned_rows(
     radii: (f64, f64),
     g_w_h: (f64, f64),
 ) -> bool {
+    route_owned_rows_detailed(g, master_rows, radii, g_w_h).0
+}
+
+/// The stored-hop control text of a `PolylineTo.A` cell,
+/// OWNERSHIP-SAFE (PR #339 round 5): the generated literal (a V with
+/// no authored formula), a bare `POLYLINE(...)` formula — a Visio
+/// re-save can carry the controls in F while V holds a numeric cache,
+/// and the old V-first read masked them — or an inherited cache whose
+/// master source carries no formula (the `lit` rule). An AUTHORED
+/// formula (a GUARD wrapper, an expression) answers None: the row
+/// must survive every rewrite, exactly like a formula-driven
+/// `ArcTo.A` (round 4).
+fn polyline_a_owned(
+    r: &vsdx::model::Row,
+    master_rows: &[vsdx::model::Row],
+) -> Option<String> {
+    let master_row = |ix: i64| master_rows.iter().find(|m| m.ix == ix);
+    let own = r.cell("A");
+    let cell = own.or_else(|| master_row(r.ix).and_then(|m| m.cell("A")))?;
+    let bare = |t: &str| {
+        let t = t.trim();
+        t.starts_with("POLYLINE(") && t.ends_with(')')
+    };
+    match cell.f.as_deref() {
+        None => cell.v.clone().filter(|v| bare(v)),
+        Some("Inh") | Some("No Formula") => {
+            let derived = master_row(r.ix)
+                .and_then(|m| m.cell("A"))
+                .and_then(|c| c.f.as_deref())
+                .is_some_and(|f| f != "Inh" && f != "No Formula");
+            if derived {
+                None
+            } else {
+                cell.v.clone().filter(|v| bare(v))
+            }
+        }
+        Some(f) if bare(f) => Some(f.to_string()),
+        _ => None,
+    }
+}
+
+/// [`route_owned_rows`] plus the stored-hop signal (PR #339 round 5):
+/// the second bool says the row set carries at least one RECOGNIZED
+/// stored hop — an ArcTo, a mid-route gap `MoveTo`, or a PolylineTo
+/// at the page-radius evidence. The reroute planner grows its
+/// wholesale-replace gate on it: a same-shape endpoint edit once
+/// mapped the bare route's single corner onto row 2 of a saved gap's
+/// row set, and the leftover pen move then read as an authored break
+/// the reconcile refused to repair.
+fn route_owned_rows_detailed(
+    g: &vsdx::model::Section,
+    master_rows: &[vsdx::model::Row],
+    radii: (f64, f64),
+    g_w_h: (f64, f64),
+) -> (bool, bool) {
     let live: Vec<&vsdx::model::Row> = g.rows.iter().filter(|r| !r.is_deleted()).collect();
     if live.is_empty() {
-        return false;
+        return (false, false);
     }
+    let mut stored_hop = false;
+    // The neighbor scans stop at PEN MOVES as well as curves — an
+    // authored break means no continuing run, and crossing one once
+    // lent the earlier stroke's direction to the polygon's backward
+    // scan (PR #339 round 5). The one exception is the ORIGIN row
+    // (index 0): the route's first MoveTo is the first stroke's
+    // start, not a break — the run out of it is ink, and a stored
+    // hop right after the origin reads its direction from it.
+    // Collapsed zero-length LineTo rows within the same stroke are
+    // still skipped.
+    let run_row = |t: Option<&str>| matches!(t, Some("LineTo") | Some("RelLineTo"));
+    let scan_row = |p: usize, t: Option<&str>| p == 0 || run_row(t);
     // A literal cell through the chain: the instance's own cell, else
     // the master row's — a value with no formula, or an inherited
     // cache (`F="Inh"`/`No Formula`) whose V carries the literal. An
@@ -1378,7 +1459,68 @@ fn route_owned_rows(
             // (`X=Width`) is authored tracking and must survive
             // (CodeRabbit on the #303 batch).
             if lit(r, "X").is_none() || lit(r, "Y").is_none() {
-                return false;
+                return (false, stored_hop);
+            }
+            // A MID-ROUTE pen move is a stored hop only when it
+            // classifies as the witnessed gap — a ≈ 2·radius
+            // collinear skip between continuing runs. An authored
+            // break stays owned but signals nothing (this is the
+            // planner's grow signal, PR #339 round 5).
+            if matches!(t, Some("MoveTo") | Some("RelMoveTo")) && i > 0 {
+                if let Some(end) = pt(r) {
+                    let mut from: Option<(f64, f64)> = None;
+                    let mut prev_dir = None;
+                    let mut p = i;
+                    while p > 0 {
+                        p -= 1;
+                        if !scan_row(p, eff_t(live[p], master_rows)) {
+                            break;
+                        }
+                        let Some(q) = pt(live[p]) else {
+                            return (false, stored_hop);
+                        };
+                        match from {
+                            None => from = Some(q),
+                            Some(f) if prev_dir.is_none() => {
+                                let d = (f.0 - q.0, f.1 - q.1);
+                                if d.0.hypot(d.1) > 1e-9 {
+                                    prev_dir = Some(d);
+                                }
+                            }
+                            _ => {}
+                        }
+                        if prev_dir.is_some() {
+                            break;
+                        }
+                    }
+                    let mut next_dir = None;
+                    let mut n = i + 1;
+                    while n < live.len() {
+                        if !run_row(eff_t(live[n], master_rows)) {
+                            break;
+                        }
+                        let Some(q) = pt(live[n]) else {
+                            return (false, stored_hop);
+                        };
+                        let d = (q.0 - end.0, q.1 - end.1);
+                        if d.0.hypot(d.1) > 1e-9 {
+                            next_dir = Some(d);
+                            break;
+                        }
+                        n += 1;
+                    }
+                    if let Some(from) = from {
+                        if dc::jumps::is_stored_jump_gap(
+                            (end.0 - from.0, end.1 - from.1),
+                            prev_dir,
+                            next_dir,
+                            radii.0,
+                            radii.1,
+                        ) {
+                            stored_hop = true;
+                        }
+                    }
+                }
             }
             continue;
         }
@@ -1386,25 +1528,25 @@ fn route_owned_rows(
             // A stored SQUARE/TRIANGLE/N-SIDES hop: the planner treats
             // it exactly like a stored arc — replaceable route
             // decoration (#324 phase-5 review). Authored polyline art
-            // keeps its rows (the evidence test below).
-            let (Some(a), Some(end)) = (
-                r.cell("A").and_then(|c| c.v.clone().or_else(|| c.f.clone())),
-                pt(r),
-            ) else {
-                return false;
+            // keeps its rows (the evidence test below), and an
+            // AUTHORED formula on A survives too — the control text
+            // reads ownership-safe (`polyline_a_owned`, PR #339
+            // round 5).
+            let (Some(a), Some(end)) = (polyline_a_owned(r, master_rows), pt(r)) else {
+                return (false, stored_hop);
             };
             let Some(start) = i.checked_sub(1).and_then(|p| pt(live[p])) else {
-                return false;
+                return (false, stored_hop);
             };
             let mut prev_dir = None;
             let mut p = i;
             while p > 0 {
                 p -= 1;
-                if !straight(eff_t(live[p], master_rows)) {
+                if !scan_row(p, eff_t(live[p], master_rows)) {
                     break;
                 }
                 let Some(q) = pt(live[p]) else {
-                    return false;
+                    return (false, stored_hop);
                 };
                 let d = (start.0 - q.0, start.1 - q.1);
                 if d.0.hypot(d.1) > 1e-9 {
@@ -1415,11 +1557,11 @@ fn route_owned_rows(
             let mut next_dir = None;
             let mut n = i + 1;
             while n < live.len() {
-                if !straight(eff_t(live[n], master_rows)) {
+                if !run_row(eff_t(live[n], master_rows)) {
                     break;
                 }
                 let Some(q) = pt(live[n]) else {
-                    return false;
+                    return (false, stored_hop);
                 };
                 let d = (q.0 - end.0, q.1 - end.1);
                 if d.0.hypot(d.1) > 1e-9 {
@@ -1443,30 +1585,31 @@ fn route_owned_rows(
                 radii.0,
                 radii.1,
             ) {
-                return false;
+                return (false, stored_hop);
             }
+            stored_hop = true;
             continue;
         }
         if t != Some("ArcTo") {
-            return false;
+            return (false, stored_hop);
         }
         // A stored jump: literal A + endpoint, a semicircle on a run
         // that continues on both sides, at the page-radius evidence.
         let (Some(a), Some(end)) = (lit(r, "A"), pt(r)) else {
-            return false;
+            return (false, stored_hop);
         };
         let Some(start) = i.checked_sub(1).and_then(|p| pt(live[p])) else {
-            return false;
+            return (false, stored_hop);
         };
         let mut prev_dir = None;
         let mut p = i;
         while p > 0 {
             p -= 1;
-            if !straight(eff_t(live[p], master_rows)) {
-                break; // a curve neighbor ends the run
+            if !scan_row(p, eff_t(live[p], master_rows)) {
+                break; // a curve or pen move ends the run
             }
             let Some(q) = pt(live[p]) else {
-                return false;
+                return (false, stored_hop);
             };
             let d = (start.0 - q.0, start.1 - q.1);
             if d.0.hypot(d.1) > 1e-9 {
@@ -1477,11 +1620,11 @@ fn route_owned_rows(
         let mut next_dir = None;
         let mut n = i + 1;
         while n < live.len() {
-            if !straight(eff_t(live[n], master_rows)) {
+            if !run_row(eff_t(live[n], master_rows)) {
                 break;
             }
             let Some(q) = pt(live[n]) else {
-                return false;
+                return (false, stored_hop);
             };
             let d = (q.0 - end.0, q.1 - end.1);
             if d.0.hypot(d.1) > 1e-9 {
@@ -1498,10 +1641,11 @@ fn route_owned_rows(
             radii.0,
             radii.1,
         ) {
-            return false;
+            return (false, stored_hop);
         }
+        stored_hop = true;
     }
-    true
+    (true, stored_hop)
 }
 
 impl Command for RerouteConnectors {
@@ -2060,21 +2204,16 @@ fn reconciled_rows(
             if !write_hops || t - r <= cursor + 2e-6 || t + r >= len - 1e-9 {
                 continue; // overlapping or no room — a plain crossing
             }
-            // The POLYLINE styles fraction their controls by the
-            // shape's Width/Height — a degenerate axis cannot encode
-            // them, and a half-written split (the slot's start line
-            // with nothing after) would strand the route: such a hop
-            // stays a plain crossing, cursor unmoved (CodeRabbit
-            // round on #324 phase 4).
-            let frame_ok = match hop_style {
-                dc::jumps::JumpStyle::Square | dc::jumps::JumpStyle::Sides(_) => {
-                    frame.size.0.abs() > 1e-9 && frame.size.1.abs() > 1e-9
-                }
-                _ => true,
-            };
-            if !frame_ok {
-                continue;
-            }
+            // The POLYLINE styles need a frame the controls can encode:
+            // fractions of Width/Height on a non-degenerate frame, or
+            // [MS-Learn]'s LOCAL-coordinate type flags — `POLYLINE(1,
+            // 1, …)` — when an axis is zero (the Connector tool's own
+            // horizontal/vertical shapes carry Height/Width = 0;
+            // PR #339 round 5: such hops once drew on canvas but
+            // never saved). The classifier reads both forms back
+            // without dividing by a zero dim.
+            let (w_in, h_in) = frame.size;
+            let local_form = w_in.abs() <= 1e-9 || h_in.abs() <= 1e-9;
             cursor = t + r;
             let p0 = (a.0 + dir.0 * (t - r), a.1 + dir.1 * (t - r));
             let p1 = (a.0 + dir.0 * (t + r), a.1 + dir.1 * (t + r));
@@ -2136,8 +2275,9 @@ fn reconciled_rows(
                     // shape's Width/Height, the square's top corners
                     // a full r above the feet, the n-sided hump's
                     // vertices inscribed in the semicircle — all in
-                    // ROW-LOCAL coordinates (dl/nl above).
-                    let (w_in, h_in) = frame.size;
+                    // ROW-LOCAL coordinates (dl/nl above). A
+                    // degenerate frame axis encodes the same vertices
+                    // as local coordinates (`POLYLINE(1, 1, …)`).
                     let verts: Vec<(f64, f64)> = match hop_style {
                         dc::jumps::JumpStyle::Square => {
                             vec![
@@ -2156,9 +2296,17 @@ fn reconciled_rows(
                             .collect(),
                         _ => Vec::new(),
                     };
-                    let mut a_formula = String::from("POLYLINE(0, 0");
+                    let mut a_formula = if local_form {
+                        String::from("POLYLINE(1, 1")
+                    } else {
+                        String::from("POLYLINE(0, 0")
+                    };
                     for (vx, vy) in verts {
-                        a_formula.push_str(&format!(", {},{}", vx / w_in, vy / h_in));
+                        if local_form {
+                            a_formula.push_str(&format!(", {},{}", vx, vy));
+                        } else {
+                            a_formula.push_str(&format!(", {},{}", vx / w_in, vy / h_in));
+                        }
                     }
                     a_formula.push(')');
                     rows.push(vsdx::model::Row {
@@ -2420,9 +2568,24 @@ impl Command for ReconcileLineJumps {
                         break;
                     }
                 };
-                let a = r
-                    .cell("A")
-                    .and_then(|c| c.v.clone().or_else(|| c.f.clone()));
+                // The control text reads OWNERSHIP-SAFE
+                // (`polyline_a_owned`): the generated literal, a bare
+                // POLYLINE formula (a Visio re-save carries the
+                // controls in F under a numeric V — the old V-first
+                // read masked them), or a clean inherited cache. An
+                // AUTHORED formula answers None and the section is
+                // not route-owned (PR #339 round 5).
+                let master_rows_for_a: &[vsdx::model::Row] = chain
+                    .get(1)
+                    .and_then(|root| {
+                        root.sheet
+                            .sections_named("Geometry")
+                            .into_iter()
+                            .next()
+                    })
+                    .map(|g| g.rows.as_slice())
+                    .unwrap_or(&[]);
+                let a = polyline_a_owned(r, master_rows_for_a);
                 // ArcTo needs a LITERAL A through `lit` — a formula
                 // (GUARD(−r), Width-driven) is authored tracking and
                 // must survive the rewrite; the parse fallback here
@@ -6155,5 +6318,403 @@ mod reconcile_jump_tests {
             .apply(&mut ed.doc)
             .unwrap();
         }
+    }
+
+    /// PR #339 round 5: polygonal hops PERSIST on ordinary
+    /// axis-aligned connectors — the Connector tool's own horizontal
+    /// and vertical shapes carry Height/Width = 0, and the fraction
+    /// encoding once demoted their hops to plain crossings (the
+    /// canvas drew them; the saved file had none). The degenerate
+    /// frame encodes [MS-Learn]'s LOCAL-coordinate type flags —
+    /// `POLYLINE(1, 1, …)` — which the classifier reads back without
+    /// dividing (the second reconcile is idempotent on them).
+    #[test]
+    fn reconcile_persists_polygonal_hops_on_degenerate_connectors() {
+        // The horizontal twin: Height = 0, the run at local y = 0.
+        let (mut ed, page_id) = witness_doc("3");
+        {
+            let h = ed
+                .doc
+                .pages[0]
+                .shapes
+                .iter_mut()
+                .find(|s| s.id == 5)
+                .unwrap();
+            h.sheet.set_cell("Height", VCell::value("0"));
+            h.sheet.set_cell("LocPinY", VCell::value("0"));
+            set_geo_rows(
+                h,
+                vec![
+                    Row {
+                        t: Some("MoveTo".into()),
+                        ix: 1,
+                        cells: xy(0.0, 0.0),
+                        ..Row::default()
+                    },
+                    lineto(2, 5.0, 0.0),
+                ],
+            );
+        }
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows.len(), 4, "the square landed: {rows:?}");
+        assert_eq!(rows[2].t.as_deref(), Some("PolylineTo"));
+        let a = rows[2].cell("A").unwrap().v.as_deref().unwrap().to_string();
+        let ((ty, tx), pts) =
+            dc::jumps::parse_polyline_controls(&a).unwrap_or_else(|| panic!("parses: {a}"));
+        assert_eq!((ty, tx), (1.0, 1.0), "local-coordinate typed: {a}");
+        assert_eq!(pts.len(), 2, "the square's two corners: {a}");
+        for (k, (x, y)) in pts.iter().enumerate() {
+            let want_x = 2.5 - R + 2.0 * R * k as f64;
+            assert!(
+                (x - want_x).abs() < 1e-6 && (y - R).abs() < 1e-6,
+                "corner {k} = local ({want_x}, {R}): {a}"
+            );
+        }
+        // The (1, 1) form re-classifies: a second reconcile is a
+        // no-op (idempotence — the reader agrees with the writer).
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let again = rows_of(&ed, 5);
+        assert_eq!(again.len(), 4, "the stored local-form hop stays: {again:?}");
+        assert_eq!(again[2].t.as_deref(), Some("PolylineTo"));
+
+        // The vertical twin: Width = 0, the VERTICAL hops (page code
+        // 2) — the jump lands in the vertical's own degenerate frame.
+        let (mut ed, page_id) = witness_doc("3");
+        ed.doc.pages[0]
+            .sheet_mut()
+            .unwrap()
+            .set_cell("LineJumpCode", VCell::value("2"));
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 6);
+        assert_eq!(rows[2].t.as_deref(), Some("PolylineTo"), "{rows:?}");
+        let a = rows[2].cell("A").unwrap().v.as_deref().unwrap().to_string();
+        let ((ty, tx), pts) = dc::jumps::parse_polyline_controls(&a).unwrap();
+        assert_eq!((ty, tx), (1.0, 1.0), "the zero-WIDTH frame also encodes local: {a}");
+        assert_eq!(pts.len(), 2, "the square's corners: {a}");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        assert_eq!(rows_of(&ed, 6).len(), 4, "idempotent on the vertical twin");
+    }
+
+    /// PR #339 round 5: a same-shape endpoint edit NORMALIZES a saved
+    /// gap — the per-row plan once mapped the bare straight route's
+    /// single corner onto row 2 of the gap's M-L-M-L set, and the
+    /// leftover pen move then read as an authored break the reconcile
+    /// refused to repair (the gap was lost though the crossing
+    /// stayed). The wholesale replace + the tail reconcile re-add the
+    /// gap at the current crossing in one undo step.
+    #[test]
+    fn reroute_normalizes_a_stored_gap_on_a_same_shape_extension() {
+        let (mut ed, page_id) = witness_doc("2");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let kinds: Vec<String> = rows_of(&ed, 5)
+            .iter()
+            .map(|r| r.t.clone().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            kinds,
+            ["MoveTo", "LineTo", "MoveTo", "LineTo"].map(|s| s.to_string())
+        );
+        // Glue the END to a target and extend the route straight
+        // (1.5 → 8.5): still horizontal, no more rows needed.
+        let mut target = vsdx::model::Shape {
+            id: 7,
+            ..vsdx::model::Shape::default()
+        };
+        for (n, v) in [
+            ("PinX", "6.5"),
+            ("PinY", "5.0"),
+            ("Width", "1"),
+            ("Height", "1"),
+            ("LocPinX", "0.5"),
+            ("LocPinY", "0.5"),
+        ] {
+            target.sheet.set_cell(n, VCell::value(v));
+        }
+        ed.doc.pages[0].shapes.push(target);
+        {
+            use dc_core::connects::ConnectsHost;
+            let mut list = ed.doc.pages[0].connects();
+            list.list.push(dc_core::connects::Connect::new(
+                5,
+                "EndX",
+                crate::connectors::PART_END_X,
+                7,
+                "PinX",
+                crate::connectors::PART_WALKGLUE,
+            ));
+            ed.doc.pages[0].set_connects(&list);
+        }
+        for sh in ed.doc.pages[0].shapes.iter_mut() {
+            if sh.id == 7 {
+                sh.sheet.set_cell("PinX", VCell::value("8.5"));
+            }
+        }
+        RerouteConnectors::new(page_id, vec![7])
+            .apply(&mut ed.doc)
+            .unwrap();
+        let rows = rows_of(&ed, 5);
+        let s5 = vsdx::model::find_shape_by_id(&ed.doc.pages[0].shapes, 5).unwrap();
+        let num = |n: &str| {
+            s5.sheet
+                .cell(n)
+                .and_then(|c| c.numeric())
+                .unwrap_or(f64::NAN)
+        };
+        let kinds: Vec<&str> = rows.iter().map(|r| r.t.as_deref().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            vec!["MoveTo", "LineTo", "MoveTo", "LineTo"],
+            "the gap is re-added at the current crossing: {rows:?}"
+        );
+        // The slot brackets the vertical's crossing (page x = 4) in
+        // the connector's CURRENT local frame, and the tail reaches
+        // the new width (the glue point is the target's PinX − LocPinX
+        // = 8.0 → 6.5 wide).
+        let origin = num("PinX") - num("LocPinX");
+        let crossing = 4.0 - origin;
+        assert!(
+            (cell(&rows[1], "X") - (crossing - R)).abs() < 1e-6,
+            "{rows:?} (origin {origin})"
+        );
+        assert!((cell(&rows[2], "X") - (crossing + R)).abs() < 1e-6, "{rows:?}");
+        assert!(
+            (cell(&rows[3], "X") - num("Width")).abs() < 1e-6,
+            "the tail line reaches the NEW endpoint: {rows:?}"
+        );
+        // No zero-length junk rows survive the normalization (the
+        // corrupted per-row outcome collapsed rows 2–4 onto the
+        // endpoint).
+        for w in rows.windows(2) {
+            assert!(
+                (cell(&w[1], "X") - cell(&w[0], "X")).abs() > 1e-6
+                    || (cell(&w[1], "Y") - cell(&w[0], "Y")).abs() > 1e-6,
+                "every row advances: {rows:?}"
+            );
+        }
+    }
+
+    /// PR #339 round 5: the EXISTING stored hops' fractions describe
+    /// the CURRENT dims — decoding them against the post-reroute frame
+    /// once misread the saved slots and rejected a valid route (the
+    /// fallback then wrote only rows 2–4 and left the old tail).
+    #[test]
+    fn route_ownership_decodes_existing_hops_at_the_current_dims() {
+        let (mut ed, page_id) = witness_doc("3");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let s5 = vsdx::model::find_shape_by_id(&ed.doc.pages[0].shapes, 5).unwrap();
+        let g = s5
+            .sheet
+            .sections_named("Geometry")
+            .into_iter()
+            .next()
+            .unwrap();
+        let (owned, hop) = route_owned_rows_detailed(g, &[], (R, R), (5.0, 0.25));
+        assert!(
+            owned && hop,
+            "the saved square classifies at the dims it was written for"
+        );
+        let (owned, _) = route_owned_rows_detailed(g, &[], (R, R), (6.0, 0.30));
+        assert!(
+            !owned,
+            "decoding the same fractions at the POST-reroute dims misreads them"
+        );
+    }
+
+    /// PR #339 round 5: the polygon ownership scans stop at PEN
+    /// MOVES — an authored break means no continuing run, and crossing
+    /// one once lent the earlier stroke's direction to the backward
+    /// scan, declaring an authored-break route fully replaceable.
+    #[test]
+    fn route_ownership_scans_stop_at_a_pen_move() {
+        // M(0,0) L(1,0) | M(2,0) [an authored break] then a valid
+        // square hop and its continuing runs.
+        let corner_y = R / 0.25;
+        let a = format!(
+            "POLYLINE(0, 0, {},{}, {},{})",
+            2.0 / 5.0,
+            corner_y,
+            (2.0 + 2.0 * R) / 5.0,
+            corner_y
+        );
+        let rows = vec![
+            Row {
+                t: Some("MoveTo".into()),
+                ix: 1,
+                cells: xy(0.0, 0.0),
+                ..Row::default()
+            },
+            lineto(2, 1.0, 0.0),
+            Row {
+                t: Some("MoveTo".into()),
+                ix: 3,
+                cells: xy(2.0, 0.0),
+                ..Row::default()
+            },
+            Row {
+                t: Some("PolylineTo".into()),
+                ix: 4,
+                cells: {
+                    let mut c = xy(2.0 + 2.0 * R, 0.0);
+                    c.push(("A".to_string(), VCell::value(a)));
+                    c
+                },
+                ..Row::default()
+            },
+            lineto(5, 3.0, 0.0),
+            lineto(6, 4.0, 0.0),
+        ];
+        let g = vsdx::model::Section {
+            name: "Geometry".into(),
+            rows,
+            ..Default::default()
+        };
+        let (owned, _) = route_owned_rows_detailed(&g, &[], (R, R), (5.0, 0.25));
+        assert!(
+            !owned,
+            "the authored break before the hop ends the incoming run"
+        );
+        // Control: WITHOUT the break the same hop classifies.
+        let g2 = vsdx::model::Section {
+            name: "Geometry".into(),
+            rows: {
+                let mut r = g.rows.clone();
+                r[2] = lineto(3, 2.0, 0.0);
+                r
+            },
+            ..Default::default()
+        };
+        let (owned, hop) = route_owned_rows_detailed(&g2, &[], (R, R), (5.0, 0.25));
+        assert!(owned && hop, "no break — the square classifies");
+    }
+
+    /// PR #339 round 5: an AUTHORED formula on the polygon controls
+    /// survives — the cached V once overrode it, both ownership paths
+    /// classified the row from the V, and Hide replaced the section
+    /// and erased the formula.
+    #[test]
+    fn reconcile_leaves_an_authored_formula_on_polyline_controls_alone() {
+        let (mut ed, page_id) = witness_doc("3");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        // Replace the A cell: the square's cached text under an
+        // authored guard formula.
+        let witness_a = rows_of(&ed, 5)[2]
+            .cell("A")
+            .unwrap()
+            .v
+            .clone()
+            .unwrap();
+        {
+            let s5 = ed
+                .doc
+                .pages[0]
+                .shapes
+                .iter_mut()
+                .find(|s| s.id == 5)
+                .unwrap();
+            let sec = s5
+                .sheet
+                .children
+                .iter_mut()
+                .find_map(|c| match c {
+                    vsdx::model::SheetChild::Section(sec) if sec.name == "Geometry" => Some(sec),
+                    _ => None,
+                })
+                .unwrap();
+            for row in sec.rows.iter_mut() {
+                if row.t.as_deref() == Some("PolylineTo") {
+                    for (n, c) in row.cells.iter_mut() {
+                        if n == "A" {
+                            *c = vsdx::Cell {
+                                v: Some(witness_a.clone()),
+                                f: Some("GUARD(Width*0.1)".into()),
+                                ..vsdx::Cell::default()
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        // A style change (the rewrite path): the authored formula
+        // keeps its rows verbatim.
+        SetCell::new(
+            Scope::PageSheet { page: page_id },
+            "LineJumpStyle",
+            VCell::value("4"),
+        )
+        .apply(&mut ed.doc)
+        .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows[2].t.as_deref(), Some("PolylineTo"), "the row stands");
+        let a = rows[2].cell("A").unwrap();
+        assert_eq!(
+            a.f.as_deref(),
+            Some("GUARD(Width*0.1)"),
+            "the authored formula is untouched"
+        );
+        assert_eq!(a.v.as_deref(), Some(witness_a.as_str()));
+    }
+
+    /// PR #339 round 5 (the question, answered in code): a Visio
+    /// re-save can carry the controls as a bare `POLYLINE(...)` FORMULA
+    /// under a numeric V — the V-first read once masked them and the
+    /// stored hop went stale on hide or restyle. The F-first read
+    /// accepts the bare form (wrappers still refuse).
+    #[test]
+    fn reconcile_reads_a_bare_polyline_formula_under_a_numeric_cache() {
+        let (mut ed, page_id) = witness_doc("3");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let witness_a = rows_of(&ed, 5)[2]
+            .cell("A")
+            .unwrap()
+            .v
+            .clone()
+            .unwrap();
+        {
+            let s5 = ed
+                .doc
+                .pages[0]
+                .shapes
+                .iter_mut()
+                .find(|s| s.id == 5)
+                .unwrap();
+            let sec = s5
+                .sheet
+                .children
+                .iter_mut()
+                .find_map(|c| match c {
+                    vsdx::model::SheetChild::Section(sec) if sec.name == "Geometry" => Some(sec),
+                    _ => None,
+                })
+                .unwrap();
+            for row in sec.rows.iter_mut() {
+                if row.t.as_deref() == Some("PolylineTo") {
+                    for (n, c) in row.cells.iter_mut() {
+                        if n == "A" {
+                            *c = vsdx::Cell {
+                                v: Some("0".into()),
+                                f: Some(witness_a.clone()),
+                                ..vsdx::Cell::default()
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        // Hide: the bare-formula hop classifies and straightens.
+        SetCell::new(
+            Scope::PageSheet { page: page_id },
+            "LineJumpCode",
+            VCell::value("0"),
+        )
+        .apply(&mut ed.doc)
+        .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert!(
+            rows.iter().all(|r| r.t.as_deref() != Some("PolylineTo")),
+            "the masked hop hides with the rest: {rows:?}"
+        );
     }
 }

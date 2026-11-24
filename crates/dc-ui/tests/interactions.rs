@@ -10514,3 +10514,47 @@ fn layout_and_routing_dialog_writes_jump_cells() {
         "no routing cell was written"
     );
 }
+
+// PR #339 round 5: opening Page Setup on a page whose
+// LineJumpFactorY = 0 — a VALID cell (0 straightens the axis, #301) —
+// must write nothing: egui's default DragValue clamping once clamped
+// 0 → 0.5 on the first draw, reported changed(), and the dialog
+// applied a factor edit no user made (dirtying the document, then
+// fighting an undo issued while the dialog stayed open). The range
+// covers the cell's documented domain and clamping of existing
+// values is off; user edits still clamp.
+#[test]
+fn page_setup_preserves_a_zero_jump_factor_on_open() {
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(
+            |ui, app: &mut App| {
+                dc_ui::theme::install(ui.ctx());
+                app.draw(ui);
+            },
+            App::debug_page_setup_with_factor_zero_for_test(),
+        );
+    h.run();
+    assert_eq!(
+        h.state()
+            .debug_page_sheet_cell_for_test("LineJumpFactorY")
+            .as_deref(),
+        Some("0"),
+        "opening the dialog leaves the zero factor alone"
+    );
+    assert_eq!(
+        h.state().debug_geometry_row_types_for_test(5),
+        vec!["MoveTo", "LineTo"],
+        "no reconcile ran either — the document is untouched"
+    );
+    // The untouched twin: the X factor (0.66667) displays in range
+    // and also writes nothing on open.
+    assert!(
+        h.state()
+            .debug_page_sheet_cell_for_test("LineJumpFactorX")
+            .is_none(),
+        "the absent X factor stays absent"
+    );
+}

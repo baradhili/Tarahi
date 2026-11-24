@@ -522,7 +522,7 @@ pub fn geometry_hit_segments(
     frame: &HitFrame,
     strip_stored_jumps: Option<(f64, f64)>,
 ) -> Vec<((f64, f64), (f64, f64))> {
-    geometry_hit_segments_marked(s, master_root, frame, strip_stored_jumps)
+    geometry_hit_segments_marked(s, master_root, frame, strip_stored_jumps, &[])
         .into_iter()
         .map(|(a, b, _)| (a, b))
         .collect()
@@ -534,11 +534,15 @@ pub fn geometry_hit_segments(
 /// (`page_jumps_stripping`) bridges a break only when it is a
 /// RECOGNIZED stored gap slot; authored stroke breaks stay out of the
 /// crossing walk (#324 phase 5). Hit-testing keeps the unmarked form.
+/// `skip` names sections (by pointer) the caller excludes from the
+/// walk — the crossing engine's per-section NoShow/NoLine filter (PR
+/// #339 round 5); hit-testing passes none.
 pub fn geometry_hit_segments_marked(
     s: &Shape,
     master_root: Option<&Shape>,
     frame: &HitFrame,
     strip_stored_jumps: Option<(f64, f64)>,
+    skip: &[&Section],
 ) -> Vec<MarkedSeg> {
     let mut sections: Vec<&Section> = s.sheet.sections_named("Geometry");
     // (owning width/height for Rel rows, x/y scale). The scale only
@@ -571,6 +575,13 @@ pub fn geometry_hit_segments_marked(
     } else {
         (frame.size, (1.0, 1.0))
     };
+    // The caller's per-section skip applies AFTER the own-vs-master
+    // decision — an all-hidden OWN set must not fall through to the
+    // master's (PR #339 round 5).
+    sections.retain(|g| !skip.iter().any(|h| std::ptr::eq(*h, *g)));
+    if sections.is_empty() {
+        return Vec::new();
+    }
     // The master rows of the FIRST geometry section, for per-cell
     // inheritance and master-only rows (shape 1017-style connectors
     // inherit their MoveTo entirely).
@@ -626,25 +637,38 @@ pub fn geometry_hit_segments_marked(
     // standalone. The flattened samples ARE the hit polyline, so
     // hit-testing agrees with the rendered ink (crate::curve::flatten).
     let mut spline_acc: Option<crate::curve::SplineAcc> = None;
-    // The ordered walk: the instance's rows, then master-only rows
-    // (by ix) the instance never overrode. Each row carries its
-    // section-qualified feed name (`Geometry1.X2`) — the ink path's
-    // convention, by section enumeration order.
+    // The ordered walk: SECTION BY SECTION in enumeration order, rows
+    // by ix WITHIN each. A GLOBAL ix sort once interleaved two
+    // sections' rows (each carries its own IX 1 MoveTo and IX 2
+    // LineTo) into M-M-L-L — the pen walked section 2's start as a
+    // break and then drew a phantom span from it onto section 1's
+    // LineTo endpoint, and the crossing set treated that span as ink
+    // (PR #339 round 5). Master-only rows merge into the FIRST
+    // section's sequence by ix (the single-section inheritance
+    // assumption the ink path's merge also makes). Each row carries
+    // its section-qualified feed name (`Geometry1.X2`) — the ink
+    // path's convention.
     let gnames: Vec<String> = (0..sections.len())
         .map(|si| format!("Geometry{}", si + 1))
         .collect();
     let mut walk: Vec<(&Row, Option<&Row>, &str)> = Vec::new();
     for (si, geo) in sections.iter().enumerate() {
-        for row in geo.rows.iter().take(MAX_WALK_ROWS) {
-            walk.push((row, master_row(row.ix), &gnames[si]));
+        let mut sec_walk: Vec<(&Row, Option<&Row>, &str)> = geo
+            .rows
+            .iter()
+            .take(MAX_WALK_ROWS)
+            .map(|row| (row, master_row(row.ix), gnames[si].as_str()))
+            .collect();
+        if si == 0 {
+            for r in master_rows.iter().take(MAX_WALK_ROWS) {
+                if !sec_walk.iter().any(|(row, _, _)| row.ix == r.ix) {
+                    sec_walk.push((r, None, gnames[si].as_str()));
+                }
+            }
         }
+        sec_walk.sort_by_key(|(row, _, _)| row.ix);
+        walk.extend(sec_walk);
     }
-    for r in master_rows.iter().take(MAX_WALK_ROWS) {
-        if !walk.iter().any(|(row, _, _)| row.ix == r.ix) {
-            walk.push((r, None, "Geometry1"));
-        }
-    }
-    walk.sort_by_key(|(row, _, _)| row.ix);
     // `Del="1"` rows stay deleted (GitHub #293): the INSTANCE row's
     // marker wins when one is present, else the master-only row's own.
     // The #293 repro's connector inherits its master's hook row through

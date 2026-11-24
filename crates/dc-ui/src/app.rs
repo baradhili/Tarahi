@@ -5772,7 +5772,19 @@ impl App {
         }
         dc::jumps::page_jumps_stripping(doc, page, hidden, None)
             .into_iter()
-            .map(|j| canvas::JumpFx {
+            // A hop with no room on its own run (a corner-adjacent
+            // crossing, `Jump.cap`) draws as a plain crossing — the
+            // svg overlay's own rule (PR #339 round 5).
+            .filter_map(|j| {
+                let axis = if j.dir.0.abs() >= j.dir.1.abs() {
+                    jump_radius.0
+                } else {
+                    jump_radius.1
+                };
+                let r_eff = axis.min((j.cap - j.weight * 0.5).max(0.0));
+                (r_eff > j.weight).then_some((j, r_eff))
+            })
+            .map(|(j, r_eff)| canvas::JumpFx {
                 // The gap paints the BACKDROP — the fill of the
                 // topmost filled shape beneath the connector at the
                 // hop, else page white: the canvas cannot cut cached
@@ -5793,12 +5805,11 @@ impl App {
                 under_color: Color32::from_rgb(j.under_color.0, j.under_color.1, j.under_color.2),
                 // The hop sizes with the radius of the jumping
                 // segment's own axis (the svg overlay's rule — PR #299
-                // review).
-                radius_in: (if j.dir.0.abs() >= j.dir.1.abs() {
-                    jump_radius.0
-                } else {
-                    jump_radius.1
-                }) as f32,
+                // review), capped to the run's own room around the
+                // crossing (PR #339 round 5) — the gap paints inside
+                // the same room so it never covers a turn or the next
+                // leg.
+                radius_in: r_eff as f32,
             })
             .collect()
     }
@@ -7712,9 +7723,20 @@ impl App {
                     macro_rules! factor_row {
                         ($ui:expr, $label:expr, $value:expr, $doc:expr, $draft:ident, $apply:ident) => {{
                             $ui.label(&$label);
+                            // The range is the CELL's documented domain
+                            // (0–10 — 0 straightens the axis, #301;
+                            // 10 is documented-valid), and existing
+                            // values are NOT clamped to it: egui's
+                            // default clamps on the first draw and
+                            // reports changed(), which wrote 0.5 over
+                            // an untouched LineJumpFactorY=0 the moment
+                            // Page Setup opened (PR #339 round 5). User
+                            // edits still clamp; a draft reloads from
+                            // the document each frame.
                             let r = $ui.add(
                                 egui::DragValue::new(&mut $value)
-                                    .range(0.5..=3.0)
+                                    .range(0.0..=10.0)
+                                    .clamp_existing_to_range(false)
                                     .speed(0.05)
                                     .suffix("×"),
                             );
@@ -16169,6 +16191,22 @@ impl App {
         app.ed = Some(ed);
         app.pagesetup_open = true;
         app.page_idx = 0;
+        app
+    }
+
+    /// kittest: the twin of
+    /// [`Self::debug_page_setup_with_crossing_for_test`] with the
+    /// page's `LineJumpFactorY = 0` — a VALID cell (0 straightens the
+    /// axis, #301) that egui's default DragValue clamping once
+    /// rewrote to 0.5 the moment the dialog opened (PR #339 round 5).
+    #[doc(hidden)]
+    pub fn debug_page_setup_with_factor_zero_for_test() -> App {
+        let mut app = Self::debug_page_setup_with_crossing_for_test();
+        let ed = app.ed.as_mut().expect("the ctor carries a document");
+        ed.doc.pages[0]
+            .sheet_mut()
+            .expect("the page has a sheet")
+            .set_cell("LineJumpFactorY", vsdx::Cell::value("0"));
         app
     }
 
