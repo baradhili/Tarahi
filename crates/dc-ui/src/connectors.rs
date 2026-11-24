@@ -1157,6 +1157,7 @@ mod tests {
             style: dc::jumps::JumpStyle::Arc,
             pts: pts.to_vec(),
             breaks: Vec::new(),
+            radii: (0.041_666_7, 0.041_666_7),
         };
         // H crosses V at (1, 1): H hops.
         let lines = [

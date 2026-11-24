@@ -1449,8 +1449,19 @@ fn route_owned_rows_detailed(
             Some("MoveTo") | Some("RelMoveTo") | Some("LineTo") | Some("RelLineTo")
         )
     };
-    let pt =
-        |r: &vsdx::model::Row| -> Option<(f64, f64)> { Some((lit(r, "X")?, lit(r, "Y")?)) };
+    // A RELATIVE row's literals are fractions of the shape's own
+    // Width/Height — they resolve to local INCHES before any gap or
+    // run is measured (a 5-inch connector's Rel skip of 2r/5 once
+    // read as 2r/5 inches and the planner rejected the gap the
+    // reconcile recognizes; CodeRabbit round 6 on PR #339).
+    let pt = |r: &vsdx::model::Row| -> Option<(f64, f64)> {
+        let (x, y) = (lit(r, "X")?, lit(r, "Y")?);
+        if eff_t(r, master_rows).is_some_and(|t| t.starts_with("Rel")) {
+            Some((x * g_w_h.0, y * g_w_h.1))
+        } else {
+            Some((x, y))
+        }
+    };
     for (i, r) in live.iter().enumerate() {
         let t = eff_t(r, master_rows);
         if straight(t) {
@@ -1518,6 +1529,15 @@ fn route_owned_rows_detailed(
                             radii.1,
                         ) {
                             stored_hop = true;
+                        } else {
+                            // An UNRECOGNIZED mid-route pen move is an
+                            // authored stroke break — the route is not
+                            // wholesale-replaceable (a recognized square
+                            // elsewhere in the section once lent it the
+                            // grow signal and a frame-spanning edit
+                            // welded the two strokes into one;
+                            // CodeRabbit round 6 on PR #339).
+                            return (false, stored_hop);
                         }
                     }
                 }
@@ -5005,6 +5025,17 @@ mod reconcile_jump_tests {
         (ed, page_id)
     }
 
+
+    /// A relative geometry row (fractions of the shape's own dims).
+    fn rel_row(ix: i64, t: &str, x: f64, y: f64) -> Row {
+        Row {
+            t: Some(t.into()),
+            ix,
+            cells: xy(x, y),
+            ..Row::default()
+        }
+    }
+
     fn rows_of(ed: &dc_core::Editor, id: i64) -> Vec<Row> {
         let s = vsdx::model::find_shape_by_id(&ed.doc.pages[0].shapes, id).unwrap();
         s.sheet
@@ -6715,6 +6746,36 @@ mod reconcile_jump_tests {
         assert!(
             rows.iter().all(|r| r.t.as_deref() != Some("PolylineTo")),
             "the masked hop hides with the rest: {rows:?}"
+        );
+    }
+
+    /// CodeRabbit round 6 on PR #339: RELATIVE gap rows resolve to
+    /// local inches before the gap is measured — a 5-wide connector's
+    /// Rel skip of 2r/5 once read as 2r/5 INCHES and the planner
+    /// rejected (and then corrupted) the gap the reconcile recognizes.
+    #[test]
+    fn route_ownership_resolves_relative_gap_rows_to_inches() {
+        // Fractions of a 5 × 0.25 frame: the gap slot 2.5 ± R, the
+        // line at H/2.
+        let g = vsdx::model::Section {
+            name: "Geometry".into(),
+            rows: vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.0, 0.125),
+                    ..Row::default()
+                },
+                rel_row(2, "RelLineTo", (2.5 - R) / 5.0, 0.5),
+                rel_row(3, "RelMoveTo", (2.5 + R) / 5.0, 0.5),
+                rel_row(4, "RelLineTo", 1.0, 0.5),
+            ],
+            ..Default::default()
+        };
+        let (owned, hop) = route_owned_rows_detailed(&g, &[], (R, R), (5.0, 0.25));
+        assert!(
+            owned && hop,
+            "the Rel gap resolves to the same 2·R slot in inches"
         );
     }
 }

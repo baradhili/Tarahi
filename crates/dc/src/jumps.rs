@@ -32,6 +32,16 @@ pub struct JumpLine {
     /// with k in breaks draws no ink and never crosses). A
     /// RECOGNIZED stored gap slot bridges instead (#324 phase 5).
     pub breaks: Vec<usize>,
+    /// The PAGE-AXIS radii FOR THIS LINE (CodeRabbit round 6 on PR
+    /// #339): one radius policy — the stored rows and the row-local
+    /// classifiers pick the axis in the connector's OWN frame, so a
+    /// connector whose local X axis is page-VERTICAL carries its
+    /// radii swapped, and every page-space consumer (the cluster
+    /// reach, the painters, the overlay's spacing rule) selecting by
+    /// the page direction lands on the LOCAL axis's radius exactly
+    /// like the writer does. Unequal per-axis cells with a rotated
+    /// connector once drew a hop the writer refused to save.
+    pub radii: (f64, f64),
 }
 
 /// A computed hop (#108): where the jumping line crosses the under
@@ -67,6 +77,10 @@ pub struct Jump {
     /// a room smaller than a pen-width drops the hop to a plain
     /// crossing (the row writer's own room check, `reconciled_rows`).
     pub cap: f64,
+    /// The jumper line's PAGE-AXIS radii (already local-axis-corrected
+    /// — see [`JumpLine::radii`]); the painters size the hop with
+    /// these, matching the row writer's own axis pick.
+    pub radii: (f64, f64),
 }
 
 /// Visio's jump radius (#294): `LineToLineX × LineJumpFactorX / 2`,
@@ -719,7 +733,15 @@ impl JumpRules {
 /// [`jump_radius_in`]): it sizes the hop arc and bounds what counts
 /// as one crossing REGION (#251) when converging crossings cluster.
 pub fn line_jumps(lines: &[JumpLine], (radius, radius_y): (f64, f64)) -> Vec<Jump> {
-    line_jumps_with(lines, (radius, radius_y), &JumpRules::default())
+    let filled: Vec<JumpLine> = lines
+        .iter()
+        .cloned()
+        .map(|mut l| {
+            l.radii = (radius, radius_y);
+            l
+        })
+        .collect();
+    line_jumps_with(&filled, &JumpRules::default())
 }
 
 /// [`line_jumps`] under explicit page/connector rules ([`JumpRules`])
@@ -732,11 +754,7 @@ struct NormLine {
     breaks: Vec<usize>,
 }
 
-pub fn line_jumps_with(
-    lines: &[JumpLine],
-    (radius, radius_y): (f64, f64),
-    rules: &JumpRules,
-) -> Vec<Jump> {
+pub fn line_jumps_with(lines: &[JumpLine], rules: &JumpRules) -> Vec<Jump> {
     // Degenerate rows (a straight route's elbow LineTos collapse onto
     // the end) repeat points; the endpoint classification below reads
     // indices, so normalize first or the connector's geometric END
@@ -774,6 +792,9 @@ pub fn line_jumps_with(
         .collect();
     let pts: Vec<&Vec<(f64, f64)>> = norm.iter().map(|n| &n.pts).collect();
     let mut out = Vec::new();
+    // The jumper's LINE index and run span per emitted hop,
+    // index-aligned with `out` — the spacing pass's grouping key.
+    let mut out_meta: Vec<(usize, (usize, usize))> = Vec::new();
     for i in 0..lines.len() {
         for j in (i + 1)..lines.len() {
             // Per-PAIR crossings (#251): one crossing REGION hops once.
@@ -781,7 +802,14 @@ pub fn line_jumps_with(
             // crossings converge onto the same pixels — hopping each
             // drew overlapping arcs on one intersection (the #238
             // screenshot). Clusters within the hop radius merge.
-            let mut pair: Vec<Jump> = Vec::new();
+                let mut pair: Vec<Jump> = Vec::new();
+                // The jumper's run span per candidate, index-aligned
+                // with `pair` — the cluster's same-run identity.
+                // (line, first seg, last seg) — the run identity
+                // includes the LINE: two different connectors carry
+                // equal-looking spans.
+                let mut pair_runs: Vec<(usize, usize, usize)> = Vec::new();
+                let mut pair_lines: Vec<usize> = Vec::new();
             for (k1, w1) in pts[i].windows(2).enumerate() {
                 // A window that spans an unbridged stroke break draws
                 // no ink — never a crossing (#324 phase 5; the indices
@@ -867,6 +895,13 @@ pub fn line_jumps_with(
                         (&lines[j], &lines[i])
                     };
                     let (d, du) = if i_jumps { (d1, d2) } else { (d2, d1) };
+                    let (cap, span) = if i_jumps {
+                        run_extent(&norm[i].pts, &norm[i].breaks, k1, t)
+                    } else {
+                        run_extent(&norm[j].pts, &norm[j].breaks, k2, u)
+                    };
+                    let line = if i_jumps { i } else { j };
+                    let run = (line, span.0, span.1);
                     pair.push(Jump {
                         at,
                         dir: d,
@@ -877,12 +912,11 @@ pub fn line_jumps_with(
                         color: jmp.color,
                         under_color: und.color,
                         style: jmp.style,
-                        cap: if i_jumps {
-                            run_extent(&norm[i].pts, &norm[i].breaks, k1, t)
-                        } else {
-                            run_extent(&norm[j].pts, &norm[j].breaks, k2, u)
-                        },
+                        cap,
+                        radii: jmp.radii,
                     });
+                    pair_runs.push(run);
+                    pair_lines.push(line);
                 }
             }
             // Merge the pair's jumps inside a hop radius: the arc's
@@ -898,14 +932,16 @@ pub fn line_jumps_with(
             // witness for what a bent hop's geometry or stored rows
             // should be; the Phase 3 hop-geometry rewrite owns it.
             let mut clustered: Vec<Jump> = Vec::new();
-            for jmp in pair {
+            let mut clustered_runs: Vec<(usize, usize, usize)> = Vec::new();
+            let mut clustered_lines: Vec<usize> = Vec::new();
+            for (jmp_i, jmp) in pair.into_iter().enumerate() {
                 // The reach is the hop's OWN axis radius — the unrelated
                 // axis's would merge crossings the drawn arcs never
                 // overlap (PR #299 round-3 review).
                 let jr = if jmp.dir.0.abs() >= jmp.dir.1.abs() {
-                    radius
+                    jmp.radii.0
                 } else {
-                    radius_y
+                    jmp.radii.1
                 };
                 // A hop on a zero-radius axis cannot draw — and must
                 // not ENTER a cluster either: its stroke-width reach
@@ -925,7 +961,8 @@ pub fn line_jumps_with(
                 // merging. First hit wins; the centroid keeps the arc
                 // on the intersection instead of stacking arcs.
                 let mut hit = false;
-                for c in clustered.iter_mut() {
+                let run = pair_runs[jmp_i];
+                for (ci, c) in clustered.iter_mut().enumerate() {
                     let dd = (c.at.0 - jmp.at.0).hypot(c.at.1 - jmp.at.1);
                     // Only hops of the SAME jumper merge — one pair
                     // can yield hops with different jumpers at
@@ -942,7 +979,15 @@ pub fn line_jumps_with(
                     // (CodeRabbit round on #324 phase 4; which jumper
                     // wins at a both-bend contact has no witness).
                     let same_point = dd < 1e-6;
-                    if dd < reach && (c.jumper == jmp.jumper || same_point) {
+                    // Same CONTINUOUS run (the line+span identity) or
+                    // the same POINT — mere jumper equality once
+                    // absorbed a distinct crossing on a parallel
+                    // stroke without averaging it anywhere (the hop
+                    // count silently dropped; CodeRabbit round 6 on
+                    // PR #339).
+                    let on_same_run = clustered_runs[ci] == run
+                        && (c.dir.0 * jmp.dir.0 + c.dir.1 * jmp.dir.1) > 0.99;
+                    if dd < reach && (on_same_run || same_point) {
                         // Average the positions only for crossings on
                         // the SAME run (near-parallel directions) —
                         // the centroid of crossings on two legs of a
@@ -950,8 +995,7 @@ pub fn line_jumps_with(
                         // painter nor the row writer can place a hop
                         // there (#324 phase-5 review: keep the
                         // cluster's own crossing instead).
-                        let same_run = (c.dir.0 * jmp.dir.0 + c.dir.1 * jmp.dir.1) > 0.99;
-                        if same_run || same_point {
+                        if on_same_run || same_point {
                             c.at = ((c.at.0 + jmp.at.0) / 2.0, (c.at.1 + jmp.at.1) / 2.0);
                         }
                         // The merged hop must fit the room of BOTH
@@ -964,10 +1008,68 @@ pub fn line_jumps_with(
                 }
                 if !hit {
                     clustered.push(jmp);
+                    clustered_runs.push(run);
+                    clustered_lines.push(pair_lines[jmp_i]);
                 }
             }
             out.extend(clustered);
+            for (run, line) in clustered_runs.drain(..).zip(clustered_lines.drain(..)) {
+                out_meta.push((line, (run.1, run.2)));
+            }
         }
+    }
+    // The writer's spacing rule (reconciled_rows' cursor), applied to
+    // the drawn set: a hop that does not clear the previous one's end
+    // on the SAME run is a plain crossing. Two crossings just beyond
+    // the cluster's merge reach still overlap SLOT-wise — both cuts
+    // removed the shaft between them and the two bridges crossed in
+    // the gap, leaving dangling ends (CodeRabbit round 6 on PR #339).
+    {
+        use std::collections::BTreeMap;
+        let mut groups: BTreeMap<(i64, usize, usize), Vec<usize>> = BTreeMap::new();
+        for (idx, j) in out.iter().enumerate() {
+            let (line, run) = out_meta[idx];
+            groups
+                .entry((j.jumper, line, run.0 * 1_000 + run.1))
+                .or_default()
+                .push(idx);
+        }
+        let mut keep = vec![true; out.len()];
+        for (_, idxs) in groups {
+            let d = out[idxs[0]].dir;
+            let mut idxs = idxs;
+            idxs.sort_by(|a, b| {
+                let da = (out[*a].at.0 - out[*b].at.0) * d.0 + (out[*a].at.1 - out[*b].at.1) * d.1;
+                da.partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let mut cursor = f64::NEG_INFINITY;
+            for ix in idxs {
+                let j = &out[ix];
+                // The slot INTENT (the uncapped axis radius) governs
+                // spacing — the engine's crossing set keeps
+                // room-starved hops for the writers, whose own room
+                // rules decide what draws (reconciled_rows' slot
+                // check, the painters' cap clamp).
+                let r = if j.dir.0.abs() >= j.dir.1.abs() {
+                    j.radii.0
+                } else {
+                    j.radii.1
+                };
+                let p = j.at.0 * d.0 + j.at.1 * d.1;
+                if r <= 0.0 || p - r <= cursor + 2e-6 {
+                    keep[ix] = false;
+                    continue;
+                }
+                cursor = p + r;
+            }
+        }
+        let mut spaced = Vec::with_capacity(out.len());
+        for (j, k) in out.into_iter().zip(keep) {
+            if k {
+                spaced.push(j);
+            }
+        }
+        out = spaced;
     }
     out
 }
@@ -981,7 +1083,7 @@ pub fn line_jumps_with(
 /// phantom window's opening index), or the route's end (PR #339
 /// round 5: the hop slot once ran past a corner and cut the next
 /// leg).
-fn run_extent(pts: &[(f64, f64)], breaks: &[usize], k: usize, t: f64) -> f64 {
+fn run_extent(pts: &[(f64, f64)], breaks: &[usize], k: usize, t: f64) -> (f64, (usize, usize)) {
     let seg = (pts[k + 1].0 - pts[k].0, pts[k + 1].1 - pts[k].1);
     let len = seg.0.hypot(seg.1);
     let continues = |d: (f64, f64)| {
@@ -1004,8 +1106,12 @@ fn run_extent(pts: &[(f64, f64)], breaks: &[usize], k: usize, t: f64) -> f64 {
         back += prev.0.hypot(prev.1);
         m -= 1;
     }
+    // The forward scan starts at the segment AFTER k — `fwd` already
+    // carries k's own post-crossing part; adding segment k again once
+    // reported nearly the whole leg as room past its end (CodeRabbit
+    // round 6 on PR #339).
     let mut fwd = (1.0 - t) * len;
-    let mut n = k;
+    let mut n = k + 1;
     while n + 1 < pts.len() && !breaks.contains(&(n + 1)) {
         let next = (pts[n + 1].0 - pts[n].0, pts[n + 1].1 - pts[n].1);
         if next.0.hypot(next.1) <= 1e-9 {
@@ -1018,7 +1124,13 @@ fn run_extent(pts: &[(f64, f64)], breaks: &[usize], k: usize, t: f64) -> f64 {
         fwd += next.0.hypot(next.1);
         n += 1;
     }
-    back.min(fwd)
+    // The run's segment span (m ..= the last segment kept): the
+    // CLUSTER identity — two crossings merge only on ONE CONTINUOUS
+    // run, never merely on parallel directions (an N-route's two
+    // horizontal strokes point the same way but are not one run;
+    // merging them once averaged a hop into the blank span between
+    // the strokes, CodeRabbit round 6 on PR #339).
+    (back.min(fwd), (m, n.saturating_sub(1).max(k)))
 }
 
 /// Parse a `#rrggbb` line-color cell into the overlay's (r, g, b).
@@ -1264,11 +1376,22 @@ pub fn page_jumps_stripping(
             (d.0 / l, d.1 / l)
         };
         let mut prev_run: Option<(f64, f64)> = None;
-        for (k, (a, b, pen_up)) in segs.iter().enumerate() {
+        for (k, (a, b, mark)) in segs.iter().enumerate() {
             if k == 0 {
                 pts.push(*a);
             }
-            if *pen_up {
+            if *mark != crate::geom::SegMark::Ink {
+                // A SECTION-BOUNDARY bridge never classifies as a
+                // stored gap — two sections are two strokes by
+                // authorship and the blank span between them is
+                // authored space, however gap-shaped (CodeRabbit
+                // round 6 on PR #339).
+                if *mark == crate::geom::SegMark::SectionStart {
+                    breaks.push(pts.len());
+                    prev_run = None;
+                    pts.push(*b);
+                    continue;
+                }
                 // THIS segment is the bridge: a is the previous
                 // stroke's end, b the pen move's target — the skip is
                 // b − a. The run directions around it: the last real
@@ -1286,8 +1409,8 @@ pub fn page_jumps_stripping(
                 let mut next_dir = None;
                 let mut n = k + 1;
                 while n < segs.len() {
-                    let (na, nb, npen) = &segs[n];
-                    if *npen {
+                    let (na, nb, nmark) = &segs[n];
+                    if *nmark != crate::geom::SegMark::Ink {
                         break;
                     }
                     if (na.0 - nb.0).hypot(na.1 - nb.1) > 1e-9 {
@@ -1371,6 +1494,23 @@ pub fn page_jumps_stripping(
         // drew every such crossing's under line and hop arc in gray.
         let color = parse_hex_rgb(&crate::svg::themed_color_string(doc, s, &chain, "LineColor"))
             .unwrap_or((0x42, 0x42, 0x42));
+        // One radius policy (CodeRabbit round 6 on PR #339): the
+        // stored rows and the row-local classifiers pick the axis in
+        // the CONNECTOR'S OWN frame, so this line's page-axis radii
+        // swap when its local X axis maps to page-vertical — every
+        // page-space consumer then lands on the LOCAL axis's radius
+        // exactly like the writer. Unequal per-axis cells with a
+        // rotated connector once drew a hop the writer refused to
+        // save (a zero on the writer's axis).
+        let x_img = (
+            frame.to_page((1.0, 0.0)).0 - frame.to_page((0.0, 0.0)).0,
+            frame.to_page((1.0, 0.0)).1 - frame.to_page((0.0, 0.0)).1,
+        );
+        let line_radii = if x_img.1.abs() > x_img.0.abs() {
+            (radius_y, radius)
+        } else {
+            (radius, radius_y)
+        };
         lines.push(JumpLine {
             id: s.id,
             z,
@@ -1379,9 +1519,10 @@ pub fn page_jumps_stripping(
             style: line_jump_style(doc, &chain, s, page_style),
             pts,
             breaks,
+            radii: line_radii,
         });
     }
-    line_jumps_with(&lines, (radius, radius_y), &rules)
+    line_jumps_with(&lines, &rules)
 }
 
 #[cfg(test)]
@@ -1403,6 +1544,7 @@ mod tests {
             style: JumpStyle::Arc,
             pts: pts.to_vec(),
             breaks: Vec::new(),
+            radii: (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         }
     }
 
@@ -1420,6 +1562,7 @@ mod tests {
             style: JumpStyle::Arc,
             pts: pts.to_vec(),
             breaks: Vec::new(),
+            radii: (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         };
         // A shallow arc's belly cut by a horizontal just under its
         // apex: the line enters and leaves 0.05 in apart — well inside
@@ -1674,6 +1817,7 @@ mod tests {
                 style: JumpStyle::Arc,
                 pts: vec![(0.0, 1.0), (2.0, 1.0)],
                 breaks: Vec::new(),
+                radii: (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
             },
             // The crossed line: a U crossing the run TWICE — at x=1
             // and x=1.5. One pair, two crossings 0.5 in apart.
@@ -1685,6 +1829,7 @@ mod tests {
                 style: JumpStyle::Arc,
                 pts: vec![(1.0, 0.0), (1.0, 2.0), (1.5, 2.0), (1.5, 0.0)],
                 breaks: Vec::new(),
+                radii: (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
             },
         ];
         // X radius tiny, Y radius huge: the horizontal hops draw at
@@ -1727,6 +1872,7 @@ mod tests {
             style: JumpStyle::Arc,
             pts: vec![(1.0, 0.5), (0.4, 0.5), (0.4, 1.0)],
             breaks: Vec::new(),
+            radii: (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         };
         let u = JumpLine {
             id: 2,
@@ -1736,11 +1882,14 @@ mod tests {
             style: JumpStyle::Arc,
             pts: vec![(0.35, 0.578), (0.5, 0.428)],
             breaks: Vec::new(),
+            radii: (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         };
         // X radius 0 (no horizontal hops can draw), Y radius 0.05.
+        let (mut j, mut u) = (j.clone(), u.clone());
+        j.radii = (0.0, 0.05);
+        u.radii = (0.0, 0.05);
         let js = line_jumps_with(
             &[j.clone(), u.clone()],
-            (0.0, 0.05),
             &JumpRules {
                 page_code: 1,
                 con_codes: [(1, 2)].into_iter().collect(),
@@ -1972,7 +2121,13 @@ mod tests {
             page_code: page,
             con_codes: codes.iter().copied().collect(),
         };
-        let hops = |ls: &[JumpLine], ru: &JumpRules| line_jumps_with(ls, r, ru);
+        let hops = |ls: &[JumpLine], ru: &JumpRules| {
+            let mut filled = ls.to_vec();
+            for l in &mut filled {
+                l.radii = r;
+            }
+            line_jumps_with(&filled, ru)
+        };
         // Page 1: the horizontal hops over the vertical…
         let js = hops(&[h.clone(), v.clone()], &rules(1, &[]));
         assert!(js.len() == 1 && js[0].dir.1.abs() < 1e-9, "{js:?}");
@@ -2371,6 +2526,7 @@ mod tests {
             style: JumpStyle::Arc,
             pts: vec![(0.0, 1.0), (1.0, 1.0), (1.0, 1.0), (2.0, 1.0)],
             breaks: vec![2],
+            radii: (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         };
         let v = jline(2, 1, &[(1.5, 0.0), (1.5, 2.0)]);
         let js = line_jumps(&[collapsed, v], r);
@@ -2555,6 +2711,7 @@ mod tests {
             style: JumpStyle::Arc,
             pts: vec![(0.0, 1.0), (1.0, 1.0), (1.0, 1.0), (3.0, 1.0), (4.0, 1.0)],
             breaks: vec![3],
+            radii: (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         };
         let v = jline(2, 1, &[(3.5, 0.0), (3.5, 2.0)]);
         let js = line_jumps(&[dup_break, v], r);
@@ -2576,6 +2733,7 @@ mod tests {
             style: JumpStyle::Arc,
             pts: vec![(0.0, 1.0), (1.0, 1.0), (1.0, 1.0), (3.0, 1.0), (4.0, 1.0)],
             breaks: vec![3],
+            radii: (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         };
         assert!(
             line_jumps(&[broken_line.clone(), v_early.clone()], r).is_empty(),
@@ -2607,6 +2765,7 @@ mod tests {
                 (1.0, 3.0),
             ],
             breaks: vec![3], // the (unrecognized-by-the-test) gap slot
+            radii: (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         };
         let v2 = jline(2, 1, &[(1.0, 0.5), (3.0, 0.5)]);
         let js = line_jumps(&[gapped, v2], r);
@@ -3094,6 +3253,33 @@ mod tests {
         );
     }
 
+
+    /// CodeRabbit round 6 on PR #339: crossings on two PARALLEL
+    /// strokes of one connector (an authored break between) never
+    /// merge — they are not one continuous run, and the averaged
+    /// centroid once landed a hop in the blank span between the
+    /// strokes where neither exists.
+    #[test]
+    fn parallel_strokes_of_one_connector_keep_their_own_hops() {
+        let mut n_route = jline(1, 0, &[(0.0, 0.0), (4.0, 0.0), (0.0, 0.04), (4.0, 0.04)]);
+        n_route.breaks = vec![2]; // the pen move onto the second stroke
+        let v = jline(2, 1, &[(1.0, -1.0), (1.0, 1.0)]);
+        let js = line_jumps_with(
+            &[n_route, v],
+            &JumpRules {
+                page_code: 1,
+                con_codes: std::collections::HashMap::new(),
+            },
+        );
+        assert_eq!(js.len(), 2, "each stroke keeps its own hop: {js:?}");
+        assert!(
+            js.iter()
+                .any(|j| (j.at.1 - 0.0).abs() < 1e-6)
+                && js.iter().any(|j| (j.at.1 - 0.04).abs() < 1e-6),
+            "the hops sit ON the strokes, not between them: {js:?}"
+        );
+    }
+
     /// PR #339 round 5: the hop carries its run's own room (`Jump.cap`)
     /// — a crossing 0.05 above an L's corner caps the slot at 0.05 so
     /// the cut and the bridge stay on the crossing leg; a mid-run
@@ -3106,7 +3292,7 @@ mod tests {
         };
         let l = jline(1, 0, &[(0.0, 1.0), (1.0, 1.0), (1.0, 3.0)]);
         let near = jline(2, 1, &[(0.5, 1.05), (1.5, 1.05)]);
-        let js = line_jumps_with(&[l, near], (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS), &rules);
+        let js = line_jumps_with(&[l, near], &rules);
         assert_eq!(js.len(), 1);
         assert_eq!(js[0].jumper, 1);
         assert!(
@@ -3122,11 +3308,24 @@ mod tests {
             &[(0.0, 1.0), (1.0, 1.0), (1.0, 2.0), (1.0, 2.5), (1.0, 3.0)],
         );
         let mid = jline(2, 1, &[(0.5, 2.2), (1.5, 2.2)]);
-        let js = line_jumps_with(&[split, mid], (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS), &rules);
+        let js = line_jumps_with(&[split, mid], &rules);
         assert_eq!(js.len(), 1);
         assert!(
-            (js[0].cap - 1.2).abs() < 1e-9,
-            "the room spans the collinear rows to the corner: {:?}",
+            (js[0].cap - 0.8).abs() < 1e-9,
+            "the room spans the collinear rows to the NEARER end (the forward leg is shorter): {:?}",
+            js[0].cap
+        );
+        // The FORWARD end bounds too: a crossing 0.05 below the top of
+        // a plain 2-inch leg caps at 0.05 (CodeRabbit round 6 — the
+        // forward scan once counted the crossing's own segment twice
+        // and reported 1.95).
+        let leg = jline(1, 0, &[(1.0, 1.0), (1.0, 3.0)]);
+        let top = jline(2, 1, &[(0.5, 2.95), (1.5, 2.95)]);
+        let js = line_jumps_with(&[leg, top], &rules);
+        assert_eq!(js.len(), 1);
+        assert!(
+            (js[0].cap - 0.05).abs() < 1e-9,
+            "the room stops at the forward end: {:?}",
             js[0].cap
         );
     }

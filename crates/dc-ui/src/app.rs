@@ -5776,10 +5776,13 @@ impl App {
             // crossing, `Jump.cap`) draws as a plain crossing — the
             // svg overlay's own rule (PR #339 round 5).
             .filter_map(|j| {
+                // The hop's OWN line radii — one policy with the row
+                // writer and the svg overlay (CodeRabbit round 6 on
+                // PR #339), capped to the run room.
                 let axis = if j.dir.0.abs() >= j.dir.1.abs() {
-                    jump_radius.0
+                    j.radii.0
                 } else {
-                    jump_radius.1
+                    j.radii.1
                 };
                 let r_eff = axis.min((j.cap - j.weight * 0.5).max(0.0));
                 (r_eff > j.weight).then_some((j, r_eff))

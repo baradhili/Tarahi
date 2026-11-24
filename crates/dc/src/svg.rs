@@ -1188,10 +1188,13 @@ fn render_page_full(
     // A zero axis never reaches here: the engine drops zero-axis
     // hops before they can cluster (#324 phase-2 review).
     let hop_r = |j: &crate::jumps::Jump| {
+        // The hop's OWN line radii (already local-axis-corrected —
+        // one policy with the row writer, CodeRabbit round 6 on PR
+        // #339), capped to the run room.
         let axis = if j.dir.0.abs() >= j.dir.1.abs() {
-            radius
+            j.radii.0
         } else {
-            radius_y
+            j.radii.1
         };
         axis.min((j.cap - j.weight * 0.5).max(0.0))
     };
@@ -1212,27 +1215,29 @@ fn render_page_full(
         }
         // A jumping connector renders inside page-space clips that cut
         // it open around its hops (#324 phase 3). One clip PER HOP,
-        // nested: clip groups INTERSECT, so two hops closer than their
-        // radii still open the shaft along both — a single even-odd
-        // path with overlapping slots would RE-KEEP the overlap
-        // (odd parity) and the shaft would reappear between the arcs
-        // (CodeRabbit round on #324 phase 3). The slot coordinates are
-        // page-space, so the groups wrap the shape OUTSIDE its
+        // ONE clip per connector carries every slot as its own
+        // even-odd subpath: the engine's spacing rule (the row
+        // writer's own cursor) keeps a connector's slots DISJOINT — a
+        // hop that would overlap the previous one's end is a plain
+        // crossing — so disjoint slot subpaths all subtract from the
+        // page rect without the odd-parity re-keep overlapping slots
+        // once caused (that was the reason for NESTED per-hop clips,
+        // CodeRabbit round on #324 phase 3; the nesting also stacked
+        // one PDF q per hop and a 28-hop connector exceeded the
+        // graphics-state depth PostScript printing guarantees —
+        // CodeRabbit round 6 on PR #339). The slot coordinates are
+        // page-space, so the group wraps the shape OUTSIDE its
         // transform.
         let cuts: Vec<&crate::jumps::Jump> = jumps
             .iter()
             .filter(|j| j.jumper == shape.id && hop_r(j) > j.weight)
             .collect();
-        for (k, j) in cuts.iter().enumerate() {
-            let id = if k == 0 {
-                format!("dc-jumpcut{}", shape.id)
-            } else {
-                format!("dc-jumpcut{}-{}", shape.id, k)
-            };
+        if !cuts.is_empty() {
+            let id = format!("dc-jumpcut{}", shape.id);
             let _ = writeln!(
                 svg,
                 r#"<clipPath id="{id}"><path clip-rule="evenodd" d="{}"/></clipPath><g clip-path="url(#{id})">"#,
-                jump_cut_clip_d(j, h, w, hop_r(j))
+                jump_cuts_clip_d(&cuts, h, w, &hop_r)
             );
         }
         render_shape(
@@ -1269,7 +1274,7 @@ fn render_page_full(
             },
             &mut svg,
         );
-        for _ in &cuts {
+        if !cuts.is_empty() {
             let _ = writeln!(svg, "</g>");
         }
         // The hop arcs bridge the cuts, painted WITH the connector —
@@ -1338,7 +1343,12 @@ pub fn jump_normal(dir: (f64, f64)) -> (f64, f64) {
 /// whole page plus, per hop, a slot across the line (2·r along it,
 /// generously wide across), combined even-odd so the slots are holes.
 /// Coordinates are page-space SVG (y down).
-fn jump_cut_clip_d(j: &crate::jumps::Jump, page_h: f64, page_w: f64, r: f64) -> String {
+fn jump_cuts_clip_d(
+    js: &[&crate::jumps::Jump],
+    page_h: f64,
+    page_w: f64,
+    r_of: &dyn Fn(&crate::jumps::Jump) -> f64,
+) -> String {
     let pad = 4.0 * page_w.max(page_h).max(1.0);
     let mut d = format!(
         "M {:.4} {:.4} L {:.4} {:.4} L {:.4} {:.4} L {:.4} {:.4} Z ",
@@ -1351,29 +1361,32 @@ fn jump_cut_clip_d(j: &crate::jumps::Jump, page_h: f64, page_w: f64, r: f64) -> 
         -pad,
         page_h + pad
     );
-    let (dx, dy) = j.dir;
-    let n = (-dy, dx);
-    // Across the line: two pen-widths — well past the stroke the cut
-    // removes (the strip already straightened any stored hop, so the
-    // ink inside the slot is the shaft's own band), without reaching
-    // a NEIGHBORING run of the same shape: the radius-proportional
-    // slack once cut a parallel return run 0.04 in off the crossing
-    // run and Gap style showed a second break where nothing crossed
-    // (PR #339 round 5).
-    let half_w = j.weight * 2.0;
-    let c = |a: f64, b: f64| {
-        let x = j.at.0 + dx * a + n.0 * b;
-        let y = j.at.1 + dy * a + n.1 * b;
-        format!("{:.5} {:.5}", x, page_h - y)
-    };
-    let _ = write!(
-        d,
-        "M {} L {} L {} L {} Z ",
-        c(-r, -half_w),
-        c(r, -half_w),
-        c(r, half_w),
-        c(-r, half_w)
-    );
+    for j in js {
+        let r = r_of(j);
+        let (dx, dy) = j.dir;
+        let n = (-dy, dx);
+        // Across the line: two pen-widths — well past the stroke the
+        // cut removes (the strip already straightened any stored hop,
+        // so the ink inside the slot is the shaft's own band), without
+        // reaching a NEIGHBORING run of the same shape: the
+        // radius-proportional slack once cut a parallel return run
+        // 0.04 in off the crossing run and Gap style showed a second
+        // break where nothing crossed (PR #339 round 5).
+        let half_w = j.weight * 2.0;
+        let c = |a: f64, b: f64| {
+            let x = j.at.0 + dx * a + n.0 * b;
+            let y = j.at.1 + dy * a + n.1 * b;
+            format!("{:.5} {:.5}", x, page_h - y)
+        };
+        let _ = write!(
+            d,
+            "M {} L {} L {} L {} Z ",
+            c(-r, -half_w),
+            c(r, -half_w),
+            c(r, half_w),
+            c(-r, half_w)
+        );
+    }
     d.trim_end().to_string()
 }
 
@@ -9396,11 +9409,12 @@ mod tests {
         }
     }
 
-    /// Two hops closer together than their radii still open the shaft
-    /// along BOTH: the clips NEST one per hop (clip groups intersect),
-    /// where a single even-odd path with overlapping slots would
-    /// re-keep the overlap and the shaft would reappear between the
-    /// arcs (CodeRabbit round on #324 phase 3).
+    /// Two hops closer together than their slots: the second is a
+    /// PLAIN crossing — the row writer's own spacing rule, applied to
+    /// the drawn set (the overlapping pair once cut the shaft between
+    /// the arcs twice and the two bridges crossed mid-gap, leaving
+    /// dangling ends; CodeRabbit round 6 on PR #339). Disjoint hops
+    /// share ONE clip per connector as separate even-odd subpaths.
     #[test]
     fn export_cuts_overlapping_hop_slots_apart() {
         let connector = |id: i64, pin: (f64, f64), w: f64, h: f64| {
@@ -9451,20 +9465,33 @@ mod tests {
         let svg = render_page(&doc, &page).unwrap();
         assert_eq!(
             svg.matches(r#"stroke-linejoin="round""#).count(),
-            2,
-            "two hop arcs: {svg}"
+            1,
+            "the FIRST hop draws; the overlapping second is a plain crossing: {svg}"
         );
-        // The jumper's clips NEST: one group per hop (the outer id,
-        // then the -1 twin), so the intersection cuts both slots.
+        // ONE clip per connector — no nested per-hop twins (a
+        // 28-hop connector once stacked 29 PDF q operators, past the
+        // graphics-state depth PostScript printing guarantees;
+        // CodeRabbit round 6 on PR #339).
         assert_eq!(
             svg.matches(r#"<clipPath id="dc-jumpcut1""#).count(),
             1,
-            "the outer clip"
+            "the connector's one clip"
         );
+        assert!(
+            !svg.contains("dc-jumpcut1-1"),
+            "no nested second-hop clip: {svg}"
+        );
+        // The clip carries exactly ONE slot subpath (the dropped
+        // hop's slot never opens the shaft).
+        let clip = svg
+            .split("<clipPath id=\"dc-jumpcut1\">")
+            .nth(1)
+            .and_then(|rest| rest.split("</clipPath>").next())
+            .unwrap_or_default();
         assert_eq!(
-            svg.matches(r#"<clipPath id="dc-jumpcut1-1""#).count(),
-            1,
-            "the nested second-hop clip"
+            clip.matches('M').count(),
+            2,
+            "the page rect plus ONE slot subpath: {clip}"
         );
     }
 
@@ -12498,11 +12525,14 @@ mod tests {
         assert_eq!(
             segs,
             vec![
-                ((0.0, 0.0), (2.0, 0.0), false),
-                ((2.0, 0.0), (4.0, 0.0), true),
-                ((4.0, 0.0), (6.0, 0.0), false),
+                ((0.0, 0.0), (2.0, 0.0), crate::geom::SegMark::Ink),
+                // The bridge between the sections is a SECTION START,
+                // not a same-section pen move — it can never classify
+                // as a stored gap (CodeRabbit round 6 on PR #339).
+                ((2.0, 0.0), (4.0, 0.0), crate::geom::SegMark::SectionStart),
+                ((4.0, 0.0), (6.0, 0.0), crate::geom::SegMark::Ink),
             ],
-            "each section's own run, one pen-up bridge between: {segs:?}"
+            "each section's own run, one section-boundary bridge between: {segs:?}"
         );
         let _ = &page;
     }
@@ -12578,5 +12608,261 @@ mod tests {
             !geometry_flag_on(&doc, &inst, &chain, sec, "NoShow"),
             "the inherited flag answers in the master's frame"
         );
+    }
+
+    /// CodeRabbit round 6 on PR #339: a SECTION BOUNDARY never
+    /// classifies as a stored gap — two sections are two strokes by
+    /// authorship, and the blank span between them (however
+    /// gap-shaped, here exactly 2·r collinear) is authored space: a
+    /// vertical through it crosses nothing.
+    #[test]
+    fn a_section_boundary_blank_is_not_a_stored_gap() {
+        let r = 0.125 * (2.0 / 3.0) / 2.0;
+        // Pin (0, 5) with LocPin (0, 0.5): local x IS page x.
+        let mut conn = shape_at(1, (0.0, 5.0), 9.0, 1.0, 0.0);
+        conn.sheet.set_cell("LocPinX", Cell::value("0"));
+        conn.sheet.set_cell("LocPinY", Cell::value("0.5"));
+        conn.sheet.set_cell("ObjType", Cell::value("2"));
+        let mut sec1 = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec1.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 2.0), ("Y", 0.5)]),
+            geo_row(2, "LineTo", &[("X", 4.0), ("Y", 0.5)]),
+        ];
+        let mut sec2 = Section {
+            name: "Geometry".into(),
+            ix: 1,
+            ..Section::default()
+        };
+        sec2.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 4.0 + 2.0 * r), ("Y", 0.5)]),
+            geo_row(2, "LineTo", &[("X", 8.0), ("Y", 0.5)]),
+        ];
+        conn.sheet.children.push(SheetChild::Section(sec1));
+        conn.sheet.children.push(SheetChild::Section(sec2));
+        // A vertical through the blank span (page x 4..4+2r, exactly
+        // 2·r collinear — gap-shaped) — nothing inked there.
+        let mut v = shape_at(2, (4.0 + r, 5.0), 0.0, 4.0, 0.0);
+        v.sheet.set_cell("LocPinY", Cell::value("2"));
+        v.sheet.set_cell("ObjType", Cell::value("2"));
+        push_geo(
+            &mut v,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 0.0), ("Y", 4.0)]),
+            ],
+        );
+        let (doc, page) = page_fixture(vec![conn, v]);
+        let js = crate::jumps::page_jumps(&doc, &page, &[]);
+        assert!(
+            js.is_empty(),
+            "the section boundary is authored space, not a gap: {js:?}"
+        );
+    }
+
+    /// CodeRabbit round 6 on PR #339: one radius policy — a connector
+    /// whose local X axis is page-vertical carries SWAPPED page-axis
+    /// radii, so a rotated band with unequal per-axis cells hops at
+    /// its LOCAL axis's radius (the writer's and the row-local
+    /// classifiers' pick), not the page-vertical one.
+    #[test]
+    fn a_rotated_connector_hops_at_its_local_axis_radius() {
+        // rx = 0.1·1/2 = 0.05, ry = 0.2·1/2 = 0.10.
+        let mut band = shape_at(1, (4.0, 5.0), 6.0, 0.25, std::f64::consts::FRAC_PI_2);
+        band.sheet.set_cell("ObjType", Cell::value("2"));
+        push_geo(
+            &mut band,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.125)]),
+                geo_row(2, "LineTo", &[("X", 6.0), ("Y", 0.125)]),
+            ],
+        );
+        let mut cross = shape_at(2, (4.0, 5.0), 6.0, 0.0, 0.0);
+        cross.sheet.set_cell("LocPinX", Cell::value("3"));
+        cross.sheet.set_cell("LocPinY", Cell::value("0"));
+        cross.sheet.set_cell("ObjType", Cell::value("2"));
+        push_geo(
+            &mut cross,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 6.0), ("Y", 0.0)]),
+            ],
+        );
+        let (_doc, mut page) = page_fixture(vec![band, cross]);
+        for (n, v) in [
+            ("LineToLineX", "0.1"),
+            ("LineJumpFactorX", "1"),
+            ("LineToLineY", "0.2"),
+            ("LineJumpFactorY", "1"),
+            ("LineJumpCode", "2"),
+        ] {
+            page.sheet_mut().unwrap().set_cell(n, Cell::value(v));
+        }
+        let doc = Document {
+            pages: vec![page.clone()],
+            ..Document::default()
+        };
+        let js = crate::jumps::page_jumps(&doc, &page, &[]);
+        assert_eq!(js.len(), 1, "the rotated band hops (code 2): {js:?}");
+        // The band's local X axis is page-vertical → its page-axis
+        // radii are swapped: page-horizontal slots take ry, page-
+        // vertical (this hop) take rx.
+        assert_eq!(
+            js[0].radii,
+            (0.2 * 1.0 / 2.0, 0.1 * 1.0 / 2.0),
+            "swapped for the rotated frame: {:?}",
+            js[0]
+        );
+        // The drawn hop sizes at rx (0.05) — the LOCAL axis radius.
+        let svg = render_page(&doc, &page).unwrap();
+        let apex_y = format!("{:.5}", 11.0 - (5.0 + 0.05));
+        assert!(
+            svg.contains(&apex_y),
+            "the apex rises the LOCAL axis radius: {svg}"
+        );
+        let wrong = format!("{:.5}", 11.0 - (5.0 + 0.10));
+        assert!(
+            !svg.contains(&wrong),
+            "never the page-vertical radius: {svg}"
+        );
+    }
+
+    /// CodeRabbit round 6 on PR #339: section ordinals survive
+    /// filtering — with Geometry1 hidden, the visible section's rows
+    /// still feed the env as Geometry2.X#, so its own
+    /// `Geometry2.X2+1` formula resolves instead of finding nothing
+    /// under a renumbered Geometry1.
+    #[test]
+    fn filtered_sections_keep_their_env_ordinals() {
+        let mut s = shape_at(1, (3.0, 0.5), 6.0, 1.0, 0.0);
+        let mut sec1 = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            cells: vec![("NoShow".into(), Cell::value("1".to_string()))],
+            ..Section::default()
+        };
+        sec1.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "LineTo", &[("X", 2.0), ("Y", 0.0)]),
+        ];
+        let mut sec2 = Section {
+            name: "Geometry".into(),
+            ix: 1,
+            ..Section::default()
+        };
+        sec2.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.5)]),
+            geo_row(2, "LineTo", &[("X", 2.0), ("Y", 0.5)]),
+            Row {
+                t: Some("LineTo".into()),
+                ix: 3,
+                cells: vec![
+                    (
+                        "X".into(),
+                        Cell {
+                            v: Some("0".into()),
+                            f: Some("Geometry2.X2+1".into()),
+                            ..Cell::default()
+                        },
+                    ),
+                    ("Y".into(), Cell::value("0.5")),
+                ],
+                ..Row::default()
+            },
+        ];
+        s.sheet.children.push(SheetChild::Section(sec1.clone()));
+        s.sheet.children.push(SheetChild::Section(sec2));
+        let (doc, page) = page_fixture(vec![s]);
+        let sh = &doc.pages[0].shapes[0];
+        let chain = [sh];
+        let frame = crate::geom::hit_frame(&doc, &chain, sh, (1.0, 1.0));
+        let skip = [doc.pages[0].shapes[0]
+            .sheet
+            .sections_named("Geometry")[0]];
+        let segs =
+            crate::geom::geometry_hit_segments_marked(sh, None, &frame, None, &skip);
+        assert_eq!(
+            segs,
+            vec![
+                ((0.0, 0.5), (2.0, 0.5), crate::geom::SegMark::Ink),
+                ((2.0, 0.5), (3.0, 0.5), crate::geom::SegMark::Ink),
+            ],
+            "the Geometry2.X2+1 formula resolves under its OWN name: {segs:?}"
+        );
+        let _ = &page;
+    }
+
+    /// CodeRabbit round 6 on PR #339: the master-row merge targets the
+    /// section that was ORIGINALLY first — a hidden first section's
+    /// inherited tail is hidden with it, never appended onto the
+    /// visible second.
+    #[test]
+    fn master_rows_do_not_merge_into_a_filtered_first_section() {
+        let mut root = Shape {
+            id: 9,
+            ..Shape::default()
+        };
+        root.sheet.set_cell("Width", Cell::value("6"));
+        root.sheet.set_cell("Height", Cell::value("1"));
+        let mut msec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        msec.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "LineTo", &[("X", 2.0), ("Y", 0.0)]),
+            geo_row(3, "LineTo", &[("X", 5.0), ("Y", 0.0)]),
+        ];
+        root.sheet.children.push(SheetChild::Section(msec));
+        let mut s = shape_at(1, (3.0, 0.5), 6.0, 1.0, 0.0);
+        // Own sections: a hidden first, a visible second overriding
+        // rows 1–2 (the master's row 3 is master-ONLY).
+        let mut sec1 = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            cells: vec![("NoShow".into(), Cell::value("1".to_string()))],
+            ..Section::default()
+        };
+        sec1.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "LineTo", &[("X", 2.0), ("Y", 0.0)]),
+        ];
+        let mut sec2 = Section {
+            name: "Geometry".into(),
+            ix: 1,
+            ..Section::default()
+        };
+        sec2.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.5)]),
+            geo_row(2, "LineTo", &[("X", 2.0), ("Y", 0.5)]),
+        ];
+        s.sheet.children.push(SheetChild::Section(sec1.clone()));
+        s.sheet.children.push(SheetChild::Section(sec2));
+        s.master = None;
+        s.master_shape = None;
+        let (doc, page) = page_fixture(vec![s]);
+        let sh = &doc.pages[0].shapes[0];
+        let chain = [sh];
+        let frame = crate::geom::hit_frame(&doc, &chain, sh, (6.0, 1.0));
+        let skip = [doc.pages[0].shapes[0]
+            .sheet
+            .sections_named("Geometry")[0]];
+        let segs = crate::geom::geometry_hit_segments_marked(
+            sh,
+            Some(&root),
+            &frame,
+            None,
+            &skip,
+        );
+        assert_eq!(
+            segs,
+            vec![((0.0, 0.5), (2.0, 0.5), crate::geom::SegMark::Ink)],
+            "the hidden first section's master-only tail stays hidden: {segs:?}"
+        );
+        let _ = &page;
     }
 }

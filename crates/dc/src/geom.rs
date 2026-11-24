@@ -577,9 +577,17 @@ pub fn geometry_hit_segments_marked(
     };
     // The caller's per-section skip applies AFTER the own-vs-master
     // decision — an all-hidden OWN set must not fall through to the
-    // master's (PR #339 round 5).
-    sections.retain(|g| !skip.iter().any(|h| std::ptr::eq(*h, *g)));
-    if sections.is_empty() {
+    // master's (PR #339 round 5). ORDINALS survive the filter: the
+    // env feed names (Geometry2.X2) and the master-row merge identity
+    // key on the ORIGINAL position — renumbering after a hidden
+    // Geometry1 once redirected a Geometry2.X2 formula at nothing
+    // under its own name, and the merge appended the hidden first
+    // section's master-only rows onto the visible second (CodeRabbit
+    // round 6 on PR #339).
+    let mut secs: Vec<(usize, &Section)> =
+        (0..sections.len()).zip(sections.drain(..)).collect();
+    secs.retain(|(_, g)| !skip.iter().any(|h| std::ptr::eq(*h, *g)));
+    if secs.is_empty() {
         return Vec::new();
     }
     // The master rows of the FIRST geometry section, for per-cell
@@ -626,6 +634,11 @@ pub fn geometry_hit_segments_marked(
     let mut pts: Vec<(f64, f64)> = Vec::new();
     // Stroke-break indices: pts positions a pen move OPENED (#324 phase 5).
     let mut pen_up_before: Vec<usize> = Vec::new();
+    // The subset of those a SECTION BOUNDARY opened (the next
+    // section's own MoveTo — never a stored-gap candidate, CodeRabbit
+    // round 6 on PR #339).
+    let mut section_starts: Vec<usize> = Vec::new();
+    let mut prev_gname: Option<&str> = None;
     // shape-local
     let mut cur: Option<(f64, f64)> = None;
     // The same pen in the UNSCALED row frame — stored-jump
@@ -643,26 +656,28 @@ pub fn geometry_hit_segments_marked(
     // LineTo) into M-M-L-L — the pen walked section 2's start as a
     // break and then drew a phantom span from it onto section 1's
     // LineTo endpoint, and the crossing set treated that span as ink
-    // (PR #339 round 5). Master-only rows merge into the FIRST
-    // section's sequence by ix (the single-section inheritance
-    // assumption the ink path's merge also makes). Each row carries
-    // its section-qualified feed name (`Geometry1.X2`) — the ink
-    // path's convention.
-    let gnames: Vec<String> = (0..sections.len())
-        .map(|si| format!("Geometry{}", si + 1))
+    // (PR #339 round 5). Master-only rows merge into the section that
+    // was ORIGINALLY first (the single-section inheritance assumption
+    // the ink path's merge also makes) — and into NOTHING when that
+    // section is filtered out: its inherited tail is hidden with it.
+    // Each row carries its ORIGINAL section-qualified feed name
+    // (`Geometry1.X2`) — the ink path's convention.
+    let gnames: Vec<String> = secs
+        .iter()
+        .map(|(si, _)| format!("Geometry{}", si + 1))
         .collect();
     let mut walk: Vec<(&Row, Option<&Row>, &str)> = Vec::new();
-    for (si, geo) in sections.iter().enumerate() {
+    for (k, (si, geo)) in secs.iter().enumerate() {
         let mut sec_walk: Vec<(&Row, Option<&Row>, &str)> = geo
             .rows
             .iter()
             .take(MAX_WALK_ROWS)
-            .map(|row| (row, master_row(row.ix), gnames[si].as_str()))
+            .map(|row| (row, master_row(row.ix), gnames[k].as_str()))
             .collect();
-        if si == 0 {
+        if *si == 0 {
             for r in master_rows.iter().take(MAX_WALK_ROWS) {
                 if !sec_walk.iter().any(|(row, _, _)| row.ix == r.ix) {
-                    sec_walk.push((r, None, gnames[si].as_str()));
+                    sec_walk.push((r, None, gnames[k].as_str()));
                 }
             }
         }
@@ -742,14 +757,23 @@ pub fn geometry_hit_segments_marked(
         let t = t.as_str();
         let end_local = *end_local;
         let end = *end;
+        let section_start = prev_gname != Some(_gname);
+        prev_gname = Some(_gname);
         match t {
             "MoveTo" | "RelMoveTo" => {
                 // A mid-route pen move records the STROKE BREAK: the
                 // segment pts.last()→this point is a phantom bridge
                 // the crossing set must not treat as ink (the marked
-                // variant's contract; #324 phase-5 review).
+                // variant's contract; #324 phase-5 review). A
+                // SECTION-BOUNDARY opening carries its own mark —
+                // two sections are two strokes by authorship and the
+                // blank between them is never a stored gap
+                // (CodeRabbit round 6 on PR #339).
                 if !pts.is_empty() {
                     pen_up_before.push(pts.len());
+                    if section_start {
+                        section_starts.push(pts.len());
+                    }
                 }
                 cur = Some(end);
                 cur_local = Some(end_local);
@@ -1036,27 +1060,49 @@ pub fn geometry_hit_segments_marked(
             }
         }
     }
-    geometry_segments_from_pts(pts, &pen_up_before)
+    geometry_segments_from_pts(pts, &pen_up_before, &section_starts)
 }
 
 /// One hit-walk segment, with the PEN-UP BRIDGE flag (`true` = the
 /// segment exists only because a `MoveTo` jumped the pen).
-pub type MarkedSeg = ((f64, f64), (f64, f64), bool);
+/// What one walked segment IS: drawn ink, a pen-up bridge inside one
+/// section (a `MoveTo` mid-route — the stored-gap candidate), or a
+/// bridge a SECTION BOUNDARY opened (the next section's own MoveTo —
+/// never a stored gap: two sections are two strokes by authorship,
+/// CodeRabbit round 6 on PR #339).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegMark {
+    Ink,
+    PenUp,
+    SectionStart,
+}
+
+pub type MarkedSeg = ((f64, f64), (f64, f64), SegMark);
 
 /// The walk's polyline + stroke-break indices → segments, each bridge
-/// marked `true` (a segment that exists only because a pen move
-/// jumped the pen — NOT drawn ink). [`geometry_hit_segments`] drops
-/// the marks (hit-testing keeps its long-standing behavior); the
-/// crossing set keeps them and drops UNRECOGNIZED bridges
+/// marked (a segment that exists only because a pen move jumped the
+/// pen — NOT drawn ink; a SECTION-BOUNDARY bridge is its own mark —
+/// never a stored-gap candidate). [`geometry_hit_segments`] drops the
+/// marks (hit-testing keeps its long-standing behavior); the crossing
+/// set keeps them and drops UNRECOGNIZED bridges
 /// (`page_jumps_stripping`, #324 phase 5).
-fn geometry_segments_from_pts(pts: Vec<(f64, f64)>, pen_up_before: &[usize]) -> Vec<MarkedSeg> {
+fn geometry_segments_from_pts(
+    pts: Vec<(f64, f64)>,
+    pen_up_before: &[usize],
+    section_starts: &[usize],
+) -> Vec<MarkedSeg> {
     pts.windows(2)
         .enumerate()
         .map(|(k, w)| {
-            let bridge = pen_up_before.contains(&(k + 1));
-            ((w[0], w[1]), bridge)
+            let mark = if section_starts.contains(&(k + 1)) {
+                SegMark::SectionStart
+            } else if pen_up_before.contains(&(k + 1)) {
+                SegMark::PenUp
+            } else {
+                SegMark::Ink
+            };
+            (w[0], w[1], mark)
         })
-        .map(|((a, b), bridge)| (a, b, bridge))
         .collect()
 }
 
