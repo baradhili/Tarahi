@@ -6471,36 +6471,6 @@ fn line_dasharray(pattern: f64, weight: f64) -> Option<String> {
 }
 
 /// Resolve a color-ish cell to `#rrggbb`.
-/// Variant colors from visio/theme/theme1.xml (DrawingML scheme),
-/// indexed by THEMEVAL("VariantColorN") formulas.
-fn theme_variant_colors(doc: &Document) -> Vec<String> {
-    let Some(pkg) = doc.package.as_ref() else {
-        return Vec::new();
-    };
-    let Some(raw) = pkg.part("visio/theme/theme1.xml") else {
-        return Vec::new();
-    };
-    let xml = String::from_utf8_lossy(raw).into_owned();
-    let mut out = Vec::new();
-    // <vt:varColorN><a:srgbClr val="RRGGBB"/>...</vt:varColorN>
-    for n in 1..=8 {
-        let tag = format!("varColor{n}");
-        let Some(pos) = xml.find(&tag) else { continue };
-        let window = &xml[pos..(pos + 300).min(xml.len())];
-        if let Some(vpos) = window.find("srgbClr val=\"") {
-            let rest = &window[vpos + 13..];
-            if let Some(end) = rest.find('"') {
-                if end == 6 {
-                    out.push(format!("#{}", &rest[..end]));
-                    continue;
-                }
-            }
-        }
-        break;
-    }
-    out
-}
-
 /// Resolve a color cell for rendering: literal hex / document palette,
 /// or — when the cell's formula is a THEMEVAL("VariantColorN") — the
 /// theme's variant color (Visio evaluates the formula, not the cached
@@ -6514,7 +6484,7 @@ fn color_value(doc: &Document, v: &str, f: Option<&str>) -> String {
         if f.contains("THEMEVAL") {
             for n in 1..=8 {
                 if f.contains(&format!("VariantColor{n}")) {
-                    let variants = theme_variant_colors(doc);
+                    let variants = doc.theme_variant_colors();
                     if let Some(col) = variants.get(n - 1) {
                         return col.clone();
                     }
