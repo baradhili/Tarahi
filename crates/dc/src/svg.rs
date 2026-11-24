@@ -4267,6 +4267,7 @@ fn render_geometry(
     // The cached V already lives in that frame; evaluating a formula in
     // the WRONG frame (e.g. master rows against instance Width) skews
     // rectangles into triangles.
+    let inherited_frame = matches!(frame, Frame::Master(_));
     let mut inst_env;
     let env: &mut vsdx::formula::Env = match frame {
         Frame::Instance => {
@@ -4929,10 +4930,28 @@ fn render_geometry(
     // Rounding (Line Format): Visio rounds every corner of a straight
     // polyline walk with this radius — rounded boxes, pill-shaped
     // container headings, connector bends (Visio 2021 witness, t06).
+    // `Rounding` is a shape-level cell, so a formula evaluates in the
+    // INSTANCE env even when the rows come from the master: the path is
+    // already in instance units (Greptile on PR #344). Rows that sample
+    // a curve into `L` segments (NURBS, splines) are curves, not
+    // corners, and stay as drawn.
+    let own_env;
+    let rounding_env: &vsdx::formula::Env = if inherited_frame {
+        own_env = shape_env(doc, s, chain);
+        &own_env
+    } else {
+        env
+    };
+    let sampled_curve = rows.iter().any(|r| {
+        matches!(
+            r.t.as_deref(),
+            Some("NURBSTo" | "SplineStart" | "SplineKnot")
+        )
+    });
     let rounding = doc
         .resolve_cell(s, chain, "Rounding")
-        .and_then(|c| cell_num(&c, env))
-        .filter(|r| r.is_finite() && *r > 0.0);
+        .and_then(|c| cell_num(&c, rounding_env))
+        .filter(|r| r.is_finite() && *r > 0.0 && !sampled_curve);
     if let Some(r) = rounding {
         if let Some(rounded) = round_corners(&d, r) {
             d = rounded;
@@ -10501,6 +10520,69 @@ mod tests {
             8,
             "fill + stroke"
         );
+    }
+
+    /// A spline samples into `L` segments but is a curve: a positive
+    /// `Rounding` leaves it as drawn (Greptile on PR #344).
+    #[test]
+    fn rounding_leaves_sampled_splines_alone() {
+        let render = |rounding: Option<&str>| {
+            let mut s = shape_at(1, (2.0, 2.0), 4.0, 2.0, 0.0);
+            push_geo(
+                &mut s,
+                vec![
+                    geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                    geo_row(
+                        2,
+                        "SplineStart",
+                        &[
+                            ("X", 1.0),
+                            ("Y", 1.5),
+                            ("A", 0.3),
+                            ("B", 0.0),
+                            ("C", 1.0),
+                            ("D", 3.0),
+                        ],
+                    ),
+                    geo_row(3, "SplineKnot", &[("X", 2.5), ("Y", 0.4), ("A", 0.6)]),
+                    geo_row(4, "SplineKnot", &[("X", 4.0), ("Y", 2.0), ("A", 1.0)]),
+                ],
+            );
+            if let Some(r) = rounding {
+                s.sheet.set_cell("Rounding", Cell::value(r));
+            }
+            let (doc, page) = page_fixture(vec![s]);
+            render_page(&doc, &page).unwrap()
+        };
+        assert_eq!(render(Some("0.125")), render(None));
+    }
+
+    /// A formula-only `Rounding` on an instance of a resized master
+    /// evaluates with the INSTANCE's size: `Width/10` on a 4 in wide
+    /// instance is 0.4, not the 1 in master's 0.1 (Greptile on PR #344).
+    #[test]
+    fn rounding_formulas_use_the_instance_size() {
+        let mut master = rect_shape(1, (1.0, 1.0));
+        master.sheet.set_cell("Width", Cell::value("1"));
+        master.sheet.set_cell("Height", Cell::value("1"));
+        let mut inst = shape_at(1, (4.0, 5.0), 4.0, 4.0, 0.0);
+        inst.master = Some(7);
+        inst.sheet.set_cell(
+            "Rounding",
+            Cell {
+                f: Some("Width/10".into()),
+                ..Cell::default()
+            },
+        );
+        let (mut doc, page) = page_fixture(vec![inst]);
+        doc.masters.push(vsdx::model::Master {
+            id: 7,
+            shapes: vec![master],
+            ..vsdx::model::Master::default()
+        });
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(svg.contains(" A 0.40000 0.40000"), "{svg}");
+        assert!(!svg.contains(" A 0.10000 0.10000"), "{svg}");
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
