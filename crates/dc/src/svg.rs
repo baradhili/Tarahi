@@ -2773,8 +2773,77 @@ pub(crate) fn wrap_block_text(
     first_off: f64,
     left_off: f64,
 ) -> Vec<WrapLine> {
+    wrap_block_text_scaled(
+        face, text, size, usable_w, cs_face, cs_size, fb_chain, first_off, left_off, None,
+    )
+}
+
+/// [`wrap_block_text`] with a per-character size factor for `text`
+/// (character runs: a run's `Size` over the block's). An LTR line
+/// then measures each equal-size stretch at its own size, so a label
+/// whose tail is set smaller fits where Visio fits it (the network
+/// LLD's P2MP labels: 10 pt + 8 pt measure 3.55 in against a 3.58 in
+/// block; measured all at 10 pt they wrapped). `None`, or a factor
+/// that is the same for a whole paragraph, measures exactly as
+/// before.
+#[allow(clippy::too_many_arguments)] // wrap_block_text's arguments + the factors
+pub(crate) fn wrap_block_text_scaled(
+    face: &crate::textmetrics::ResolvedFace,
+    text: &str,
+    size: f64,
+    usable_w: f64,
+    cs_face: &crate::textmetrics::ResolvedFace,
+    cs_size: f64,
+    fb_chain: &[&crate::textmetrics::ResolvedFace],
+    first_off: f64,
+    left_off: f64,
+    scale: Option<&[f64]>,
+) -> Vec<WrapLine> {
     let mut lines: Vec<WrapLine> = Vec::new();
-    for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
+    // CRLF / lone CR normalize to one break; the factors follow the
+    // characters they belong to.
+    let mut norm = String::with_capacity(text.len());
+    let mut factors: Vec<f64> = Vec::new();
+    let mut chars = text.chars().enumerate().peekable();
+    while let Some((i, c)) = chars.next() {
+        let f = scale.and_then(|sc| sc.get(i).copied()).unwrap_or(1.0);
+        if c == '\r' {
+            if chars.peek().is_some_and(|&(_, n)| n == '\n') {
+                continue;
+            }
+            norm.push('\n');
+        } else {
+            norm.push(c);
+        }
+        factors.push(f);
+    }
+    let mut para_off = 0usize;
+    for para in norm.split('\n') {
+        let para_len = para.chars().count();
+        let para_factors =
+            &factors[para_off.min(factors.len())..(para_off + para_len).min(factors.len())];
+        para_off += para_len + 1;
+        let mixed = scale.is_some() && para_factors.windows(2).any(|w| (w[0] - w[1]).abs() > 1e-9);
+        let para_chars: Vec<char> = if mixed {
+            para.chars().collect()
+        } else {
+            Vec::new()
+        };
+        // Where the current line starts its search: lines are exact,
+        // in-order substrings of the paragraph.
+        let cursor = std::cell::Cell::new(0usize);
+        let locate = |s: &str| -> Option<usize> {
+            let sc: Vec<char> = s.chars().collect();
+            (cursor.get()..=para_chars.len().checked_sub(sc.len())?)
+                .find(|&k| para_chars[k..k + sc.len()] == sc[..])
+        };
+        let advance = |s: &str| {
+            if mixed {
+                if let Some(p) = locate(s) {
+                    cursor.set(p + s.chars().count());
+                }
+            }
+        };
         let rtl = paragraph_base_rtl(para);
         // Run-by-run measurement with the faces the raster paints
         // with (PR #269 review for RTL; #282 extended it to LTR for
@@ -2785,6 +2854,21 @@ pub(crate) fn wrap_block_text(
         let width_in = |s: &str| {
             if rtl {
                 cs_face.width_in_runs(fb_chain, s, cs_size)
+            } else if let Some(p) = mixed.then(|| locate(s)).flatten() {
+                // Equal-size stretches, each at its own size.
+                let mut total = 0.0;
+                let mut seg = String::new();
+                let mut seg_f = para_factors[p];
+                for (k, c) in s.chars().enumerate() {
+                    let f = para_factors[p + k];
+                    if (f - seg_f).abs() > 1e-9 {
+                        total += face.width_in_runs(fb_chain, &seg, size * seg_f);
+                        seg.clear();
+                        seg_f = f;
+                    }
+                    seg.push(c);
+                }
+                total + face.width_in_runs(fb_chain, &seg, size * seg_f)
             } else {
                 face.width_in_runs(fb_chain, s, size)
             }
@@ -2828,6 +2912,7 @@ pub(crate) fn wrap_block_text(
                     // (`图，`, ``, `上`, `色。`) (CodeRabbit PR
                     // review).
                     if !token.sep.is_empty() {
+                        advance(token.sep);
                         lines.push(WrapLine {
                             text: token.sep.to_string(),
                             rtl,
@@ -2836,6 +2921,7 @@ pub(crate) fn wrap_block_text(
                         para_has_lines = true;
                     }
                 } else {
+                    advance(&cur);
                     lines.push(WrapLine {
                         text: std::mem::take(&mut cur),
                         rtl,
@@ -2929,6 +3015,7 @@ pub(crate) fn wrap_block_text(
                     }
                 }
                 let rest = cur.split_off(split_at);
+                advance(&cur);
                 lines.push(WrapLine {
                     text: std::mem::replace(&mut cur, rest),
                     rtl,
@@ -3168,8 +3255,21 @@ fn emit_text(
         }
         (Vec::new(), bars)
     } else {
+        // Character runs set in another size measure at that size
+        // (the raster paints them so).
+        let run_scale: Option<Vec<f64>> = runs.as_ref().map(|r| {
+            (0..text.chars().count())
+                .map(|i| {
+                    r.styles
+                        .get(r.style_at(i))
+                        .and_then(|st| st.size)
+                        .filter(|z| *z > 0.0 && size > 0.0)
+                        .map_or(1.0, |z| z / size)
+                })
+                .collect()
+        });
         (
-            wrap_block_text(
+            wrap_block_text_scaled(
                 &face,
                 text,
                 paint_size,
@@ -3179,6 +3279,7 @@ fn emit_text(
                 &fb_chain,
                 first_off,
                 left_off,
+                run_scale.as_deref(),
             ),
             Vec::new(),
         )
@@ -11122,6 +11223,65 @@ mod tests {
             svg.matches("<line ").count(),
             1,
             "one strike-through line: {svg}"
+        );
+    }
+
+    /// A run set in a smaller size measures at that size when the line
+    /// wraps (the network LLD's P2MP labels: 10 pt + 8 pt fit the
+    /// 3.58 in block on one line in Visio; measured all at 10 pt they
+    /// wrapped).
+    #[test]
+    fn smaller_runs_measure_at_their_own_size_when_wrapping() {
+        let render = |tail: &str| {
+            let mut s = rect_shape(1, (4.0, 2.0));
+            for (n, v) in [
+                ("Width", "3.5828"),
+                ("LeftMargin", "0"),
+                ("RightMargin", "0"),
+            ] {
+                s.sheet.set_cell(n, Cell::value(v));
+            }
+            s.sheet.text =
+                Some("P2MP:vl2170:IPv4: 88.213.189.16/29 IPv6:2a00:d80:1420:1170::/64".into());
+            s.sheet.text_raw = Some(
+                "<cp IX='0'/>P2MP:vl2170:IPv4: 88.213.189.16/29 IPv6:<cp IX='1'/>2a00:d80:1420:1170::/64"
+                    .into(),
+            );
+            let mut sec = Section {
+                name: "Character".into(),
+                ..Section::default()
+            };
+            let row = |ix: i64, size: &str| Row {
+                ix,
+                cells: vec![
+                    ("Font".to_string(), Cell::value("Calibri")),
+                    ("Size".to_string(), Cell::value(size)),
+                ],
+                ..Row::default()
+            };
+            sec.rows.push(row(0, "0.1388888888888889"));
+            sec.rows.push(row(1, tail));
+            s.sheet.children.push(SheetChild::Section(sec));
+            let (doc, page) = page_fixture(vec![s]);
+            render_page(&doc, &page).unwrap()
+        };
+        // Distinct baselines: a run's own chunk shares its line's y.
+        let lines = |svg: &str| {
+            let mut ys: Vec<&str> = svg
+                .split(" y=\"")
+                .skip(1)
+                .filter_map(|t| t.split('"').next())
+                .collect();
+            ys.sort_unstable();
+            ys.dedup();
+            ys.len()
+        };
+        // The 8 pt tail fits on the first line; set at 10 pt it wraps.
+        let mixed = render("0.1111111111111111");
+        let uniform = render("0.1388888888888889");
+        assert!(
+            lines(&uniform) > lines(&mixed),
+            "mixed: {mixed}\nuniform: {uniform}"
         );
     }
 
