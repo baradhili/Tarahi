@@ -2773,8 +2773,93 @@ pub(crate) fn wrap_block_text(
     first_off: f64,
     left_off: f64,
 ) -> Vec<WrapLine> {
+    wrap_block_text_scaled(
+        face, text, size, usable_w, cs_face, cs_size, fb_chain, first_off, left_off, None,
+    )
+}
+
+/// Character runs for the wrap (see [`wrap_block_text_scaled`]): per
+/// character of the text, the run's size over the block's and the
+/// run's face (`None` = the block face).
+pub(crate) struct WrapRuns {
+    pub factor: Vec<f64>,
+    pub face: Vec<Option<usize>>,
+    pub faces: Vec<crate::textmetrics::ResolvedFace>,
+}
+
+/// [`wrap_block_text`] with character runs. An LTR paragraph that
+/// carries runs measures each stretch of equal size and face with that
+/// run's face at that run's size, so a label whose tail is set smaller
+/// fits where Visio fits it (the network LLD's P2MP labels: 10 pt +
+/// 8 pt measure 3.55 in against a 3.58 in block; measured all at 10 pt
+/// they wrapped), a paragraph set wholly in another size wraps at that
+/// size, and a bold run measures bold (Greptile on PR #350). Without
+/// runs, or in a paragraph where every character keeps the block's
+/// size and face, the measurement is exactly as before.
+#[allow(clippy::too_many_arguments)] // wrap_block_text's arguments + the runs
+pub(crate) fn wrap_block_text_scaled(
+    face: &crate::textmetrics::ResolvedFace,
+    text: &str,
+    size: f64,
+    usable_w: f64,
+    cs_face: &crate::textmetrics::ResolvedFace,
+    cs_size: f64,
+    fb_chain: &[&crate::textmetrics::ResolvedFace],
+    first_off: f64,
+    left_off: f64,
+    runs: Option<&WrapRuns>,
+) -> Vec<WrapLine> {
     let mut lines: Vec<WrapLine> = Vec::new();
-    for para in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
+    // CRLF / lone CR normalize to one break; the run keys follow the
+    // characters they belong to.
+    let mut norm = String::with_capacity(text.len());
+    let mut keys: Vec<(f64, Option<usize>)> = Vec::new();
+    let mut chars = text.chars().enumerate().peekable();
+    while let Some((i, c)) = chars.next() {
+        let key = runs.map_or((1.0, None), |r| {
+            (
+                r.factor.get(i).copied().unwrap_or(1.0),
+                r.face.get(i).copied().flatten(),
+            )
+        });
+        if c == '\r' {
+            if chars.peek().is_some_and(|&(_, n)| n == '\n') {
+                continue;
+            }
+            norm.push('\n');
+        } else {
+            norm.push(c);
+        }
+        keys.push(key);
+    }
+    let same =
+        |a: (f64, Option<usize>), b: (f64, Option<usize>)| (a.0 - b.0).abs() <= 1e-9 && a.1 == b.1;
+    let mut para_off = 0usize;
+    for para in norm.split('\n') {
+        let para_len = para.chars().count();
+        let para_keys = &keys[para_off.min(keys.len())..(para_off + para_len).min(keys.len())];
+        para_off += para_len + 1;
+        let styled = runs.is_some() && para_keys.iter().any(|k| !same(*k, (1.0, None)));
+        let para_chars: Vec<char> = if styled {
+            para.chars().collect()
+        } else {
+            Vec::new()
+        };
+        // Where the current line starts its search: lines are exact,
+        // in-order substrings of the paragraph.
+        let cursor = std::cell::Cell::new(0usize);
+        let locate = |s: &str| -> Option<usize> {
+            let sc: Vec<char> = s.chars().collect();
+            (cursor.get()..=para_chars.len().checked_sub(sc.len())?)
+                .find(|&k| para_chars[k..k + sc.len()] == sc[..])
+        };
+        let advance = |s: &str| {
+            if styled {
+                if let Some(p) = locate(s) {
+                    cursor.set(p + s.chars().count());
+                }
+            }
+        };
         let rtl = paragraph_base_rtl(para);
         // Run-by-run measurement with the faces the raster paints
         // with (PR #269 review for RTL; #282 extended it to LTR for
@@ -2782,9 +2867,35 @@ pub(crate) fn wrap_block_text(
         // shared fallback chain. A pure-script paragraph the primary
         // face covers measures as one run through the same single-
         // face path as before.
+        let measure = |k: (f64, Option<usize>), seg: &str| {
+            let f =
+                k.1.and_then(|i| runs.and_then(|r| r.faces.get(i)))
+                    .unwrap_or(face);
+            f.width_in_runs(fb_chain, seg, size * k.0)
+        };
         let width_in = |s: &str| {
-            if rtl {
+            if s.is_empty() {
+                // Nothing to measure — and no position to look up: an
+                // emitted whole token leaves the cursor at the paragraph
+                // end (Greptile on PR #350).
+                0.0
+            } else if rtl {
                 cs_face.width_in_runs(fb_chain, s, cs_size)
+            } else if let Some(p) = styled.then(|| locate(s)).flatten() {
+                // Equal-key stretches, each with its own face and size.
+                let mut total = 0.0;
+                let mut seg = String::new();
+                let mut seg_k = para_keys[p];
+                for (k, c) in s.chars().enumerate() {
+                    let key = para_keys[p + k];
+                    if !same(key, seg_k) {
+                        total += measure(seg_k, &seg);
+                        seg.clear();
+                        seg_k = key;
+                    }
+                    seg.push(c);
+                }
+                total + measure(seg_k, &seg)
             } else {
                 face.width_in_runs(fb_chain, s, size)
             }
@@ -2828,6 +2939,7 @@ pub(crate) fn wrap_block_text(
                     // (`图，`, ``, `上`, `色。`) (CodeRabbit PR
                     // review).
                     if !token.sep.is_empty() {
+                        advance(token.sep);
                         lines.push(WrapLine {
                             text: token.sep.to_string(),
                             rtl,
@@ -2836,6 +2948,7 @@ pub(crate) fn wrap_block_text(
                         para_has_lines = true;
                     }
                 } else {
+                    advance(&cur);
                     lines.push(WrapLine {
                         text: std::mem::take(&mut cur),
                         rtl,
@@ -2929,6 +3042,7 @@ pub(crate) fn wrap_block_text(
                     }
                 }
                 let rest = cur.split_off(split_at);
+                advance(&cur);
                 lines.push(WrapLine {
                     text: std::mem::replace(&mut cur, rest),
                     rtl,
@@ -2996,6 +3110,22 @@ fn emit_text(
         return;
     };
     let tb = resolve_text_block(doc, s, chain, width, height);
+    // Character runs (`<cp IX='n'/>` markers → Character rows) and the
+    // layout text: U+2028 is a line break, a tab advances like four
+    // spaces (Visio 2021 witness c03 — tab stops are not modeled).
+    // Blocks without differing runs keep their exact former output.
+    let runs = if substituted.is_none() {
+        text_runs(doc, s, chain, &tb)
+    } else {
+        None
+    };
+    let layout_text: String;
+    let text = if text.contains(['\u{2028}', '\t']) {
+        layout_text = text.replace('\u{2028}', "\n").replace('\t', "    ");
+        layout_text.as_str()
+    } else {
+        text
+    };
     let (tx, ty) = tb.pin;
     let (tw, th) = tb.size;
     let angle = tb.angle;
@@ -3152,8 +3282,39 @@ fn emit_text(
         }
         (Vec::new(), bars)
     } else {
+        // Character runs measure with their own size and face (the
+        // raster paints them so).
+        let wrap_runs: Option<WrapRuns> = runs.as_ref().map(|r| {
+            let mut faces: Vec<crate::textmetrics::ResolvedFace> = Vec::new();
+            let mut face_of: Vec<Option<usize>> = Vec::new();
+            for st in &r.styles {
+                let (b, i) = (st.bold.unwrap_or(tb.bold), st.italic.unwrap_or(tb.italic));
+                face_of.push(if (b, i) == (tb.bold, tb.italic) {
+                    None
+                } else {
+                    faces.push(crate::textmetrics::resolve(tb.font.as_deref(), b, i));
+                    Some(faces.len() - 1)
+                });
+            }
+            let n = text.chars().count();
+            WrapRuns {
+                factor: (0..n)
+                    .map(|i| {
+                        r.styles
+                            .get(r.style_at(i))
+                            .and_then(|st| st.size)
+                            .filter(|z| *z > 0.0 && size > 0.0)
+                            .map_or(1.0, |z| z / size)
+                    })
+                    .collect(),
+                face: (0..n)
+                    .map(|i| face_of.get(r.style_at(i)).copied().flatten())
+                    .collect(),
+                faces,
+            }
+        });
         (
-            wrap_block_text(
+            wrap_block_text_scaled(
                 &face,
                 text,
                 paint_size,
@@ -3163,6 +3324,7 @@ fn emit_text(
                 &fb_chain,
                 first_off,
                 left_off,
+                wrap_runs.as_ref(),
             ),
             Vec::new(),
         )
@@ -3178,17 +3340,83 @@ fn emit_text(
     // TEXTHEIGHT (textfunc) measured the same too-small block. Slots
     // stay NOMINAL under Character.Pos (#230: TEXTHEIGHT retains the
     // nominal size).
+    // Each wrapped line's character range in the layout text (lines are
+    // exact substrings, in order; the separators a break consumed are
+    // skipped) — only needed when the block carries runs.
+    let line_ranges: Vec<Option<(usize, usize)>> = if runs.is_some() {
+        let chars: Vec<char> = text.chars().collect();
+        let mut cursor = 0usize;
+        lines
+            .iter()
+            .map(|l| {
+                let lc: Vec<char> = l.text.chars().collect();
+                let found = (cursor..=chars.len().saturating_sub(lc.len()))
+                    .find(|&k| chars[k..k + lc.len()] == lc[..])?;
+                cursor = found + lc.len();
+                Some((found, found + lc.len()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    // A run line's segments: each style stretch with its face, paint
+    // size and width — the one measure for placement, alignment and the
+    // #229 background (Greptile on PR #350: the block-style width
+    // misplaced centered and right-aligned mixed-size lines).
+    let run_segs = |r: &TextRuns, content: &str, lo: usize| {
+        let chars: Vec<char> = content.chars().collect();
+        let mut segs: Vec<(String, usize, f64, f64)> = Vec::new();
+        let mut i = 0;
+        while i < chars.len() {
+            let st = r.style_at(lo + i);
+            let mut j = i + 1;
+            while j < chars.len() && r.style_at(lo + j) == st {
+                j += 1;
+            }
+            let seg: String = chars[i..j].iter().collect();
+            let rs = &r.styles[st];
+            let fs = rs.size.map_or(paint_size, |z| z * reduce);
+            let seg_face = crate::textmetrics::resolve(
+                tb.font.as_deref(),
+                rs.bold.unwrap_or(tb.bold),
+                rs.italic.unwrap_or(tb.italic),
+            );
+            let w = seg_face.width_in_runs(&fb_chain, &seg, fs);
+            segs.push((seg, st, fs, w));
+            i = j;
+        }
+        segs
+    };
+    // A run line's height factor: its largest run over the block size,
+    // never below the block's own (Greptile on PR #350: a 30 pt run in
+    // a 10 pt block overlapped its neighbours at 12 pt spacing).
+    let run_scale = |line_no: usize| -> f64 {
+        match (&runs, line_ranges.get(line_no).copied().flatten()) {
+            (Some(r), Some((lo, hi))) if !lines[line_no].rtl && size > 0.0 => (lo..hi)
+                .map(|i| r.styles[r.style_at(i)].size.map_or(1.0, |z| z / size))
+                .fold(1.0, f64::max),
+            _ => 1.0,
+        }
+    };
     let slots: Vec<f64> = if greeked {
         vec![line_h; n_lines as usize]
     } else {
-        lines.iter().map(|l| line_slot_height(&tb, l.rtl)).collect()
+        lines
+            .iter()
+            .enumerate()
+            .map(|(i, l)| line_slot_height(&tb, l.rtl) * run_scale(i))
+            .collect()
     };
     let total_h: f64 = slots.iter().sum();
     // The first line's ascent rides its own effective size (nominal
     // under Pos — the shift applies to the baseline, not the slot).
-    let first_size = lines
-        .first()
-        .map_or(size, |l| if l.rtl { effective_cs_size(&tb) } else { size });
+    let first_size = lines.first().map_or(size, |l| {
+        if l.rtl {
+            effective_cs_size(&tb)
+        } else {
+            size * run_scale(0)
+        }
+    });
 
     // Text-block rect from the sheet: the pin (TxtPinX/TxtPinY, y-up local)
     // sits TxtLocPinX/TxtLocPinY from the block's lower-left corner, so that
@@ -3260,7 +3488,9 @@ fn emit_text(
     // (above shape geometry, below text).
     let mut bkgnd_span: Option<(f64, f64)> = None;
     let mut any_rtl = false;
-    for (line, slot) in lines.iter().zip(&slots) {
+    let mut deco = String::new();
+    for (line_no, (line, slot)) in lines.iter().zip(&slots).enumerate() {
+        let range = line_ranges.get(line_no).copied().flatten();
         let (content, line_x, line_attrs, pre, y) = if line.rtl {
             any_rtl = true;
             // The RTL line paints with the complex-script pair; its
@@ -3329,7 +3559,7 @@ fn emit_text(
             // measured em offset (positive = raised) — independent of
             // the reduced glyph em, so the shift base is the line's
             // NOMINAL size.
-            let line_size = size;
+            let line_size = size * run_scale(line_no);
             let y = top + line_size * 0.8 - script_l.map_or(0.0, |(_, shift)| shift * line_size);
             // LTR line placement: every line lays out in an indented
             // band — a bulleted paragraph's first line carries
@@ -3348,7 +3578,10 @@ fn emit_text(
             // PR review). Latin-only lines keep their width — the
             // chain falls back to `width_in` when the face covers
             // the whole line.
-            let line_w = face.width_in_runs(&fb_chain, &line.text, paint_size);
+            let line_w = match (&runs, range) {
+                (Some(r), Some((lo, _))) => run_segs(r, &line.text, lo).iter().map(|g| g.3).sum(),
+                _ => face.width_in_runs(&fb_chain, &line.text, paint_size),
+            };
             let bulleted = line.first_of_para && bullet_layout.is_some();
             let band_off = if bulleted {
                 // The unit math below places the line outright.
@@ -3461,12 +3694,59 @@ fn emit_text(
             (line.text.clone(), lx, attrs, pre, y)
         };
         let _ = write!(body, "{pre}");
-        let _ = write!(
-            body,
-            r#"<tspan x="{line_x:.4}" y="{y:.4}"{}>{}</tspan>"#,
-            line_attrs,
-            escape_text(&content)
-        );
+        // A bulleted first line anchors "start" at its text x (its only
+        // line attribute); it keeps its runs too (Greptile on PR #350).
+        let run_line = match (&runs, range) {
+            (Some(r), Some(rg)) if !line.rtl && content == line.text => Some((r, rg)),
+            _ => None,
+        };
+        if let Some((r, (lo, _))) = run_line {
+            // One positioned chunk per run (its own fill/weight even in
+            // the PDF export, which paints a chunk in one style);
+            // underline/strike-through as real lines after the text.
+            let segs = run_segs(r, &content, lo);
+            let line_w: f64 = segs.iter().map(|g| g.3).sum();
+            let line_anchor = if line_attrs.is_empty() {
+                anchor
+            } else {
+                "start"
+            };
+            let mut x = match line_anchor {
+                "start" => line_x,
+                "end" => line_x - line_w,
+                _ => line_x - line_w / 2.0,
+            };
+            for (seg, st, fs, seg_w) in &segs {
+                let rs = &r.styles[*st];
+                let _ = write!(
+                    body,
+                    r#"<tspan x="{x:.4}" y="{y:.4}" text-anchor="start"{}>{}</tspan>"#,
+                    rs.attrs(reduce),
+                    escape_text(seg)
+                );
+                let ink = rs.color.as_deref().unwrap_or(&color);
+                for (on, dy) in [(rs.underline, 0.11), (rs.strike, -0.27)] {
+                    if on && !seg.trim().is_empty() {
+                        let _ = write!(
+                            deco,
+                            r#"<line x1="{x:.4}" y1="{yy:.4}" x2="{x2:.4}" y2="{yy:.4}" stroke="{c}" stroke-width="{w:.4}"/>"#,
+                            yy = y + dy * fs,
+                            x2 = x + seg_w,
+                            c = escape_attr(ink),
+                            w = fs * 0.06,
+                        );
+                    }
+                }
+                x += seg_w;
+            }
+        } else {
+            let _ = write!(
+                body,
+                r#"<tspan x="{line_x:.4}" y="{y:.4}"{}>{}</tspan>"#,
+                line_attrs,
+                escape_text(&content)
+            );
+        }
         top += slot;
     }
     // Flip-aware block rotation (issue #19): the counter-scale keeps the
@@ -3546,6 +3826,7 @@ fn emit_text(
             f = font_attrs,
             b = body
         );
+        let _ = write!(out, "{deco}");
         let _ = writeln!(out, "</g>");
     } else {
         let _ = write!(out, "{bkgnd_rect}");
@@ -3558,7 +3839,182 @@ fn emit_text(
             f = font_attrs,
             b = body
         );
+        let _ = write!(out, "{deco}");
     }
+}
+
+/// One Character row's look where it differs from the block (its
+/// first row): `None` = as the block.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct RunStyle {
+    color: Option<String>,
+    bold: Option<bool>,
+    italic: Option<bool>,
+    size: Option<f64>,
+    underline: bool,
+    strike: bool,
+}
+
+impl RunStyle {
+    /// `reduce` is the Character.Pos size reduction the run was measured
+    /// with: a super- or subscript run draws at the same reduced size
+    /// (Greptile on PR #350).
+    fn attrs(&self, reduce: f64) -> String {
+        let mut a = String::new();
+        if let Some(c) = &self.color {
+            let _ = write!(a, r#" fill="{}""#, escape_attr(c));
+        }
+        if let Some(b) = self.bold {
+            a.push_str(if b {
+                r#" font-weight="bold""#
+            } else {
+                r#" font-weight="normal""#
+            });
+        }
+        if let Some(i) = self.italic {
+            a.push_str(if i {
+                r#" font-style="italic""#
+            } else {
+                r#" font-style="normal""#
+            });
+        }
+        if let Some(z) = self.size {
+            let _ = write!(a, r#" font-size="{:.4}""#, z * reduce);
+        }
+        a
+    }
+}
+
+/// A block's character runs: the style index of every layout-text
+/// character (tabs count four, like the layout) and the styles.
+struct TextRuns {
+    per_char: Vec<usize>,
+    styles: Vec<RunStyle>,
+}
+
+impl TextRuns {
+    fn style_at(&self, i: usize) -> usize {
+        self.per_char.get(i).copied().unwrap_or(0)
+    }
+}
+
+/// Parse the raw text's `<cp IX='n'/>` markers into per-character
+/// Character-row indices and resolve each row against the block's
+/// first-row look (Visio 2021 witness c03: strike-through, red bold
+/// and underlined runs authored through the Characters object).
+/// `None` when no run differs (the block renders as before), when the
+/// raw text does not reproduce the plain text, or it carries fields.
+fn text_runs(doc: &Document, s: &Shape, chain: &[&Shape], tb: &TextBlock) -> Option<TextRuns> {
+    let raw = s.sheet.text_raw.as_deref()?;
+    if !raw.contains("<cp") || raw.contains("<fld") {
+        return None;
+    }
+    let mut plain = String::new();
+    let mut idx: Vec<usize> = Vec::new();
+    let mut cur = 0usize;
+    let mut rest = raw;
+    while let Some(c) = rest.chars().next() {
+        if c == '<' {
+            let end = rest.find('>')?;
+            let tag = &rest[..=end];
+            if tag.starts_with("<cp") {
+                let ix = tag
+                    .split("IX=")
+                    .nth(1)
+                    .and_then(|v| v.trim_start_matches(['\'', '"']).split(['\'', '"']).next())
+                    .and_then(|v| v.parse::<usize>().ok())?;
+                cur = ix;
+            }
+            rest = &rest[end + 1..];
+            continue;
+        }
+        let (ch, len) = if c == '&' {
+            let end = rest.find(';')?;
+            let ent = &rest[1..end];
+            let ch = match ent {
+                "amp" => '&',
+                "lt" => '<',
+                "gt" => '>',
+                "quot" => '"',
+                "apos" => '\'',
+                e if e.starts_with("#x") => char::from_u32(u32::from_str_radix(&e[2..], 16).ok()?)?,
+                e if e.starts_with('#') => char::from_u32(e[1..].parse().ok()?)?,
+                _ => return None,
+            };
+            (ch, end + 1)
+        } else {
+            (c, c.len_utf8())
+        };
+        plain.push(ch);
+        // A tab lays out as four spaces.
+        let n = if ch == '\t' { 4 } else { 1 };
+        idx.extend(std::iter::repeat_n(cur, n));
+        rest = &rest[len..];
+    }
+    let expected = s.sheet.text.as_deref().unwrap_or("");
+    if plain.replace("\r\n", "\n") != expected.replace("\r\n", "\n") {
+        return None;
+    }
+    // Only the IX values the text references get a style, compacted to
+    // 0..n: a document-controlled `<cp IX='1000000000'/>` must not size
+    // an allocation (Greptile on PR #350). Index 0 stays the first
+    // referenced row, so `style_at`'s fallback is a real style.
+    let mut used: Vec<usize> = idx.clone();
+    used.sort_unstable();
+    used.dedup();
+    for i in idx.iter_mut() {
+        *i = used.binary_search(i).unwrap_or(0);
+    }
+    let row_cell = |ix: usize, name: &str| -> Option<Cell> {
+        let find = |sh: &Sheet| {
+            sh.sections_named("Character")
+                .into_iter()
+                .next()
+                .and_then(|sec| sec.rows.iter().find(|r| r.ix == ix as i64))
+                .and_then(|r| r.cell(name))
+                .filter(|c| !c.is_inherited() && !c.is_themed())
+                .cloned()
+        };
+        find(&s.sheet).or_else(|| doc.instance_source(s, chain).and_then(|m| find(&m.sheet)))
+    };
+    let styles: Vec<RunStyle> = used
+        .iter()
+        .map(|&ix| {
+            let color = row_cell(ix, "Color")
+                .map(|c| color_value(doc, c.v.as_deref().unwrap_or(""), c.f.as_deref()))
+                .filter(|c| !c.eq_ignore_ascii_case(&tb.color));
+            let bits = row_cell(ix, "Style")
+                .and_then(|c| c.numeric())
+                .map(|v| v as u32);
+            let bold = bits.map(|b| b & 1 != 0).filter(|b| *b != tb.bold);
+            let italic = bits.map(|b| b & 2 != 0).filter(|i| *i != tb.italic);
+            let underline = bits.is_some_and(|b| b & 4 != 0);
+            let strike = row_cell(ix, "Strikethru")
+                .and_then(|c| c.numeric())
+                .is_some_and(|v| v != 0.0)
+                || row_cell(ix, "DoubleStrikethrough")
+                    .and_then(|c| c.numeric())
+                    .is_some_and(|v| v != 0.0);
+            let size = row_cell(ix, "Size")
+                .and_then(|c| c.numeric())
+                .filter(|z| (z - tb.font_size).abs() > 1e-6);
+            RunStyle {
+                color,
+                bold,
+                italic,
+                size,
+                underline,
+                strike,
+            }
+        })
+        .collect();
+    if styles.iter().all(|st| *st == RunStyle::default()) {
+        return None;
+    }
+    Some(TextRuns {
+        per_char: idx,
+        styles,
+    })
 }
 
 /// `#rrggbb` (or `#rgb`) → (r, g, b) bytes; black on anything else —
@@ -10888,6 +11344,302 @@ mod tests {
         );
         let stroke = render(&[("LineGradientEnabled", "1")], true);
         assert!(stroke.contains(r#"stroke="url(#dc-grad"#), "{stroke}");
+    }
+
+    /// Character runs (Visio 2021 witness c03): `<cp IX='n'/>` markers
+    /// pick Character rows; a struck run gets a line through it, a red
+    /// bold run its own positioned chunk, an underlined run a line under
+    /// it. A block whose rows match the first row renders unchanged.
+    #[test]
+    fn character_runs_style_their_chunks() {
+        let mut s = rect_shape(1, (2.0, 2.0));
+        s.sheet.set_cell("Width", Cell::value("3"));
+        s.sheet.text = Some("normal struck red".into());
+        s.sheet.text_raw =
+            Some("<cp IX='0'/>normal <cp IX='1'/>struck<cp IX='0'/> <cp IX='2'/>red".into());
+        let mut sec = Section {
+            name: "Character".into(),
+            ..Section::default()
+        };
+        let row = |ix: i64, cells: &[(&str, &str)]| Row {
+            ix,
+            cells: cells
+                .iter()
+                .map(|(n, v)| (n.to_string(), Cell::value(*v)))
+                .collect(),
+            ..Row::default()
+        };
+        sec.rows.push(row(0, &[]));
+        sec.rows.push(row(1, &[("Strikethru", "1")]));
+        sec.rows
+            .push(row(2, &[("Color", "#ff0000"), ("Style", "1")]));
+        s.sheet.children.push(SheetChild::Section(sec));
+        let (doc, page) = page_fixture(vec![s]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(
+            svg.contains(r##"fill="#ff0000" font-weight="bold">red</tspan>"##),
+            "{svg}"
+        );
+        assert!(svg.contains(">struck</tspan>"), "{svg}");
+        assert_eq!(
+            svg.matches("<line ").count(),
+            1,
+            "one strike-through line: {svg}"
+        );
+    }
+
+    /// A run set in a smaller size measures at that size when the line
+    /// wraps (the network LLD's P2MP labels: 10 pt + 8 pt fit the
+    /// 3.58 in block on one line in Visio; measured all at 10 pt they
+    /// wrapped).
+    #[test]
+    fn smaller_runs_measure_at_their_own_size_when_wrapping() {
+        let render = |tail: &str| {
+            let mut s = rect_shape(1, (4.0, 2.0));
+            for (n, v) in [
+                ("Width", "3.5828"),
+                ("LeftMargin", "0"),
+                ("RightMargin", "0"),
+            ] {
+                s.sheet.set_cell(n, Cell::value(v));
+            }
+            s.sheet.text =
+                Some("P2MP:vl2170:IPv4: 88.213.189.16/29 IPv6:2a00:d80:1420:1170::/64".into());
+            s.sheet.text_raw = Some(
+                "<cp IX='0'/>P2MP:vl2170:IPv4: 88.213.189.16/29 IPv6:<cp IX='1'/>2a00:d80:1420:1170::/64"
+                    .into(),
+            );
+            let mut sec = Section {
+                name: "Character".into(),
+                ..Section::default()
+            };
+            let row = |ix: i64, size: &str| Row {
+                ix,
+                cells: vec![
+                    ("Font".to_string(), Cell::value("Calibri")),
+                    ("Size".to_string(), Cell::value(size)),
+                ],
+                ..Row::default()
+            };
+            sec.rows.push(row(0, "0.1388888888888889"));
+            sec.rows.push(row(1, tail));
+            s.sheet.children.push(SheetChild::Section(sec));
+            let (doc, page) = page_fixture(vec![s]);
+            render_page(&doc, &page).unwrap()
+        };
+        // Distinct baselines: a run's own chunk shares its line's y.
+        let lines = |svg: &str| {
+            let mut ys: Vec<&str> = svg
+                .split(" y=\"")
+                .skip(1)
+                .filter_map(|t| t.split('"').next())
+                .collect();
+            ys.sort_unstable();
+            ys.dedup();
+            ys.len()
+        };
+        // The 8 pt tail fits on the first line; set at 10 pt it wraps.
+        let mixed = render("0.1111111111111111");
+        let uniform = render("0.1388888888888889");
+        assert!(
+            lines(&uniform) > lines(&mixed),
+            "mixed: {mixed}\nuniform: {uniform}"
+        );
+    }
+
+    /// One text block with character runs through `emit_text`: `raw`
+    /// carries the `<cp IX='n'/>` markers, `rows` the Character rows by
+    /// IX, `cells` extra sheet cells, `para` extra Paragraph cells.
+    fn emit_runs(
+        raw: &str,
+        rows: &[(i64, &[(&str, &str)])],
+        cells: &[(&str, &str)],
+        para: &[(&str, &str)],
+    ) -> String {
+        let doc = Document::default();
+        let mut s = Shape::default();
+        let mut plain = String::new();
+        let mut rest = raw;
+        while let Some(i) = rest.find('<') {
+            plain.push_str(&rest[..i]);
+            rest = &rest[rest[i..].find('>').unwrap() + i + 1..];
+        }
+        plain.push_str(rest);
+        s.sheet.text = Some(plain);
+        s.sheet.text_raw = Some(raw.into());
+        s.sheet.set_cell("Width", Cell::value("4.0"));
+        s.sheet.set_cell("LeftMargin", Cell::value("0"));
+        s.sheet.set_cell("RightMargin", Cell::value("0"));
+        for (n, v) in cells {
+            s.sheet.set_cell(n, Cell::value(*v));
+        }
+        let row = |ix: i64, cells: &[(&str, &str)]| Row {
+            ix,
+            cells: cells
+                .iter()
+                .map(|(n, v)| (n.to_string(), Cell::value(*v)))
+                .collect(),
+            ..Row::default()
+        };
+        s.sheet.children.push(SheetChild::Section(Section {
+            name: "Character".into(),
+            rows: rows.iter().map(|(ix, c)| row(*ix, c)).collect(),
+            ..Section::default()
+        }));
+        if !para.is_empty() {
+            s.sheet.children.push(SheetChild::Section(Section {
+                name: "Paragraph".into(),
+                rows: vec![row(0, para)],
+                ..Section::default()
+            }));
+        }
+        let chain = [&s];
+        let mut out = String::new();
+        let w = cells
+            .iter()
+            .find(|(n, _)| *n == "Width")
+            .map_or(4.0, |(_, v)| v.parse().unwrap());
+        emit_text(
+            &doc, &s, &chain, w, 1.0, 1.0, 1.0, false, None, None, &mut out,
+        );
+        out
+    }
+
+    /// The `x`/`y` attribute values of every `<tspan>`, in order.
+    fn tspan_xy(svg: &str) -> Vec<(f64, f64)> {
+        svg.split("<tspan ")
+            .skip(1)
+            .filter_map(|t| {
+                let get = |k: &str| {
+                    t.split(&format!(" {k}=\""))
+                        .nth(1)
+                        .or_else(|| t.strip_prefix(&format!("{k}=\"")))?
+                        .split('"')
+                        .next()?
+                        .parse::<f64>()
+                        .ok()
+                };
+                Some((get("x")?, get("y")?))
+            })
+            .collect()
+    }
+
+    /// The wrap measures a paragraph set wholly in another size at that
+    /// size, a bold run with the bold face, and survives a narrow CJK
+    /// token whose split leaves nothing behind (Greptile on PR #350).
+    #[test]
+    fn wrap_runs_measure_uniform_sizes_bold_faces_and_empty_rests() {
+        let face = crate::textmetrics::resolve(Some("Calibri"), false, false);
+        let size = 0.1389;
+        let text = "aaaa bbbb cccc";
+        let n = text.chars().count();
+        let w = face.width_in_runs(&[], text, size);
+        let wrap = |usable: f64, runs: Option<&WrapRuns>| {
+            wrap_block_text_scaled(&face, text, size, usable, &face, size, &[], 0.0, 0.0, runs)
+                .len()
+        };
+        assert_eq!(wrap(w * 1.05, None), 1);
+        let big = WrapRuns {
+            factor: vec![2.0; n],
+            face: vec![None; n],
+            faces: Vec::new(),
+        };
+        assert!(wrap(w * 1.05, Some(&big)) > 1, "a 2x paragraph wraps");
+        let bold_face = crate::textmetrics::resolve(Some("Calibri"), true, false);
+        let bold_w = bold_face.width_in_runs(&[], text, size);
+        assert!(bold_w > w * 1.01, "the bold face is wider");
+        let bold = WrapRuns {
+            factor: vec![1.0; n],
+            face: vec![Some(0); n],
+            faces: vec![bold_face],
+        };
+        assert!(wrap(w * 1.005, Some(&bold)) > 1, "a bold run wraps bold");
+        let cjk = WrapRuns {
+            factor: vec![1.0, 0.5],
+            face: vec![None, None],
+            faces: Vec::new(),
+        };
+        let lines = wrap_block_text_scaled(
+            &face,
+            "图，",
+            size,
+            0.01,
+            &face,
+            size,
+            &[],
+            0.0,
+            0.0,
+            Some(&cjk),
+        );
+        assert!(!lines.is_empty());
+    }
+
+    /// Mixed-size lines place and space by their runs (Greptile on PR
+    /// #350): a right-aligned line with a smaller tail ends at the right
+    /// edge, a 30 pt run pushes the next line down, a superscript run
+    /// draws at its reduced size, and a bulleted line keeps its runs.
+    #[test]
+    fn mixed_size_runs_place_space_and_script() {
+        let tail = |z: &str| {
+            emit_runs(
+                "<cp IX='0'/>right aligned <cp IX='1'/>tail",
+                &[(0, &[]), (1, &[("Size", z), ("Color", "#ff0000")])],
+                &[],
+                &[("HorzAlign", "2")],
+            )
+        };
+        let x0 = |svg: &str| tspan_xy(svg)[0].0;
+        assert!(
+            x0(&tail("0.1111")) > x0(&tail("0.1389")) + 1e-3,
+            "a smaller tail starts further right"
+        );
+        let tall = |z: &str| {
+            emit_runs(
+                "<cp IX='0'/>first\n<cp IX='1'/>big<cp IX='2'/>\nthird",
+                &[
+                    (0, &[]),
+                    (1, &[("Size", z), ("Color", "#ff0000")]),
+                    (2, &[]),
+                ],
+                &[],
+                &[],
+            )
+        };
+        let gap = |svg: &str| {
+            let ys: Vec<f64> = tspan_xy(svg).iter().map(|p| p.1).collect();
+            ys[ys.len() - 1] - ys[0]
+        };
+        assert!(
+            gap(&tall("0.4167")) > gap(&tall("0.1389")) + 0.2,
+            "a 30 pt line takes 30 pt of height"
+        );
+        let sup = emit_runs(
+            "<cp IX='0'/>H<cp IX='1'/>2",
+            &[(0, &[("Pos", "1")]), (1, &[("Pos", "1"), ("Size", "0.2")])],
+            &[],
+            &[],
+        );
+        assert!(!sup.contains(r#"font-size="0.2000""#), "{sup}");
+        let bullet = emit_runs(
+            "<cp IX='0'/>bulleted <cp IX='1'/>red",
+            &[(0, &[]), (1, &[("Color", "#ff0000")])],
+            &[],
+            &[("Bullet", "1")],
+        );
+        assert!(bullet.contains(r##"fill="#ff0000""##), "{bullet}");
+    }
+
+    /// A document-controlled `IX` does not size an allocation (Greptile
+    /// on PR #350): only referenced rows get a style.
+    #[test]
+    fn huge_character_ix_values_stay_small() {
+        let svg = emit_runs(
+            "<cp IX='0'/>plain <cp IX='1000000000'/>red",
+            &[(0, &[]), (1_000_000_000, &[("Color", "#ff0000")])],
+            &[],
+            &[],
+        );
+        assert!(svg.contains(r##"fill="#ff0000""##), "{svg}");
     }
 
     /// An Ellipse row joins the shape's even-odd fill (Visio 2021
