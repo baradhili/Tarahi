@@ -1252,8 +1252,20 @@ fn render_page_full(
         {
             let r = hop_r(j);
             let clash = cuts.iter().any(|k| {
-                (k.at.0 - j.at.0).hypot(k.at.1 - j.at.1)
-                    <= hop_r(k) + r + 2.0 * j.weight.max(k.weight)
+                slots_overlap(
+                    &SlotRect {
+                        at: k.at,
+                        dir: k.dir,
+                        r: hop_r(k),
+                        w: 2.0 * k.weight,
+                    },
+                    &SlotRect {
+                        at: j.at,
+                        dir: j.dir,
+                        r,
+                        w: 2.0 * j.weight,
+                    },
+                )
             });
             if !clash {
                 cuts.push(j);
@@ -1387,6 +1399,46 @@ pub fn jump_normal(dir: (f64, f64)) -> (f64, f64) {
         n = (-n.0, -n.1);
     }
     n
+}
+
+/// One hop's cut slot as the clip emits it: centered on the hop, `r`
+/// along the run, `w` across (the caller passes `2·weight` — the
+/// clip's "well past the stroke" slack).
+struct SlotRect {
+    at: (f64, f64),
+    dir: (f64, f64),
+    r: f64,
+    w: f64,
+}
+
+/// Do two hop SLOTS overlap? Each slot is the rectangle its clip quad
+/// emits (`SlotRect`), so the test is exact SAT over the two rects'
+/// own axes. The old center-distance bound (`r + r + 2·weight`)
+/// under-covered a THICK pen: with radius 0.045 and weight 0.055, two
+/// strokes 0.205 apart passed the bound while their slots (±0.11
+/// across) overlapped and the nonzero clip restored the shaft inside
+/// the overlap (CodeRabbit round 9 on PR #339). It also over-covered
+/// thin pens, dropping same-run hops the exact rectangles keep — the
+/// engine's spacing rule already keeps same-run slots disjoint, so
+/// the backstop must not be tighter than the truth.
+fn slots_overlap(a: &SlotRect, b: &SlotRect) -> bool {
+    let axes = [
+        a.dir,
+        (-a.dir.1, a.dir.0),
+        b.dir,
+        (-b.dir.1, b.dir.0),
+    ];
+    // The rect's half-extent along the candidate axis: the run axis's
+    // projection × r plus the normal axis's projection × w (the normal
+    // of `d` against `ax` is the cross product).
+    let half = |d: (f64, f64), r: f64, w: f64, ax: (f64, f64)| {
+        (d.0 * ax.0 + d.1 * ax.1).abs() * r + (d.0 * ax.1 - d.1 * ax.0).abs() * w
+    };
+    let delta = (b.at.0 - a.at.0, b.at.1 - a.at.1);
+    axes.iter().all(|ax| {
+        let center = (delta.0 * ax.0 + delta.1 * ax.1).abs();
+        center <= half(a.dir, a.r, a.w, *ax) + half(b.dir, b.r, b.w, *ax)
+    })
 }
 
 /// The clip that cuts a jumping connector open around its hops: the
@@ -1672,15 +1724,18 @@ pub fn geometry_flag_on(
                         // and the reader hid a stroke the paint drew),
                         // skips hidden sections' rows (the paint
                         // returns from them), and evaluates RELATIVE
-                        // rows with the paint's scaling (fractions of
-                        // the master's own dims).
+                        // rows with the paint's scaling — the INSTANCE
+                        // dims, exactly what render_geometry's
+                        // rel_adjust multiplies every Rel row by
+                        // regardless of frame (a master-dim replay once
+                        // fed a 1-inch instance's RelLineTo fraction at
+                        // the master's 4 inches and a Geometry1.X2-based
+                        // flag hid a stroke the paint drew — Greptile
+                        // round 10 on PR #339).
                         let target_ordinal = src.sheet.sections_named("Geometry")
                             .iter()
                             .position(|g| std::ptr::eq(*g, section));
-                        let (mw, mh) = (
-                            src.sheet.cell("Width").and_then(|c| c.numeric()),
-                            src.sheet.cell("Height").and_then(|c| c.numeric()),
-                        );
+                        let (iw, ih) = shape_size(doc, s, chain);
                         for (n, sec) in src
                             .sheet
                             .sections_named("Geometry")
@@ -1739,12 +1794,8 @@ pub fn geometry_flag_on(
                                             .filter(|v| v.is_finite())
                                             .or_else(|| c.numeric());
                                         if is_rel {
-                                            if let (Some(val), Some(m)) = (
-                                                v,
-                                                if name == "X" { mw } else { mh },
-                                            ) {
-                                                v = Some(val * m);
-                                            }
+                                            let m = if name == "X" { iw } else { ih };
+                                            v = v.map(|val| val * m);
                                         }
                                         if let Some(v) = v {
                                             menv.insert(
@@ -4611,6 +4662,14 @@ fn render_all_geometry(
             }
             merged.push(m);
         }
+        // ONE shared instance env for the whole inline render: each
+        // section seeds it and the walk's section-qualified feeds
+        // accumulate — a later section's formulas read the earlier
+        // sections' LIVE endpoints, exactly what the crossing walk's
+        // one-env rule sees (CodeRabbit round 10 on PR #339: a fresh
+        // per-section env once read the stale cache and drew a stroke
+        // the crossing set placed elsewhere).
+        let mut ienv = vsdx::formula::Env::new();
         for (i, geo) in merged.iter().enumerate() {
             // Instance frame: formulas and cached values are both in
             // instance units.
@@ -4621,7 +4680,7 @@ fn render_all_geometry(
                 chain,
                 geo,
                 (1.0, 1.0),
-                Frame::Instance,
+                Frame::Instance(&mut ienv),
                 &gname,
                 jump_radius,
                 hop_ats,
@@ -4676,16 +4735,24 @@ fn render_all_geometry(
 }
 
 /// Which frame geometry rows live in — picks the formula environment.
-/// The master variant carries the PREPARED env (master cells, the
-/// instance's glued Begin/End seeded in).
+/// Both variants carry the env SHARED by reference across every
+/// Geometry section of the frame: the walk's section-qualified feeds
+/// accumulate in it, so a later section's formulas read the earlier
+/// sections' LIVE endpoints (`Geometry1.X2`) instead of the stale
+/// caches.
 enum Frame<'a> {
-    Instance,
+    /// The instance env: render_all_geometry builds ONE for the whole
+    /// inline render; render_geometry seeds it with the section's own
+    /// caches per section (a fresh per-section env once read the stale
+    /// cache and drew a stroke the crossing walk placed elsewhere —
+    /// CodeRabbit round 10 on PR #339).
+    Instance(&'a mut vsdx::formula::Env),
     /// The PREPARED env (master cells, the instance's glued Begin/End
-    /// seeded in), SHARED by reference across every Geometry section
-    /// of the frame (#218 review): render_geometry feeds evaluated row
-    /// coordinates back into it (`Geometry1.X2`), and per-section
-    /// clones discarded those writes — a Geometry2 referencing
-    /// Geometry1 fell back to the authored pose.
+    /// seeded in), built once for the whole master render (#218
+    /// review): render_geometry feeds evaluated row coordinates back
+    /// into it (`Geometry1.X2`), and per-section clones discarded
+    /// those writes — a Geometry2 referencing Geometry1 fell back to
+    /// the authored pose.
     Master(&'a mut vsdx::formula::Env),
 }
 
@@ -4710,11 +4777,27 @@ fn render_geometry(
     // The cached V already lives in that frame; evaluating a formula in
     // the WRONG frame (e.g. master rows against instance Width) skews
     // rectangles into triangles.
-    let mut inst_env;
     let env: &mut vsdx::formula::Env = match frame {
-        Frame::Instance => {
-            inst_env = shape_env_for(doc, s, chain, rows);
-            &mut inst_env
+        // The shared instance env is seeded with THIS section's caches
+        // per section (the bare-key row seeds the old per-section envs
+        // carried); the walk's section-qualified feeds accumulate in
+        // the caller's env across the sections.
+        Frame::Instance(env) => {
+            // The shared env is seeded with THIS section's caches per
+            // section — EXCEPT the Geometry-qualified row caches: the
+            // walk's live feeds from the sections already rendered are
+            // authoritative, and re-seeding their stale caches once
+            // clobbered Geometry1.X2's live 2 with the cached 0 before
+            // Geometry2's formulas read it (CodeRabbit round 10 on PR
+            // #339).
+            for (k, v) in shape_env_for(doc, s, chain, rows) {
+                if k.starts_with("Geometry") {
+                    env.entry(k).or_insert(v);
+                } else {
+                    env.insert(k, v);
+                }
+            }
+            env
         }
         Frame::Master(env) => env,
     };
@@ -13392,6 +13475,113 @@ mod tests {
         );
     }
 
+    /// Greptile round 10 on PR #339: the flag replay scales RELATIVE
+    /// rows by the SAME dims the paint walk's rel_adjust receives —
+    /// the INSTANCE's. A 1-inch instance of a 4-inch master once
+    /// replayed a RelLineTo fraction at the master's 4 inches and a
+    /// Geometry1.X2-based flag hid a stroke the paint drew (the paint
+    /// feeds X2 = 0.5 × 1).
+    #[test]
+    fn relative_rows_replay_in_the_instance_frame() {
+        let mut msh = Shape {
+            id: 8,
+            ..Shape::default()
+        };
+        msh.sheet.set_cell("Width", Cell::value("4.0"));
+        msh.sheet.set_cell("Height", Cell::value("0.5"));
+        // Geometry1: a RelLineTo whose X is the literal fraction 0.5 —
+        // the paint multiplies it by the INSTANCE's width.
+        let mut sec1 = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec1.rows = vec![
+            Row {
+                ix: 1,
+                t: Some("MoveTo".into()),
+                cells: vec![
+                    ("X".into(), Cell::value("0")),
+                    ("Y".into(), Cell::value("0.25")),
+                ],
+                ..Row::default()
+            },
+            Row {
+                ix: 2,
+                t: Some("RelLineTo".into()),
+                cells: vec![
+                    ("X".into(), Cell::value("0.5")),
+                    ("Y".into(), Cell::value("0")),
+                ],
+                ..Row::default()
+            },
+        ];
+        // Geometry2: NoShow = Geometry1.X2>1 — the paint's feed is
+        // 0.5 × 1 = 0.5, so the section is VISIBLE; the master-dim
+        // replay read 0.5 × 4 = 2 and hid it.
+        let mut sec2 = Section {
+            name: "Geometry".into(),
+            ix: 1,
+            cells: vec![(
+                "NoShow".into(),
+                Cell {
+                    v: Some("0".into()),
+                    f: Some("Geometry1.X2>1".into()),
+                    ..Cell::default()
+                },
+            )],
+            ..Section::default()
+        };
+        sec2.rows = vec![
+            Row {
+                ix: 1,
+                t: Some("MoveTo".into()),
+                cells: vec![
+                    ("X".into(), Cell::value("2.0")),
+                    ("Y".into(), Cell::value("0.25")),
+                ],
+                ..Row::default()
+            },
+            Row {
+                ix: 2,
+                t: Some("LineTo".into()),
+                cells: vec![
+                    ("X".into(), Cell::value("4.0")),
+                    ("Y".into(), Cell::value("0.25")),
+                ],
+                ..Row::default()
+            },
+        ];
+        msh.sheet.children.push(SheetChild::Section(sec1));
+        msh.sheet.children.push(SheetChild::Section(sec2));
+        let doc = Document {
+            masters: vec![vsdx::Master {
+                id: 42,
+                shapes: vec![msh],
+                ..Default::default()
+            }],
+            ..Document::default()
+        };
+        // The instance has NO own geometry (the master-frame branch
+        // runs the replay) and is NARROWER than its master.
+        let mut inst = Shape {
+            id: 30,
+            master: Some(42),
+            master_shape: Some(8),
+            ..Shape::default()
+        };
+        inst.sheet.set_cell("Width", Cell::value("1.0"));
+        inst.sheet.set_cell("Height", Cell::value("0.5"));
+        let root = &doc.masters[0].shapes[0];
+        let chain = [&inst, root];
+        let eff = doc.effective_sheet(&inst, &chain);
+        let secs = eff.sections_named("Geometry");
+        assert!(
+            !geometry_flag_on(&doc, &inst, &chain, secs[1], "NoShow"),
+            "the instance-frame feed (0.5) keeps Geometry2 visible"
+        );
+    }
+
     /// CodeRabbit round 7 on PR #339: the backdrop's ray cast counts
     /// only FILL-ELIGIBLE contours — a NoFill'd inner rectangle
     /// paints nothing, and counting it once rejected the outer fill's
@@ -13503,6 +13693,79 @@ mod tests {
             "one hop bridge: {svg}"
         );
         let _ = r;
+    }
+
+    /// CodeRabbit round 9 on PR #339, round-10 regression: the slot
+    /// clash decision compares the TRUE slot rectangles (exact SAT).
+    /// A THICK pen (weight 0.055) at the default radius once measured
+    /// two strokes 0.205 apart as clear — the old center bound needed
+    /// 0.193 — while their slots (±2 pen-widths across) overlapped and
+    /// the nonzero clip restored the shaft inside the overlap. The
+    /// same-run pairs the exact rectangles keep stay kept.
+    #[test]
+    fn thick_pens_reject_overlapping_cross_run_slots() {
+        // Two eastbound strokes 0.205 apart — inside the old bound's
+        // blind band (2r + 2w = 0.193 < 0.205 < 4w = 0.22) — both
+        // crossed by one vertical at x = 4.
+        let mut conn = shape_at(1, (0.0, 5.0), 8.0, 1.0, 0.0);
+        conn.sheet.set_cell("LocPinX", Cell::value("0"));
+        conn.sheet.set_cell("LocPinY", Cell::value("0.5"));
+        conn.sheet.set_cell("ObjType", Cell::value("2"));
+        conn.sheet.set_cell("LineWeight", Cell::value("0.055"));
+        let mut sec1 = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            cells: vec![("NoFill".into(), Cell::value("1".to_string()))],
+            ..Section::default()
+        };
+        sec1.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 1.0), ("Y", 0.3975)]),
+            geo_row(2, "LineTo", &[("X", 7.0), ("Y", 0.3975)]),
+        ];
+        let mut sec2 = Section {
+            name: "Geometry".into(),
+            ix: 1,
+            cells: vec![("NoFill".into(), Cell::value("1".to_string()))],
+            ..Section::default()
+        };
+        sec2.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 1.0), ("Y", 0.6025)]),
+            geo_row(2, "LineTo", &[("X", 7.0), ("Y", 0.6025)]),
+        ];
+        conn.sheet.children.push(SheetChild::Section(sec1));
+        conn.sheet.children.push(SheetChild::Section(sec2));
+        let mut v = shape_at(2, (4.0, 5.0), 0.0, 4.0, 0.0);
+        v.sheet.set_cell("LocPinY", Cell::value("2"));
+        v.sheet.set_cell("ObjType", Cell::value("2"));
+        push_geo(
+            &mut v,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 0.0), ("Y", 4.0)]),
+            ],
+        );
+        let (doc, page) = page_fixture(vec![conn, v]);
+        let svg = render_page(&doc, &page).unwrap();
+        // ONE clip for the connector, carrying exactly ONE slot (the
+        // page rect plus one subpath) — the overlapping twin's
+        // rectangles intersect, so it drops to a plain crossing. The
+        // vertical never hops (the flatter run hops, LineJumpCode 1),
+        // so exactly ONE bridge draws — two under the old bound.
+        let clip = svg
+            .split("<clipPath id=\"dc-jumpcut1\">")
+            .nth(1)
+            .and_then(|rest| rest.split("</clipPath>").next())
+            .unwrap_or_default();
+        assert_eq!(
+            clip.matches('M').count(),
+            2,
+            "the page rect plus ONE slot — the thick-pen overlap is rejected: {clip}"
+        );
+        assert_eq!(
+            svg.matches(r#"stroke-linejoin="round""#).count(),
+            1,
+            "one hop bridge — the old bound kept the overlapping twin: {svg}"
+        );
     }
 
     /// CodeRabbit round 8 on PR #339: a SPARSE inline section inherits
@@ -13749,7 +14012,16 @@ mod tests {
             ],
             "the NoLine section feeds the formula and draws nothing: {segs:?}"
         );
-        let _ = &page;
+        // The PAINT side agrees: Geometry2's stroke evaluates at the
+        // LIVE endpoint too (the shared inline env — a fresh
+        // per-section env once read the stale cached 0 and drew the
+        // run away from the endpoint the crossing walk saw; CodeRabbit
+        // round 10 on PR #339).
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(
+            svg.contains("L 3.00000 -0.50000"),
+            "Geometry2 paints its run at the live endpoint x = 3: {svg}"
+        );
     }
 
     /// Greptile round 8 on PR #339: a THICK connector (LineWeight

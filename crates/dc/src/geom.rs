@@ -744,7 +744,12 @@ pub fn geometry_hit_segments_marked(
     // fed the env, the hit walk didn't, and a resized route stripped
     // in one walk but not the other).
     let mut evald: Vec<EvaldRow> = Vec::new();
-    for (row, master, gname) in walk.iter().take(MAX_WALK_ROWS) {
+    // The per-section build caps bound each section; the COMBINED walk
+    // carries no second budget — a shared 64-row take once let a
+    // NoLine section's fill-only rows starve the visible section behind
+    // them out of the evaluation entirely, and its crossings vanished
+    // while the paint still drew it (Greptile round 10 on PR #339).
+    for (row, master, gname) in walk.iter() {
         let t = row
             .t
             .as_deref()
@@ -782,7 +787,7 @@ pub fn geometry_hit_segments_marked(
     // second pass makes is the captured per-row value (the round-3
     // review — a post-pass env read would sample later rows' feeds).
     for (k, (row, _master, _gname, t, end_local, end, ca, cb, cc, cd)) in
-        evald.iter().take(MAX_WALK_ROWS).enumerate()
+        evald.iter().enumerate()
     {
         let t = t.as_str();
         let end_local = *end_local;
@@ -1300,6 +1305,66 @@ mod tests {
 
     /// A hit segment: start and end in page space.
     type Seg = ((f64, f64), (f64, f64));
+
+    /// Greptile round 10 on PR #339: the per-section build caps bound
+    /// each section — the COMBINED walk carries no second budget. A
+    /// NoLine section's 64 capped rows once consumed the shared
+    /// evaluation take and the visible section behind it never
+    /// evaluated: its crossings vanished while the paint still drew it.
+    #[test]
+    fn long_noline_sections_do_not_starve_the_visible_section() {
+        let mut s = Shape {
+            id: 9,
+            type_: Some("Shape".into()),
+            ..Shape::default()
+        };
+        s.sheet.set_cell("ObjType", Cell::value("2"));
+        s.sheet.set_cell("Width", Cell::value("8"));
+        s.sheet.set_cell("Height", Cell::value("1"));
+        s.sheet.set_cell("LocPinX", Cell::value("0"));
+        s.sheet.set_cell("LocPinY", Cell::value("0.5"));
+        // 70 NoLine rows: the per-section build cap keeps 64 of them,
+        // which once filled the combined walk's evaluation budget
+        // outright.
+        let mut sec1 = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            cells: vec![("NoLine".into(), Cell::value("1".to_string()))],
+            ..Section::default()
+        };
+        sec1.rows = vec![mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.5)])];
+        for k in 2..=70 {
+            sec1
+                .rows
+                .push(mrow(k, "LineTo", &[("X", k as f64 * 0.1), ("Y", 0.5)]));
+        }
+        let mut sec2 = Section {
+            name: "Geometry".into(),
+            ix: 1,
+            ..Section::default()
+        };
+        sec2.rows = vec![
+            mrow(1, "MoveTo", &[("X", 1.0), ("Y", 0.5)]),
+            mrow(2, "LineTo", &[("X", 3.0), ("Y", 0.5)]),
+        ];
+        s.sheet.children.push(SheetChild::Section(sec1));
+        s.sheet.children.push(SheetChild::Section(sec2));
+        let doc = vsdx::Document::default();
+        let chain = vec![&s];
+        let frame = hit_frame(&doc, &chain, &s, (8.0, 1.0));
+        let noline = [s.sheet.sections_named("Geometry")[0]];
+        let segs = geometry_hit_segments_marked(&s, None, &frame, None, &[], &noline);
+        // The visible section's run evaluates PAST the NoLine section's
+        // build cap: its Ink segment draws at the live endpoint.
+        assert!(
+            segs.iter().any(|&(a, b, m)| {
+                m == SegMark::Ink
+                    && (a.0 - 1.0).abs() < 1e-6
+                    && (b.0 - 3.0).abs() < 1e-6
+            }),
+            "the visible line behind the capped NoLine section still draws: {segs:?}"
+        );
+    }
 
     /// A minimal 1-section connector shape with the given geometry rows.
     fn conn_shape(id: i64, w: f64, h: f64, rows: Vec<Row>) -> Shape {
