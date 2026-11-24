@@ -126,6 +126,13 @@ struct PdfContext<'db> {
     shaper_fonts: HashMap<FaceKey, Option<harfrust::Font>>,
     image_counter: u32,
     shade_counter: u32,
+    /// Constant-alpha graphics states, keyed by (fill, stroke) alpha in
+    /// 1/1000 steps: one /ExtGState per distinct pair, in first-use
+    /// order (deterministic assembly).
+    gstates: HashMap<(u16, u16), &'static str>,
+    gstate_order: Vec<((u16, u16), Ref, &'static str)>,
+    /// The product of the enclosing groups' `opacity` while walking.
+    alpha: f32,
     /// The page content's base transform (px → points, y-flip): a
     /// shading pattern's /Matrix ignores the CTM at paint time, so
     /// the gradient must bake it plus the node's abs transform.
@@ -150,6 +157,9 @@ impl<'db> PdfContext<'db> {
             shaper_fonts: HashMap::new(),
             image_counter: 0,
             shade_counter: 0,
+            gstates: HashMap::new(),
+            gstate_order: Vec::new(),
+            alpha: 1.0,
             base: tiny_skia_path::Transform::identity(),
         }
     }
@@ -755,6 +765,11 @@ fn num_of(page: &vsdx::Page, name: &str) -> Option<f64> {
 /// Depth-first emission in document order — the z-order the SVG
 /// raster paints, preserved exactly.
 fn walk_group(chunk: &mut Chunk, ctx: &mut PdfContext, content: &mut Content, group: &usvg::Group) {
+    // Group opacity multiplies into every leaf's constant alpha — exact
+    // for Tarahi's non-overlapping per-shape groups, an approximation
+    // of a true transparency group otherwise.
+    let saved = ctx.alpha;
+    ctx.alpha *= group.opacity().get();
     for node in group.children() {
         match node {
             usvg::Node::Group(g) => walk_group(chunk, ctx, content, g),
@@ -763,6 +778,30 @@ fn walk_group(chunk: &mut Chunk, ctx: &mut PdfContext, content: &mut Content, gr
             usvg::Node::Text(t) => emit_text(ctx, content, t),
         }
     }
+    ctx.alpha = saved;
+}
+
+/// Select the constant fill/stroke alpha (`/ca`, `/CA`) for the
+/// following paint operators — SVG `fill-opacity`/`stroke-opacity`
+/// (Visio's *Trans cells) and inherited group opacity. Opaque paint
+/// emits nothing, so fully opaque pages stay byte-identical.
+fn set_alpha(ctx: &mut PdfContext, content: &mut Content, fill: f32, stroke: f32) {
+    let q = |a: f32| (a.clamp(0.0, 1.0) * 1000.0).round() as u16;
+    let key = (q(fill * ctx.alpha), q(stroke * ctx.alpha));
+    if key == (1000, 1000) {
+        return;
+    }
+    let name = match ctx.gstates.get(&key) {
+        Some(n) => *n,
+        None => {
+            let r = ctx.alloc_ref();
+            let n = PdfContext::leak_name("Gs", ctx.gstate_order.len() as u32 + 1);
+            ctx.gstates.insert(key, n);
+            ctx.gstate_order.push((key, r, n));
+            n
+        }
+    };
+    content.set_parameters(Name(name.as_bytes()));
 }
 
 /// One path node: q / cm(abs) / state / path / op / Q.
@@ -778,6 +817,12 @@ fn emit_path(chunk: &mut Chunk, ctx: &mut PdfContext, content: &mut Content, p: 
     content
         .save_state()
         .transform(transform_matrix(p.abs_transform()));
+    set_alpha(
+        ctx,
+        content,
+        fill.map_or(1.0, |f| f.opacity().get()),
+        stroke.map_or(1.0, |s| s.opacity().get()),
+    );
     if let Some(f) = fill {
         set_fill_paint(chunk, ctx, content, f, p.abs_transform());
     }
@@ -938,6 +983,7 @@ fn emit_image(chunk: &mut Chunk, ctx: &mut PdfContext, content: &mut Content, im
         t.sy * h + t.ty,
     ];
     content.save_state().transform(m);
+    set_alpha(ctx, content, 1.0, 1.0);
     content.x_object(Name(name.as_bytes()));
     content.restore_state();
 }
@@ -1013,18 +1059,21 @@ fn emit_text(ctx: &mut PdfContext, content: &mut Content, text: &usvg::Text) {
         let local_x = text_chunk.x().unwrap_or(0.0) + anchor_shift;
         let local_y = text_chunk.y().unwrap_or(0.0);
         // The paint: first span's fill (uniform in Tarahi output).
-        let [pr, pg, pb] = text_chunk
-            .spans()
-            .first()
-            .and_then(|s| s.fill())
+        let first_fill = text_chunk.spans().first().and_then(|s| s.fill());
+        let [pr, pg, pb] = first_fill
             .map(|f| match f.paint() {
                 usvg::Paint::Color(c) => color_rgb(*c),
                 _ => [0.0, 0.0, 0.0],
             })
             .unwrap_or([0.0, 0.0, 0.0]);
+        content.save_state().transform(node);
+        set_alpha(
+            ctx,
+            content,
+            first_fill.map_or(1.0, |f| f.opacity().get()),
+            1.0,
+        );
         content
-            .save_state()
-            .transform(node)
             .begin_text()
             .set_fill_rgb(pr, pg, pb)
             .set_text_matrix([1.0, 0.0, 0.0, -1.0, local_x, local_y]);
@@ -1244,6 +1293,12 @@ fn assemble(
                 }
             }
         }
+        if !ctx.gstate_order.is_empty() {
+            let mut gs = res.insert(Name(b"ExtGState")).dict();
+            for (_, r, n) in &ctx.gstate_order {
+                gs.pair(Name(n.as_bytes()), *r);
+            }
+        }
         if !ctx.shading_order.is_empty() {
             let mut patterns = res.insert(Name(b"Pattern")).dict();
             for key in &ctx.shading_order {
@@ -1260,6 +1315,13 @@ fn assemble(
             Name(b"ImageC"),
             Name(b"ImageI"),
         ]);
+    }
+
+    // The constant-alpha graphics states.
+    for ((fill, stroke), r, _) in ctx.gstate_order.clone() {
+        pdf.ext_graphics(r)
+            .non_stroking_alpha(f32::from(fill) / 1000.0)
+            .stroking_alpha(f32::from(stroke) / 1000.0);
     }
 
     // Content streams (Flate-compressed).
@@ -1543,6 +1605,28 @@ mod tests {
         assert!(
             m[3] < 0.0 && (m[5] - (-m[3])).abs() < 1e-3,
             "the image matrix carries the vertical flip (d<0, f=−d): {cm:?}"
+        );
+    }
+
+    /// Fill/stroke opacity (Visio *Trans cells, TextBkgndTrans) and
+    /// group opacity reach the PDF as constant-alpha graphics states;
+    /// opaque paint selects none.
+    #[test]
+    fn opacity_selects_a_constant_alpha_gstate() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="5" height="5" fill="#ff0000"/><rect x="6" width="5" height="5" fill="#ff0000" fill-opacity="0.5" stroke="#000" stroke-opacity="0.25"/><g opacity="0.5"><rect x="12" width="5" height="5" fill="#00f" fill-opacity="0.5"/></g></svg>"##;
+        let db = raster::font_db();
+        let tree = raster::parse_svg(svg, &db).expect("svg parses");
+        let mut pdf = Pdf::new();
+        let mut ctx = PdfContext::new(&db);
+        let mut content = Content::new();
+        walk_group(&mut pdf, &mut ctx, &mut content, tree.root());
+        let buf = String::from_utf8(content.finish().to_vec()).unwrap();
+        let keys: Vec<(u16, u16)> = ctx.gstate_order.iter().map(|(k, _, _)| *k).collect();
+        assert_eq!(keys, vec![(500, 250), (250, 500)], "{buf}");
+        assert_eq!(
+            buf.matches(" gs").count(),
+            2,
+            "opaque rect selects no gstate: {buf}"
         );
     }
 }
