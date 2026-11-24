@@ -4407,19 +4407,9 @@ fn render_geometry(
     let no_line = no_line || line_alpha <= 0.0;
     let fill = if no_fill { "none".to_string() } else { fill };
     let dash = line_pattern.and_then(|p| line_dasharray(p, line_weight));
-    let style = style_attr(
-        no_fill,
-        no_line,
-        &fill,
-        &line_color,
-        line_weight,
-        dash.as_deref(),
-        fill_alpha,
-        line_alpha,
-    );
     // #228: the section's own element is STROKE-only (fill
-    // participation joins the shape's one even-odd path); standalone
-    // Ellipse rows keep the full `style` above.
+    // participation joins the shape's one even-odd path — Ellipse rows
+    // included).
     let stroke_a = stroke_attr(
         no_line,
         &line_color,
@@ -4721,19 +4711,27 @@ fn render_geometry(
                     transform_ellipse(rx.max(ry), (rx.min(ry)) / rx.max(ry), ang, scale);
                 let (rx2, ry2) = if rx >= ry { (rx2, ry2) } else { (ry2, rx2) };
                 let p = sc((x, y));
-                // A standalone full-ellipse row keeps its own element
-                // (fill + stroke) — it does not join the even-odd union
-                // (#228 scope: the witness covers path sections; an
-                // ellipse row overlapping path sections is unwitnessed).
-                let _ = writeln!(
-                    paint.strokes,
-                    r#"<ellipse cx="{cx:.5}" cy="{cy:.5}" rx="{rx:.5}" ry="{ry:.5}" transform="rotate({rot:.4} {cx:.5} {cy:.5})" {style}/>"#,
-                    cx = p.0,
-                    cy = -p.1,
-                    rx = rx2.max(1e-6),
-                    ry = ry2.max(1e-6),
-                    rot = -ang2.to_degrees(), // mirror frame
-                    style = style,
+                // A full-ellipse row is one closed subpath (two half
+                // arcs) of the section's path, so it joins the shape's
+                // even-odd fill like any other closed contour — an
+                // ellipse section inside a rectangle section punches a
+                // hole, two concentric ellipse sections make a ring
+                // (Visio 2021 witness, t07; the "no entry" signs of the
+                // network stencils). The stroke stays per section.
+                let (cx, cy) = (p.0, -p.1);
+                let (rx, ry) = (rx2.max(1e-6), ry2.max(1e-6));
+                let rot = -ang2; // mirror frame
+                let (ex, ey) = (rx * rot.cos(), rx * rot.sin());
+                let deg = rot.to_degrees();
+                let _ = write!(
+                    d,
+                    "M {:.5} {:.5} A {rx:.5} {ry:.5} {deg:.4} 1 0 {:.5} {:.5} A {rx:.5} {ry:.5} {deg:.4} 1 0 {:.5} {:.5} Z ",
+                    cx + ex,
+                    cy + ey,
+                    cx - ex,
+                    cy - ey,
+                    cx + ex,
+                    cy + ey,
                 );
                 cur = (x, y);
             }
@@ -6175,31 +6173,6 @@ fn opacity_attr(name: &str, alpha: f64) -> String {
     } else {
         String::new()
     }
-}
-
-// The full paint context of one geometry section; a struct would only
-// move the call site's argument list.
-#[allow(clippy::too_many_arguments)]
-fn style_attr(
-    no_fill: bool,
-    no_line: bool,
-    fill: &str,
-    line_color: &str,
-    line_weight: f64,
-    dash: Option<&str>,
-    fill_alpha: f64,
-    line_alpha: f64,
-) -> String {
-    let (fill, fill_op) = if no_fill {
-        ("none".to_string(), String::new())
-    } else {
-        (fill.to_string(), opacity_attr("fill-opacity", fill_alpha))
-    };
-    format!(
-        r#"fill="{}"{fill_op} {}"#,
-        escape_attr(&fill),
-        stroke_attr(no_line, line_color, line_weight, dash, line_alpha)
-    )
 }
 
 /// One shape's accumulated paint, #228: every FILL-ELIGIBLE Geometry
@@ -10334,6 +10307,47 @@ mod tests {
             !gone.contains("dc-ah") && !gone.contains("#00ff00"),
             "a fully transparent line hides its head: {gone}"
         );
+    }
+
+    /// An Ellipse row joins the shape's even-odd fill (Visio 2021
+    /// witness, t07): a rectangle section plus an ellipse section is a
+    /// square with a round hole — one fill path carrying both contours,
+    /// no separately filled <ellipse> on top.
+    #[test]
+    fn ellipse_row_joins_the_even_odd_fill() {
+        let mut s = rect_shape(1, (2.0, 2.0));
+        s.sheet.set_cell("FillForegnd", Cell::value("#ff0000"));
+        let mut sec = Section {
+            name: "Geometry".into(),
+            ix: 1,
+            ..Section::default()
+        };
+        sec.rows.push(geo_row(
+            1,
+            "Ellipse",
+            &[
+                ("X", 0.5),
+                ("Y", 0.5),
+                ("A", 0.8),
+                ("B", 0.5),
+                ("C", 0.5),
+                ("D", 0.8),
+            ],
+        ));
+        s.sheet.children.push(SheetChild::Section(sec));
+        let (doc, page) = page_fixture(vec![s]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(!svg.contains("<ellipse"), "{svg}");
+        let fill = svg
+            .lines()
+            .find(|l| l.contains(r#"fill-rule="evenodd""#))
+            .expect("one even-odd fill path");
+        assert_eq!(
+            fill.matches('M').count(),
+            2,
+            "rect + ellipse contours: {fill}"
+        );
+        assert_eq!(fill.matches(" A ").count(), 2, "two half arcs: {fill}");
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
