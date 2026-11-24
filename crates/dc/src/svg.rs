@@ -3946,6 +3946,15 @@ fn render_all_geometry(
                     "Y" | "B" | "D" => v * sy,
                     _ => v,
                 };
+                // EllipticalArcTo's C is the major-axis ANGLE and D the
+                // axis RATIO — neither is a coordinate, so an inherited
+                // (omitted = unchanged) value never scales with the
+                // instance size (a stretched U-Turn arrow turned D=1
+                // into a 9:1 ratio and its quarter circles into blobs).
+                let not_coord = |t: Option<&str>, name: &str| {
+                    matches!(t, Some("EllipticalArcTo") | Some("RelEllipticalArcTo"))
+                        && matches!(name, "C" | "D")
+                };
                 // Pair each inline row with the master row of the SAME
                 // IX. Inline copies drop rows whose cells are fully
                 // inherited-identical, keeping the survivors' original
@@ -3969,14 +3978,34 @@ fn render_all_geometry(
                         {
                             let mut nr = src_row.clone();
                             // scale per cell name
+                            // The same rule as the omitted-CELL fallback
+                            // below (Greptile on PR #343): a size formula
+                            // evaluates in the instance env; one the env
+                            // cannot evaluate keeps the master's cache as
+                            // is, since an omitted row is unchanged.
+                            let bound = 3.0 * width.max(height).max(0.02);
                             for (cname, cell) in nr.cells.iter_mut() {
-                                let proportional = cell
+                                let proportional =
+                                    cell.f.as_deref().map(refs_own_size).unwrap_or(true);
+                                let has_formula = cell
                                     .f
                                     .as_deref()
-                                    .map(|f| f.contains("Width") || f.contains("Height"))
-                                    .unwrap_or(true);
+                                    .is_some_and(|f| f != "Inh" && f != "No Formula");
                                 if let Some(v) = cell.numeric() {
-                                    let placed = if proportional { scaled(cname, v) } else { v };
+                                    let placed = if !proportional
+                                        || not_coord(src_row.t.as_deref(), cname)
+                                    {
+                                        v
+                                    } else if has_formula {
+                                        cell.f
+                                            .as_deref()
+                                            .and_then(|f| vsdx::formula::eval(f, &env).ok())
+                                            .and_then(|e| e.as_f64())
+                                            .filter(|e| e.is_finite() && e.abs() <= bound)
+                                            .unwrap_or(v)
+                                    } else {
+                                        scaled(cname, v)
+                                    };
                                     cell.v = Some(format!("{placed}"));
                                 }
                                 cell.f = None;
@@ -4072,12 +4101,14 @@ fn render_all_geometry(
                         // into instance units; User.*-driven cells (corner
                         // radii and the like) stay absolute — instances
                         // keep those unscaled while the body stretches.
-                        let proportional = scell
-                            .f
-                            .as_deref()
-                            .map(|f| f.contains("Width") || f.contains("Height"))
-                            .unwrap_or(true);
-                        let placed = |v: f64| if proportional { scaled(cname, v) } else { v };
+                        let proportional = scell.f.as_deref().map(refs_own_size).unwrap_or(true);
+                        let placed = |v: f64| {
+                            if proportional && !not_coord(src_row.t.as_deref(), cname) {
+                                scaled(cname, v)
+                            } else {
+                                v
+                            }
+                        };
                         // Formula-authoritative for PROPORTIONAL master
                         // cells (the same rule the row walk uses):
                         // corpus connector masters carry stale zero
@@ -4101,6 +4132,19 @@ fn render_all_geometry(
                         // scaled cache; skipping would let row_num
                         // default the axis to 0 and collapse the
                         // inherited geometry (#185 review).
+                        // A master FORMULA the instance env cannot
+                        // evaluate (`Height-User.BarWidth` with the
+                        // master's User row out of reach) keeps the
+                        // master's cached value AS IS: Visio writes every
+                        // instance cell whose value changed (F='Inh' plus
+                        // the new V), so an omitted cell is unchanged —
+                        // scaling it bent the U-Turn arrow's return leg
+                        // into a blob (Visio 2021 witness, the network
+                        // LLD's U-Turn arrows stretched to 9.7 × 1 in).
+                        let has_formula = scell
+                            .f
+                            .as_deref()
+                            .is_some_and(|f| f != "Inh" && f != "No Formula");
                         let sv = if proportional {
                             scell
                                 .f
@@ -4109,7 +4153,9 @@ fn render_all_geometry(
                                 .and_then(|v| v.as_f64())
                                 .filter(|v| v.is_finite() && v.abs() <= bound)
                                 .or_else(|| {
-                                    scell.numeric().map(placed).filter(|v| v.abs() <= bound)
+                                    let v = scell.numeric()?;
+                                    let v = if has_formula { v } else { placed(v) };
+                                    Some(v).filter(|v| v.abs() <= bound)
                                 })
                         } else {
                             scell.numeric().map(placed).filter(|v| v.abs() <= bound)
@@ -6538,6 +6584,24 @@ fn round_corners(d: &str, r: f64) -> Option<String> {
         let _ = write!(out, "L {:.5} {:.5} ", pts[n - 1].0, pts[n - 1].1);
     }
     Some(out)
+}
+
+/// Does a ShapeSheet formula reference the shape's own `Width` or
+/// `Height` cell? A whole-identifier match: `User.BarWidth`,
+/// `Sheet.5!Width` or `TxtHeight` are other cells, and treating them as
+/// the shape's size scaled a stretched U-Turn arrow's 0.2 in bar to
+/// 1.9 in (the network LLD witness).
+fn refs_own_size(f: &str) -> bool {
+    let b = f.as_bytes();
+    ["Width", "Height"].iter().any(|w| {
+        f.match_indices(w).any(|(i, _)| {
+            let before = i.checked_sub(1).map(|j| b[j]);
+            let after = b.get(i + w.len()).copied();
+            let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'.' || c == b'!';
+            !before.is_some_and(ident)
+                && !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_')
+        })
+    })
 }
 
 /// The closed subpaths of a path in the renderer's own format
@@ -11011,6 +11075,69 @@ mod tests {
         // unreachable).
         let chain = family_chain(Some("Lucida Sans Typewriter"));
         assert_eq!(chain[0], "Calibri", "{chain:?}");
+    }
+
+    /// A master size formula the instance cannot evaluate keeps the
+    /// master's cached value, whether the instance omits the whole row
+    /// or only the cell (Greptile on PR #343).
+    #[test]
+    fn unevaluable_master_formulas_stay_unscaled_on_both_paths() {
+        let render = |omit_row: bool| {
+            let mut x = geo_row(2, "LineTo", &[("Y", 0.0)]);
+            x.cells.push((
+                "X".into(),
+                Cell {
+                    v: Some("1.8".into()),
+                    f: Some("Width-User.Missing".into()),
+                    ..Cell::default()
+                },
+            ));
+            let mut master = shape_at(1, (1.0, 0.5), 2.0, 1.0, 0.0);
+            push_geo(
+                &mut master,
+                vec![
+                    geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                    x,
+                    geo_row(3, "LineTo", &[("X", 2.0), ("Y", 1.0)]),
+                ],
+            );
+            let mut inst = shape_at(1, (4.0, 5.0), 4.0, 2.0, 0.0);
+            inst.master = Some(7);
+            let mut rows = vec![geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)])];
+            if !omit_row {
+                rows.push(geo_row(2, "LineTo", &[("Y", 0.0)]));
+            }
+            rows.push(geo_row(3, "LineTo", &[("X", 4.0), ("Y", 2.0)]));
+            push_geo(&mut inst, rows);
+            let (mut doc, page) = page_fixture(vec![inst]);
+            doc.masters.push(vsdx::model::Master {
+                id: 7,
+                shapes: vec![master],
+                ..vsdx::model::Master::default()
+            });
+            render_page(&doc, &page).unwrap()
+        };
+        for omit_row in [true, false] {
+            let svg = render(omit_row);
+            assert!(
+                svg.contains("L 1.80000 ") && !svg.contains("L 3.60000 "),
+                "omit_row={omit_row}: {svg}"
+            );
+        }
+    }
+
+    /// Inherited master cells in local geometry rows (the network LLD's
+    /// stretched U-Turn arrows): only a whole-identifier Width/Height
+    /// reference scales with the instance.
+    #[test]
+    fn own_size_references_are_whole_identifiers() {
+        assert!(refs_own_size("Width*0.5"));
+        assert!(refs_own_size("Height-User.BarWidth"));
+        assert!(refs_own_size("MIN(Width,Height)"));
+        assert!(!refs_own_size("User.BarWidth"));
+        assert!(!refs_own_size("Sheet.5!Width*1"));
+        assert!(!refs_own_size("TxtHeight*0.5"));
+        assert!(!refs_own_size("Controls.Row_1"));
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
