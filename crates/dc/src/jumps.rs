@@ -1054,8 +1054,15 @@ pub fn line_jumps_with(lines: &[JumpLine], rules: &JumpRules) -> Vec<Jump> {
                         }
                         // The merged hop must fit the room of BOTH
                         // candidates — the conservative min keeps a
-                        // shrunken hop inside the run (PR #339 round 5).
-                        c.cap = c.cap.min(jmp.cap);
+                        // shrunken hop inside the run (PR #339 round
+                        // 5). SAME-POINT-only merges (different legs)
+                        // keep the RETAINED candidate's cap: the min
+                        // once zeroed a valid hop when the later
+                        // candidate was the leg-end twin (Greptile
+                        // round 8 on PR #339).
+                        if on_same_run {
+                            c.cap = c.cap.min(jmp.cap);
+                        }
                         hit = true;
                         break;
                     }
@@ -1113,7 +1120,13 @@ pub fn line_jumps_with(lines: &[JumpLine], rules: &JumpRules) -> Vec<Jump> {
                     } else {
                         j.radii.1
                     };
-                    axis.min((j.cap - j.weight * 0.5).max(0.0)) > j.weight
+                    // The writer's rule: a positive radius that fits
+                    // the run (the cap already carries the half-pen
+                    // lead). A pen-WIDTH floor once erased every hop
+                    // of a connector whose LineWeight exceeds the
+                    // page radius while the writer kept storing rows
+                    // (Greptile round 8 on PR #339).
+                    axis.min((j.cap - j.weight * 0.5).max(0.0)) > 0.0
                 };
                 if !drawable {
                     continue;
@@ -1188,10 +1201,11 @@ fn run_extent(
     // round 6 on PR #339).
     let mut fwd = (1.0 - t) * len;
     let mut n = k + 1;
-    while n + 1 < pts.len()
-        && !breaks.contains(&(n + 1))
-        && !bounds.contains(&(n + 1))
-    {
+    // The bounds check reads the vertex the read segment STARTS at
+    // (`n`) — the boundary's own segment belongs to the next stroke,
+    // but the segment ENDING at the boundary is this run's. Checking
+    // n+1 stopped one segment early (Greptile round 8 on PR #339).
+    while n + 1 < pts.len() && !breaks.contains(&(n + 1)) && !bounds.contains(&n) {
         let next = (pts[n + 1].0 - pts[n].0, pts[n + 1].1 - pts[n].1);
         if next.0.hypot(next.1) <= 1e-9 {
             n += 1;
@@ -1409,13 +1423,20 @@ pub fn page_jumps_stripping(
         } else {
             s.sheet.sections_named("Geometry")
         };
-        let hidden_secs: Vec<&vsdx::model::Section> = walk_secs
-            .into_iter()
-            .filter(|g| {
-                crate::svg::geometry_flag_on(doc, s, &chain, g, "NoShow")
-                    || crate::svg::geometry_flag_on(doc, s, &chain, g, "NoLine")
-            })
-            .collect();
+        // NoShow drops the section whole (nothing paints, nothing
+        // feeds — the render's early return); NoLine KEEPS the walk
+        // (the section fills and its coordinates feed later sections'
+        // formulas) and only the stroke leaves (Greptile round 8 on
+        // PR #339).
+        let mut hidden_secs: Vec<&vsdx::model::Section> = Vec::new();
+        let mut noline_secs: Vec<&vsdx::model::Section> = Vec::new();
+        for g in walk_secs {
+            if crate::svg::geometry_flag_on(doc, s, &chain, g, "NoShow") {
+                hidden_secs.push(g);
+            } else if crate::svg::geometry_flag_on(doc, s, &chain, g, "NoLine") {
+                noline_secs.push(g);
+            }
+        }
         // Everything reaching here is a connector (the gate above), so
         // stored jump arcs strip from the polyline (#294) — the hop
         // computes on the straight run, never on a stale arc. The
@@ -1436,6 +1457,7 @@ pub fn page_jumps_stripping(
             &frame,
             Some((strip_r, strip_ry)),
             &hidden_secs,
+            &noline_secs,
         );
         if segs.is_empty() {
             continue;
@@ -3396,6 +3418,62 @@ mod tests {
             js[0]
         );
         assert_eq!(js[0].jumper, 2, "B hops (the steep leg's crossing)");
+    }
+
+
+    /// Greptile round 8 on PR #339: the run room's forward bounds
+    /// check reads the vertex the next segment STARTS at — the
+    /// boundary's own segment belongs to the next stroke, but the
+    /// segment ENDING at the boundary is this run's (the n+1 check
+    /// once stopped one segment early and erased a valid hop).
+    #[test]
+    fn the_forward_bounds_check_stops_at_the_boundary_segment() {
+        let rules = JumpRules {
+            page_code: 1,
+            con_codes: std::collections::HashMap::new(),
+        };
+        let mut joined = jline(
+            1,
+            0,
+            &[(0.0, 0.0), (0.2, 0.0), (1.0, 0.0), (1.0, 0.0), (2.0, 0.0)],
+        );
+        joined.breaks = vec![3]; // the zero-length pen move at (1, 0)
+        let near = jline(2, 1, &[(0.19, -1.0), (0.19, 1.0)]);
+        let js = line_jumps_with(&[joined, near], &rules);
+        assert_eq!(js.len(), 1);
+        // cap = min(back 0.19, fwd 0.81) — the FORWARD room now
+        // reaches the boundary vertex (the old n+1 check stopped at
+        // the first collinear segment and left cap = 0.01, under the
+        // radius: the hop vanished).
+        assert!(
+            (js[0].cap - 0.19).abs() < 1e-9,
+            "the forward room reaches the boundary vertex: {:?}",
+            js[0].cap
+        );
+    }
+
+    /// Greptile round 8 on PR #339: a same-POINT merge keeps the
+    /// RETAINED candidate's cap — the conservative min once zeroed a
+    /// valid hop when the later candidate was the leg-end twin (point
+    /// order alone decided whether the hop drew).
+    #[test]
+    fn a_reversed_bent_line_keeps_its_valid_hop() {
+        let rules = JumpRules {
+            page_code: 1,
+            con_codes: std::collections::HashMap::new(),
+        };
+        // The roomier test's bent line, REVERSED: the first candidate
+        // hops the diagonal with room on both sides; the second (the
+        // leg-end twin, cap 0) must not zero it.
+        let a = jline(1, 0, &[(1.0, -3.0), (0.0, 0.0), (-1.0, 0.5)]);
+        let b = jline(2, 1, &[(-0.5, -0.5), (0.5, 0.5)]);
+        let js = line_jumps_with(&[a, b], &rules);
+        assert_eq!(js.len(), 1, "one contact, one hop: {js:?}");
+        assert!(
+            js[0].cap > 1e-9,
+            "point order does not erase the valid hop: {:?}",
+            js[0]
+        );
     }
 
     /// CodeRabbit round 7 on PR #339: a hop that CANNOT draw reserves

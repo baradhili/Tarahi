@@ -5785,8 +5785,25 @@ impl App {
                     j.radii.1
                 };
                 let r_eff = axis.min((j.cap - j.weight * 0.5).max(0.0));
-                (r_eff > j.weight).then_some((j, r_eff))
+                // The writer's drawability rule — positive radius that
+                // fits the run; a pen-width floor once hid every hop of
+                // a thick connector whose saved rows carry them
+                // (Greptile round 8 on PR #339).
+                (r_eff > 0.0).then_some((j, r_eff))
             })
+            // Cross-run slot overlaps drop to plain crossings — the
+            // svg overlay's rule (CodeRabbit round 8 on PR #339).
+            .scan(Vec::<(dc::jumps::Jump, f64)>::new(), |kept, (j, r_eff)| {
+                let clash = kept.iter().any(|(k, kr)| {
+                    (k.at.0 - j.at.0).hypot(k.at.1 - j.at.1)
+                        <= kr + r_eff + 2.0 * j.weight.max(k.weight)
+                });
+                if !clash {
+                    kept.push((j, r_eff));
+                }
+                Some(if clash { None } else { Some((j, r_eff)) })
+            })
+            .flatten()
             .map(|(j, r_eff)| canvas::JumpFx {
                 jumper: j.jumper,
                 // The gap paints the BACKDROP — the fill of the

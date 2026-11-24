@@ -141,6 +141,7 @@ pub fn render_masters(doc: &Document) -> anyhow::Result<String> {
                 // carries no page to resolve a radius from: stored-jump
                 // evidence is unavailable, so nothing strips.
                 (0.0, 0.0),
+                &[],
                 &mut svg,
             );
         }
@@ -261,6 +262,7 @@ pub fn render_master(doc: &Document, m: &vsdx::Master) -> anyhow::Result<String>
             // carries no page to resolve a radius from: stored-jump
             // evidence is unavailable, so nothing strips.
             (0.0, 0.0),
+            &[],
             &mut svg,
         );
     }
@@ -1057,6 +1059,17 @@ fn render_shape_layer_inner(
         ph = bh * PX_PER_IN,
     );
     if !hidden_member(shape) {
+        // The canvas jump overlay draws exactly this walk's top-level
+        // connectors (#294 review). The page's own radii (X and Y — a
+        // stored jump on a vertical run was authored at the Y spacing)
+        // are the stored-jump evidence, and the shape's own hops (in
+        // its local frame) are the ink weld's evidence (CodeRabbit
+        // round 8 on PR #339).
+        let hops: Vec<crate::jumps::Jump> = crate::jumps::page_jumps(doc, page, hidden)
+            .into_iter()
+            .filter(|j| j.jumper == shape.id)
+            .collect();
+        let hop_ats = hop_ats_local(doc, shape, page_h, &hops);
         render_shape(
             doc,
             shape,
@@ -1067,11 +1080,8 @@ fn render_shape_layer_inner(
             greek.as_ref(),
             cull,
             Some(fields),
-            // The canvas jump overlay draws exactly this walk's
-            // top-level connectors (#294 review). The page's own
-            // radii (X and Y — a stored jump on a vertical run was
-            // authored at the Y spacing) are the stored-jump evidence.
             crate::jumps::jump_radii_in(doc, page),
+            &hop_ats,
             &mut svg,
         );
     }
@@ -1228,10 +1238,31 @@ fn render_page_full(
         // CodeRabbit round 6 on PR #339). The slot coordinates are
         // page-space, so the group wraps the shape OUTSIDE its
         // transform.
-        let cuts: Vec<&crate::jumps::Jump> = jumps
+        // Slots that would OVERLAP an already-kept one drop to plain
+        // crossings — the engine's spacing rule covers same-run pairs,
+        // but two strokes of the connector crossed at the same station
+        // still overlap slot-wise, and no single subpath encoding
+        // (even-odd or nonzero) subtracts an overlap of two holes.
+        // First-come wins; the dropped hop's bridge does not draw
+        // either (CodeRabbit round 8 on PR #339, Greptile's twin).
+        let mut cuts: Vec<&crate::jumps::Jump> = Vec::new();
+        for j in jumps
             .iter()
-            .filter(|j| j.jumper == shape.id && hop_r(j) > j.weight)
-            .collect();
+            .filter(|j| j.jumper == shape.id && hop_r(j) > 0.0)
+        {
+            let r = hop_r(j);
+            let clash = cuts.iter().any(|k| {
+                (k.at.0 - j.at.0).hypot(k.at.1 - j.at.1)
+                    <= hop_r(k) + r + 2.0 * j.weight.max(k.weight)
+            });
+            if !clash {
+                cuts.push(j);
+            }
+        }
+        // The ink weld's evidence, in the shape's own local frame
+        // (CodeRabbit round 8 on PR #339).
+        let hop_owned: Vec<crate::jumps::Jump> = cuts.iter().map(|j| **j).collect();
+        let hop_locals = hop_ats_local(doc, shape, h, &hop_owned);
         if !cuts.is_empty() {
             let id = format!("dc-jumpcut{}", shape.id);
             let _ = writeln!(
@@ -1272,6 +1303,7 @@ fn render_page_full(
             } else {
                 (0.0, 0.0)
             },
+            &hop_locals,
             &mut svg,
         );
         if !cuts.is_empty() {
@@ -1323,6 +1355,24 @@ fn render_page_full(
     }
     let _ = writeln!(svg, "</svg>");
     Ok(svg)
+}
+
+/// The shape's CURRENT hops mapped into its own LOCAL frame — the
+/// ink weld's evidence that a gap-shaped pen move carries a hop (an
+/// authored break that merely measures ~2·r keeps its pen up;
+/// CodeRabbit round 8 on PR #339). `hops` are page y-up; the returned
+/// points live in the emit frame (the group's inner coordinates).
+fn hop_ats_local(
+    doc: &Document,
+    shape: &Shape,
+    page_h: f64,
+    hops: &[crate::jumps::Jump],
+) -> Vec<(f64, f64)> {
+    let inv = level_affine(doc, &[shape], 0, page_h).invert();
+    hops
+        .iter()
+        .map(|j| inv.apply(j.at.0, page_h - j.at.1))
+        .collect()
 }
 
 /// The hop arc's normal for a jumper direction (page space, y up):
@@ -1571,7 +1621,23 @@ pub fn geometry_flag_on(
     section: &vsdx::model::Section,
     name: &str,
 ) -> bool {
-    let Some(c) = section.cell(name) else {
+    let Some(c) = section.cell(name).or_else(|| {
+        // A SPARSE inline section inherits section-level cells from
+        // the master's SAME-ORDINAL section — the renderer's merge
+        // rule (render_all_geometry). The unmerged read once saw a
+        // NoLine'd shaft as stroked and visible connectors hopped
+        // over invisible ink (CodeRabbit round 8 on PR #339).
+        let ordinal = s
+            .sheet
+            .sections_named("Geometry")
+            .iter()
+            .position(|g| std::ptr::eq(*g, section))?;
+        let src = doc.instance_source(s, chain)?;
+        src.sheet
+            .sections_named("Geometry")
+            .get(ordinal)
+            .and_then(|g| g.cell(name))
+    }) else {
         return false;
     };
     let by_formula = c
@@ -1603,6 +1669,32 @@ pub fn geometry_flag_on(
                             .into_iter()
                             .enumerate()
                         {
+                            // The paint walk RETURNS from a hidden
+                            // section before feeding its rows — replay
+                            // the same order, or a later section's flag
+                            // sees feeds the paint never made and the
+                            // reader hides a visible run (CodeRabbit
+                            // round 8 on PR #339).
+                            let sec_hidden = sec
+                                .cell("NoShow")
+                                .and_then(|c| {
+                                    c.f.as_deref()
+                                        .and_then(|f| {
+                                            if f == "Inh" || f == "No Formula" {
+                                                None
+                                            } else {
+                                                vsdx::formula::eval(f, &menv)
+                                                    .ok()
+                                                    .and_then(|v| v.as_f64())
+                                            }
+                                        })
+                                        .filter(|v| v.is_finite())
+                                        .or_else(|| c.numeric())
+                                })
+                                .is_some_and(|v| v != 0.0);
+                            if sec_hidden {
+                                continue;
+                            }
                             let gname = format!("Geometry{}", n + 1);
                             for row in
                                 sec.rows.iter().take(crate::geom::MAX_WALK_ROWS)
@@ -1822,6 +1914,7 @@ pub fn backdrop_color_at(
                 &frame,
                 None,
                 &nonfill,
+                &[],
             )
             .into_iter()
             .map(|(a, b, _)| (a, b))
@@ -2125,6 +2218,11 @@ fn render_shape<'a>(
     // contact sheets carry no page context, and an authored arc that
     // matches no radius is preserved).
     jump_radius: (f64, f64),
+    // The CURRENT hops of THIS shape, in the shape's own LOCAL frame —
+    // the ink weld's evidence that a gap-shaped pen move is a stored
+    // hop and not an authored break that merely measures ~2·r
+    // (CodeRabbit round 8 on PR #339). Empty = weld nothing.
+    hop_ats: &[(f64, f64)],
     out: &mut String,
 ) {
     let mut chain: Vec<&'a Shape> = chain.to_vec();
@@ -2166,7 +2264,7 @@ fn render_shape<'a>(
     // the first root.
     let multi_root = multi_root_master(doc, s);
     if !multi_root {
-        render_all_geometry(doc, s, &chain, width, height, jump_radius, out);
+        render_all_geometry(doc, s, &chain, width, height, jump_radius, hop_ats, out);
         // Embedded image (ForeignData → media part via this part's rels).
         if let Some(uri) = foreign_image_uri(doc, part, s) {
             let _ = writeln!(
@@ -2244,7 +2342,7 @@ fn render_shape_local<'a>(
         // Group children aren't in the jump overlay's crossing set
         // (page_jumps collects top-level connectors only, #294
         // review): their stored jump arcs keep rendering as ink.
-        render_all_geometry(doc, s, &chain, width, height, (0.0, 0.0), out);
+        render_all_geometry(doc, s, &chain, width, height, (0.0, 0.0), &[], out);
         if let Some(uri) = foreign_image_uri(doc, part, s) {
             let _ = writeln!(
                 out,
@@ -4264,6 +4362,7 @@ pub(crate) fn base64(data: &[u8]) -> String {
 /// local units, scaled to the instance size). The instance often carries
 /// other inline sections (Character/Paragraph) — that must not mask the
 /// inherited geometry.
+#[allow(clippy::too_many_arguments)] // the render pipeline's evidence set, one fact per argument
 fn render_all_geometry(
     doc: &Document,
     s: &Shape,
@@ -4271,6 +4370,7 @@ fn render_all_geometry(
     width: f64,
     height: f64,
     jump_radius: (f64, f64),
+    hop_ats: &[(f64, f64)],
     out: &mut String,
 ) {
     // Groups usually don't self-draw (children + the master drawing
@@ -4489,6 +4589,7 @@ fn render_all_geometry(
                 Frame::Instance,
                 &gname,
                 jump_radius,
+                hop_ats,
                 out,
                 &mut paint,
             );
@@ -4531,6 +4632,7 @@ fn render_all_geometry(
             Frame::Master(&mut menv),
             &format!("Geometry{}", i + 1),
             jump_radius,
+            hop_ats,
             out,
             &mut paint,
         );
@@ -4562,6 +4664,7 @@ fn render_geometry(
     frame: Frame<'_>,
     gname: &str,
     jump_radius: (f64, f64),
+    hop_ats: &[(f64, f64)],
     out: &mut String,
     paint: &mut ShapePaint,
 ) {
@@ -4863,6 +4966,16 @@ fn render_geometry(
                             m += 1;
                         }
                         crate::jumps::is_stored_jump_gap(skip, prev_dir, next_dir, rx, ry)
+                            && hop_ats.iter().any(|&(hx, hy)| {
+                                // A CURRENT hop sits in the slot — the
+                                // break belongs to a stored hop, not to
+                                // an authored stroke that merely
+                                // measures ~2·r (CodeRabbit round 8 on
+                                // PR #339).
+                                let mid = ((sx + x) / 2.0, (sy + y) / 2.0);
+                                (hx - mid.0).hypot(hy - mid.1)
+                                    <= skip.0.hypot(skip.1) / 2.0 + 1e-6
+                            })
                     }
                 } else {
                     false
@@ -7653,7 +7766,7 @@ mod tests {
         let chain: Vec<&Shape> = Vec::new();
         let mut out = String::new();
         render_shape(
-            &doc, &inst, 8.5, &chain, "", None, None, None, None, (0.0, 0.0), &mut out,
+            &doc, &inst, 8.5, &chain, "", None, None, None, None, (0.0, 0.0), &[], &mut out,
         );
         // The controls land at gx·W: 0.5 → 2.0 and 0.75 → 3.0; the y
         // fraction 0.5 of H=2 → 1.0 (emitted negated). The old
@@ -7707,7 +7820,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &[], &mut out);
             out
         };
         // 0 = no head at all.
@@ -7865,7 +7978,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &[], &mut out);
             out
         };
         // A closed rectangle walk (returns to its start) with both
@@ -7953,7 +8066,7 @@ mod tests {
             }));
             let chain = [&s];
             let mut out = String::new();
-            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
+            render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &[], &mut out);
             out
         };
         let flat = render("0");
@@ -7992,7 +8105,7 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
+        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &[], &mut out);
         assert!(
             out.contains(r#"stroke-width="0.00000""#),
             "an explicit zero stays zero: {out}"
@@ -8065,7 +8178,7 @@ mod tests {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
+        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &[], &mut out);
         // ONE even-odd fill element, first among the paths (under the
         // ink), carrying exactly the three fill-eligible subpaths.
         assert_eq!(
@@ -8635,7 +8748,7 @@ mod tests {
             ..Document::default()
         };
         let mut out = String::new();
-        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, (0.0, 0.0), &mut out);
+        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, (0.0, 0.0), &[], &mut out);
         assert!(
             !out.contains("<path"),
             "NoShow'd section must not draw: {out}"
@@ -8648,7 +8761,7 @@ mod tests {
             ..Document::default()
         };
         let mut out = String::new();
-        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, (0.0, 0.0), &mut out);
+        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, (0.0, 0.0), &[], &mut out);
         assert!(
             out.contains("<path"),
             "formula must beat the stale cache: {out}"
@@ -8664,7 +8777,7 @@ mod tests {
             ..Document::default()
         };
         let mut out = String::new();
-        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, (0.0, 0.0), &mut out);
+        render_all_geometry(&doc, &inst, &[], 4.0, 0.5, (0.0, 0.0), &[], &mut out);
         assert!(!out.contains("<path"), "cached NoShow must hide: {out}");
     }
 
@@ -9369,22 +9482,62 @@ mod tests {
             s.sheet.children.push(SheetChild::Section(sec));
             s
         };
-        // A STORED gap on the run (MoveTo at +2r): welds — exactly
-        // ONE pen up in the whole export (the route's start). The
-        // count is the discriminator (a substring check on the target
-        // coordinate was vacuous; PR #339 round 2).
+        // A STORED gap on the run (MoveTo at +2r) WITH a crossing in
+        // the slot: welds — exactly ONE pen up in the whole export (the
+        // route's start). The count is the discriminator (a substring
+        // check on the target coordinate was vacuous; PR #339 round 2).
+        // The crossing is the WELD'S EVIDENCE (CodeRabbit round 8 on
+        // PR #339): a gap-shaped pen move with no hop in its slot is
+        // authored ink and keeps its M — see the no-crossing case at
+        // the end of this test.
+        let under = {
+            let mut v = shape_at(2, (2.5, 5.0), 0.0, 4.0, 0.0);
+            v.sheet.set_cell("LocPinY", Cell::value("2"));
+            v.sheet.set_cell("ObjType", Cell::value("2"));
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            sec.cells.push(("NoFill".to_string(), Cell::value("1")));
+            sec.rows = vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 0.0), ("Y", 4.0)]),
+            ];
+            v.sheet.children.push(SheetChild::Section(sec));
+            v
+        };
         let gapped = shape(&[
             ("MoveTo", 0.0, 0.0),
             ("LineTo", 2.5 - r, 0.0),
             ("MoveTo", 2.5 + r, 0.0),
             ("LineTo", 5.0, 0.0),
         ]);
+        let (doc, page) = page_fixture(vec![gapped.clone(), under.clone()]);
+        let svg = render_page(&doc, &page).unwrap();
+        let shaft = svg
+            .split(r#"<g transform="translate(2.500000,6.000000)"#)
+            .nth(1)
+            .and_then(|rest| rest.split("</g>").next())
+            .unwrap_or_default();
+        assert_eq!(
+            shaft.matches("M ").count(),
+            1,
+            "the stored gap welds to one stroke (the route's start): {shaft}"
+        );
+        // WITHOUT the crossing, the same gap-shaped break is AUTHORED
+        // ink — the pen stays up (CodeRabbit round 8 on PR #339).
         let (doc, page) = page_fixture(vec![gapped]);
         let svg = render_page(&doc, &page).unwrap();
+        let shaft = svg
+            .split(r#"<g transform="translate(2.500000,6.000000)"#)
+            .nth(1)
+            .and_then(|rest| rest.split("</g>").next())
+            .unwrap_or_default();
         assert_eq!(
-            svg.matches("M ").count(),
-            1,
-            "the stored gap welds to one stroke: {svg}"
+            shaft.matches("M ").count(),
+            2,
+            "no hop in the slot — the break keeps its pen up: {shaft}"
         );
         // A duplicate endpoint right before the gap: still welds (the
         // zero-length run must not clobber the incoming direction).
@@ -9395,12 +9548,17 @@ mod tests {
             ("MoveTo", 2.5 + r, 0.0),
             ("LineTo", 5.0, 0.0),
         ]);
-        let (doc, page) = page_fixture(vec![dup]);
+        let (doc, page) = page_fixture(vec![dup, under]);
         let svg = render_page(&doc, &page).unwrap();
+        let shaft = svg
+            .split(r#"<g transform="translate(2.500000,6.000000)"#)
+            .nth(1)
+            .and_then(|rest| rest.split("</g>").next())
+            .unwrap_or_default();
         assert_eq!(
-            svg.matches("M ").count(),
+            shaft.matches("M ").count(),
             1,
-            "a duplicate endpoint before the gap still welds: {svg}"
+            "a duplicate endpoint before the gap still welds: {shaft}"
         );
         // An AUTHORED break (a skip of the wrong length): keeps its M.
         let authored = shape(&[
@@ -12624,7 +12782,8 @@ mod tests {
         let s = &doc.pages[0].shapes[0];
         let chain = [s];
         let frame = crate::geom::hit_frame(&doc, &chain, s, (1.0, 1.0));
-        let segs = crate::geom::geometry_hit_segments_marked(s, None, &frame, None, &[]);
+        let segs =
+            crate::geom::geometry_hit_segments_marked(s, None, &frame, None, &[], &[]);
         assert_eq!(
             segs,
             vec![
@@ -12696,7 +12855,7 @@ mod tests {
         // The paint path draws the inherited section (the master's
         // Width answers the formula).
         let mut out = String::new();
-        render_all_geometry(&doc, &inst, &[], 4.0, 0.25, (0.0, 0.0), &mut out);
+        render_all_geometry(&doc, &inst, &[], 4.0, 0.25, (0.0, 0.0), &[], &mut out);
         assert!(
             out.contains("<path"),
             "the master-frame evaluation paints the section: {out}"
@@ -12886,7 +13045,7 @@ mod tests {
             .sheet
             .sections_named("Geometry")[0]];
         let segs =
-            crate::geom::geometry_hit_segments_marked(sh, None, &frame, None, &skip);
+            crate::geom::geometry_hit_segments_marked(sh, None, &frame, None, &skip, &[]);
         assert_eq!(
             segs,
             vec![
@@ -12960,6 +13119,7 @@ mod tests {
             &frame,
             None,
             &skip,
+            &[],
         );
         assert_eq!(
             segs,
@@ -13080,7 +13240,7 @@ mod tests {
         let sh = &doc.pages[0].shapes[0];
         let chain = [sh];
         let frame = crate::geom::hit_frame(&doc, &chain, sh, (1.0, 1.0));
-        let segs = crate::geom::geometry_hit_segments_marked(sh, None, &frame, None, &[]);
+        let segs = crate::geom::geometry_hit_segments_marked(sh, None, &frame, None, &[], &[]);
         // The boundary bridge is CONTIGUOUS with the strokes on both
         // sides: the spline's last sample → the section-2 start, then
         // section-2's own ink. The interleaving bug broke the chain.
@@ -13215,6 +13375,361 @@ mod tests {
             backdrop_color_at(&doc, &page, (2.0, 2.0), 99, &[]),
             (0xff, 0, 0),
             "the NoFill contour does not punch a hole in the outer fill"
+        );
+    }
+
+    /// CodeRabbit round 8 on PR #339 (+ Greptile's twin): two strokes
+    /// of one connector crossed at the same station — the overlapping
+    /// slots cannot both cut (no single subpath encoding subtracts an
+    /// overlap of two holes), so the SECOND drops to a plain crossing:
+    /// one slot in the clip, one bridge path.
+    #[test]
+    fn overlapping_cross_run_slots_leave_one_cut() {
+        let r = 0.125 * (2.0 / 3.0) / 2.0;
+        // Two eastbound strokes 0.015 apart (an authored break
+        // between), both crossed by one vertical at x = 4.
+        let mut conn = shape_at(1, (0.0, 5.0), 8.0, 1.0, 0.0);
+        conn.sheet.set_cell("LocPinX", Cell::value("0"));
+        conn.sheet.set_cell("LocPinY", Cell::value("0.5"));
+        conn.sheet.set_cell("ObjType", Cell::value("2"));
+        let mut sec1 = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            cells: vec![("NoFill".into(), Cell::value("1".to_string()))],
+            ..Section::default()
+        };
+        sec1.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 1.0), ("Y", 0.5)]),
+            geo_row(2, "LineTo", &[("X", 7.0), ("Y", 0.5)]),
+        ];
+        let mut sec2 = Section {
+            name: "Geometry".into(),
+            ix: 1,
+            cells: vec![("NoFill".into(), Cell::value("1".to_string()))],
+            ..Section::default()
+        };
+        sec2.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 1.0), ("Y", 0.515)]),
+            geo_row(2, "LineTo", &[("X", 7.0), ("Y", 0.515)]),
+        ];
+        conn.sheet.children.push(SheetChild::Section(sec1));
+        conn.sheet.children.push(SheetChild::Section(sec2));
+        let mut v = shape_at(2, (4.0, 5.0), 0.0, 4.0, 0.0);
+        v.sheet.set_cell("LocPinY", Cell::value("2"));
+        v.sheet.set_cell("ObjType", Cell::value("2"));
+        push_geo(
+            &mut v,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 0.0), ("Y", 4.0)]),
+            ],
+        );
+        let (doc, page) = page_fixture(vec![conn, v]);
+        let svg = render_page(&doc, &page).unwrap();
+        // ONE clip for the connector, carrying exactly ONE slot (the
+        // page rect plus one subpath).
+        let clip = svg
+            .split("<clipPath id=\"dc-jumpcut1\">")
+            .nth(1)
+            .and_then(|rest| rest.split("</clipPath>").next())
+            .unwrap_or_default();
+        assert_eq!(
+            clip.matches('M').count(),
+            2,
+            "the page rect plus ONE slot — the overlapping twin dropped: {clip}"
+        );
+        // ONE bridge path draws.
+        assert_eq!(
+            svg.matches(r#"stroke-linejoin="round""#).count(),
+            1,
+            "one hop bridge: {svg}"
+        );
+        let _ = r;
+    }
+
+    /// CodeRabbit round 8 on PR #339: a SPARSE inline section inherits
+    /// section-level flags from the master's same-ordinal section —
+    /// the renderer's merge rule; the unmerged read once saw a
+    /// NoLine'd shaft as stroked.
+    #[test]
+    fn sparse_inline_sections_inherit_master_flags() {
+        let mut msh = Shape {
+            id: 8,
+            ..Shape::default()
+        };
+        msh.sheet.set_cell("Width", Cell::value("4.0"));
+        msh.sheet.set_cell("Height", Cell::value("0.25"));
+        msh.sheet.children.push(SheetChild::Section(Section {
+            name: "Geometry".into(),
+            ix: 0,
+            cells: vec![("NoLine".into(), Cell::value("1".to_string()))],
+            rows: vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.125)]),
+                geo_row(2, "LineTo", &[("X", 4.0), ("Y", 0.125)]),
+            ],
+            ..Section::default()
+        }));
+        let doc = Document {
+            masters: vec![vsdx::Master {
+                id: 42,
+                shapes: vec![msh],
+                ..Default::default()
+            }],
+            ..Document::default()
+        };
+        // The instance carries its own (sparse) section with rows but
+        // no section-level cells.
+        let mut inst = Shape {
+            id: 30,
+            master: Some(42),
+            master_shape: Some(8),
+            ..Shape::default()
+        };
+        inst.sheet.set_cell("Width", Cell::value("4.0"));
+        inst.sheet.set_cell("Height", Cell::value("0.25"));
+        inst.sheet.children.push(SheetChild::Section(Section {
+            name: "Geometry".into(),
+            ix: 0,
+            rows: vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.125)]),
+                geo_row(2, "LineTo", &[("X", 4.0), ("Y", 0.125)]),
+            ],
+            ..Section::default()
+        }));
+        let root = &doc.masters[0].shapes[0];
+        let chain = [&inst, root];
+        let own_sec = inst.sheet.sections_named("Geometry").remove(0);
+        assert!(
+            geometry_flag_on(&doc, &inst, &chain, own_sec, "NoLine"),
+            "the sparse section inherits the master's NoLine"
+        );
+    }
+
+    /// CodeRabbit round 8 on PR #339: the flag reader's feed replay
+    /// follows the PAINT ORDER — a hidden section's rows never feed
+    /// (the paint walk returns first), so a later section's
+    /// Geometry1.X2-based flag sees the same stale value the paint
+    /// saw, not the hidden rows' live numbers.
+    #[test]
+    fn the_feed_replay_skips_hidden_sections() {
+        let grow = |ix: i64, t: &str, x: f64, y: f64| Row {
+            ix,
+            t: Some(t.into()),
+            cells: vec![
+                ("X".into(), Cell::value(format!("{x}"))),
+                ("Y".into(), Cell::value(format!("{y}"))),
+            ],
+            ..Row::default()
+        };
+        let mut msh = Shape {
+            id: 8,
+            ..Shape::default()
+        };
+        msh.sheet.set_cell("Width", Cell::value("4.0"));
+        msh.sheet.set_cell("Height", Cell::value("0.5"));
+        // Geometry1: HIDDEN, its row 2 X evaluates to 2 (the formula)
+        // with a stale cached 0.
+        msh.sheet.children.push(SheetChild::Section(Section {
+            name: "Geometry".into(),
+            ix: 0,
+            cells: vec![("NoShow".into(), Cell::value("1".to_string()))],
+            rows: vec![
+                grow(1, "MoveTo", 0.0, 0.25),
+                Row {
+                    ix: 2,
+                    t: Some("LineTo".into()),
+                    cells: vec![
+                        (
+                            "X".into(),
+                            Cell {
+                                v: Some("0".into()),
+                                f: Some("Width*0.5".into()),
+                                ..Cell::default()
+                            },
+                        ),
+                        ("Y".into(), Cell::value("0.25")),
+                    ],
+                    ..Row::default()
+                },
+            ],
+            ..Section::default()
+        }));
+        // Geometry2: NoShow = Geometry1.X2>1 — under the paint order
+        // Geometry1 never feeds (hidden), so the flag sees the STALE
+        // 0 and the section is VISIBLE.
+        msh.sheet.children.push(SheetChild::Section(Section {
+            name: "Geometry".into(),
+            ix: 1,
+            cells: vec![(
+                "NoShow".into(),
+                Cell {
+                    v: Some("0".into()),
+                    f: Some("Geometry1.X2>1".into()),
+                    ..Cell::default()
+                },
+            )],
+            rows: vec![grow(1, "MoveTo", 0.0, 0.25), grow(2, "LineTo", 4.0, 0.25)],
+            ..Section::default()
+        }));
+        let doc = Document {
+            masters: vec![vsdx::Master {
+                id: 42,
+                shapes: vec![msh],
+                ..Default::default()
+            }],
+            ..Document::default()
+        };
+        let mut inst = Shape {
+            id: 30,
+            master: Some(42),
+            master_shape: Some(8),
+            ..Shape::default()
+        };
+        inst.sheet.set_cell("Width", Cell::value("4.0"));
+        inst.sheet.set_cell("Height", Cell::value("0.5"));
+        let root = &doc.masters[0].shapes[0];
+        let chain = [&inst, root];
+        let eff = doc.effective_sheet(&inst, &chain);
+        let secs = eff.sections_named("Geometry");
+        assert!(
+            !geometry_flag_on(&doc, &inst, &chain, secs[1], "NoShow"),
+            "the paint-order replay leaves Geometry2 visible (stale 0)"
+        );
+    }
+
+    /// Greptile round 8 on PR #339: a NOLINE section still evaluates
+    /// and feeds — its GeometryN.X# coordinates stay live for later
+    /// sections' formulas, and only its own stroke leaves the crossing
+    /// set (dropping it whole once starved the formulas back to stale
+    /// caches and moved crossings off the painted line).
+    #[test]
+    fn noline_sections_feed_but_do_not_draw() {
+        let mut conn = shape_at(1, (0.0, 5.0), 4.0, 1.0, 0.0);
+        conn.sheet.set_cell("LocPinX", Cell::value("0"));
+        conn.sheet.set_cell("LocPinY", Cell::value("0.5"));
+        conn.sheet.set_cell("ObjType", Cell::value("2"));
+        // Geometry1 (NoLine): its row 2's X evaluates to Width/2 = 2
+        // with a stale cached 0.
+        let mut sec1 = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            cells: vec![("NoLine".into(), Cell::value("1".to_string()))],
+            ..Section::default()
+        };
+        sec1.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.5)]),
+            Row {
+                ix: 2,
+                t: Some("LineTo".into()),
+                cells: vec![
+                    (
+                        "X".into(),
+                        Cell {
+                            v: Some("0".into()),
+                            f: Some("Width*0.5".into()),
+                            ..Cell::default()
+                        },
+                    ),
+                    ("Y".into(), Cell::value("0.5")),
+                ],
+                ..Row::default()
+            },
+        ];
+        // Geometry2 (visible): its run's far end reads Geometry1.X2+1
+        // — the LIVE feed (3), not the stale cache (1).
+        let mut sec2 = Section {
+            name: "Geometry".into(),
+            ix: 1,
+            ..Section::default()
+        };
+        sec2.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 1.0), ("Y", 0.5)]),
+            Row {
+                ix: 2,
+                t: Some("LineTo".into()),
+                cells: vec![
+                    (
+                        "X".into(),
+                        Cell {
+                            v: Some("0".into()),
+                            f: Some("Geometry1.X2+1".into()),
+                            ..Cell::default()
+                        },
+                    ),
+                    ("Y".into(), Cell::value("0.5")),
+                ],
+                ..Row::default()
+            },
+        ];
+        conn.sheet.children.push(SheetChild::Section(sec1));
+        conn.sheet.children.push(SheetChild::Section(sec2));
+        let (doc, page) = page_fixture(vec![conn]);
+        let sh = &doc.pages[0].shapes[0];
+        let chain = [sh];
+        let frame = crate::geom::hit_frame(&doc, &chain, sh, (1.0, 1.0));
+        let noline = [doc.pages[0].shapes[0]
+            .sheet
+            .sections_named("Geometry")[0]];
+        let segs = crate::geom::geometry_hit_segments_marked(
+            sh,
+            None,
+            &frame,
+            None,
+            &[],
+            &noline,
+        );
+        // Only Geometry2's run draws, at the LIVE endpoint x = 3.
+        assert_eq!(
+            segs,
+            vec![
+                // The NoLine section's opening MoveTo positions the
+                // pen; its stroked row draws nothing; Geometry2's own
+                // MoveTo opens a section-start bridge, then its run
+                // draws at the LIVE endpoint x = 3.
+                ((0.0, 5.0), (1.0, 5.0), crate::geom::SegMark::SectionStart),
+                ((1.0, 5.0), (3.0, 5.0), crate::geom::SegMark::Ink),
+            ],
+            "the NoLine section feeds the formula and draws nothing: {segs:?}"
+        );
+        let _ = &page;
+    }
+
+    /// Greptile round 8 on PR #339: a THICK connector (LineWeight
+    /// beyond the page radius) keeps its drawn hops — the painter's
+    /// old pen-width floor erased every hop while the writer kept
+    /// storing rows.
+    #[test]
+    fn thick_connectors_keep_their_hops() {
+        let mut h = shape_at(1, (3.0, 5.0), 4.0, 0.0, 0.0);
+        h.sheet.set_cell("ObjType", Cell::value("2"));
+        h.sheet.set_cell("LineWeight", Cell::value("0.055"));
+        push_geo(
+            &mut h,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 4.0), ("Y", 0.0)]),
+            ],
+        );
+        let mut v = shape_at(2, (4.0, 5.0), 0.0, 4.0, 0.0);
+        v.sheet.set_cell("LocPinY", Cell::value("2"));
+        v.sheet.set_cell("ObjType", Cell::value("2"));
+        push_geo(
+            &mut v,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 0.0), ("Y", 4.0)]),
+            ],
+        );
+        let (doc, page) = page_fixture(vec![h, v]);
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(
+            svg.contains(r#"<clipPath id="dc-jumpcut1""#),
+            "the thick connector's hop still cuts: {svg}"
+        );
+        assert_eq!(
+            svg.matches(r#"stroke-linejoin="round""#).count(),
+            1,
+            "and still bridges: {svg}"
         );
     }
 }

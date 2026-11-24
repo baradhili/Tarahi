@@ -522,7 +522,7 @@ pub fn geometry_hit_segments(
     frame: &HitFrame,
     strip_stored_jumps: Option<(f64, f64)>,
 ) -> Vec<((f64, f64), (f64, f64))> {
-    geometry_hit_segments_marked(s, master_root, frame, strip_stored_jumps, &[])
+    geometry_hit_segments_marked(s, master_root, frame, strip_stored_jumps, &[], &[])
         .into_iter()
         .map(|(a, b, _)| (a, b))
         .collect()
@@ -535,14 +535,23 @@ pub fn geometry_hit_segments(
 /// RECOGNIZED stored gap slot; authored stroke breaks stay out of the
 /// crossing walk (#324 phase 5). Hit-testing keeps the unmarked form.
 /// `skip` names sections (by pointer) the caller excludes from the
-/// walk — the crossing engine's per-section NoShow/NoLine filter (PR
-/// #339 round 5); hit-testing passes none.
+/// walk ENTIRELY — the crossing engine's NoShow filter (a NoShow
+/// section paints nothing and never feeds the env, exactly like the
+/// render's early return; PR #339 round 5). `noline` names sections
+/// that still EVALUATE and FEED (the renderer walks them — they fill,
+/// and later sections' formulas read their GeometryN.X# coordinates)
+/// but DRAW no stroke: their rows act as one pen reposition, so only
+/// their ink leaves the crossing set (Greptile round 8 on PR #339 —
+/// dropping them whole once starved later sections' formulas of live
+/// values and moved crossings off the painted line). Hit-testing
+/// passes neither.
 pub fn geometry_hit_segments_marked(
     s: &Shape,
     master_root: Option<&Shape>,
     frame: &HitFrame,
     strip_stored_jumps: Option<(f64, f64)>,
     skip: &[&Section],
+    noline: &[&Section],
 ) -> Vec<MarkedSeg> {
     let mut sections: Vec<&Section> = s.sheet.sections_named("Geometry");
     // (owning width/height for Rel rows, x/y scale). The scale only
@@ -667,7 +676,11 @@ pub fn geometry_hit_segments_marked(
         .map(|(si, _)| format!("Geometry{}", si + 1))
         .collect();
     let mut walk: Vec<(&Row, Option<&Row>, &str)> = Vec::new();
+    // Per-walk-row NoLine membership (aligned with `walk`): the
+    // section's rows still evaluate and feed, but draw nothing.
+    let mut walk_noline: Vec<bool> = Vec::new();
     for (k, (si, geo)) in secs.iter().enumerate() {
+        let nl = noline.iter().any(|n| std::ptr::eq(*n, *geo));
         let mut sec_walk: Vec<(&Row, Option<&Row>, &str)> = geo
             .rows
             .iter()
@@ -683,6 +696,7 @@ pub fn geometry_hit_segments_marked(
         }
         sec_walk.sort_by_key(|(row, _, _)| row.ix);
         walk.extend(sec_walk);
+        walk_noline.extend(std::iter::repeat_n(nl, walk.len() - walk_noline.len()));
     }
     // `Del="1"` rows stay deleted (GitHub #293): the INSTANCE row's
     // marker wins when one is present, else the master-only row's own.
@@ -759,6 +773,31 @@ pub fn geometry_hit_segments_marked(
         let end = *end;
         let section_start = prev_gname != Some(_gname);
         prev_gname = Some(_gname);
+        // A NOLINE section's rows draw nothing — but they evaluated
+        // and FED the env above, exactly like the renderer's walk of
+        // a fill-only section. The section acts as one pen
+        // reposition at its first row (Greptile round 8 on PR #339).
+        if walk_noline.get(k).copied().unwrap_or(false) {
+            if section_start {
+                if let Some(acc) = spline_acc.take() {
+                    if let Some(data) = acc.flush() {
+                        for p in crate::curve::SplineData::flatten(&data, 16)
+                            .into_iter()
+                            .skip(1)
+                        {
+                            pts.push(to_page(p));
+                        }
+                    }
+                }
+                if !pts.is_empty() {
+                    pen_up_before.push(pts.len());
+                }
+                cur = Some(end);
+                cur_local = Some(end_local);
+                pts.push(to_page(end));
+            }
+            continue;
+        }
         match t {
             "MoveTo" | "RelMoveTo" => {
                 // A pending SPLINE flushes BEFORE the pen repositions

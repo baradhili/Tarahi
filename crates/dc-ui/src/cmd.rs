@@ -880,7 +880,20 @@ pub fn plan_connector_frame(
             .sheet
             .sections_named("Geometry")
             .first()
-            .is_some_and(|g| route_owned_rows(g, &master_rows, jump_radii, conn_wh));
+            .is_some_and(|g| {
+                let master_wh = conn.master.and_then(|mid| doc.master(mid)).and_then(|m| {
+                    m.shapes.first().and_then(|root| {
+                        let g = |n: &str| {
+                            root.sheet
+                                .cell(n)
+                                .and_then(|c| c.numeric())
+                                .filter(|v| v.abs() > 1e-9)
+                        };
+                        g("Width").zip(g("Height"))
+                    })
+                });
+                route_owned_rows_detailed(g, &master_rows, jump_radii, conn_wh, master_wh).0
+            });
     // #226 (MisterDiagram parity evidence): the CHORD-frame
     // masters — a master-based curve connector whose
     // inherited geometry rows derive their coordinates from
@@ -1175,11 +1188,26 @@ pub fn plan_connector_frame(
         // valid routes (PR #339 round 5); the replacement geometry
         // alone uses the new dims.
         let conn_wh = (get("Width").unwrap_or(1.0), get("Height").unwrap_or(1.0));
+        // The master root's own dims, for the inherited-literal
+        // instance-frame scaling (CodeRabbit round 8 on PR #339).
+        let master_wh = conn.master.and_then(|mid| doc.master(mid)).and_then(|m| {
+            m.shapes.first().and_then(|root| {
+                let g = |n: &str| {
+                    root.sheet
+                        .cell(n)
+                        .and_then(|c| c.numeric())
+                        .filter(|v| v.abs() > 1e-9)
+                };
+                g("Width").zip(g("Height"))
+            })
+        });
         let detailed = conn
             .sheet
             .sections_named("Geometry")
             .first()
-            .map(|g| route_owned_rows_detailed(g, &master_rows, jump_radii, conn_wh))
+            .map(|g| {
+                route_owned_rows_detailed(g, &master_rows, jump_radii, conn_wh, master_wh)
+            })
             .unwrap_or((false, false));
         let (rows_owned, stored_hops) = if line_frame {
             (true, detailed.1)
@@ -1326,15 +1354,6 @@ pub fn plan_connector_frame(
 /// literal (formula-driven arcs take the conservative path). Authored
 /// curves (`EllipticalArcTo`, splines) and an authored semicircle
 /// answer false: a wholesale route replace would destroy them.
-fn route_owned_rows(
-    g: &vsdx::model::Section,
-    master_rows: &[vsdx::model::Row],
-    radii: (f64, f64),
-    g_w_h: (f64, f64),
-) -> bool {
-    route_owned_rows_detailed(g, master_rows, radii, g_w_h).0
-}
-
 /// The stored-hop control text of a `PolylineTo.A` cell,
 /// OWNERSHIP-SAFE (PR #339 round 5): the generated literal (a V with
 /// no authored formula), a bare `POLYLINE(...)` formula — a Visio
@@ -1386,6 +1405,7 @@ fn route_owned_rows_detailed(
     master_rows: &[vsdx::model::Row],
     radii: (f64, f64),
     g_w_h: (f64, f64),
+    master_wh: Option<(f64, f64)>,
 ) -> (bool, bool) {
     // IX ORDER, like the geometry walk: a section whose rows sit
     // out of ix order in the file once classified a different route
@@ -1417,8 +1437,14 @@ fn route_owned_rows_detailed(
     // as a literal would destroy the authored row (#226's rule, the
     // planner's inherited_geo_formula; review on the #303 batch).
     let master_row = |ix: i64| master_rows.iter().find(|r| r.ix == ix);
+    // An INHERITED literal resolves into the INSTANCE frame first,
+    // per-axis like the geometry walk (CodeRabbit round 8 on PR #339):
+    // a scaled instance once measured a master-frame 2·R skip as 2·R
+    // instance inches and the planner treated an authored break as a
+    // stored hop.
     let lit = |r: &vsdx::model::Row, n: &str| -> Option<f64> {
         let own = r.cell(n);
+        let inherited = own.is_none();
         let cell = own.or_else(|| master_row(r.ix).and_then(|m| m.cell(n)))?;
         if matches!(cell.f.as_deref(), Some("Inh") | Some("No Formula")) && own.is_some() {
             let derived = master_row(r.ix)
@@ -1429,10 +1455,32 @@ fn route_owned_rows_detailed(
                 return None;
             }
         }
-        match cell.f.as_deref() {
+        let v = match cell.f.as_deref() {
             None | Some("Inh") | Some("No Formula") => cell.numeric(),
             _ => None,
+        }?;
+        if inherited {
+            if let Some((mw, mh)) = master_wh {
+                let k = match n {
+                    "X" | "A" => {
+                        if mw.abs() > 1e-9 {
+                            g_w_h.0 / mw
+                        } else {
+                            1.0
+                        }
+                    }
+                    _ => {
+                        if mh.abs() > 1e-9 {
+                            g_w_h.1 / mh
+                        } else {
+                            1.0
+                        }
+                    }
+                };
+                return Some(v * k);
+            }
         }
+        Some(v)
     };
     // The EFFECTIVE type: a typeless local row inherits its master
     // row's type (a None-`T` override over a master `CubicBezTo` is a
@@ -2524,8 +2572,23 @@ impl Command for ReconcileLineJumps {
             // literal only when its master source carries no effective
             // formula — the planner's #226 rule (see route_owned_rows)
             // applied to the reconcile walk (review on the #303 batch).
+            // An INHERITED literal resolves into the INSTANCE frame
+            // first, per-axis like the geometry walk (the instance's
+            // own dims over the master's): a 10-inch instance of a
+            // 5-inch master once measured a 2·R master-frame skip as
+            // 2·R instance inches and hid/replaced a break that is 4·R
+            // on the page (CodeRabbit round 8 on PR #339).
+            let master_size = |n: &str| {
+                chain.get(1).and_then(|root| {
+                    root.sheet
+                        .cell(n)
+                        .and_then(|c| c.numeric())
+                        .filter(|v| v.abs() > 1e-9)
+                })
+            };
             let lit = |r: &vsdx::model::Row, n: &str| -> Option<f64> {
                 let own = r.cell(n);
+                let inherited = own.is_none();
                 let cell = own.or_else(|| master_row(r.ix).and_then(|m| m.cell(n)))?;
                 if matches!(cell.f.as_deref(), Some("Inh") | Some("No Formula"))
                     && own.is_some()
@@ -2538,10 +2601,28 @@ impl Command for ReconcileLineJumps {
                         return None;
                     }
                 }
-                match cell.f.as_deref() {
+                let v = match cell.f.as_deref() {
                     None | Some("Inh") | Some("No Formula") => cell.numeric(),
                     _ => None,
+                }?;
+                if inherited {
+                    let (iw, ih) = (
+                        doc.resolve_cell(s, &chain, "Width")
+                            .and_then(|c| c.numeric())
+                            .unwrap_or(1.0),
+                        doc.resolve_cell(s, &chain, "Height")
+                            .and_then(|c| c.numeric())
+                            .unwrap_or(1.0),
+                    );
+                    let scale = |n: &str| match n {
+                        "X" | "A" => master_size("Width").map(|mw| iw / mw),
+                        _ => master_size("Height").map(|mh| ih / mh),
+                    };
+                    if let Some(k) = scale(n) {
+                        return Some(v * k);
+                    }
                 }
+                Some(v)
             };
             let mut arctos = 0usize;
             let mut styled_hops = 0usize;
@@ -6558,12 +6639,12 @@ mod reconcile_jump_tests {
             .into_iter()
             .next()
             .unwrap();
-        let (owned, hop) = route_owned_rows_detailed(g, &[], (R, R), (5.0, 0.25));
+        let (owned, hop) = route_owned_rows_detailed(g, &[], (R, R), (5.0, 0.25), None);
         assert!(
             owned && hop,
             "the saved square classifies at the dims it was written for"
         );
-        let (owned, _) = route_owned_rows_detailed(g, &[], (R, R), (6.0, 0.30));
+        let (owned, _) = route_owned_rows_detailed(g, &[], (R, R), (6.0, 0.30), None);
         assert!(
             !owned,
             "decoding the same fractions at the POST-reroute dims misreads them"
@@ -6618,7 +6699,7 @@ mod reconcile_jump_tests {
             rows,
             ..Default::default()
         };
-        let (owned, _) = route_owned_rows_detailed(&g, &[], (R, R), (5.0, 0.25));
+        let (owned, _) = route_owned_rows_detailed(&g, &[], (R, R), (5.0, 0.25), None);
         assert!(
             !owned,
             "the authored break before the hop ends the incoming run"
@@ -6633,7 +6714,7 @@ mod reconcile_jump_tests {
             },
             ..Default::default()
         };
-        let (owned, hop) = route_owned_rows_detailed(&g2, &[], (R, R), (5.0, 0.25));
+        let (owned, hop) = route_owned_rows_detailed(&g2, &[], (R, R), (5.0, 0.25), None);
         assert!(owned && hop, "no break — the square classifies");
     }
 
@@ -6790,7 +6871,7 @@ mod reconcile_jump_tests {
             ],
             ..Default::default()
         };
-        let (owned, hop) = route_owned_rows_detailed(&g, &[], (R, R), (5.0, 0.25));
+        let (owned, hop) = route_owned_rows_detailed(&g, &[], (R, R), (5.0, 0.25), None);
         assert!(
             owned && hop,
             "the Rel gap resolves to the same 2·R slot in inches"
@@ -6828,7 +6909,7 @@ mod reconcile_jump_tests {
             ],
             ..Default::default()
         };
-        let (owned, hop) = route_owned_rows_detailed(&g, &[], (R, R), (5.0, 0.25));
+        let (owned, hop) = route_owned_rows_detailed(&g, &[], (R, R), (5.0, 0.25), None);
         assert!(
             owned && hop,
             "the ix-ordered route carries the recognized gap"
@@ -6902,5 +6983,68 @@ mod reconcile_jump_tests {
             1,
             "the triangle REPLACED the square formula: {a}"
         );
+    }
+
+    /// CodeRabbit round 8 on PR #339: an INHERITED gap's literals
+    /// resolve into the INSTANCE frame before classification — a
+    /// 10-inch instance of a 5-inch master once measured a master-
+    /// frame 2·R skip as 2·R instance inches and the planner treated
+    /// an authored break as a stored hop.
+    #[test]
+    fn an_inherited_gap_resolves_in_the_instance_frame() {
+        // Master rows carry a 2·R gap in MASTER units (a 5-wide
+        // master); the instance is 10 wide — the same literals are a
+        // 4·R break on the page and must NOT classify.
+        let master_rows = vec![
+            Row {
+                t: Some("MoveTo".into()),
+                ix: 1,
+                cells: xy(0.0, 0.125),
+                ..Row::default()
+            },
+            lineto(2, 2.5 - R, 0.125),
+            Row {
+                t: Some("MoveTo".into()),
+                ix: 3,
+                cells: xy(2.5 + R, 0.125),
+                ..Row::default()
+            },
+            lineto(4, 5.0, 0.125),
+        ];
+        // The instance carries sparse rows with no X cells (full
+        // inheritance).
+        let sparse = |t: &str, ix: i64| Row {
+            t: Some(t.into()),
+            ix,
+            ..Row::default()
+        };
+        let g = vsdx::model::Section {
+            name: "Geometry".into(),
+            rows: vec![
+                sparse("MoveTo", 1),
+                sparse("LineTo", 2),
+                sparse("MoveTo", 3),
+                sparse("LineTo", 4),
+            ],
+            ..Default::default()
+        };
+        // 2× the instance: the skip measures 2·R·2 = 4·R — rejected.
+        let (owned, _) = route_owned_rows_detailed(
+            &g,
+            &master_rows,
+            (R, R),
+            (10.0, 0.25),
+            Some((5.0, 0.25)),
+        );
+        assert!(!owned, "the scaled break is 4·R on the page — not a hop");
+        // Control: at the MASTER's own size the skip IS 2·R — owned.
+        let (owned, hop) = route_owned_rows_detailed(
+            &g,
+            &master_rows,
+            (R, R),
+            (5.0, 0.25),
+            Some((5.0, 0.25)),
+        );
+        assert!(owned && hop, "unscaled, the gap classifies");
     }
 }
