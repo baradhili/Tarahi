@@ -7053,15 +7053,19 @@ fn gradient_paint(
 /// `r` counts as its chord, because Visio's rounding swallows it — a
 /// pill drawn as a flat end plus a shallow arc end with `Rounding`
 /// above half its height comes out fully round at both ends (the
-/// network LLD's BVI and label pills). `None` (path unchanged) when no
-/// corner rounds, or for more than one subpath.
+/// network LLD's BVI and label pills). Such an arc turns into its chord
+/// only where a corner at one of its ends actually rounds; elsewhere it
+/// keeps its authored shape. `None` (path unchanged) when no corner
+/// rounds, or for more than one subpath.
 fn round_corners(d: &str, r: f64) -> Option<String> {
     // One segment of the walk: its end point, and the original command
     // text when it is a curve (`None` = straight, or an arc flat enough
-    // to round through).
+    // to round through). `arc` keeps such a flat arc's command for when
+    // no corner at its ends rounds.
     struct Seg {
         to: (f64, f64),
         curve: Option<String>,
+        arc: Option<String>,
     }
     let mut start: Option<(f64, f64)> = None;
     let mut segs: Vec<Seg> = Vec::new();
@@ -7103,7 +7107,11 @@ fn round_corners(d: &str, r: f64) -> Option<String> {
             "L" => {
                 let p = (num(toks.next())?, num(toks.next())?);
                 if (p.0 - cur.0).hypot(p.1 - cur.1) > 1e-9 {
-                    segs.push(Seg { to: p, curve: None });
+                    segs.push(Seg {
+                        to: p,
+                        curve: None,
+                        arc: None,
+                    });
                 }
                 cur = p;
             }
@@ -7118,10 +7126,12 @@ fn round_corners(d: &str, r: f64) -> Option<String> {
                     "A {:.5} {:.5} {} {} {} {:.5} {:.5} ",
                     v[0], v[1], v[2], v[3], v[4], p.0, p.1
                 );
-                segs.push(Seg {
-                    to: p,
-                    curve: (!flat).then_some(text),
-                });
+                let (curve, arc) = if flat {
+                    (None, Some(text))
+                } else {
+                    (Some(text), None)
+                };
+                segs.push(Seg { to: p, curve, arc });
                 cur = p;
             }
             "C" | "Q" => {
@@ -7138,6 +7148,7 @@ fn round_corners(d: &str, r: f64) -> Option<String> {
                 segs.push(Seg {
                     to: p,
                     curve: Some(text),
+                    arc: None,
                 });
                 cur = p;
             }
@@ -7220,7 +7231,21 @@ fn round_corners(d: &str, r: f64) -> Option<String> {
                 );
             }
             (None, None) => {
-                let _ = write!(out, "L {:.5} {:.5} ", seg.to.0, seg.to.1);
+                // The corner this segment leaves from.
+                let before = if i > 0 {
+                    corners[i - 1]
+                } else if closed {
+                    corners[n - 1]
+                } else {
+                    None
+                };
+                match &seg.arc {
+                    // A flat arc no rounded corner touches keeps its shape.
+                    Some(text) if before.is_none() => out.push_str(text),
+                    _ => {
+                        let _ = write!(out, "L {:.5} {:.5} ", seg.to.0, seg.to.1);
+                    }
+                }
             }
         }
     }
@@ -7232,7 +7257,8 @@ fn round_corners(d: &str, r: f64) -> Option<String> {
 
 /// The bulge depth of an SVG arc from `a` to `b` (radii `rx`/`ry`,
 /// x-axis rotation `rot_deg`, small arc): the largest distance of the
-/// arc from its chord. Infinite when the radii cannot span the chord.
+/// arc from its chord. When the radii cannot span the chord they scale
+/// up uniformly, as SVG does, and the arc is half of that ellipse.
 fn arc_sagitta(a: (f64, f64), b: (f64, f64), rx: f64, ry: f64, rot_deg: f64, sweep: bool) -> f64 {
     let (rx, ry) = (rx.abs(), ry.abs());
     if rx < 1e-12 || ry < 1e-12 {
@@ -7249,16 +7275,17 @@ fn arc_sagitta(a: (f64, f64), b: (f64, f64), rx: f64, ry: f64, rot_deg: f64, swe
         (x * cs - y * sn, x * sn + y * cs)
     };
     let (ua, ub) = (to_unit(a), to_unit(b));
-    let (dx, dy) = (ub.0 - ua.0, ub.1 - ua.1);
-    let c = dx.hypot(dy);
+    let c = (ub.0 - ua.0).hypot(ub.1 - ua.1);
     if c < 1e-12 {
         return 0.0;
     }
-    if c > 2.0 + 1e-9 {
-        // SVG scales the radii up to span the chord: a half circle.
-        let chord = (b.0 - a.0).hypot(b.1 - a.1);
-        return chord / 2.0;
-    }
+    // Radii too small for the chord scale up by `k`: in the scaled unit
+    // frame the chord is a diameter (SVG 2 implementation notes, F.6.6).
+    let k = (c / 2.0).max(1.0);
+    let (ua, ub) = ((ua.0 / k, ua.1 / k), (ub.0 / k, ub.1 / k));
+    let from_unit = |p: (f64, f64)| from_unit((p.0 * k, p.1 * k));
+    let (dx, dy) = (ub.0 - ua.0, ub.1 - ua.1);
+    let c = c / k;
     let s = 1.0 - (1.0 - (c / 2.0).powi(2)).max(0.0).sqrt();
     // The unit-frame apex: the chord's midpoint pushed out by the
     // sagitta, on the side the sweep bulges to.
@@ -12016,9 +12043,16 @@ mod tests {
         // LLD's BVI labels): Rounding above half the height rounds both
         // ends fully — the arc's bulge is shallower than the radius, so
         // it rounds through as its chord.
-        let pill = "M 0 0 L 0.77570 0 A 0.39349 0.03937 0 0 1 0.77570 -0.09843 L 0 -0.09843 L 0 0 ";
-        let p = round_corners(pill, 0.15748).expect("the pill rounds");
-        assert_eq!(p.matches(" A 0.04921 0.04921").count(), 4, "{p}");
+        // Radii too small for the chord scale up uniformly (SVG): this
+        // arc is half of a 0.49 × 0.05 ellipse, far deeper than the
+        // radius, so it stays (CodeRabbit on PR #354).
+        let wide = "M 0 0 L 0.77570 0 A 0.39349 0.03937 0 0 1 0.77570 -0.09843 L 0 -0.09843 L 0 0 ";
+        let w = round_corners(wide, 0.15748).expect("the straight corners round");
+        assert!(
+            w.contains("A 0.39349 0.03937 0 0 1 0.77570 -0.09843"),
+            "{w}"
+        );
+        assert_eq!(w.matches(" A 0.04921 0.04921").count(), 2, "{w}");
         // As the renderer writes it: the arc row ends without a space,
         // so the next `L` arrives glued to its last number.
         let glued = "M 0.00000 -0.00000 L 0.77570 -0.00000 A 0.08228 0.05895 -90.0000 0 0 0.77570 -0.09843L 0.00000 -0.09843 L 0.00000 -0.00000 Z";
@@ -12033,6 +12067,15 @@ mod tests {
             "{d}"
         );
         assert_eq!(d.matches(" A 0.25000 0.25000").count(), 2, "{d}");
+        // A shallow arc whose ends round no corner keeps its shape:
+        // only the right angle before it rounds (CodeRabbit on PR #354).
+        let tail = round_corners("M 1 0 L 1 -2 L 2 -2 A 1 0.25 0 0 1 3 -2 ", 0.1)
+            .expect("the right angle rounds");
+        assert!(
+            tail.ends_with("A 1.00000 0.25000 0 0 1 3.00000 -2.00000 "),
+            "{tail}"
+        );
+        assert_eq!(tail.matches(" A 0.10000 0.10000").count(), 1, "{tail}");
         // Through the renderer: the cell reaches the stroked outline.
         let mut s = rect_shape(1, (2.0, 2.0));
         s.sheet.set_cell("Rounding", Cell::value("0.125"));
