@@ -4942,15 +4942,27 @@ fn render_geometry(
     } else {
         env
     };
+    // Deleted rows draw nothing, so they never block the rounding
+    // (Greptile on PR #344).
     let sampled_curve = rows.iter().any(|r| {
-        matches!(
-            r.t.as_deref(),
-            Some("NURBSTo" | "SplineStart" | "SplineKnot")
-        )
+        !r.is_deleted()
+            && matches!(
+                r.t.as_deref(),
+                Some("NURBSTo" | "SplineStart" | "SplineKnot")
+            )
     });
+    // Formula first: an inherited cell's cached value is the MASTER's
+    // (`Width/10` cached as 0.1 on a 1 in master), so the instance env
+    // decides and the cache is only the fallback (Greptile on PR #344).
     let rounding = doc
         .resolve_cell(s, chain, "Rounding")
-        .and_then(|c| cell_num(&c, rounding_env))
+        .and_then(|c| {
+            c.f.as_deref()
+                .filter(|f| *f != "Inh" && *f != "No Formula")
+                .and_then(|f| vsdx::formula::eval(f, rounding_env).ok())
+                .and_then(|v| v.as_f64())
+                .or_else(|| cell_num(&c, rounding_env))
+        })
         .filter(|r| r.is_finite() && *r > 0.0 && !sampled_curve);
     if let Some(r) = rounding {
         if let Some(rounded) = round_corners(&d, r) {
@@ -10562,27 +10574,62 @@ mod tests {
     /// instance is 0.4, not the 1 in master's 0.1 (Greptile on PR #344).
     #[test]
     fn rounding_formulas_use_the_instance_size() {
-        let mut master = rect_shape(1, (1.0, 1.0));
-        master.sheet.set_cell("Width", Cell::value("1"));
-        master.sheet.set_cell("Height", Cell::value("1"));
-        let mut inst = shape_at(1, (4.0, 5.0), 4.0, 4.0, 0.0);
-        inst.master = Some(7);
-        inst.sheet.set_cell(
-            "Rounding",
-            Cell {
+        // A formula-only cell on the instance, and the master's cell with
+        // the master's cache `V='0.1'` (Greptile on PR #344, twice): both
+        // evaluate with the instance's size.
+        for on_master in [false, true] {
+            let mut master = rect_shape(1, (1.0, 1.0));
+            master.sheet.set_cell("Width", Cell::value("1"));
+            master.sheet.set_cell("Height", Cell::value("1"));
+            let mut inst = shape_at(1, (4.0, 5.0), 4.0, 4.0, 0.0);
+            inst.master = Some(7);
+            let cell = Cell {
+                v: on_master.then(|| "0.1".to_string()),
                 f: Some("Width/10".into()),
                 ..Cell::default()
-            },
-        );
-        let (mut doc, page) = page_fixture(vec![inst]);
-        doc.masters.push(vsdx::model::Master {
-            id: 7,
-            shapes: vec![master],
-            ..vsdx::model::Master::default()
-        });
+            };
+            if on_master {
+                master.sheet.set_cell("Rounding", cell);
+            } else {
+                inst.sheet.set_cell("Rounding", cell);
+            }
+            let (mut doc, page) = page_fixture(vec![inst]);
+            doc.masters.push(vsdx::model::Master {
+                id: 7,
+                shapes: vec![master],
+                ..vsdx::model::Master::default()
+            });
+            let svg = render_page(&doc, &page).unwrap();
+            assert!(
+                svg.contains(" A 0.40000 0.40000"),
+                "on_master={on_master}: {svg}"
+            );
+            assert!(
+                !svg.contains(" A 0.10000 0.10000"),
+                "on_master={on_master}: {svg}"
+            );
+        }
+    }
+
+    /// A deleted spline row draws nothing and does not block the
+    /// rounding of the straight walk that remains (Greptile on PR #344).
+    #[test]
+    fn deleted_curve_rows_do_not_block_rounding() {
+        let mut s = rect_shape(1, (2.0, 2.0));
+        s.sheet.set_cell("Rounding", Cell::value("0.125"));
+        let mut gone = geo_row(6, "SplineKnot", &[("X", 0.5), ("Y", 0.5), ("A", 1.0)]);
+        gone.attrs.push(("Del".into(), "1".into()));
+        if let Some(SheetChild::Section(sec)) = s
+            .sheet
+            .children
+            .iter_mut()
+            .find(|c| matches!(c, SheetChild::Section(sec) if sec.name == "Geometry"))
+        {
+            sec.rows.push(gone);
+        }
+        let (doc, page) = page_fixture(vec![s]);
         let svg = render_page(&doc, &page).unwrap();
-        assert!(svg.contains(" A 0.40000 0.40000"), "{svg}");
-        assert!(!svg.contains(" A 0.10000 0.10000"), "{svg}");
+        assert!(svg.contains(" A 0.12500 0.12500"), "{svg}");
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
