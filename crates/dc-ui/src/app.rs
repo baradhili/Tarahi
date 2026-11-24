@@ -1491,6 +1491,11 @@ impl App {
             );
         }
         self.page_idx = to;
+        // The jump-size drafts are PAGE-scoped — a draft from another
+        // page once showed in the reopened dialog (CodeRabbit round 9
+        // on PR #339).
+        self.line_jump_draft = None;
+        self.line_jump_draft_y = None;
         // Group-edit state does not carry across pages: shape ids
         // overlap across pages, and the per-frame coherence check only
         // drops levels that stop resolving to a Group — an id that
@@ -3707,6 +3712,11 @@ impl App {
         }
         if self.pagesetup_open {
             self.pagesetup_open = false;
+            // An interrupted drag's draft dies with the dialog — a
+            // reopened dialog once showed the draft, not the document
+            // (CodeRabbit round 9 on PR #339).
+            self.line_jump_draft = None;
+            self.line_jump_draft_y = None;
             return true;
         }
         if self.copypic_open {
@@ -7840,6 +7850,8 @@ impl App {
         }
         if !open {
             self.pagesetup_open = false;
+            self.line_jump_draft = None;
+            self.line_jump_draft_y = None;
         }
     }
 

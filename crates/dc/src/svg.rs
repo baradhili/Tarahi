@@ -1663,27 +1663,42 @@ pub fn geometry_flag_on(
                     // PR #339).
                     Some(src) => {
                         let mut menv = prepared_master_env(doc, s, chain, src);
+                        // The replay mirrors the PAINT WALK exactly
+                        // (CodeRabbit rounds 8–9 on PR #339): it feeds
+                        // only the sections BEFORE the target (the
+                        // paint evaluates a section's flag on ENTRY,
+                        // before its own rows feed — a self-referential
+                        // flag once read the section's post-walk value
+                        // and the reader hid a stroke the paint drew),
+                        // skips hidden sections' rows (the paint
+                        // returns from them), and evaluates RELATIVE
+                        // rows with the paint's scaling (fractions of
+                        // the master's own dims).
+                        let target_ordinal = src.sheet.sections_named("Geometry")
+                            .iter()
+                            .position(|g| std::ptr::eq(*g, section));
+                        let (mw, mh) = (
+                            src.sheet.cell("Width").and_then(|c| c.numeric()),
+                            src.sheet.cell("Height").and_then(|c| c.numeric()),
+                        );
                         for (n, sec) in src
                             .sheet
                             .sections_named("Geometry")
                             .into_iter()
                             .enumerate()
                         {
-                            // The paint walk RETURNS from a hidden
-                            // section before feeding its rows — replay
-                            // the same order, or a later section's flag
-                            // sees feeds the paint never made and the
-                            // reader hides a visible run (CodeRabbit
-                            // round 8 on PR #339).
+                            if Some(n) == target_ordinal {
+                                break; // the flag sees feeds BEFORE its section
+                            }
                             let sec_hidden = sec
                                 .cell("NoShow")
                                 .and_then(|c| {
                                     c.f.as_deref()
-                                        .and_then(|f| {
-                                            if f == "Inh" || f == "No Formula" {
+                                        .and_then(|rf| {
+                                            if rf == "Inh" || rf == "No Formula" {
                                                 None
                                             } else {
-                                                vsdx::formula::eval(f, &menv)
+                                                vsdx::formula::eval(rf, &menv)
                                                     .ok()
                                                     .and_then(|v| v.as_f64())
                                             }
@@ -1699,9 +1714,13 @@ pub fn geometry_flag_on(
                             for row in
                                 sec.rows.iter().take(crate::geom::MAX_WALK_ROWS)
                             {
+                                let is_rel = row
+                                    .t
+                                    .as_deref()
+                                    .is_some_and(|t| t.starts_with("Rel"));
                                 for name in ["X", "Y"] {
                                     if let Some(c) = row.cell(name) {
-                                        let v = c
+                                        let mut v = c
                                             .f
                                             .as_deref()
                                             .and_then(|rf| {
@@ -1719,6 +1738,14 @@ pub fn geometry_flag_on(
                                             })
                                             .filter(|v| v.is_finite())
                                             .or_else(|| c.numeric());
+                                        if is_rel {
+                                            if let (Some(val), Some(m)) = (
+                                                v,
+                                                if name == "X" { mw } else { mh },
+                                            ) {
+                                                v = Some(val * m);
+                                            }
+                                        }
                                         if let Some(v) = v {
                                             menv.insert(
                                                 format!("{gname}.{name}{}", row.ix),
@@ -1908,41 +1935,49 @@ pub fn backdrop_color_at(
                         || geometry_flag_on(doc, s, &chain, g, "NoFill")
                 })
                 .collect();
-            let segs = crate::geom::geometry_hit_segments_marked(
+            // The cast keeps the walk's MARKS: bridge segments are
+            // not ink, and each contiguous INK contour closes on
+            // itself (SVG fills each open subpath closed) — closing
+            // the whole segment list once spanned two separate
+            // triangles and reported a point inside neither
+            // (CodeRabbit round 9 on PR #339).
+            let marked = crate::geom::geometry_hit_segments_marked(
                 s,
                 root,
                 &frame,
                 None,
                 &nonfill,
                 &[],
-            )
-            .into_iter()
-            .map(|(a, b, _)| (a, b))
-            .collect::<Vec<_>>();
-            if !segs.is_empty() {
-                let q = (pt.0, page_h - pt.1); // the cast runs page y-up
-                let mut in_fill = false;
-                let mut cross = |a: (f64, f64), b: (f64, f64)| {
-                    if (a.1 > q.1) != (b.1 > q.1) {
-                        let x = a.0 + (q.1 - a.1) / (b.1 - a.1) * (b.0 - a.0);
-                        if x > q.0 {
-                            in_fill = !in_fill;
-                        }
+            );
+            let q = (pt.0, page_h - pt.1); // the cast runs page y-up
+            let mut in_fill = false;
+            let mut cross = |a: (f64, f64), b: (f64, f64)| {
+                if (a.1 > q.1) != (b.1 > q.1) {
+                    let x = a.0 + (q.1 - a.1) / (b.1 - a.1) * (b.0 - a.0);
+                    if x > q.0 {
+                        in_fill = !in_fill;
                     }
-                };
-                for (a, b) in &segs {
-                    cross(*a, *b);
                 }
-                // The renderer FILLS open contours closed — include
-                // the implicit closing edge of the (top-level shapes
-                // here are single-subpath) contour (CodeRabbit round
-                // on #324 phase 4).
-                if let (Some(first), Some(last)) = (segs.first(), segs.last()) {
-                    cross(last.1, first.0);
+            };
+            let mut contour: Vec<((f64, f64), (f64, f64))> = Vec::new();
+            for (a, b, mark) in &marked {
+                if *mark != crate::geom::SegMark::Ink {
+                    // Close the finished contour before the bridge.
+                    if let (Some(first), Some(last)) = (contour.first(), contour.last())
+                    {
+                        cross(last.1, first.0);
+                    }
+                    contour.clear();
+                    continue;
                 }
-                if !in_fill {
-                    return None;
-                }
+                cross(*a, *b);
+                contour.push((*a, *b));
+            }
+            if let (Some(first), Some(last)) = (contour.first(), contour.last()) {
+                cross(last.1, first.0);
+            }
+            if !marked.is_empty() && !in_fill {
+                return None;
             }
         }
         filled(doc, s, &chain)
@@ -13286,12 +13321,35 @@ mod tests {
         };
         msh.sheet.set_cell("Width", Cell::value("4.0"));
         msh.sheet.set_cell("Height", Cell::value("0.5"));
+        // The fed row carries a STALE cached 0 under the live formula
+        // (Width*0.5 = 2): without the replay, shape_env's absence of
+        // Geometry1.X2 leaves the formula unevaluable against the
+        // cache and the flag reads 0 (CodeRabbit round 9 on PR #339 —
+        // a plain literal feed once passed with the replay removed).
         let mut sec1 = Section {
             name: "Geometry".into(),
             ix: 0,
             ..Section::default()
         };
-        sec1.rows = vec![grow(1, "MoveTo", 0.0, 0.25), grow(2, "LineTo", 2.0, 0.25)];
+        sec1.rows = vec![
+            grow(1, "MoveTo", 0.0, 0.25),
+            Row {
+                ix: 2,
+                t: Some("LineTo".into()),
+                cells: vec![
+                    (
+                        "X".into(),
+                        Cell {
+                            v: Some("0".into()),
+                            f: Some("Width*0.5".into()),
+                            ..Cell::default()
+                        },
+                    ),
+                    ("Y".into(), Cell::value("0.25")),
+                ],
+                ..Row::default()
+            },
+        ];
         let mut sec2 = Section {
             name: "Geometry".into(),
             ix: 1,
@@ -13731,5 +13789,164 @@ mod tests {
             1,
             "and still bridges: {svg}"
         );
+    }
+
+    /// Greptile + CodeRabbit round 9 on PR #339: DELETED rows keep
+    /// the NoLine flags aligned — two deleted tail rows of a NoLine
+    /// section once shifted the flags onto the following visible
+    /// section's rows and its crossings vanished.
+    #[test]
+    fn deleted_rows_keep_the_noline_flags_aligned() {
+        let mut s = shape_at(1, (0.0, 5.0), 6.0, 1.0, 0.0);
+        s.sheet.set_cell("LocPinX", Cell::value("0"));
+        s.sheet.set_cell("LocPinY", Cell::value("0.5"));
+        s.sheet.set_cell("ObjType", Cell::value("2"));
+        let mut sec1 = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            cells: vec![("NoLine".into(), Cell::value("1".to_string()))],
+            ..Section::default()
+        };
+        sec1.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 1.0), ("Y", 0.5)]),
+            geo_row(2, "LineTo", &[("X", 2.0), ("Y", 0.5)]),
+            // Two DELETED tail rows.
+            Row {
+                t: Some("LineTo".into()),
+                ix: 3,
+                attrs: vec![("Del".to_string(), "1".to_string())],
+                cells: vec![
+                    ("X".to_string(), Cell::value("2.5")),
+                    ("Y".to_string(), Cell::value("0.5")),
+                ],
+                ..Row::default()
+            },
+            Row {
+                t: Some("LineTo".into()),
+                ix: 4,
+                attrs: vec![("Del".to_string(), "1".to_string())],
+                cells: vec![
+                    ("X".to_string(), Cell::value("3.0")),
+                    ("Y".to_string(), Cell::value("0.5")),
+                ],
+                ..Row::default()
+            },
+        ];
+        let mut sec2 = Section {
+            name: "Geometry".into(),
+            ix: 1,
+            ..Section::default()
+        };
+        sec2.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 4.0), ("Y", 0.5)]),
+            geo_row(2, "LineTo", &[("X", 6.0), ("Y", 0.5)]),
+        ];
+        s.sheet.children.push(SheetChild::Section(sec1));
+        s.sheet.children.push(SheetChild::Section(sec2));
+        let (doc, page) = page_fixture(vec![s]);
+        let sh = &doc.pages[0].shapes[0];
+        let chain = [sh];
+        let frame = crate::geom::hit_frame(&doc, &chain, sh, (1.0, 1.0));
+        let noline = [doc.pages[0].shapes[0]
+            .sheet
+            .sections_named("Geometry")[0]];
+        let segs = crate::geom::geometry_hit_segments_marked(
+            sh,
+            None,
+            &frame,
+            None,
+            &[],
+            &noline,
+        );
+        // The VISIBLE section still draws — the flags did not shift
+        // onto it.
+        assert!(
+            segs.iter().any(|(_, _, m)| *m == crate::geom::SegMark::Ink),
+            "the visible section's ink survives the deleted NoLine tail: {segs:?}"
+        );
+        let _ = &page;
+    }
+
+    /// CodeRabbit round 9 on PR #339: the backdrop closes each ink
+    /// contour separately — two open triangles on one shape once
+    /// closed as ONE loop and a point between them reported inside.
+    #[test]
+    fn the_backdrop_closes_each_contour_separately() {
+        let mut t = shape_at(1, (0.0, 5.0), 8.0, 1.0, 0.0);
+        t.sheet.set_cell("LocPinX", Cell::value("0"));
+        t.sheet.set_cell("LocPinY", Cell::value("0.5"));
+        t.sheet.set_cell("FillForegnd", Cell::value("#ff0000"));
+        let mut sec1 = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec1.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "LineTo", &[("X", 2.0), ("Y", 0.0)]),
+            geo_row(3, "LineTo", &[("X", 0.0), ("Y", 2.0)]),
+        ];
+        let mut sec2 = Section {
+            name: "Geometry".into(),
+            ix: 1,
+            ..Section::default()
+        };
+        sec2.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 4.0), ("Y", 0.0)]),
+            geo_row(2, "LineTo", &[("X", 6.0), ("Y", 0.0)]),
+            geo_row(3, "LineTo", &[("X", 4.0), ("Y", 2.0)]),
+        ];
+        t.sheet.children.push(SheetChild::Section(sec1));
+        t.sheet.children.push(SheetChild::Section(sec2));
+        let (doc, page) = page_fixture(vec![t]);
+        // Between the triangles (page x 3): inside NEITHER fill.
+        assert_eq!(
+            backdrop_color_at(&doc, &page, (3.0, 5.5), 99, &[]),
+            (0xff, 0xff, 0xff),
+            "the spanning closure once reported this point inside"
+        );
+        // Inside the first triangle: red.
+        assert_eq!(
+            backdrop_color_at(&doc, &page, (0.5, 5.4), 99, &[]),
+            (0xff, 0, 0),
+            "the first contour still fills"
+        );
+    }
+
+    /// Greptile + CodeRabbit round 9 on PR #339: the canvas overlay's
+    /// overlap suppression is per-JUMPER — two separate horizontal
+    /// connectors 0.08 apart crossed by one vertical both keep their
+    /// hops (a global comparison once dropped the second connector's).
+    #[test]
+    fn nearby_separate_connectors_keep_their_hops() {
+        let mk = |id: i64, y: f64| {
+            let mut h = shape_at(id, (3.0, y), 4.0, 0.0, 0.0);
+            h.sheet.set_cell("ObjType", Cell::value("2"));
+            push_geo(
+                &mut h,
+                vec![
+                    geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                    geo_row(2, "LineTo", &[("X", 4.0), ("Y", 0.0)]),
+                ],
+            );
+            h
+        };
+        let mut v = shape_at(3, (4.0, 5.0), 0.0, 4.0, 0.0);
+        v.sheet.set_cell("LocPinY", Cell::value("2"));
+        v.sheet.set_cell("ObjType", Cell::value("2"));
+        push_geo(
+            &mut v,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 0.0), ("Y", 4.0)]),
+            ],
+        );
+        let (doc, page) = page_fixture(vec![mk(1, 5.0), mk(2, 5.08), v]);
+        let js = crate::jumps::page_jumps(&doc, &page, &[]);
+        assert_eq!(js.len(), 2, "each connector keeps its hop: {js:?}");
+        // The export cuts BOTH connectors.
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(svg.contains("dc-jumpcut1"), "connector 1 cuts: {svg}");
+        assert!(svg.contains("dc-jumpcut2"), "connector 2 cuts too: {svg}");
     }
 }

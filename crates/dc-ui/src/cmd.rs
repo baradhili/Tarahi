@@ -1460,22 +1460,13 @@ fn route_owned_rows_detailed(
             _ => None,
         }?;
         if inherited {
-            if let Some((mw, mh)) = master_wh {
+            // The geometry walk's all-or-nothing ratio: a degenerate
+            // master axis means NO scaling at all (CodeRabbit round 9
+            // on PR #339).
+            if let Some((mw, mh)) = master_wh.filter(|(w, h)| w.abs() > 1e-6 && h.abs() > 1e-6) {
                 let k = match n {
-                    "X" | "A" => {
-                        if mw.abs() > 1e-9 {
-                            g_w_h.0 / mw
-                        } else {
-                            1.0
-                        }
-                    }
-                    _ => {
-                        if mh.abs() > 1e-9 {
-                            g_w_h.1 / mh
-                        } else {
-                            1.0
-                        }
-                    }
+                    "X" | "A" => g_w_h.0 / mw,
+                    _ => g_w_h.1 / mh,
                 };
                 return Some(v * k);
             }
@@ -1515,6 +1506,44 @@ fn route_owned_rows_detailed(
             Some((x, y))
         }
     };
+    // A MoveTo that is itself a STORED-GAP TARGET starts a real run —
+    // reading it as the run's start vertex lets the backward scan
+    // measure the segment between two gaps (M L M L M L once stopped
+    // at the first gap's target and the route read as not owned;
+    // CodeRabbit round 9 on PR #339). The gate is the target's own
+    // skip: ≈ 2·radius and collinear with the run out of it — an
+    // authored break's arbitrary skip does not qualify.
+    let gap_target_start = |i: usize, from: (f64, f64)| -> bool {
+        let Some(mt) = pt(live[i]) else {
+            return false;
+        };
+        let mut q = None;
+        let mut p = i;
+        while p > 0 {
+            p -= 1;
+            if !run_row(eff_t(live[p], master_rows)) {
+                return false;
+            }
+            if let Some(v) = pt(live[p]) {
+                q = Some(v);
+                break;
+            }
+        }
+        let Some(q) = q else {
+            return false;
+        };
+        let skip = (mt.0 - q.0, mt.1 - q.1);
+        let len = skip.0.hypot(skip.1);
+        let out = (from.0 - mt.0, from.1 - mt.1);
+        let out_len = out.0.hypot(out.1);
+        len > 1e-9
+            && out_len > 1e-9
+            && radii.0.max(radii.1) > 0.0
+            && ((len - 2.0 * radii.0).abs() <= radii.0 * 0.05 + 1e-6
+                || (len - 2.0 * radii.1).abs() <= radii.1 * 0.05 + 1e-6)
+            && (skip.0 * out.0 + skip.1 * out.1) > 0.0
+            && (skip.0 * out.1 - skip.1 * out.0).abs() <= 0.02 * len * out_len
+    };
     for (i, r) in live.iter().enumerate() {
         let t = eff_t(r, master_rows);
         if straight(t) {
@@ -1537,7 +1566,23 @@ fn route_owned_rows_detailed(
                     let mut p = i;
                     while p > 0 {
                         p -= 1;
-                        if !scan_row(p, eff_t(live[p], master_rows)) {
+                        let t_p = eff_t(live[p], master_rows);
+                        if !scan_row(p, t_p) {
+                            // A stored-gap TARGET opens a run — read
+                            // its point as this run's start vertex (the
+                            // two-gap route case; CodeRabbit round 9).
+                            if let Some(f) = from {
+                                if matches!(t_p, Some("MoveTo") | Some("RelMoveTo"))
+                                    && gap_target_start(p, f)
+                                {
+                                    if let Some(q) = pt(live[p]) {
+                                        let d = (f.0 - q.0, f.1 - q.1);
+                                        if d.0.hypot(d.1) > 1e-9 {
+                                            prev_dir = Some(d);
+                                        }
+                                    }
+                                }
+                            }
                             break;
                         }
                         let Some(q) = pt(live[p]) else {
@@ -2148,7 +2193,20 @@ fn reconciled_rows(
     // merged skeleton is the minimal true route. A middle point
     // survives only when it TURNS the route: look ahead (the point
     // after it through the last kept), since the first candidate has
-    // no prior direction.
+    // no prior direction. CONSECUTIVE DUPLICATES dedup first — a
+    // duplicate's zero-length lookahead once failed the collinearity
+    // test and the duplicate survived as a phantom turning point,
+    // splitting the hop's own window (CodeRabbit round 9 on PR #339).
+    let deduped: Vec<(f64, f64)> = {
+        let mut v: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
+        for p in pts {
+            if v.last().is_none_or(|q| (q.0 - p.0).hypot(q.1 - p.1) > 1e-9) {
+                v.push(*p);
+            }
+        }
+        v
+    };
+    let pts = &deduped[..];
     let mut skel: Vec<(f64, f64)> = vec![pts[0]];
     for (i, p) in pts[1..pts.len() - 1].iter().enumerate() {
         let q = pts[i + 2];
@@ -2245,7 +2303,13 @@ fn reconciled_rows(
                 let d = (j.at.0 - a.0, j.at.1 - a.1);
                 let t = d.0 * dir.0 + d.1 * dir.1;
                 let perp = (d.0 * dir.1 - d.1 * dir.0).abs();
-                t > 1e-9 && t < len - 1e-9 && perp < 1e-6
+                // The hop's OWN direction must agree with the
+                // segment's — a self-crossing route passes one point
+                // on two runs, and a position-only match once let the
+                // horizontal run's hop land on the steep run that
+                // shares the point (CodeRabbit round 9 on PR #339).
+                let along = j.dir.0 * dir.0 + j.dir.1 * dir.1;
+                t > 1e-9 && t < len - 1e-9 && perp < 1e-6 && along > 0.99
             })
             .map(|j| ((j.at.0 - a.0) * dir.0 + (j.at.1 - a.1) * dir.1, j.style))
             .collect::<Vec<_>>();
@@ -2578,14 +2642,21 @@ impl Command for ReconcileLineJumps {
             // 5-inch master once measured a 2·R master-frame skip as
             // 2·R instance inches and hid/replaced a break that is 4·R
             // on the page (CodeRabbit round 8 on PR #339).
-            let master_size = |n: &str| {
-                chain.get(1).and_then(|root| {
+            // The geometry walk's scale policy: NO per-axis scaling
+            // when EITHER master dim is degenerate (master_ratio is
+            // all-or-nothing there) — a zero-height master once had
+            // the reconcile scale X alone, measure a 0.10 in skip the
+            // walk reads as 0.05, and weld an authored break on Hide
+            // (CodeRabbit round 9 on PR #339).
+            let master_ratio = chain.get(1).and_then(|root| {
+                let g = |n: &str| {
                     root.sheet
                         .cell(n)
                         .and_then(|c| c.numeric())
-                        .filter(|v| v.abs() > 1e-9)
-                })
-            };
+                        .filter(|v| v.abs() > 1e-6)
+                };
+                g("Width").zip(g("Height"))
+            });
             let lit = |r: &vsdx::model::Row, n: &str| -> Option<f64> {
                 let own = r.cell(n);
                 let inherited = own.is_none();
@@ -2606,19 +2677,19 @@ impl Command for ReconcileLineJumps {
                     _ => None,
                 }?;
                 if inherited {
-                    let (iw, ih) = (
-                        doc.resolve_cell(s, &chain, "Width")
-                            .and_then(|c| c.numeric())
-                            .unwrap_or(1.0),
-                        doc.resolve_cell(s, &chain, "Height")
-                            .and_then(|c| c.numeric())
-                            .unwrap_or(1.0),
-                    );
-                    let scale = |n: &str| match n {
-                        "X" | "A" => master_size("Width").map(|mw| iw / mw),
-                        _ => master_size("Height").map(|mh| ih / mh),
-                    };
-                    if let Some(k) = scale(n) {
+                    if let Some((mw, mh)) = master_ratio {
+                        let (iw, ih) = (
+                            doc.resolve_cell(s, &chain, "Width")
+                                .and_then(|c| c.numeric())
+                                .unwrap_or(1.0),
+                            doc.resolve_cell(s, &chain, "Height")
+                                .and_then(|c| c.numeric())
+                                .unwrap_or(1.0),
+                        );
+                        let k = match n {
+                            "X" | "A" => iw / mw,
+                            _ => ih / mh,
+                        };
                         return Some(v * k);
                     }
                 }
@@ -5366,17 +5437,32 @@ mod reconcile_jump_tests {
             let page = &mut ed.doc.pages[0];
             let h = vsdx::model::find_shape_by_id_mut(&mut page.shapes, 5).unwrap();
             let mut sec = h.sheet.sections_named("Geometry")[0].clone();
-            let mut rows = sec.rows.clone();
-            rows.insert(
-                2,
-                Row {
-                    t: Some("LineTo".into()),
-                    ix: 99,
-                    cells: rows[1].cells.clone(),
-                    ..Row::default()
-                },
-            );
-            sec.rows = rows;
+            let rows = sec.rows.clone();
+            // IX ORDER matters (the walkers sort by it): the duplicate
+            // takes the NEXT ix after the incoming LineTo and the
+            // following rows renumber — ix 99 once sorted after the
+            // route tail and the duplicate-neighbor scan never ran
+            // (CodeRabbit round 9 on PR #339).
+            let mut dup_rows: Vec<Row> = Vec::with_capacity(rows.len() + 1);
+            let mut next_ix = 3;
+            for (k, r) in rows.iter().enumerate() {
+                if k == 2 {
+                    dup_rows.push(Row {
+                        t: Some("LineTo".into()),
+                        ix: next_ix,
+                        cells: rows[1].cells.clone(),
+                        ..Row::default()
+                    });
+                    next_ix += 1;
+                }
+                let mut r2 = r.clone();
+                if k >= 2 {
+                    r2.ix = next_ix;
+                    next_ix += 1;
+                }
+                dup_rows.push(r2);
+            }
+            sec.rows = dup_rows;
             for child in h.sheet.children.iter_mut() {
                 if let vsdx::model::SheetChild::Section(g) = child {
                     if g.name == "Geometry" {
@@ -6973,15 +7059,23 @@ mod reconcile_jump_tests {
         .apply(&mut ed.doc)
         .unwrap();
         ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
-        let a = rows_of(&ed, 5)[2]
-            .cell("A")
-            .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+        // Assert on the EFFECTIVE controls: the square FORMULA must be
+        // gone from the persisted row (a V-first read once passed with
+        // the stale cache intact; CodeRabbit round 9 on PR #339).
+        let row2 = &rows_of(&ed, 5)[2];
+        assert_ne!(
+            row2.cell("A").and_then(|c| c.f.clone()),
+            Some(square_a.clone()),
+            "the square formula did not survive the rewrite"
+        );
+        let a = polyline_a_owned(row2, &[])
+            .or_else(|| row2.cell("A").and_then(|c| c.v.clone().or_else(|| c.f.clone())))
             .unwrap();
         let (_, pts) = dc::jumps::parse_polyline_controls(&a).unwrap();
         assert_eq!(
             pts.len(),
             1,
-            "the triangle REPLACED the square formula: {a}"
+            "the effective controls are the triangle's single apex: {a}"
         );
     }
 
@@ -7046,5 +7140,45 @@ mod reconcile_jump_tests {
             Some((5.0, 0.25)),
         );
         assert!(owned && hop, "unscaled, the gap classifies");
+    }
+
+    /// CodeRabbit round 9 on PR #339: a route with TWO stored gaps —
+    /// the backward scan measures the segment BETWEEN the gaps (the
+    /// first gap's target opens the second's incoming run) instead of
+    /// stopping at it and rejecting the route.
+    #[test]
+    fn a_two_gap_route_stays_owned() {
+        let g = vsdx::model::Section {
+            name: "Geometry".into(),
+            rows: vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.0, 0.125),
+                    ..Row::default()
+                },
+                lineto(2, 0.95, 0.125),
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 3,
+                    cells: xy(1.05, 0.125),
+                    ..Row::default()
+                },
+                lineto(4, 1.95, 0.125),
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 5,
+                    cells: xy(2.05, 0.125),
+                    ..Row::default()
+                },
+                lineto(6, 5.0, 0.125),
+            ],
+            ..Default::default()
+        };
+        let (owned, hop) = route_owned_rows_detailed(&g, &[], (0.05, 0.05), (5.0, 0.25), None);
+        assert!(
+            owned && hop,
+            "both gaps classify (each measures its own 2·R skip)"
+        );
     }
 }

@@ -10500,13 +10500,28 @@ fn layout_and_routing_dialog_writes_jump_cells() {
         Some("0"),
         "None wrote the off switch"
     );
-    // The Routing group paints disabled: the Style row's button exists
-    // and is not clickable (visPLO-style cells absent whatever the
-    // user tries).
+    // The Routing group paints DISABLED: the Style row's button
+    // exists, clicking it opens no options (the dropdown entries
+    // never appear), and no routing cell is written whatever the user
+    // tries (CodeRabbit round 9 on PR #339: existence alone once
+    // passed an enabled-but-not-yet-clicked control).
     let disabled = h
         .get_all_by_label_contains("Right Angle")
         .max_by_key(|n| n.rect().min.y as i64);
     assert!(disabled.is_some(), "the routing Style control paints");
+    // A disabled control opens nothing: clicking adds NO new
+    // "Straight" entry (one paints in the base chrome — a dropdown
+    // would add another; CodeRabbit round 9 on PR #339).
+    let straight_before = h.get_all_by_label_contains("Straight").count();
+    if let Some(btn) = disabled {
+        btn.click();
+        h.run();
+    }
+    assert_eq!(
+        h.get_all_by_label_contains("Straight").count(),
+        straight_before,
+        "the disabled routing control opens no options"
+    );
     assert!(
         h.state()
             .debug_page_sheet_cell_for_test("RouteStyle")

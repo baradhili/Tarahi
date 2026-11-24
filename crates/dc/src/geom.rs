@@ -702,7 +702,23 @@ pub fn geometry_hit_segments_marked(
     // marker wins when one is present, else the master-only row's own.
     // The #293 repro's connector inherits its master's hook row through
     // an instance `<Row Del="1" IX="3" T="LineTo"/>` with no cells.
-    walk.retain(|(row, _, _)| !row.is_deleted());
+    // The NoLine flags ride the SAME filter — retaining the walk
+    // alone once shifted section flags onto the wrong rows (two
+    // deleted tail rows of a NoLine section made the following visible
+    // section's rows read as NoLine; Greptile + CodeRabbit round 9 on
+    // PR #339).
+    {
+        let mut k = 0;
+        walk.retain(|(row, _, _)| {
+            let keep = !row.is_deleted();
+            if !keep {
+                walk_noline.remove(k);
+            } else {
+                k += 1;
+            }
+            keep
+        });
+    }
     // Row kind: 0 = MoveTo (positions the pen, draws no run), 1 =
     // straight LineTo (the only run that counts as jump context —
     // curved neighbors' endpoint chords can lie about the route,

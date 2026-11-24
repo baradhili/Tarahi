@@ -3476,6 +3476,40 @@ mod tests {
         );
     }
 
+
+    /// CodeRabbit round 9 on PR #339: a connector crossing the probe
+    /// on TWO different runs — the probe (ConLineJumpCode 1) vetoes
+    /// its own hop, so BOTH of the connector's runs hop; the writer
+    /// must place each hop on ITS OWN run (the route passes (2,0)
+    /// twice: once horizontal, once on the steep diagonal — a
+    /// position-only match once put the diagonal hop on the
+    /// horizontal run).
+    #[test]
+    fn hops_on_two_runs_of_one_connector_stay_on_their_runs() {
+        let rules = JumpRules {
+            page_code: 1,
+            con_codes: [(2, 1)].into_iter().collect(), // the probe never hops
+        };
+        let bent = jline(
+            1,
+            0,
+            &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (3.0, 4.0), (1.0, -4.0)],
+        );
+        let probe = jline(2, 1, &[(1.0, -1.0), (3.0, 1.0)]);
+        let js = line_jumps_with(&[bent, probe], &rules);
+        // Both crossings sit at the SAME point (2,0) on two different
+        // runs — the cluster keeps the roomier HORIZONTAL one (the
+        // writer then needs the direction match to place it on the
+        // horizontal run, not the diagonal that shares the point —
+        // see reconciled_rows' dir filter).
+        assert_eq!(js.len(), 1, "one hop at the shared contact: {js:?}");
+        assert!(
+            js[0].dir.1.abs() < 1e-9 && (js[0].at.0 - 2.0).abs() < 1e-9,
+            "the horizontal run's hop wins the contact: {:?}",
+            js[0]
+        );
+    }
+
     /// CodeRabbit round 7 on PR #339: a hop that CANNOT draw reserves
     /// no space — a cap-starved crossing at the run's start once
     /// reserved the slot and suppressed a later valid hop the writer
