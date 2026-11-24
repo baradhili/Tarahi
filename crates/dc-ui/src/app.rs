@@ -85,6 +85,15 @@ enum FormatSection {
     Text,
 }
 
+/// What a frame's line-jump overlay depends on (see `App::jump_fx_cache`).
+#[derive(Debug, Clone, PartialEq)]
+struct JumpFxKey {
+    version: u64,
+    page_idx: usize,
+    hidden: Vec<i64>,
+    radius_bits: (u64, u64),
+}
+
 pub struct App {
     ed: Option<Editor>,
     path: PathBuf,
@@ -311,6 +320,13 @@ pub struct App {
     connpt_sel: Option<(i64, i64)>,
     /// #108: the line-jump hops painted on the last frame (test seam).
     jumps_last: usize,
+    /// The last frame's hops and what they were computed for: the
+    /// document version (bumped by every edit, undo, redo and open —
+    /// the same key the layer underlay uses), the page, the hidden
+    /// layers and the hop radii. An idle frame reuses them instead of
+    /// recomputing the crossing set and every hop's backdrop (PR #339:
+    /// a 600-hop page spent about 60 s per frame there).
+    jump_fx_cache: Option<(JumpFxKey, Vec<canvas::JumpFx>)>,
     /// #226: whether the last frame painted the styled endpoint-drag
     /// ghost (test seam).
     last_endpoint_ghost: bool,
@@ -808,6 +824,7 @@ impl App {
             painter_sticky: false,
             connpt_sel: None,
             jumps_last: 0,
+            jump_fx_cache: None,
             last_endpoint_ghost: false,
             shot_frames: 0,
             // #224: headless default — no branded boot moment (the
@@ -5780,6 +5797,9 @@ impl App {
         if !shown {
             return Vec::new();
         }
+        // One backdrop index per pass: every hop's gap color is a
+        // lookup, not a walk over the whole page (PR #339).
+        let backdrop = dc::svg::BackdropIndex::new(doc, page);
         dc::jumps::page_jumps_stripping(doc, page, hidden, None)
             .into_iter()
             // A hop with no room on its own run (a corner-adjacent
@@ -5822,8 +5842,7 @@ impl App {
                 // rasters, so this mimics the export's cut in the
                 // color that shows through it (#324 phase 3).
                 gap_color: {
-                    let (r, g, b) =
-                        dc::svg::backdrop_color_at(doc, page, j.at, j.jumper, hidden);
+                    let (r, g, b) = backdrop.color_at(j.at, j.jumper, hidden);
                     Color32::from_rgb(r, g, b)
                 },
                 style: j.style,
@@ -5843,6 +5862,25 @@ impl App {
                 radius_in: r_eff as f32,
             })
             .collect()
+    }
+
+    /// [`App::jump_fx`] for the frame, reused while nothing it depends
+    /// on changed (`jump_fx_cache`).
+    fn jump_fx_cached(&mut self, jump_radius: (f64, f64), hidden: &[i64]) -> Vec<canvas::JumpFx> {
+        let key = JumpFxKey {
+            version: self.version,
+            page_idx: self.page_idx,
+            hidden: hidden.to_vec(),
+            radius_bits: (jump_radius.0.to_bits(), jump_radius.1.to_bits()),
+        };
+        if let Some((k, fx)) = &self.jump_fx_cache {
+            if *k == key {
+                return fx.clone();
+            }
+        }
+        let fx = self.jump_fx(jump_radius, hidden);
+        self.jump_fx_cache = Some((key, fx.clone()));
+        fx
     }
 
     /// The page's glue candidates (#108): every non-connector shape's
@@ -10456,7 +10494,7 @@ impl App {
         };
         // One crossing set for the canvas, the export and the
         // stored-jump reconciliation (#336) — `jump_fx`.
-        let jump_fx = self.jump_fx(jump_radius, &hidden);
+        let jump_fx = self.jump_fx_cached(jump_radius, &hidden);
         self.jumps_last = jump_fx.len();
         // #177: everything the connection-point overlay needs, built
         // before the destructuring borrows below (the closure runs
@@ -19190,6 +19228,34 @@ mod tests {
         }
         // A page that shows no jumps (radius 0) paints none.
         assert!(app.jump_fx((0.0, 0.0), &[]).is_empty());
+        // The frame's cached form (PR #339): reused while the version,
+        // page, hidden layers and radius stay the same; any change
+        // recomputes.
+        let gap_at_7 = |fx: &[canvas::JumpFx]| {
+            fx.iter()
+                .find(|j| (j.at.0 - 7.0).abs() < 1e-9)
+                .map(|j| j.gap_color)
+        };
+        let panel_blue = Some(Color32::from_rgb(0x40, 0x80, 0xff));
+        assert_eq!(gap_at_7(&app.jump_fx_cached(radius, &[])), panel_blue);
+        assert_eq!(
+            gap_at_7(&app.jump_fx_cached(radius, &[7])),
+            Some(Color32::WHITE),
+            "a different hidden set recomputes"
+        );
+        assert_eq!(gap_at_7(&app.jump_fx_cached(radius, &[])), panel_blue);
+        // Drop the panel without a version bump: the cache answers…
+        app.ed.as_mut().unwrap().doc.pages[0]
+            .shapes
+            .retain(|s| s.sheet.cell("LayerMember").and_then(|c| c.numeric()) != Some(7.0));
+        assert_eq!(gap_at_7(&app.jump_fx_cached(radius, &[])), panel_blue);
+        // …and every edit bumps the version, which recomputes.
+        app.simulate_edit_for_test();
+        assert_eq!(
+            gap_at_7(&app.jump_fx_cached(radius, &[])),
+            Some(Color32::WHITE),
+            "an edit recomputes the hops"
+        );
     }
 
 
