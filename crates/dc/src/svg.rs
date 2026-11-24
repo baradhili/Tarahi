@@ -4906,9 +4906,22 @@ fn render_geometry(
         }
         format!("url(#{id})")
     } else if fill_pattern > 1.5 {
-        fill_bkgnd.clone()
+        match hatch_fill(fill_pattern, &fill_color, &fill_bkgnd, (width, height)) {
+            Some(Hatch::Mixed(c)) => c,
+            // Line patterns: the background color on the path; the
+            // clipped lines replace it at flush time (`hatch_tiles`).
+            _ => fill_bkgnd.clone(),
+        }
     } else {
         fill_color.clone()
+    };
+    let hatch_tiles = if no_fill || fill_gradient.is_some() {
+        None
+    } else {
+        match hatch_fill(fill_pattern, &fill_color, &fill_bkgnd, (width, height)) {
+            Some(Hatch::Lines(t)) => Some(t),
+            _ => None,
+        }
     };
     // Fill/line transparency: every *Trans cell is a fraction (the
     // file stores 50 % as V='0.5'). A solid fill takes
@@ -5602,7 +5615,7 @@ fn render_geometry(
             paint.fill_opacity = fill_alpha;
             paint.fill_tiles = match &fill_gradient {
                 Some(GradientPaint::Tiles(t)) => Some(t.clone()),
-                _ => None,
+                _ => hatch_tiles.clone(),
             };
         }
         if !no_line {
@@ -6690,6 +6703,78 @@ enum GradientPaint {
     Tiles(String),
 }
 
+/// A legacy fill pattern (FillPattern 2–23): Visio draws them as 8×8
+/// device-pixel bitmaps at 96 dpi — period 1/12 in, 1/96 in lines in
+/// FillForegnd over FillBkgnd (Visio 2021 witness t12). The line
+/// patterns become clipped strokes; the dot/dither patterns a mixed
+/// color (8 ≈ ¾ foreground, the rest ≈ ½ — their bitmaps are not
+/// modeled).
+enum Hatch {
+    Lines(String),
+    Mixed(String),
+}
+
+fn hatch_fill(pattern: f64, fg: &str, bg: &str, (w, h): (f64, f64)) -> Option<Hatch> {
+    let pat = pattern.round() as i64;
+    if !(2..=23).contains(&pat) {
+        return None;
+    }
+    if pat >= 8 {
+        let (a, b) = (hex_rgb(fg), hex_rgb(bg));
+        let k = if pat == 8 { 0.75 } else { 0.5 };
+        let mix = |x: u8, y: u8| (f64::from(x) * k + f64::from(y) * (1.0 - k)).round() as u8;
+        return Some(Hatch::Mixed(format!(
+            "#{:02x}{:02x}{:02x}",
+            mix(a.0, b.0),
+            mix(a.1, b.1),
+            mix(a.2, b.2)
+        )));
+    }
+    let period = 1.0 / 12.0;
+    let pen = 1.0 / 96.0;
+    // The local box spans x 0…|w|, y −|h|…0 (y down); lines cover it
+    // generously and the fill path clips them.
+    let (w, h) = (w.abs(), h.abs());
+    let span = w + h + period;
+    let mut d = String::new();
+    let mut lines = |dir: u8| {
+        let n = (span / period).ceil() as i64 + 1;
+        for k in -n..=n {
+            let c = k as f64 * period;
+            let (a, b) = match dir {
+                // horizontal / vertical
+                0 => ((-period, -c), (w + period, -c)),
+                1 => ((c, -h - period), (c, period)),
+                // "/" (x + y = c) and "\" (x − y = c), y down
+                2 => ((c + h + period, -h - period), (c - period, period)),
+                _ => ((c - h - period, -h - period), (c + period, period)),
+            };
+            let _ = write!(d, "M {:.4} {:.4} L {:.4} {:.4} ", a.0, a.1, b.0, b.1);
+        }
+    };
+    match pat {
+        2 => lines(2),
+        3 => {
+            lines(0);
+            lines(1);
+        }
+        4 => {
+            lines(2);
+            lines(3);
+        }
+        5 => lines(3),
+        6 => lines(0),
+        _ => lines(1),
+    }
+    Some(Hatch::Lines(format!(
+        r#"<rect x="0" y="{:.5}" width="{w:.5}" height="{h:.5}" fill="{}"/><path d="{}" fill="none" stroke="{}" stroke-width="{pen:.5}"/>"#,
+        -h,
+        escape_attr(bg),
+        d.trim_end(),
+        escape_attr(fg)
+    )))
+}
+
 /// One gradient stop: color, alpha, position 0–1.
 type Stop = (String, f64, f64);
 
@@ -7195,8 +7280,10 @@ fn flush_shape_paint(paint: &mut ShapePaint, out: &mut String) {
         let id = format!("dc-gclip{:x}", fnv(&format!("{d}|{tiles}")));
         let _ = writeln!(
             out,
-            r#"<clipPath id="{id}"><path clip-rule="evenodd" d="{}"/></clipPath><g clip-path="url(#{id})">{tiles}</g>"#,
-            escape_attr(d)
+            r#"<clipPath id="{id}"><path clip-rule="evenodd" d="{}"/></clipPath><g clip-path="url(#{id})"{}{}>{tiles}</g>"#,
+            escape_attr(d),
+            opacity_attr("fill-opacity", paint.fill_opacity),
+            opacity_attr("stroke-opacity", paint.fill_opacity)
         );
     } else if !paint.fill_d.is_empty() {
         let _ = writeln!(
@@ -11640,6 +11727,30 @@ mod tests {
             &[],
         );
         assert!(svg.contains(r##"fill="#ff0000""##), "{svg}");
+    }
+
+    /// Legacy fill patterns (Visio 2021 witness t12): 2–7 draw 1/96 in
+    /// lines at a 1/12 in period in FillForegnd over FillBkgnd, clipped
+    /// to the outline; dither patterns mix the two colors.
+    #[test]
+    fn hatch_patterns_draw_lines_over_the_background() {
+        let render = |pat: &str| {
+            let mut s = rect_shape(1, (2.0, 2.0));
+            s.sheet.set_cell("FillForegnd", Cell::value("#0000ff"));
+            s.sheet.set_cell("FillBkgnd", Cell::value("#ffff00"));
+            s.sheet.set_cell("FillPattern", Cell::value(pat));
+            let (doc, page) = page_fixture(vec![s]);
+            render_page(&doc, &page).unwrap()
+        };
+        let horiz = render("6");
+        assert!(
+            horiz.contains("<clipPath")
+                && horiz.contains(r##"stroke="#0000ff" stroke-width="0.01042""##),
+            "{horiz}"
+        );
+        assert!(horiz.contains(r##"fill="#ffff00""##));
+        let dither = render("9");
+        assert!(dither.contains(r##"fill="#808080""##), "{dither}");
     }
 
     /// An Ellipse row joins the shape's even-odd fill (Visio 2021
