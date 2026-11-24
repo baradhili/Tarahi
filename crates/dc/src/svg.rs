@@ -1877,6 +1877,9 @@ fn prepared_master_env(
 /// cut the connector's own ink the way the export does (#324 phase 3;
 /// the old paper-white gap dashed every hop over a gray chassis
 /// panel, #322).
+///
+/// One-off form of [`BackdropIndex`]: callers asking for many hops on
+/// one page build the index once and query it per hop.
 pub fn backdrop_color_at(
     doc: &Document,
     page: &vsdx::Page,
@@ -1884,65 +1887,80 @@ pub fn backdrop_color_at(
     below: i64,
     hidden: &[i64],
 ) -> (u8, u8, u8) {
-    let page_h = num(page.sheet().and_then(|s| s.cell("PageHeight"))).unwrap_or(11.0);
-    let pt = (at.0, page_h - at.1);
-    fn filled(doc: &Document, s: &Shape, chain: &[&Shape]) -> Option<String> {
-        let sheet = doc.effective_sheet(s, chain);
-        let geos = sheet.sections_named("Geometry");
-        // NoFill/NoShow read the RENDERER's way — formula first, cached
-        // V as fallback: a hidden section (NoShow=1, or a formula that
-        // now returns 0 with a stale cache) paints nothing and must not
-        // color a gap (PR #339 round 4).
-        let any_fill = geos.iter().any(|g| {
-            !geometry_flag_on(doc, s, chain, g, "NoShow")
-                && !geometry_flag_on(doc, s, chain, g, "NoFill")
-                && g.rows.iter().any(|r| r.t.is_some())
-        });
-        if !any_fill {
-            return None;
-        }
-        let num_cell = |n: &str| doc.resolve_cell(s, chain, n).and_then(|c| c.numeric());
-        let pattern = num_cell("FillPattern").unwrap_or(1.0);
-        if pattern == 0.0 || num_cell("FillForegndTrans").unwrap_or(0.0) >= 0.5 {
-            return None;
-        }
-        let cell = if pattern > 1.5 && !(24.0..=40.0).contains(&pattern) {
-            "FillBkgnd"
-        } else {
-            "FillForegnd"
-        };
-        Some(themed_color_string(doc, s, chain, cell))
-    }
-    fn walk(
-        doc: &Document,
-        s: &Shape,
-        chain: &[&Shape],
-        page_h: f64,
-        top: bool,
-        to_page: Affine,
-        pt: (f64, f64),
-    ) -> Option<String> {
-        let mut chain: Vec<&Shape> = chain.to_vec();
-        chain.push(s);
-        let (bx, a) = node_ink_box(doc, s, &chain, page_h, top, to_page);
-        // Later children paint over earlier ones and over the parent.
-        for sub in s.sub_shapes.iter().rev() {
-            if let Some(c) = walk(doc, sub, &chain, page_h, false, a, pt) {
-                return Some(c);
+    BackdropIndex::new(doc, page).color_at(at, below, hidden)
+}
+
+/// A page's backdrop lookup for [`backdrop_color_at`], built once: per
+/// top-level shape, the nodes that can color a gap (a fill, its ink
+/// box, and for top-level shapes the fill contour the ray cast walks),
+/// in the order the walk tests them (later children over earlier ones,
+/// children over their parent). Building it walks every shape once; a
+/// query is box tests plus a ray cast. Asking `backdrop_color_at` per
+/// hop re-walked every shape's ink box per hop, about 0.1 s each on a
+/// 600-hop page, every frame (PR #339).
+pub struct BackdropIndex {
+    page_h: f64,
+    shapes: Vec<BackdropShape>,
+}
+
+struct BackdropShape {
+    id: i64,
+    guide: bool,
+    layer: Option<i64>,
+    nodes: Vec<BackdropNode>,
+}
+
+/// One edge of a fill contour, page space y up.
+type Edge = ((f64, f64), (f64, f64));
+
+struct BackdropNode {
+    /// Page-space ink box, y down: (x, y, w, h).
+    bx: (f64, f64, f64, f64),
+    /// The closed ink contours as edges (page space, y up) for the
+    /// point-in-fill test; `None` skips the test (group children, and
+    /// top-level shapes whose walk yields no segments).
+    edges: Option<Vec<Edge>>,
+    fill: (u8, u8, u8),
+}
+
+impl BackdropIndex {
+    pub fn new(doc: &Document, page: &vsdx::Page) -> BackdropIndex {
+        let page_h = num(page.sheet().and_then(|s| s.cell("PageHeight"))).unwrap_or(11.0);
+        fn filled(doc: &Document, s: &Shape, chain: &[&Shape]) -> Option<String> {
+            let sheet = doc.effective_sheet(s, chain);
+            let geos = sheet.sections_named("Geometry");
+            // NoFill/NoShow read the RENDERER's way — formula first, cached
+            // V as fallback: a hidden section (NoShow=1, or a formula that
+            // now returns 0 with a stale cache) paints nothing and must not
+            // color a gap (PR #339 round 4).
+            let any_fill = geos.iter().any(|g| {
+                !geometry_flag_on(doc, s, chain, g, "NoShow")
+                    && !geometry_flag_on(doc, s, chain, g, "NoFill")
+                    && g.rows.iter().any(|r| r.t.is_some())
+            });
+            if !any_fill {
+                return None;
             }
+            let num_cell = |n: &str| doc.resolve_cell(s, chain, n).and_then(|c| c.numeric());
+            let pattern = num_cell("FillPattern").unwrap_or(1.0);
+            if pattern == 0.0 || num_cell("FillForegndTrans").unwrap_or(0.0) >= 0.5 {
+                return None;
+            }
+            let cell = if pattern > 1.5 && !(24.0..=40.0).contains(&pattern) {
+                "FillBkgnd"
+            } else {
+                "FillForegnd"
+            };
+            Some(themed_color_string(doc, s, chain, cell))
         }
-        let inside = pt.0 >= bx.0 && pt.0 <= bx.0 + bx.2 && pt.1 >= bx.1 && pt.1 <= bx.1 + bx.3;
-        if !inside {
-            return None;
-        }
-        // The ink box only REJECTS — a triangle's empty corner is
-        // inside its box but outside its fill, and the gap would paint
-        // a color nothing draws there (CodeRabbit round on #324 phase
-        // 3). TOP-LEVEL shapes get the exact test: an even-odd ray
-        // cast over the same flattened geometry the crossing set
+        // The fill contour of a TOP-LEVEL shape. The ink box only
+        // REJECTS — a triangle's empty corner is inside its box but
+        // outside its fill, and the gap would paint a color nothing
+        // draws there (CodeRabbit round on #324 phase 3): an even-odd
+        // ray cast over the same flattened geometry the crossing set
         // walks. Group children keep the box alone — their frames are
         // parent-local here, and panels behind hops are top-level.
-        if top {
+        fn contour_edges(doc: &Document, s: &Shape, chain: &[&Shape]) -> Option<Vec<Edge>> {
             let msize = s
                 .master
                 .and_then(|mid| doc.master(mid))
@@ -1956,22 +1974,15 @@ pub fn backdrop_color_at(
                     (g("Width"), g("Height"))
                 })
                 .unwrap_or((1.0, 1.0));
-            let frame = crate::geom::hit_frame(doc, &chain, s, msize);
-            // chain.get(1) is ALWAYS None here — the walk starts with
-            // an empty chain and pushes only the instance, so a
-            // master-inheriting triangle produced no segments and the
-            // point-in-fill check silently skipped (an empty corner
-            // painted the shape's fill; PR #339 round 4). Resolve the
-            // master root the same way msize just did.
+            let frame = crate::geom::hit_frame(doc, chain, s, msize);
+            // The master root resolves the same way msize just did (an
+            // instance-only chain never carries it — PR #339 round 4).
             let root = s
                 .master
                 .and_then(|mid| doc.master(mid))
                 .and_then(|m| m.shapes.first());
-            // The ray cast counts only FILL-ELIGIBLE contours — a
-            // NoFill'd inner contour paints nothing, and counting it
-            // once rejected the outer fill's center before the
-            // eligibility test ran (the gap then painted a lower fill
-            // or white; CodeRabbit round 7 on PR #339).
+            // Only FILL-ELIGIBLE contours count — a NoFill'd inner
+            // contour paints nothing (CodeRabbit round 7 on PR #339).
             let own_secs = s.sheet.sections_named("Geometry");
             let walk_secs: Vec<&vsdx::model::Section> = if own_secs.is_empty() {
                 root.map(|r| r.sheet.sections_named("Geometry"))
@@ -1982,78 +1993,136 @@ pub fn backdrop_color_at(
             let nonfill: Vec<&vsdx::model::Section> = walk_secs
                 .into_iter()
                 .filter(|g| {
-                    geometry_flag_on(doc, s, &chain, g, "NoShow")
-                        || geometry_flag_on(doc, s, &chain, g, "NoFill")
+                    geometry_flag_on(doc, s, chain, g, "NoShow")
+                        || geometry_flag_on(doc, s, chain, g, "NoFill")
                 })
                 .collect();
-            // The cast keeps the walk's MARKS: bridge segments are
-            // not ink, and each contiguous INK contour closes on
-            // itself (SVG fills each open subpath closed) — closing
-            // the whole segment list once spanned two separate
-            // triangles and reported a point inside neither
+            // The cast keeps the walk's MARKS: bridge segments are not
+            // ink, and each contiguous INK contour closes on itself
             // (CodeRabbit round 9 on PR #339).
-            let marked = crate::geom::geometry_hit_segments_marked(
-                s,
-                root,
-                &frame,
-                None,
-                &nonfill,
-                &[],
-            );
-            let q = (pt.0, page_h - pt.1); // the cast runs page y-up
-            let mut in_fill = false;
-            let mut cross = |a: (f64, f64), b: (f64, f64)| {
-                if (a.1 > q.1) != (b.1 > q.1) {
-                    let x = a.0 + (q.1 - a.1) / (b.1 - a.1) * (b.0 - a.0);
-                    if x > q.0 {
-                        in_fill = !in_fill;
-                    }
-                }
-            };
-            let mut contour: Vec<((f64, f64), (f64, f64))> = Vec::new();
+            let marked =
+                crate::geom::geometry_hit_segments_marked(s, root, &frame, None, &nonfill, &[]);
+            if marked.is_empty() {
+                return None;
+            }
+            let mut edges = Vec::new();
+            let mut contour: Vec<Edge> = Vec::new();
             for (a, b, mark) in &marked {
                 if *mark != crate::geom::SegMark::Ink {
-                    // Close the finished contour before the bridge.
-                    if let (Some(first), Some(last)) = (contour.first(), contour.last())
-                    {
-                        cross(last.1, first.0);
+                    if let (Some(first), Some(last)) = (contour.first(), contour.last()) {
+                        edges.push((last.1, first.0));
                     }
                     contour.clear();
                     continue;
                 }
-                cross(*a, *b);
+                edges.push((*a, *b));
                 contour.push((*a, *b));
             }
             if let (Some(first), Some(last)) = (contour.first(), contour.last()) {
-                cross(last.1, first.0);
+                edges.push((last.1, first.0));
             }
-            if !marked.is_empty() && !in_fill {
-                return None;
+            Some(edges)
+        }
+        #[allow(clippy::too_many_arguments)] // the walk's frame + the output list
+        fn build(
+            doc: &Document,
+            s: &Shape,
+            chain: &[&Shape],
+            page_h: f64,
+            top: bool,
+            to_page: Affine,
+            out: &mut Vec<BackdropNode>,
+        ) {
+            let mut chain: Vec<&Shape> = chain.to_vec();
+            chain.push(s);
+            let (bx, a) = node_ink_box(doc, s, &chain, page_h, top, to_page);
+            // Later children paint over earlier ones and over the parent.
+            for sub in s.sub_shapes.iter().rev() {
+                build(doc, sub, &chain, page_h, false, a, out);
+            }
+            // A node without a fill never colors a gap: skip it (and its
+            // contour) — the query would pass over it anyway.
+            let Some(fill) = filled(doc, s, &chain) else {
+                return;
+            };
+            let edges = if top {
+                contour_edges(doc, s, &chain)
+            } else {
+                None
+            };
+            out.push(BackdropNode {
+                bx,
+                edges,
+                fill: hex_rgb(&fill),
+            });
+        }
+        let shapes = page
+            .shapes
+            .iter()
+            .map(|s| {
+                let guide = s.type_.as_deref() == Some("Guide");
+                let mut nodes = Vec::new();
+                if !guide {
+                    build(doc, s, &[], page_h, true, Affine::IDENTITY, &mut nodes);
+                }
+                BackdropShape {
+                    id: s.id,
+                    guide,
+                    layer: s
+                        .sheet
+                        .cell("LayerMember")
+                        .and_then(|c| c.numeric())
+                        .map(|m| m as i64),
+                    nodes,
+                }
+            })
+            .collect();
+        BackdropIndex { page_h, shapes }
+    }
+
+    /// The backdrop color at page point `at` (y up) beneath the shape
+    /// `below`; see [`backdrop_color_at`].
+    pub fn color_at(&self, at: (f64, f64), below: i64, hidden: &[i64]) -> (u8, u8, u8) {
+        let pt = (at.0, self.page_h - at.1);
+        let upto = self
+            .shapes
+            .iter()
+            .position(|s| s.id == below)
+            .unwrap_or(self.shapes.len());
+        for sh in self.shapes[..upto].iter().rev() {
+            // Hidden layers leave the compositor — the export omits
+            // them, so a hidden panel must not color a gap either
+            // (CodeRabbit round on #324 phase 3).
+            if sh.guide || sh.layer.is_some_and(|m| hidden.contains(&m)) {
+                continue;
+            }
+            for n in &sh.nodes {
+                let (x, y, w, h) = n.bx;
+                let inside = pt.0 >= x && pt.0 <= x + w && pt.1 >= y && pt.1 <= y + h;
+                if !inside {
+                    continue;
+                }
+                if let Some(edges) = &n.edges {
+                    // Even-odd ray cast, page y-up.
+                    let q = at;
+                    let mut in_fill = false;
+                    for (a, b) in edges {
+                        if (a.1 > q.1) != (b.1 > q.1) {
+                            let x = a.0 + (q.1 - a.1) / (b.1 - a.1) * (b.0 - a.0);
+                            if x > q.0 {
+                                in_fill = !in_fill;
+                            }
+                        }
+                    }
+                    if !in_fill {
+                        continue;
+                    }
+                }
+                return n.fill;
             }
         }
-        filled(doc, s, &chain)
+        (0xff, 0xff, 0xff)
     }
-    let upto = page
-        .shapes
-        .iter()
-        .position(|s| s.id == below)
-        .unwrap_or(page.shapes.len());
-    for s in page.shapes[..upto].iter().rev() {
-        if s.type_.as_deref() == Some("Guide") {
-            continue;
-        }
-        // Hidden layers leave the compositor — the export omits them,
-        // so a hidden panel must not color a gap either (CodeRabbit
-        // round on #324 phase 3: the canvas would paint a gray gap on
-        // a white page).
-        if s.sheet.cell("LayerMember").and_then(|c| c.numeric()).is_some_and(|m| hidden.contains(&(m as i64))) {
-            continue;
-        }
-        if let Some(c) = walk(doc, s, &[], page_h, true, Affine::IDENTITY, pt) {
-            return hex_rgb(&c);
-        }
-    }
-    (0xff, 0xff, 0xff)
 }
 
 /// An SVG-order affine: `x' = a·x + c·y + e`, `y' = b·x + d·y + f`
