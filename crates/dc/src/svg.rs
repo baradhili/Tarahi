@@ -4353,8 +4353,33 @@ fn render_geometry(
     // (FillForegnd → FillBkgnd along FillGradientAngle, default 90°
     // top-to-bottom). Everything else patterned >1.5 is a hatch: the
     // background dominates, so it renders as the background color.
+    // Visio 2013+ gradients (FillGradientEnabled): the FillGradient
+    // stop rows, FillGradientDir (0 linear, 1–7 radial, 8–13
+    // rectangular) and FillGradientAngle — see `gradient_paint`. They
+    // win over the legacy pattern gradients below.
+    let fill_gradient = if no_fill || fill_pattern == 0.0 {
+        None
+    } else {
+        gradient_paint(
+            doc,
+            s,
+            chain,
+            env,
+            "Fill",
+            (width, height),
+            (&fill_color, &fill_bkgnd),
+            out,
+        )
+    };
     let fill = if no_fill || fill_pattern == 0.0 {
         "none".to_string()
+    } else if let Some(g) = &fill_gradient {
+        match g {
+            GradientPaint::Url(u) => u.clone(),
+            // Rectangular: the solid color stands in on the path; the
+            // clipped tiles replace it at flush time.
+            GradientPaint::Tiles(_) => fill_color.clone(),
+        }
     } else if (24.0..=40.0).contains(&fill_pattern) {
         let angle_deg = doc
             .resolve_cell_explicit(s, chain, "FillGradientAngle")
@@ -4398,12 +4423,30 @@ fn render_geometry(
             .clamp(0.0, 1.0)
     };
     let fill_alpha = 1.0
-        - if fill_pattern > 1.5 && !(24.0..=40.0).contains(&fill_pattern) {
+        - if fill_gradient.is_some() {
+            0.0 // per-stop GradientStopColorTrans instead
+        } else if fill_pattern > 1.5 && !(24.0..=40.0).contains(&fill_pattern) {
             trans("FillBkgndTrans")
         } else {
             trans("FillForegndTrans")
         };
     let line_alpha = 1.0 - trans("LineColorTrans");
+    // LineGradientEnabled: the stroke paints with the LineGradient
+    // stops (rectangular directions have no stroke form and fall back
+    // to linear); arrowheads keep the solid LineColor.
+    let stroke_paint = match gradient_paint(
+        doc,
+        s,
+        chain,
+        env,
+        "Line",
+        (width, height),
+        (&line_color, &line_color),
+        out,
+    ) {
+        Some(GradientPaint::Url(u)) => u,
+        _ => line_color.clone(),
+    };
     let no_fill = no_fill || fill_alpha <= 0.0;
     let no_line = no_line || line_alpha <= 0.0;
     let fill = if no_fill { "none".to_string() } else { fill };
@@ -4413,7 +4456,7 @@ fn render_geometry(
     // included).
     let stroke_a = stroke_attr(
         no_line,
-        &line_color,
+        &stroke_paint,
         line_weight,
         dash.as_deref(),
         line_alpha,
@@ -5055,6 +5098,10 @@ fn render_geometry(
             paint.fill_d.push(' ');
             paint.fill = fill.clone();
             paint.fill_opacity = fill_alpha;
+            paint.fill_tiles = match &fill_gradient {
+                Some(GradientPaint::Tiles(t)) => Some(t.clone()),
+                _ => None,
+            };
         }
         if !no_line {
             let _ = writeln!(
@@ -6131,6 +6178,259 @@ fn stroke_attr(
     }
 }
 
+/// A Visio 2013+ gradient as SVG paint: a `url(#…)` linear/radial
+/// gradient, or — for the rectangular directions SVG has no gradient
+/// for — tiles (four triangles, each a linear gradient from the
+/// origin to one side) the caller clips to the fill path.
+#[derive(Clone)]
+enum GradientPaint {
+    Url(String),
+    Tiles(String),
+}
+
+/// One gradient stop: color, alpha, position 0–1.
+type Stop = (String, f64, f64);
+
+/// The `<prefix>Gradient` stop rows (FillGradient / LineGradient)
+/// through the instance → master → style chain; per-row cells the
+/// instance row omits come from the master's row of the same IX.
+fn gradient_stops(doc: &Document, s: &Shape, chain: &[&Shape], prefix: &str) -> Vec<Stop> {
+    let name = format!("{prefix}Gradient");
+    fn first<'a>(sheet: &'a Sheet, name: &str) -> Option<&'a vsdx::Section> {
+        sheet.sections_named(name).into_iter().next()
+    }
+    let src = doc
+        .instance_source(s, chain)
+        .and_then(|m| first(&m.sheet, &name));
+    // The style chain (the shape's — or its master's — Fill/LineStyle,
+    // then each style's parent attribute): the first style whose stop
+    // rows carry real values. The Theme style's `V='Themed'` rows are
+    // no values without an evaluated theme.
+    let parent_attr = format!("{prefix}Style");
+    let mut style = None;
+    let mut id = doc.shape_style_for(s, chain, &format!("{prefix}Gradient"));
+    for _ in 0..8 {
+        let Some(st) = doc.stylesheet(id) else { break };
+        if let Some(sec) = first(&st.sheet, &name) {
+            let real = sec.rows.iter().any(|r| {
+                r.cell("GradientStopColor")
+                    .is_some_and(|c| !c.is_themed() && !c.is_inherited())
+            });
+            if real {
+                style = Some(sec);
+                break;
+            }
+        }
+        match st
+            .attrs
+            .iter()
+            .find(|(n, _)| *n == parent_attr)
+            .and_then(|(_, v)| v.parse::<i64>().ok())
+        {
+            Some(next) if next != id => id = next,
+            _ => break,
+        }
+    }
+    // Stop rows merge per IX across the layers — instance, master,
+    // style — and per CELL within a row: a master row that overrides
+    // only `GradientStopColor` keeps the style row's position (Visio
+    // 2021 witness: the Network-Locations cloud overrides stop 0's
+    // color and inherits stop 1 entirely from "3D Net Face"). A row
+    // deleted (`Del='1'`) in the topmost layer that mentions it is gone.
+    let layers: Vec<&vsdx::Section> = [first(&s.sheet, &name), src, style]
+        .into_iter()
+        .flatten()
+        .collect();
+    let mut ixs: Vec<i64> = layers
+        .iter()
+        .flat_map(|sec| sec.rows.iter().map(|r| r.ix))
+        .collect();
+    ixs.sort_unstable();
+    ixs.dedup();
+    let mut stops: Vec<Stop> = ixs
+        .into_iter()
+        .filter_map(|ix| {
+            let rows: Vec<&vsdx::Row> = layers
+                .iter()
+                .filter_map(|sec| sec.rows.iter().find(|r| r.ix == ix))
+                .collect();
+            if rows.first().is_none_or(|r| r.is_deleted()) {
+                return None;
+            }
+            let cell = |n: &str| {
+                rows.iter()
+                    .take_while(|r| !r.is_deleted())
+                    .filter_map(|r| r.cell(n))
+                    .find(|c| !c.is_inherited() && !c.is_themed())
+            };
+            let col = cell("GradientStopColor")?;
+            let color = color_value(doc, col.v.as_deref().unwrap_or(""), col.f.as_deref());
+            let trans = cell("GradientStopColorTrans")
+                .and_then(|c| c.numeric())
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0);
+            let pos = cell("GradientStopPosition")
+                .and_then(|c| c.numeric())
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0);
+            Some((color, 1.0 - trans, pos))
+        })
+        .collect();
+    stops.sort_by(|a, b| a.2.total_cmp(&b.2));
+    stops
+}
+
+/// `<stop>` elements for `stops`.
+fn stop_elems(stops: &[Stop]) -> String {
+    let mut out = String::new();
+    for (c, a, p) in stops {
+        let _ = write!(
+            out,
+            r#"<stop offset="{p:.4}" stop-color="{}"{}/>"#,
+            escape_attr(c),
+            opacity_attr("stop-opacity", *a)
+        );
+    }
+    out
+}
+
+/// Resolve a `Fill`/`Line` gradient for one shape (Visio 2021
+/// witnesses t08–t10). `None` unless `<prefix>GradientEnabled` is on.
+///
+/// - Stops come from the `<prefix>Gradient` rows; a shape with the
+///   flag but no rows takes `fallback` (FillForegnd → FillBkgnd).
+/// - Dir 0 is linear along `<prefix>GradientAngle` (default 90°):
+///   0° runs left → right, 90° top → bottom, 45° from the top-left
+///   to the bottom-right corner — the axis spans the box's projection
+///   onto the direction, so stop 0 and 1 land exactly on the corners.
+/// - Dir 1–7 are radial from a box anchor (1 bottom-right, 2
+///   bottom-left, 3 center, 4 top-center, 5 bottom-center, 6
+///   top-right, 7 top-left), reaching the farthest corner.
+/// - Dir 8–12 are rectangular from an anchor (8 bottom-right, 9
+///   bottom-left, 10 center, 11 top-right, 12 top-left); 13 (path)
+///   renders as the centered rectangle.
+///
+/// Coordinates are the shape's local SVG frame (x 0…W, y −H…0), so
+/// every gradient is `userSpaceOnUse` and the definitions dedupe by
+/// content hash into `out`. The box is the frame's ABSOLUTE extent: a
+/// connector drawn right-to-left has a negative Width (`EndX−BeginX`),
+/// and Visio still runs a 0° gradient left → right across it.
+#[allow(clippy::too_many_arguments)]
+fn gradient_paint(
+    doc: &Document,
+    s: &Shape,
+    chain: &[&Shape],
+    env: &vsdx::formula::Env,
+    prefix: &str,
+    (w, h): (f64, f64),
+    fallback: (&str, &str),
+    out: &mut String,
+) -> Option<GradientPaint> {
+    let num = |n: &str| {
+        doc.resolve_cell(s, chain, &format!("{prefix}{n}"))
+            .and_then(|c| cell_num(&c, env))
+            .filter(|v| v.is_finite())
+    };
+    if num("GradientEnabled").is_none_or(|v| v == 0.0) {
+        return None;
+    }
+    let mut stops = gradient_stops(doc, s, chain, prefix);
+    if stops.is_empty() {
+        stops = vec![
+            (fallback.0.to_string(), 1.0, 0.0),
+            (fallback.1.to_string(), 1.0, 1.0),
+        ];
+    }
+    let stops_svg = stop_elems(&stops);
+    // The absolute box in the local SVG frame (y down).
+    let (bl, br) = (w.min(0.0), w.max(0.0));
+    let (bt, bb) = ((-h).min(0.0), (-h).max(0.0));
+    let (w, h) = (br - bl, bb - bt);
+    let dir = num("GradientDir").unwrap_or(0.0).round() as i64;
+    let angle = num("GradientAngle").unwrap_or(std::f64::consts::FRAC_PI_2);
+    let def = |out: &mut String, body: String| -> String {
+        let id = format!("dc-grad{:x}", fnv(&body));
+        if !out.contains(&format!(r#"id="{id}""#)) {
+            let _ = writeln!(out, "<defs>{}</defs>", body.replace("{ID}", &id));
+        }
+        id
+    };
+    let linear = |out: &mut String, (x1, y1): (f64, f64), (x2, y2): (f64, f64)| {
+        def(
+            out,
+            format!(
+                r#"<linearGradient id="{{ID}}" gradientUnits="userSpaceOnUse" x1="{x1:.5}" y1="{y1:.5}" x2="{x2:.5}" y2="{y2:.5}">{stops_svg}</linearGradient>"#
+            ),
+        )
+    };
+    // Box anchors in the local SVG frame (y down, −H…0).
+    let (mx, my) = ((bl + br) / 2.0, (bt + bb) / 2.0);
+    let anchor = |k: i64| -> (f64, f64) {
+        match k {
+            1 | 8 => (br, bb),
+            2 | 9 => (bl, bb),
+            4 => (mx, bt),
+            5 => (mx, bb),
+            6 | 11 => (br, bt),
+            7 | 12 => (bl, bt),
+            _ => (mx, my),
+        }
+    };
+    let rect = (8..=13).contains(&dir) && prefix == "Fill";
+    if (1..=7).contains(&dir) {
+        let (cx, cy) = anchor(dir);
+        let r = [(bl, bt), (br, bt), (bl, bb), (br, bb)]
+            .iter()
+            .map(|(x, y)| (x - cx).hypot(y - cy))
+            .fold(0.0, f64::max)
+            .max(1e-6);
+        let id = def(
+            out,
+            format!(
+                r#"<radialGradient id="{{ID}}" gradientUnits="userSpaceOnUse" cx="{cx:.5}" cy="{cy:.5}" r="{r:.5}">{stops_svg}</radialGradient>"#
+            ),
+        );
+        return Some(GradientPaint::Url(format!("url(#{id})")));
+    }
+    if rect {
+        // Chebyshev distance from the anchor: four triangles (one per
+        // side), each a linear ramp from the anchor to that side.
+        let (ox, oy) = anchor(dir);
+        let rx = (ox - bl).max(br - ox).max(1e-6);
+        let ry = (oy - bt).max(bb - oy).max(1e-6);
+        let mut tiles = String::new();
+        for (sx, sy, horiz) in [
+            (1.0, 0.0, true),
+            (-1.0, 0.0, true),
+            (0.0, 1.0, false),
+            (0.0, -1.0, false),
+        ] {
+            let (c1, c2) = if horiz {
+                ((ox + sx * rx, oy - ry), (ox + sx * rx, oy + ry))
+            } else {
+                ((ox - rx, oy + sy * ry), (ox + rx, oy + sy * ry))
+            };
+            let end = (ox + sx * rx, oy + sy * ry);
+            let id = linear(out, (ox, oy), end);
+            let _ = write!(
+                tiles,
+                r#"<path d="M {ox:.5} {oy:.5} L {:.5} {:.5} L {:.5} {:.5} Z" fill="url(#{id})"/>"#,
+                c1.0, c1.1, c2.0, c2.1
+            );
+        }
+        return Some(GradientPaint::Tiles(tiles));
+    }
+    let (dx, dy) = (angle.cos(), angle.sin());
+    let half = (dx.abs() * w + dy.abs() * h) / 2.0;
+    let (cx, cy) = (mx, my);
+    let id = linear(
+        out,
+        (cx - dx * half, cy - dy * half),
+        (cx + dx * half, cy + dy * half),
+    );
+    Some(GradientPaint::Url(format!("url(#{id})")))
+}
+
 /// Round the corners of a straight-line path (`M`/`L`/`Z` only, the
 /// renderer's own number format) with radius `r`, the way Visio's
 /// Rounding cell does: each corner is replaced by a circular arc
@@ -6347,6 +6647,9 @@ struct ShapePaint {
     fill: String,
     /// The fill's alpha (1 − FillForegndTrans / FillBkgndTrans).
     fill_opacity: f64,
+    /// A rectangular gradient's tiles (`gradient_paint`): painted
+    /// clipped to the fill path instead of the plain fill.
+    fill_tiles: Option<String>,
     /// Stroke-only paths, arrow shafts/heads, and standalone ellipse
     /// rows, in emission order.
     strokes: String,
@@ -6358,6 +6661,7 @@ impl Default for ShapePaint {
             fill_d: String::new(),
             fill: "none".to_string(),
             fill_opacity: 1.0,
+            fill_tiles: None,
             strokes: String::new(),
         }
     }
@@ -6366,7 +6670,15 @@ impl Default for ShapePaint {
 /// Emit the accumulated paint under the caller's ink (#228): the ONE
 /// even-odd fill path first, then the per-section strokes.
 fn flush_shape_paint(paint: &mut ShapePaint, out: &mut String) {
-    if !paint.fill_d.is_empty() {
+    if let (false, Some(tiles)) = (paint.fill_d.is_empty(), &paint.fill_tiles) {
+        let d = paint.fill_d.trim();
+        let id = format!("dc-gclip{:x}", fnv(&format!("{d}|{tiles}")));
+        let _ = writeln!(
+            out,
+            r#"<clipPath id="{id}"><path clip-rule="evenodd" d="{}"/></clipPath><g clip-path="url(#{id})">{tiles}</g>"#,
+            escape_attr(d)
+        );
+    } else if !paint.fill_d.is_empty() {
         let _ = writeln!(
             out,
             r#"<path fill-rule="evenodd" d="{}" fill="{}"{}/>"#,
@@ -10436,6 +10748,82 @@ mod tests {
             !gone.contains("dc-ah") && !gone.contains("#00ff00"),
             "a fully transparent line hides its head: {gone}"
         );
+    }
+
+    /// Visio 2013+ gradients (Visio 2021 witnesses t08–t10): the
+    /// FillGradient stop rows drive the paint; Dir 0 runs along the
+    /// angle (0° left → right), Dir 1–7 are radial from a box anchor,
+    /// Dir 8–13 rectangular tiles clipped to the outline, and
+    /// LineGradientEnabled paints the stroke.
+    #[test]
+    fn gradient_fill_directions_and_line_gradient() {
+        let stops = |name: &str| {
+            let mut sec = Section {
+                name: name.into(),
+                ..Section::default()
+            };
+            for (ix, (c, p)) in [("#ff0000", "0"), ("#0000ff", "1")].into_iter().enumerate() {
+                sec.rows.push(Row {
+                    ix: ix as i64,
+                    cells: vec![
+                        ("GradientStopColor".into(), Cell::value(c)),
+                        ("GradientStopPosition".into(), Cell::value(p)),
+                    ],
+                    ..Row::default()
+                });
+            }
+            SheetChild::Section(sec)
+        };
+        let render = |cells: &[(&str, &str)], line: bool| {
+            let mut s = rect_shape(1, (2.0, 2.0));
+            s.sheet
+                .children
+                .push(stops(if line { "LineGradient" } else { "FillGradient" }));
+            for (n, v) in cells {
+                s.sheet.set_cell(n, Cell::value(*v));
+            }
+            let (doc, page) = page_fixture(vec![s]);
+            render_page(&doc, &page).unwrap()
+        };
+        let lin = render(
+            &[("FillGradientEnabled", "1"), ("FillGradientAngle", "0")],
+            false,
+        );
+        assert!(
+            lin.contains(r#"x1="0.00000" y1="-0.50000" x2="1.00000" y2="-0.50000""#),
+            "0° runs left → right across the box: {lin}"
+        );
+        assert!(lin.contains(r##"stop-color="#ff0000""##) && lin.contains("url(#dc-grad"));
+        let rad = render(
+            &[("FillGradientEnabled", "1"), ("FillGradientDir", "3")],
+            false,
+        );
+        assert!(
+            rad.contains(r#"<radialGradient id="#) && rad.contains(r#"cx="0.50000" cy="-0.50000""#),
+            "{rad}"
+        );
+        let rect = render(
+            &[("FillGradientEnabled", "1"), ("FillGradientDir", "10")],
+            false,
+        );
+        assert!(rect.contains("<clipPath") && rect.matches("<linearGradient").count() == 4);
+        // Disabled: the plain FillForegnd paint, no gradient.
+        assert!(!render(&[("FillGradientEnabled", "0")], false).contains("Gradient id"));
+        // A right-to-left connector (negative Width) keeps the
+        // left → right sense of a 0° gradient.
+        let mut neg = rect_shape(1, (2.0, 2.0));
+        neg.sheet.set_cell("Width", Cell::value("-1"));
+        neg.sheet.set_cell("FillGradientEnabled", Cell::value("1"));
+        neg.sheet.set_cell("FillGradientAngle", Cell::value("0"));
+        neg.sheet.children.push(stops("FillGradient"));
+        let (doc, page) = page_fixture(vec![neg]);
+        let neg = render_page(&doc, &page).unwrap();
+        assert!(
+            neg.contains(r#"x1="-1.00000" y1="-0.50000" x2="0.00000""#),
+            "{neg}"
+        );
+        let stroke = render(&[("LineGradientEnabled", "1")], true);
+        assert!(stroke.contains(r#"stroke="url(#dc-grad"#), "{stroke}");
     }
 
     /// An Ellipse row joins the shape's even-odd fill (Visio 2021

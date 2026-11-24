@@ -770,6 +770,12 @@ fn walk_group(chunk: &mut Chunk, ctx: &mut PdfContext, content: &mut Content, gr
     // of a true transparency group otherwise.
     let saved = ctx.alpha;
     ctx.alpha *= group.opacity().get();
+    // clip-path (rectangular gradient tiles clip to the shape outline):
+    // the clip's paths, mapped through the group's absolute transform
+    // and the clip's own, become one clipping path for the children.
+    let clipped = group
+        .clip_path()
+        .is_some_and(|cp| push_clip(content, cp, group.abs_transform()));
     for node in group.children() {
         match node {
             usvg::Node::Group(g) => walk_group(chunk, ctx, content, g),
@@ -778,7 +784,52 @@ fn walk_group(chunk: &mut Chunk, ctx: &mut PdfContext, content: &mut Content, gr
             usvg::Node::Text(t) => emit_text(ctx, content, t),
         }
     }
+    if clipped {
+        content.restore_state();
+    }
     ctx.alpha = saved;
+}
+
+/// `q` + the clip path's geometry + `W n` (even-odd when the clip rule
+/// says so). Returns false — nothing pushed — for an empty clip.
+fn push_clip(content: &mut Content, cp: &usvg::ClipPath, abs: tiny_skia_path::Transform) -> bool {
+    fn collect(
+        g: &usvg::Group,
+        t: tiny_skia_path::Transform,
+        out: &mut Vec<(tiny_skia_path::Path, bool)>,
+    ) {
+        for node in g.children() {
+            match node {
+                usvg::Node::Path(p) => {
+                    let even_odd = p
+                        .fill()
+                        .is_some_and(|f| matches!(f.rule(), usvg::FillRule::EvenOdd));
+                    if let Some(path) = p.data().clone().transform(t) {
+                        out.push((path, even_odd));
+                    }
+                }
+                usvg::Node::Group(sub) => collect(sub, t.pre_concat(sub.transform()), out),
+                _ => {}
+            }
+        }
+    }
+    let mut paths = Vec::new();
+    collect(cp.root(), abs.pre_concat(cp.transform()), &mut paths);
+    if paths.is_empty() {
+        return false;
+    }
+    content.save_state();
+    let even_odd = paths.iter().any(|(_, eo)| *eo);
+    for (path, _) in &paths {
+        write_path_data(content, path);
+    }
+    if even_odd {
+        content.clip_even_odd();
+    } else {
+        content.clip_nonzero();
+    }
+    content.end_path();
+    true
 }
 
 /// Select the constant fill/stroke alpha (`/ca`, `/CA`) for the
@@ -827,7 +878,7 @@ fn emit_path(chunk: &mut Chunk, ctx: &mut PdfContext, content: &mut Content, p: 
         set_fill_paint(chunk, ctx, content, f, p.abs_transform());
     }
     if let Some(s) = stroke {
-        set_stroke_paint(chunk, ctx, content, s);
+        set_stroke_paint(chunk, ctx, content, s, p.abs_transform());
     }
     write_path_data(content, p.data());
     // Our renderer never combines fill+stroke on one element (a path
@@ -931,18 +982,32 @@ fn set_fill_paint(
 }
 
 fn set_stroke_paint(
-    _chunk: &mut Chunk,
-    _ctx: &mut PdfContext,
+    chunk: &mut Chunk,
+    ctx: &mut PdfContext,
     content: &mut Content,
     s: &usvg::Stroke,
+    abs: tiny_skia_path::Transform,
 ) {
     match s.paint() {
         usvg::Paint::Color(c) => {
             let [r, g, b] = color_rgb(*c);
             content.set_stroke_rgb(r, g, b);
         }
-        // Gradient strokes don't occur in Tarahi output; solid gray.
-        _ => {
+        // LineGradientEnabled strokes: the same shading patterns as
+        // gradient fills.
+        usvg::Paint::LinearGradient(_) | usvg::Paint::RadialGradient(_) => {
+            let extra = compose(ctx.base, abs);
+            match register_gradient(chunk, ctx, s.paint(), extra) {
+                Some(name) => {
+                    content.set_stroke_color_space(pdf_writer::types::ColorSpaceOperand::Pattern);
+                    content.set_stroke_pattern(std::iter::empty(), Name(name.as_bytes()));
+                }
+                None => {
+                    content.set_stroke_rgb(0.5, 0.5, 0.5);
+                }
+            }
+        }
+        usvg::Paint::Pattern(_) => {
             content.set_stroke_rgb(0.5, 0.5, 0.5);
         }
     }
@@ -1628,5 +1693,22 @@ mod tests {
             2,
             "opaque rect selects no gstate: {buf}"
         );
+    }
+
+    /// A clip-path group (rectangular gradient tiles) pushes one
+    /// clipping path around its children; stroke gradients select a
+    /// shading pattern instead of the old gray.
+    #[test]
+    fn clip_paths_and_stroke_gradients_reach_the_pdf() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="10" y2="0"><stop offset="0" stop-color="#f00"/><stop offset="1" stop-color="#00f"/></linearGradient></defs><clipPath id="c"><path clip-rule="evenodd" d="M 1 1 L 9 1 L 9 9 Z"/></clipPath><g clip-path="url(#c)"><rect width="10" height="10" fill="#0f0"/></g><path d="M 0 5 L 20 5" stroke="url(#g)" stroke-width="2" fill="none"/></svg>"##;
+        let db = raster::font_db();
+        let tree = raster::parse_svg(svg, &db).expect("svg parses");
+        let mut pdf = Pdf::new();
+        let mut ctx = PdfContext::new(&db);
+        let mut content = Content::new();
+        walk_group(&mut pdf, &mut ctx, &mut content, tree.root());
+        let buf = String::from_utf8(content.finish().to_vec()).unwrap();
+        assert!(buf.contains("W* n") || buf.contains("W*\nn"), "{buf}");
+        assert!(buf.contains("/Pattern CS"), "stroke shading: {buf}");
     }
 }
