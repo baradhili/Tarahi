@@ -3978,16 +3978,33 @@ fn render_all_geometry(
                         {
                             let mut nr = src_row.clone();
                             // scale per cell name
+                            // The same rule as the omitted-CELL fallback
+                            // below (Greptile on PR #343): a size formula
+                            // evaluates in the instance env; one the env
+                            // cannot evaluate keeps the master's cache as
+                            // is, since an omitted row is unchanged.
+                            let bound = 3.0 * width.max(height).max(0.02);
                             for (cname, cell) in nr.cells.iter_mut() {
                                 let proportional =
                                     cell.f.as_deref().map(refs_own_size).unwrap_or(true);
+                                let has_formula = cell
+                                    .f
+                                    .as_deref()
+                                    .is_some_and(|f| f != "Inh" && f != "No Formula");
                                 if let Some(v) = cell.numeric() {
-                                    let placed = if proportional
-                                        && !not_coord(src_row.t.as_deref(), cname)
+                                    let placed = if !proportional
+                                        || not_coord(src_row.t.as_deref(), cname)
                                     {
-                                        scaled(cname, v)
-                                    } else {
                                         v
+                                    } else if has_formula {
+                                        cell.f
+                                            .as_deref()
+                                            .and_then(|f| vsdx::formula::eval(f, &env).ok())
+                                            .and_then(|e| e.as_f64())
+                                            .filter(|e| e.is_finite() && e.abs() <= bound)
+                                            .unwrap_or(v)
+                                    } else {
+                                        scaled(cname, v)
                                     };
                                     cell.v = Some(format!("{placed}"));
                                 }
@@ -11058,6 +11075,55 @@ mod tests {
         // unreachable).
         let chain = family_chain(Some("Lucida Sans Typewriter"));
         assert_eq!(chain[0], "Calibri", "{chain:?}");
+    }
+
+    /// A master size formula the instance cannot evaluate keeps the
+    /// master's cached value, whether the instance omits the whole row
+    /// or only the cell (Greptile on PR #343).
+    #[test]
+    fn unevaluable_master_formulas_stay_unscaled_on_both_paths() {
+        let render = |omit_row: bool| {
+            let mut x = geo_row(2, "LineTo", &[("Y", 0.0)]);
+            x.cells.push((
+                "X".into(),
+                Cell {
+                    v: Some("1.8".into()),
+                    f: Some("Width-User.Missing".into()),
+                    ..Cell::default()
+                },
+            ));
+            let mut master = shape_at(1, (1.0, 0.5), 2.0, 1.0, 0.0);
+            push_geo(
+                &mut master,
+                vec![
+                    geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                    x,
+                    geo_row(3, "LineTo", &[("X", 2.0), ("Y", 1.0)]),
+                ],
+            );
+            let mut inst = shape_at(1, (4.0, 5.0), 4.0, 2.0, 0.0);
+            inst.master = Some(7);
+            let mut rows = vec![geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)])];
+            if !omit_row {
+                rows.push(geo_row(2, "LineTo", &[("Y", 0.0)]));
+            }
+            rows.push(geo_row(3, "LineTo", &[("X", 4.0), ("Y", 2.0)]));
+            push_geo(&mut inst, rows);
+            let (mut doc, page) = page_fixture(vec![inst]);
+            doc.masters.push(vsdx::model::Master {
+                id: 7,
+                shapes: vec![master],
+                ..vsdx::model::Master::default()
+            });
+            render_page(&doc, &page).unwrap()
+        };
+        for omit_row in [true, false] {
+            let svg = render(omit_row);
+            assert!(
+                svg.contains("L 1.80000 ") && !svg.contains("L 3.60000 "),
+                "omit_row={omit_row}: {svg}"
+            );
+        }
     }
 
     /// Inherited master cells in local geometry rows (the network LLD's
