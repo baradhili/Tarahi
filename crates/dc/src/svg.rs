@@ -4959,9 +4959,26 @@ fn render_geometry(
     // LineCap: 0 round (Visio's default — round ends AND round
     // corners), 1 flat at the endpoint, 2 square-extended (Visio 2021
     // witness, b04: 12 pt lines and corners).
+    // A shape-level cell: its formula evaluates in the INSTANCE env
+    // first, also for inherited master geometry, and the cache (the
+    // master's, for an inherited cell) is the fallback — the Rounding
+    // rule (Greptile on PR #342).
+    let cap_own_env;
+    let cap_env: &vsdx::formula::Env = if inherited_frame {
+        cap_own_env = shape_env(doc, s, chain);
+        &cap_own_env
+    } else {
+        env
+    };
     let line_cap = doc
         .resolve_cell(s, chain, "LineCap")
-        .and_then(|c| cell_num(&c, env))
+        .and_then(|c| {
+            c.f.as_deref()
+                .filter(|f| *f != "Inh" && *f != "No Formula")
+                .and_then(|f| vsdx::formula::eval(f, cap_env).ok())
+                .and_then(|v| v.as_f64())
+                .or_else(|| cell_num(&c, cap_env))
+        })
         .map_or(0, |v| v.round() as i64);
     let stroke_a = stroke_attr(
         no_line,
@@ -11951,6 +11968,36 @@ mod tests {
         assert!(!refs_own_size("Sheet.5!Width*1"));
         assert!(!refs_own_size("TxtHeight*0.5"));
         assert!(!refs_own_size("Controls.Row_1"));
+    }
+
+    /// A master's `LineCap` formula evaluates with the instance's size,
+    /// not the master's cached value (Greptile on PR #342): `Width`
+    /// cached as 1 (flat) on a 1 in master is 2 (extended) on a 2 in
+    /// instance.
+    #[test]
+    fn line_cap_formulas_use_the_instance() {
+        let mut master = rect_shape(1, (1.0, 1.0));
+        master.sheet.set_cell("Width", Cell::value("1"));
+        master.sheet.set_cell("Height", Cell::value("1"));
+        master.sheet.set_cell(
+            "LineCap",
+            Cell {
+                v: Some("1".into()),
+                f: Some("Width".into()),
+                ..Cell::default()
+            },
+        );
+        let mut inst = shape_at(1, (4.0, 5.0), 2.0, 1.0, 0.0);
+        inst.master = Some(7);
+        let (mut doc, page) = page_fixture(vec![inst]);
+        doc.masters.push(vsdx::model::Master {
+            id: 7,
+            shapes: vec![master],
+            ..vsdx::model::Master::default()
+        });
+        let svg = render_page(&doc, &page).unwrap();
+        assert!(svg.contains(r#"stroke-linecap="square""#), "{svg}");
+        assert!(!svg.contains(r#"stroke-linecap="butt""#), "{svg}");
     }
 
     /// LineCap (Visio 2021 witness, b04): 0 round ends and corners
