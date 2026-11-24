@@ -431,6 +431,10 @@ pub struct Document {
     /// The raw source package, retained so unmodeled parts round-trip
     /// byte-for-byte. `None` for documents built in code.
     pub package: Option<Package>,
+    /// The theme's variant colors, read once from `package` on first
+    /// use: style resolution asks for them on every THEMEVAL cell, and
+    /// re-reading the theme XML each time made big pages crawl.
+    pub theme_variants: std::sync::OnceLock<Vec<String>>,
 }
 
 /// Text Block Format cells without a `Txt`/`Text` prefix. They belong
@@ -627,6 +631,16 @@ impl Document {
     /// Variant colors from `visio/theme/theme1.xml` (DrawingML scheme),
     /// indexed by `THEMEVAL("VariantColorN")` formulas (N = 1…8).
     pub fn theme_variant_colors(&self) -> Vec<String> {
+        self.theme_variants_cached().to_vec()
+    }
+
+    /// [`Document::theme_variant_colors`] without the copy, parsed once.
+    fn theme_variants_cached(&self) -> &[String] {
+        self.theme_variants
+            .get_or_init(|| self.parse_theme_variant_colors())
+    }
+
+    fn parse_theme_variant_colors(&self) -> Vec<String> {
         let Some(pkg) = self.package.as_ref() else {
             return Vec::new();
         };
@@ -665,8 +679,8 @@ impl Document {
         if !c.is_theme_eval() || !f.contains("THEMEVAL") {
             return false;
         }
-        let variants = self.theme_variant_colors();
-        (1..=variants.len()).any(|n| f.contains(&format!("VariantColor{n}")))
+        let variants = self.theme_variants_cached().len();
+        (1..=variants).any(|n| f.contains(&format!("VariantColor{n}")))
     }
 
     /// The stylesheet a shape's `name` cell cascades into: the shape's
@@ -1532,7 +1546,10 @@ mod snap_glue_tests {
             ..Cell::default()
         };
         let mut doc = doc_with_theme();
+        // The theme XML is read once and cached on the document.
+        assert!(doc.theme_variants.get().is_none());
         assert_eq!(doc.theme_variant_colors(), vec!["#4472C4".to_string()]);
+        assert_eq!(doc.theme_variants.get().map(Vec::len), Some(1));
         let mut no_style = StyleSheet::default();
         no_style.sheet.set_cell("FillForegnd", Cell::value("1"));
         let mut theme = StyleSheet {
