@@ -761,6 +761,21 @@ pub fn geometry_hit_segments_marked(
         prev_gname = Some(_gname);
         match t {
             "MoveTo" | "RelMoveTo" => {
+                // A pending SPLINE flushes BEFORE the pen repositions
+                // — a section ending in SplineStart/SplineKnot once
+                // left the accumulator open across the boundary and
+                // the next section's ink interleaved with the old
+                // spline's samples (CodeRabbit round 7 on PR #339).
+                if let Some(acc) = spline_acc.take() {
+                    if let Some(data) = acc.flush() {
+                        for p in crate::curve::SplineData::flatten(&data, 16)
+                            .into_iter()
+                            .skip(1)
+                        {
+                            pts.push(to_page(p));
+                        }
+                    }
+                }
                 // A mid-route pen move records the STROKE BREAK: the
                 // segment pts.last()→this point is a phantom bridge
                 // the crossing set must not treat as ink (the marked

@@ -1236,7 +1236,7 @@ fn render_page_full(
             let id = format!("dc-jumpcut{}", shape.id);
             let _ = writeln!(
                 svg,
-                r#"<clipPath id="{id}"><path clip-rule="evenodd" d="{}"/></clipPath><g clip-path="url(#{id})">"#,
+                r#"<clipPath id="{id}"><path clip-rule="nonzero" d="{}"/></clipPath><g clip-path="url(#{id})">"#,
                 jump_cuts_clip_d(&cuts, h, w, &hop_r)
             );
         }
@@ -1376,15 +1376,45 @@ fn jump_cuts_clip_d(
         let c = |a: f64, b: f64| {
             let x = j.at.0 + dx * a + n.0 * b;
             let y = j.at.1 + dy * a + n.1 * b;
-            format!("{:.5} {:.5}", x, page_h - y)
+            (x, page_h - y)
         };
-        let _ = write!(
-            d,
-            "M {} L {} L {} L {} Z ",
+        // CANONICAL WINDING under the nonzero rule: every slot winds
+        // the SAME way regardless of its run's direction, so slots of
+        // DIFFERENT runs that overlap (two parallel strokes of one
+        // connector 0.015 in apart, both crossed at the same station)
+        // stay SUBTRACTIVE — under even-odd, or with opposing slot
+        // windings, the overlap returned to the page rect's winding
+        // and the straight shafts reappeared beneath the hops
+        // (Greptile, round 7 on PR #339).
+        let mut quad = [
             c(-r, -half_w),
             c(r, -half_w),
             c(r, half_w),
-            c(-r, half_w)
+            c(-r, half_w),
+        ];
+        let area: f64 = quad
+            .windows(2)
+            .map(|w| w[0].0 * w[1].1 - w[1].0 * w[0].1)
+            .sum::<f64>()
+            + quad[3].0 * quad[0].1
+            - quad[0].0 * quad[3].1;
+        // The page rect above winds POSITIVE (its emitted order is
+        // counter-clockwise), so the slots normalize NEGATIVE to
+        // subtract under nonzero.
+        if area > 0.0 {
+            quad.reverse();
+        }
+        let _ = write!(
+            d,
+            "M {:.5} {:.5} L {:.5} {:.5} L {:.5} {:.5} L {:.5} {:.5} Z ",
+            quad[0].0,
+            quad[0].1,
+            quad[1].0,
+            quad[1].1,
+            quad[2].0,
+            quad[2].1,
+            quad[3].0,
+            quad[3].1
         );
     }
     d.trim_end().to_string()
@@ -1559,9 +1589,54 @@ pub fn geometry_flag_on(
             } else {
                 match doc.instance_source(s, chain) {
                     // Master frame: the inherited sections evaluate
-                    // against the master source (Frame::Master).
+                    // against the master source (Frame::Master) —
+                    // WITH the ordered GeometryN.X# row feeds the
+                    // paint walk accumulates, so a flag formula like
+                    // NoShow = Geometry1.X2>1 sees the live route, not
+                    // the fresh env's absence (CodeRabbit round 7 on
+                    // PR #339).
                     Some(src) => {
-                        let menv = prepared_master_env(doc, s, chain, src);
+                        let mut menv = prepared_master_env(doc, s, chain, src);
+                        for (n, sec) in src
+                            .sheet
+                            .sections_named("Geometry")
+                            .into_iter()
+                            .enumerate()
+                        {
+                            let gname = format!("Geometry{}", n + 1);
+                            for row in
+                                sec.rows.iter().take(crate::geom::MAX_WALK_ROWS)
+                            {
+                                for name in ["X", "Y"] {
+                                    if let Some(c) = row.cell(name) {
+                                        let v = c
+                                            .f
+                                            .as_deref()
+                                            .and_then(|rf| {
+                                                if rf == "Inh"
+                                                    || rf == "No Formula"
+                                                {
+                                                    None
+                                                } else {
+                                                    vsdx::formula::eval(
+                                                        rf, &menv,
+                                                    )
+                                                    .ok()
+                                                    .and_then(|v| v.as_f64())
+                                                }
+                                            })
+                                            .filter(|v| v.is_finite())
+                                            .or_else(|| c.numeric());
+                                        if let Some(v) = v {
+                                            menv.insert(
+                                                format!("{gname}.{name}{}", row.ix),
+                                                v,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         vsdx::formula::eval(f, &menv).ok().and_then(|v| v.as_f64())
                     }
                     None => {
@@ -1722,7 +1797,35 @@ pub fn backdrop_color_at(
                 .master
                 .and_then(|mid| doc.master(mid))
                 .and_then(|m| m.shapes.first());
-            let segs = crate::geom::geometry_hit_segments(s, root, &frame, None);
+            // The ray cast counts only FILL-ELIGIBLE contours — a
+            // NoFill'd inner contour paints nothing, and counting it
+            // once rejected the outer fill's center before the
+            // eligibility test ran (the gap then painted a lower fill
+            // or white; CodeRabbit round 7 on PR #339).
+            let own_secs = s.sheet.sections_named("Geometry");
+            let walk_secs: Vec<&vsdx::model::Section> = if own_secs.is_empty() {
+                root.map(|r| r.sheet.sections_named("Geometry"))
+                    .unwrap_or_default()
+            } else {
+                own_secs
+            };
+            let nonfill: Vec<&vsdx::model::Section> = walk_secs
+                .into_iter()
+                .filter(|g| {
+                    geometry_flag_on(doc, s, &chain, g, "NoShow")
+                        || geometry_flag_on(doc, s, &chain, g, "NoFill")
+                })
+                .collect();
+            let segs = crate::geom::geometry_hit_segments_marked(
+                s,
+                root,
+                &frame,
+                None,
+                &nonfill,
+            )
+            .into_iter()
+            .map(|(a, b, _)| (a, b))
+            .collect::<Vec<_>>();
             if !segs.is_empty() {
                 let q = (pt.0, page_h - pt.1); // the cast runs page y-up
                 let mut in_fill = false;
@@ -12864,5 +12967,254 @@ mod tests {
             "the hidden first section's master-only tail stays hidden: {segs:?}"
         );
         let _ = &page;
+    }
+
+    /// CodeRabbit round 7 / Greptile on PR #339: the single per-
+    /// connector clip is NONZERO with canonically wound slots — every
+    /// slot winds negative (opposite the page rect) regardless of its
+    /// run's direction, so overlapping slots of DIFFERENT runs stay
+    /// subtractive instead of returning the shaft to the clip.
+    #[test]
+    fn jump_cut_slots_wind_subtractively() {
+        let mk = |at: (f64, f64), dir: (f64, f64)| crate::jumps::Jump {
+            at,
+            dir,
+            under: (0.0, 1.0),
+            jumper: 1,
+            weight: 0.01,
+            under_weight: 0.01,
+            color: (0, 0, 0),
+            under_color: (0, 0, 0),
+            style: crate::jumps::JumpStyle::Gap,
+            cap: 1.0,
+            radii: (0.05, 0.05),
+        };
+        let shoelace = |pts: &[(f64, f64)]| -> f64 {
+            pts.windows(2)
+                .map(|w| w[0].0 * w[1].1 - w[1].0 * w[0].1)
+                .sum::<f64>()
+                + pts[pts.len() - 1].0 * pts[0].1
+                - pts[0].0 * pts[pts.len() - 1].1
+        };
+        let parse = |d: &str| -> Vec<Vec<(f64, f64)>> {
+            d.replace(" Z ", "\n")
+                .replace(" Z", "\n")
+                .split('\n')
+                .filter(|sub| !sub.trim().is_empty())
+                .map(|sub| {
+                    sub.split([' ', 'L', 'M'])
+                        .filter(|t| !t.is_empty())
+                        .map(|t| t.to_string())
+                        .collect::<Vec<_>>()
+                        .chunks(2)
+                        .map(|c| {
+                            (
+                                c[0].parse::<f64>().unwrap(),
+                                c[1].parse::<f64>().unwrap(),
+                            )
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+        // Two anti-parallel runs of one connector crossed at the same
+        // station — the slot windings must STILL agree.
+        let js = [
+            mk((4.0, 5.0), (1.0, 0.0)),
+            mk((4.0, 5.015), (-1.0, 0.0)),
+        ];
+        let js_refs = js.iter().collect::<Vec<_>>();
+        let d = jump_cuts_clip_d(&js_refs, 11.0, 8.5, &|_| 0.05);
+        let subs = parse(&d);
+        assert_eq!(subs.len(), 3, "the page rect plus two slots: {d}");
+        assert!(shoelace(&subs[0]) > 0.0, "the page rect winds positive");
+        for sub in &subs[1..] {
+            assert!(
+                shoelace(sub) < 0.0,
+                "every slot winds negative — subtractive: {d}"
+            );
+        }
+    }
+
+    /// CodeRabbit round 7 on PR #339: a section ending in an open
+    /// SPLINE flushes before the next section's MoveTo — the
+    /// accumulator once stayed open across the boundary and the new
+    /// section's ink interleaved with the old spline's samples.
+    #[test]
+    fn a_section_boundary_flushes_the_pending_spline() {
+        let mut s = shape_at(1, (2.0, 2.0), 6.0, 2.0, 0.0);
+        let mut sec1 = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec1.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(
+                2,
+                "SplineStart",
+                &[
+                    ("X", 1.0),
+                    ("Y", 1.5),
+                    ("A", 0.3),
+                    ("B", 0.0),
+                    ("C", 1.0),
+                    ("D", 3.0),
+                ],
+            ),
+            geo_row(3, "SplineKnot", &[("X", 2.5), ("Y", 0.4), ("A", 0.6)]),
+            geo_row(4, "SplineKnot", &[("X", 4.0), ("Y", 2.0), ("A", 1.0)]),
+        ];
+        let mut sec2 = Section {
+            name: "Geometry".into(),
+            ix: 1,
+            ..Section::default()
+        };
+        sec2.rows = vec![
+            geo_row(1, "MoveTo", &[("X", 5.0), ("Y", 0.0)]),
+            geo_row(2, "LineTo", &[("X", 6.0), ("Y", 0.0)]),
+        ];
+        s.sheet.children.push(SheetChild::Section(sec1));
+        s.sheet.children.push(SheetChild::Section(sec2));
+        let (doc, page) = page_fixture(vec![s]);
+        let sh = &doc.pages[0].shapes[0];
+        let chain = [sh];
+        let frame = crate::geom::hit_frame(&doc, &chain, sh, (1.0, 1.0));
+        let segs = crate::geom::geometry_hit_segments_marked(sh, None, &frame, None, &[]);
+        // The boundary bridge is CONTIGUOUS with the strokes on both
+        // sides: the spline's last sample → the section-2 start, then
+        // section-2's own ink. The interleaving bug broke the chain.
+        let mut contiguity_holds = true;
+        for w in segs.windows(2) {
+            if (w[0].1 .0 - w[1].0 .0).abs() > 1e-9 || (w[0].1 .1 - w[1].0 .1).abs() > 1e-9 {
+                contiguity_holds = false;
+            }
+        }
+        assert!(
+            contiguity_holds,
+            "the walk stays contiguous across the flushed boundary: {segs:?}"
+        );
+        let last = segs.last().unwrap();
+        assert_eq!(last.2, crate::geom::SegMark::Ink);
+        // Local (6, 0) → page (2 + (6 − 3), 2 + (0 − 1)) = (5, 1).
+        assert!(
+            (last.1 .0 - 5.0).abs() < 1e-6 && (last.1 .1 - 1.0).abs() < 1e-6,
+            "section 2's ink reaches its own endpoint: {segs:?}"
+        );
+        let _ = &page;
+    }
+
+    /// CodeRabbit round 7 on PR #339: an inherited flag formula sees
+    /// the ordered GeometryN row FEEDS the paint walk accumulates —
+    /// NoShow = Geometry1.X2>1 with the master's row-2 X = 2 hides
+    /// the second section; the fresh-env read once saw no such name
+    /// and fell back to the cached V.
+    #[test]
+    fn inherited_flags_read_the_ordered_row_feeds() {
+        let grow = |ix: i64, t: &str, x: f64, y: f64| Row {
+            ix,
+            t: Some(t.into()),
+            cells: vec![
+                ("X".into(), Cell::value(format!("{x}"))),
+                ("Y".into(), Cell::value(format!("{y}"))),
+            ],
+            ..Row::default()
+        };
+        let mut msh = Shape {
+            id: 8,
+            ..Shape::default()
+        };
+        msh.sheet.set_cell("Width", Cell::value("4.0"));
+        msh.sheet.set_cell("Height", Cell::value("0.5"));
+        let mut sec1 = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec1.rows = vec![grow(1, "MoveTo", 0.0, 0.25), grow(2, "LineTo", 2.0, 0.25)];
+        let mut sec2 = Section {
+            name: "Geometry".into(),
+            ix: 1,
+            cells: vec![(
+                "NoShow".into(),
+                Cell {
+                    v: Some("0".into()),
+                    f: Some("Geometry1.X2>1".into()),
+                    ..Cell::default()
+                },
+            )],
+            ..Section::default()
+        };
+        sec2.rows = vec![grow(1, "MoveTo", 2.0, 0.25), grow(2, "LineTo", 4.0, 0.25)];
+        msh.sheet.children.push(SheetChild::Section(sec1));
+        msh.sheet.children.push(SheetChild::Section(sec2));
+        let doc = Document {
+            masters: vec![vsdx::Master {
+                id: 42,
+                shapes: vec![msh],
+                ..Default::default()
+            }],
+            ..Document::default()
+        };
+        let mut inst = Shape {
+            id: 30,
+            master: Some(42),
+            master_shape: Some(8),
+            ..Shape::default()
+        };
+        inst.sheet.set_cell("Width", Cell::value("4.0"));
+        inst.sheet.set_cell("Height", Cell::value("0.5"));
+        let root = &doc.masters[0].shapes[0];
+        let chain = [&inst, root];
+        let eff = doc.effective_sheet(&inst, &chain);
+        let secs = eff.sections_named("Geometry");
+        assert!(
+            geometry_flag_on(&doc, &inst, &chain, secs[1], "NoShow"),
+            "the live Geometry1.X2 = 2 feed hides the second section"
+        );
+    }
+
+    /// CodeRabbit round 7 on PR #339: the backdrop's ray cast counts
+    /// only FILL-ELIGIBLE contours — a NoFill'd inner rectangle
+    /// paints nothing, and counting it once rejected the outer fill's
+    /// center before the eligibility test ran.
+    #[test]
+    fn the_backdrop_ignores_nofill_contours() {
+        let mut outer = shape_at(1, (2.0, 2.0), 2.0, 2.0, 0.0);
+        outer.sheet.set_cell("FillForegnd", Cell::value("#ff0000"));
+        push_geo(
+            &mut outer,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 2.0), ("Y", 0.0)]),
+                geo_row(3, "LineTo", &[("X", 2.0), ("Y", 2.0)]),
+                geo_row(4, "LineTo", &[("X", 0.0), ("Y", 2.0)]),
+                geo_row(5, "LineTo", &[("X", 0.0), ("Y", 0.0)]),
+            ],
+        );
+        let mut inner = shape_at(2, (2.0, 2.0), 2.0, 2.0, 0.0);
+        inner.sheet.set_cell("FillForegnd", Cell::value("#00ff00"));
+        {
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                cells: vec![("NoFill".into(), Cell::value("1".to_string()))],
+                ..Section::default()
+            };
+            sec.rows = vec![
+                geo_row(1, "MoveTo", &[("X", 0.75), ("Y", 0.75)]),
+                geo_row(2, "LineTo", &[("X", 1.25), ("Y", 0.75)]),
+                geo_row(3, "LineTo", &[("X", 1.25), ("Y", 1.25)]),
+                geo_row(4, "LineTo", &[("X", 0.75), ("Y", 1.25)]),
+                geo_row(5, "LineTo", &[("X", 0.75), ("Y", 0.75)]),
+            ];
+            inner.sheet.children.push(SheetChild::Section(sec));
+        }
+        let (doc, page) = page_fixture(vec![outer, inner]);
+        assert_eq!(
+            backdrop_color_at(&doc, &page, (2.0, 2.0), 99, &[]),
+            (0xff, 0, 0),
+            "the NoFill contour does not punch a hole in the outer fill"
+        );
     }
 }

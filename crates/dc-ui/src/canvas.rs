@@ -451,6 +451,11 @@ pub struct GuideFx {
 /// (#324 phase 3; paper white dashed every hop over a panel, #322).
 #[derive(Debug, Clone, Copy)]
 pub struct JumpFx {
+    /// The JUMPING shape's id — the hop composites at the jumper's
+    /// own z-order (right after its layer), never above later shapes
+    /// (CodeRabbit round 7 on PR #339: an opaque panel above the
+    /// crossing once got overdrawn by the gap and the under-redraw).
+    pub jumper: i64,
     /// The color behind the jumper at the hop (the gap's paint).
     pub gap_color: Color32,
     /// The jumper's resolved hop style (#324 phase 4 — the paint
@@ -1344,6 +1349,66 @@ pub fn show(
             Color32::WHITE,
         );
     }
+    // Line jumps (#108), painted per jumper AT ITS Z-ORDER — the
+    // loop after each layer quad below. Each hop breaks the JUMPING
+    // line with a paper-colored gap, redraws the under line through
+    // it, and arcs the jumper over the crossing (Visio's default arc
+    // style). Compositing at the jumper's position keeps the export's
+    // order: a shape painted after the connector covers its hops
+    // (CodeRabbit round 7 on PR #339).
+    let paint_jump = |p: &egui::Painter, j: &JumpFx| {
+        let ppi = view.px_per_in();
+        let r = j.radius_in * ppi;
+        let at = page_to_screen(j.at.0, j.at.1, view, page);
+        let dir = Vec2::new(j.dir.0 as f32, -(j.dir.1 as f32)); // y flip
+        let under = Vec2::new(j.under.0 as f32, -(j.under.1 as f32));
+        let w = (j.weight * ppi as f64) as f32;
+        let uw = (j.under_weight * ppi as f64) as f32;
+        // 1. the gap — in the backdrop color (the export CUTS the
+        // jumper open; the cached rasters cannot be cut, so the gap
+        // paints what would show through, #324 phase 3).
+        let g1 = at - dir * r;
+        let g2 = at + dir * r;
+        p.line_segment([g1, g2], Stroke::new(w + 2.0, j.gap_color));
+        // 2. the under line passes straight through the gap.
+        let ext = r + uw + 1.0;
+        p.line_segment(
+            [at - under * ext, at + under * ext],
+            Stroke::new(uw, j.under_color),
+        );
+        // 3. the hop, per the jumper's style — the export's own
+        // painter, direction rule and proportions (the encodings in
+        // Analysis/line-jump-styles.md); page y-up → screen y-down.
+        use dc::jumps::JumpStyle;
+        if let JumpStyle::Gap = j.style {
+            return; // the gap IS the hop — the cut shows through
+        }
+        let np = dc::svg::jump_normal(j.dir);
+        let n = Vec2::new(np.0 as f32, -(np.1 as f32));
+        let bump = |ang: f32| at - dir * r * ang.cos() + n * r * ang.sin();
+        let lead = |s: f32| at + dir * s * (r + w * 0.5);
+        let mids: Vec<egui::Pos2> = match j.style {
+            JumpStyle::Arc => (1..=11)
+                .map(|k| bump(std::f32::consts::PI * k as f32 / 12.0))
+                .collect(),
+            JumpStyle::Square => {
+                let apex = bump(std::f32::consts::FRAC_PI_2);
+                vec![apex - dir * r, apex + dir * r]
+            }
+            JumpStyle::Sides(ns) => (1..ns)
+                .map(|k| bump(std::f32::consts::PI * k as f32 / ns as f32))
+                .collect(),
+            JumpStyle::Gap => Vec::new(),
+        };
+        let mut pts = Vec::with_capacity(mids.len() + 4);
+        pts.push(lead(-1.0));
+        pts.push(bump(0.0));
+        pts.extend(mids);
+        pts.push(bump(std::f32::consts::PI));
+        pts.push(lead(1.0));
+        p.add(egui::Shape::line(pts, Stroke::new(w, j.color)));
+    };
+
     // Per-shape layers (#93), z-order = model order: each quad is the
     // layer texture at its bounds (y-down viewBox inches —
     // page_to_screen flips to its y-up convention).
@@ -1361,6 +1426,11 @@ pub fn show(
             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
             Color32::WHITE,
         );
+        // The jumper's hops ride its own z-order (CodeRabbit round 7
+        // on PR #339).
+        for j in jumps.iter().filter(|j| j.jumper == q.id) {
+            paint_jump(&p, j);
+        }
     }
 
     // Grid (5 mm spacing in display units).
@@ -1964,61 +2034,6 @@ pub fn show(
         }
     }
 
-    // Line jumps (#108): each hop breaks the JUMPING line with a
-    // paper-colored gap, redraws the under line through it, and arcs
-    // the jumper over the crossing (Visio's default arc style).
-    for j in jumps {
-        let ppi = view.px_per_in();
-        let r = j.radius_in * ppi;
-        let at = page_to_screen(j.at.0, j.at.1, view, page);
-        let dir = Vec2::new(j.dir.0 as f32, -(j.dir.1 as f32)); // y flip
-        let under = Vec2::new(j.under.0 as f32, -(j.under.1 as f32));
-        let w = (j.weight * ppi as f64) as f32;
-        let uw = (j.under_weight * ppi as f64) as f32;
-        // 1. the gap — in the backdrop color (the export CUTS the
-        // jumper open; the cached rasters cannot be cut, so the gap
-        // paints what would show through, #324 phase 3).
-        let g1 = at - dir * r;
-        let g2 = at + dir * r;
-        p.line_segment([g1, g2], Stroke::new(w + 2.0, j.gap_color));
-        // 2. the under line passes straight through the gap.
-        let ext = r + uw + 1.0;
-        p.line_segment(
-            [at - under * ext, at + under * ext],
-            Stroke::new(uw, j.under_color),
-        );
-        // 3. the hop, per the jumper's style — the export's own
-        // painter, direction rule and proportions (the encodings in
-        // Analysis/line-jump-styles.md); page y-up → screen y-down.
-        use dc::jumps::JumpStyle;
-        if let JumpStyle::Gap = j.style {
-            continue; // the gap IS the hop — the cut shows through
-        }
-        let np = dc::svg::jump_normal(j.dir);
-        let n = Vec2::new(np.0 as f32, -(np.1 as f32));
-        let bump = |ang: f32| at - dir * r * ang.cos() + n * r * ang.sin();
-        let lead = |s: f32| at + dir * s * (r + w * 0.5);
-        let mids: Vec<egui::Pos2> = match j.style {
-            JumpStyle::Arc => (1..=11)
-                .map(|k| bump(std::f32::consts::PI * k as f32 / 12.0))
-                .collect(),
-            JumpStyle::Square => {
-                let apex = bump(std::f32::consts::FRAC_PI_2);
-                vec![apex - dir * r, apex + dir * r]
-            }
-            JumpStyle::Sides(ns) => (1..ns)
-                .map(|k| bump(std::f32::consts::PI * k as f32 / ns as f32))
-                .collect(),
-            JumpStyle::Gap => Vec::new(),
-        };
-        let mut pts = Vec::with_capacity(mids.len() + 4);
-        pts.push(lead(-1.0));
-        pts.push(bump(0.0));
-        pts.extend(mids);
-        pts.push(bump(std::f32::consts::PI));
-        pts.push(lead(1.0));
-        p.add(egui::Shape::line(pts, Stroke::new(w, j.color)));
-    }
 
     // Rulers — on the bars-shrunk rect: the bands stop at the
     // scrollbars exactly like Visio's layout (#283).

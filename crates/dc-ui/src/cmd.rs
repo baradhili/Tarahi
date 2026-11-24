@@ -1387,7 +1387,12 @@ fn route_owned_rows_detailed(
     radii: (f64, f64),
     g_w_h: (f64, f64),
 ) -> (bool, bool) {
-    let live: Vec<&vsdx::model::Row> = g.rows.iter().filter(|r| !r.is_deleted()).collect();
+    // IX ORDER, like the geometry walk: a section whose rows sit
+    // out of ix order in the file once classified a different route
+    // than the walk drew (CodeRabbit round 7 on PR #339).
+    let mut live: Vec<&vsdx::model::Row> =
+        g.rows.iter().filter(|r| !r.is_deleted()).collect();
+    live.sort_by_key(|r| r.ix);
     if live.is_empty() {
         return (false, false);
     }
@@ -2481,8 +2486,12 @@ impl Command for ReconcileLineJumps {
             if geo.rows.len() > dc::geom::MAX_WALK_ROWS {
                 continue;
             }
-            let live: Vec<&vsdx::model::Row> =
+            // IX ORDER, like the geometry walk (CodeRabbit round 7
+            // on PR #339 — out-of-order rows once classified a route
+            // the walk never drew).
+            let mut live: Vec<&vsdx::model::Row> =
                 geo.rows.iter().filter(|r| !r.is_deleted()).collect();
+            live.sort_by_key(|r| r.ix);
             if live.len() < 2 {
                 continue;
             }
@@ -2814,11 +2823,20 @@ impl Command for ReconcileLineJumps {
                             // (normalized whitespace) so a style
                             // change rewrites (#324 phase-5 review).
                             (Some("PolylineTo"), _) => {
-                                let norm = |v: Option<&vsdx::model::Cell>| {
-                                    v.and_then(|c| c.v.clone().or_else(|| c.f.clone()))
-                                        .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+                                // The SAME ownership-safe resolver as
+                                // the classification: a bare-POLYLINE
+                                // formula under a stale cached V once
+                                // compared the CACHE, read as a no-op,
+                                // and the style change never landed
+                                // (CodeRabbit round 7 on PR #339).
+                                let master_rows_cmp: &[vsdx::model::Row] =
+                    chain.get(1).and_then(|root| root.sheet.sections_named("Geometry").into_iter().next()).map(|g| g.rows.as_slice()).unwrap_or(&[]);
+                                let norm = |row: &vsdx::model::Row| {
+                                    polyline_a_owned(row, master_rows_cmp).map(|t| {
+                                        t.split_whitespace().collect::<Vec<_>>().join(" ")
+                                    })
                                 };
-                                norm(t.cell("A")) == norm(r.cell("A"))
+                                norm(t) == norm(r)
                             }
                             _ => true,
                         }
@@ -6776,6 +6794,113 @@ mod reconcile_jump_tests {
         assert!(
             owned && hop,
             "the Rel gap resolves to the same 2·R slot in inches"
+        );
+    }
+
+    /// CodeRabbit round 7 on PR #339: the ownership walkers read rows
+    /// in IX ORDER like the geometry walk — a section whose rows sit
+    /// out of ix order in the file once classified a different route
+    /// than the walk drew, and the reconcile welded a break it never
+    /// classified.
+    #[test]
+    fn route_ownership_sorts_rows_into_ix_order() {
+        // Document order: M@1, L@3 (the slot's start), L@2, M@4 (the
+        // slot's end), L@5 — the geometry walk sorts by ix and sees
+        // the 2·R gap; the document order once saw a reversal.
+        let g = vsdx::model::Section {
+            name: "Geometry".into(),
+            rows: vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.0, 0.125),
+                    ..Row::default()
+                },
+                lineto(3, 2.5 - R, 0.125),
+                lineto(2, 1.0, 0.125),
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 4,
+                    cells: xy(2.5 + R, 0.125),
+                    ..Row::default()
+                },
+                lineto(5, 5.0, 0.125),
+            ],
+            ..Default::default()
+        };
+        let (owned, hop) = route_owned_rows_detailed(&g, &[], (R, R), (5.0, 0.25));
+        assert!(
+            owned && hop,
+            "the ix-ordered route carries the recognized gap"
+        );
+    }
+
+    /// CodeRabbit round 7 on PR #339: the write-skip comparison reads
+    /// the polygon controls through the SAME ownership-safe resolver
+    /// as the classification — a bare-SQUARE formula under a stale
+    /// cached TRIANGLE value once compared the cache, read as a no-op,
+    /// and the style change never landed.
+    #[test]
+    fn the_write_skip_compares_the_effective_polygon_controls() {
+        let (mut ed, page_id) = witness_doc("3");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let square_a = rows_of(&ed, 5)[2].cell("A").unwrap().v.clone().unwrap();
+        // The 2-sides target's form (the triangle the style change
+        // wants): compute it by reconciling a twin document.
+        let (mut ed2, page2) = witness_doc("4");
+        ReconcileLineJumps::new(page2).apply(&mut ed2.doc).unwrap();
+        let triangle_a = rows_of(&ed2, 5)[2].cell("A").unwrap().v.clone().unwrap();
+        // The stale cache: the triangle text under the square formula.
+        {
+            let s5 = ed
+                .doc
+                .pages[0]
+                .shapes
+                .iter_mut()
+                .find(|s| s.id == 5)
+                .unwrap();
+            let sec = s5
+                .sheet
+                .children
+                .iter_mut()
+                .find_map(|c| match c {
+                    vsdx::model::SheetChild::Section(sec) if sec.name == "Geometry" => Some(sec),
+                    _ => None,
+                })
+                .unwrap();
+            for row in sec.rows.iter_mut() {
+                if row.t.as_deref() == Some("PolylineTo") {
+                    for (n, c) in row.cells.iter_mut() {
+                        if n == "A" {
+                            *c = vsdx::Cell {
+                                v: Some(triangle_a.clone()),
+                                f: Some(square_a.clone()),
+                                ..vsdx::Cell::default()
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        // Square → 2 sides: the comparison must see the SQUARE formula
+        // (not the cached triangle) and REWRITE.
+        SetCell::new(
+            Scope::PageSheet { page: page_id },
+            "LineJumpStyle",
+            VCell::value("4"),
+        )
+        .apply(&mut ed.doc)
+        .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let a = rows_of(&ed, 5)[2]
+            .cell("A")
+            .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+            .unwrap();
+        let (_, pts) = dc::jumps::parse_polyline_controls(&a).unwrap();
+        assert_eq!(
+            pts.len(),
+            1,
+            "the triangle REPLACED the square formula: {a}"
         );
     }
 }

@@ -10558,3 +10558,32 @@ fn page_setup_preserves_a_zero_jump_factor_on_open() {
         "the absent X factor stays absent"
     );
 }
+
+/// CodeRabbit round 7 on PR #339: the hop composites at the JUMPER'S
+/// z-order — an opaque cover shape above both connectors hides the
+/// crossing's hop on the canvas exactly as the export hides it (the
+/// old post-ink jump pass painted the gap and the under-redraw over
+/// whatever covered the crossing).
+#[test]
+fn hops_composite_below_later_shapes() {
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(
+            |ui, app: &mut App| {
+                dc_ui::theme::install(ui.ctx());
+                app.draw(ui);
+            },
+            App::debug_crossing_with_cover_for_test(),
+        );
+    h.run();
+    assert_eq!(
+        h.state().debug_jump_count(),
+        1,
+        "the crossing builds its hop fx"
+    );
+    // The golden pins the pixels: the red cover owns the crossing's
+    // area — no hop arc, gap or under-redraw paints over it.
+    ctx_menu_snapshot(&mut h, "dc_ui_hop_below_cover");
+}

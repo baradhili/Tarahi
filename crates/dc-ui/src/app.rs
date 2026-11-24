@@ -5788,6 +5788,7 @@ impl App {
                 (r_eff > j.weight).then_some((j, r_eff))
             })
             .map(|(j, r_eff)| canvas::JumpFx {
+                jumper: j.jumper,
                 // The gap paints the BACKDROP — the fill of the
                 // topmost filled shape beneath the connector at the
                 // hop, else page white: the canvas cannot cut cached
@@ -16193,6 +16194,119 @@ impl App {
         let mut app = App::with_blank();
         app.ed = Some(ed);
         app.pagesetup_open = true;
+        app.page_idx = 0;
+        app
+    }
+
+    /// kittest: two crossing connectors with an OPAQUE cover shape
+    /// above them in z-order (CodeRabbit round 7 on PR #339 — the
+    /// hop composites at the jumper's layer, so the cover hides it
+    /// like the export does).
+    #[doc(hidden)]
+    pub fn debug_crossing_with_cover_for_test() -> App {
+        let mut ed = dc_core::Editor::new_blank();
+        let mut h5 = crate::connectors::connector_shape(5, (1.5, 5.0), (6.5, 5.0));
+        h5.sheet.set_cell("Height", vsdx::Cell::value("0.25"));
+        h5.sheet.set_cell("LocPinY", vsdx::Cell::value("0.125"));
+        {
+            use vsdx::model::Row;
+            let xy = |x: f64, y: f64| {
+                vec![
+                    ("X".to_string(), vsdx::Cell::value(format!("{x}"))),
+                    ("Y".to_string(), vsdx::Cell::value(format!("{y}"))),
+                ]
+            };
+            for child in h5.sheet.children.iter_mut() {
+                if let vsdx::model::SheetChild::Section(sec) = child {
+                    if sec.name == "Geometry" {
+                        sec.rows = vec![
+                            Row {
+                                t: Some("MoveTo".into()),
+                                ix: 1,
+                                cells: xy(0.0, 0.125),
+                                ..Default::default()
+                            },
+                            Row {
+                                t: Some("LineTo".into()),
+                                ix: 2,
+                                cells: xy(5.0, 0.125),
+                                ..Default::default()
+                            },
+                        ];
+                    }
+                }
+            }
+        }
+        let v6 = crate::connectors::connector_shape(6, (4.0, 2.0), (4.0, 8.0));
+        let mut cover = vsdx::model::Shape {
+            id: 7,
+            ..vsdx::model::Shape::default()
+        };
+        for (n, v) in [
+            ("PinX", "4.0"),
+            ("PinY", "5.0"),
+            ("Width", "1.5"),
+            ("Height", "1.5"),
+            ("LocPinX", "0.75"),
+            ("LocPinY", "0.75"),
+            ("FillForegnd", "#ff0000"),
+            ("FillPattern", "1"),
+        ] {
+            cover.sheet.set_cell(n, vsdx::Cell::value(v));
+        }
+        {
+            use vsdx::model::Row;
+            let xy = |x: f64, y: f64| {
+                vec![
+                    ("X".to_string(), vsdx::Cell::value(format!("{x}"))),
+                    ("Y".to_string(), vsdx::Cell::value(format!("{y}"))),
+                ]
+            };
+            cover.sheet.children.push(vsdx::model::SheetChild::Section(
+                vsdx::model::Section {
+                    name: "Geometry".into(),
+                    ix: 0,
+                    rows: vec![
+                        Row {
+                            t: Some("MoveTo".into()),
+                            ix: 1,
+                            cells: xy(0.0, 0.0),
+                            ..Default::default()
+                        },
+                        Row {
+                            t: Some("LineTo".into()),
+                            ix: 2,
+                            cells: xy(1.5, 0.0),
+                            ..Default::default()
+                        },
+                        Row {
+                            t: Some("LineTo".into()),
+                            ix: 3,
+                            cells: xy(1.5, 1.5),
+                            ..Default::default()
+                        },
+                        Row {
+                            t: Some("LineTo".into()),
+                            ix: 4,
+                            cells: xy(0.0, 1.5),
+                            ..Default::default()
+                        },
+                        Row {
+                            t: Some("LineTo".into()),
+                            ix: 5,
+                            cells: xy(0.0, 0.0),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+            ));
+        }
+        ed.doc.pages[0].shapes.push(h5);
+        ed.doc.pages[0].shapes.push(v6);
+        ed.doc.pages[0].shapes.push(cover);
+        let mut app = App::with_blank();
+        app.ed = Some(ed);
         app.page_idx = 0;
         app
     }
