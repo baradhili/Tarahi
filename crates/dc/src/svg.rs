@@ -6658,6 +6658,13 @@ fn font_substitute(name: &str) -> Option<(&'static str, &'static str)> {
         "segoe ui" => ("Carlito", "sans-serif"),
         "times new roman" => ("Liberation Serif", "serif"),
         "courier new" => ("Liberation Mono", "monospace"),
+        // The other stock monospace faces: without the face installed
+        // they must stay monospace (Visio 2021 witness: the network
+        // LLD's Lucida Console interface labels drew in Carlito and
+        // re-wrapped). Liberation Mono's 0.6 em advance matches Lucida
+        // Console's; Consolas (0.55 em) is the closest the vendored
+        // set offers.
+        "lucida console" | "consolas" => ("Liberation Mono", "monospace"),
         _ => return None,
     })
 }
@@ -10600,6 +10607,22 @@ mod tests {
         let (doc, page) = page_fixture(vec![s]);
         let svg = render_page(&doc, &page).unwrap();
         assert!(svg.contains(" A 0.12500 0.12500"), "{svg}");
+    }
+
+    /// Stock monospace faces fall back to the vendored monospace
+    /// Liberation Mono, never the proportional Carlito.
+    #[test]
+    fn monospace_stock_fonts_stay_monospace() {
+        for f in ["Lucida Console", "Consolas", "Courier New"] {
+            let chain = family_chain(Some(f));
+            assert_eq!(chain[1], "Liberation Mono", "{f}: {chain:?}");
+            assert_eq!(chain.last().map(String::as_str), Some("monospace"));
+        }
+        // Not a stock Visio font: it lays out as Calibri like any
+        // unknown family (Greptile on PR #332 found its old mapping
+        // unreachable).
+        let chain = family_chain(Some("Lucida Sans Typewriter"));
+        assert_eq!(chain[0], "Calibri", "{chain:?}");
     }
 
     /// GitHub #22: the shared TextBlock resolution must agree with the
