@@ -1247,14 +1247,20 @@ fn parse_hex_rgb(v: &str) -> Option<(u8, u8, u8)> {
 }
 
 /// A jump candidate is a REAL connector — `ObjType = 2`, locally or
-/// chain-resolved through the master (the #322 witness: Visio hops
-/// only true connectors; a plain glued 1D line — `ObjType 0`, static
-/// `PAR(PNT` glue — never joins the crossing set). The wider
-/// glue-ownership gate [`crate::geom::is_connector_in`] stays what
-/// reroute and glue use; jump candidacy is deliberately narrower,
-/// and EVERY site that strips or rewrites stored jump arcs gates on
-/// it too (the ink path and the reconcile — an authored arc on a
-/// non-candidate line is artwork, never a hop to straighten).
+/// chain-resolved through the master — or a 1D GLUE connector in the
+/// #226 signature: a resolved `BeginX` (XForm1D) plus a glue trigger
+/// on either end (`BegTrigger`/`EndTrigger`), the corpus Line-arc
+/// master's own marking. Visio hops those (issue #340: the
+/// utilisation.vsdx arcs carry no ObjType at all, so the ObjType-only
+/// gate left every Page-Setup jump state empty on the file). The
+/// #322 witness still stays out: a plain glued 1D line — `ObjType 0`,
+/// static `PAR(PNT` glue, NO trigger cells — never joins the crossing
+/// set, which is why the wider glue-ownership gate's static-formula
+/// leg is NOT adopted here; [`crate::geom::is_connector_in`] stays
+/// what reroute and glue use. EVERY site that strips or rewrites
+/// stored jump arcs gates on this too (the ink path and the reconcile
+/// — an authored arc on a non-candidate line is artwork, never a hop
+/// to straighten).
 pub fn is_jump_candidate(
     doc: &vsdx::Document,
     chain: &[&vsdx::model::Shape],
@@ -1265,6 +1271,9 @@ pub fn is_jump_candidate(
             .resolve_cell(s, chain, "ObjType")
             .and_then(|c| c.numeric())
             .is_some_and(|v| v == 2.0)
+        || (doc.resolve_cell(s, chain, "BeginX").is_some()
+            && (doc.resolve_cell(s, chain, "BegTrigger").is_some()
+                || doc.resolve_cell(s, chain, "EndTrigger").is_some()))
 }
 
 /// The page's jump rules (#324 phase 2): the PageSheet's
@@ -2271,13 +2280,14 @@ mod tests {
 
     /// `page_jump_rules` reads what Visio reads — the PageSheet's
     /// `LineJumpCode` through the style chain, the connectors'
-    /// resolved `ConLineJumpCode`s — and jump candidacy is
-    /// `ObjType = 2`: a plain glued 1D line (static `PAR(PNT` glue,
-    /// no ObjType) never joins the crossing set (#322's witness),
-    /// while the master chain still supplies the marker for real
-    /// connectors (#174, covered end to end by the b01/c02 fixtures).
+    /// resolved `ConLineJumpCode`s — and jump candidacy is the
+    /// three-leg rule: `ObjType = 2` (local or chain-resolved, #174 —
+    /// covered end to end by the b01/c02 fixtures), the #226 glue
+    /// signature (XForm1D + a glue trigger, issue #340), and NEVER a
+    /// plain glued 1D line (static `PAR(PNT` glue, no ObjType, no
+    /// triggers — #322's witness).
     #[test]
-    fn page_jump_rules_read_visio_and_gate_on_objtype() {
+    fn page_jump_rules_read_visio_and_gate_on_candidacy() {
         let mut sheet = vsdx::model::Sheet::default();
         sheet.set_cell("LineJumpCode", Cell::value("2"));
         let mut page = vsdx::Page {
@@ -2339,6 +2349,74 @@ mod tests {
         assert!(
             page_jumps(&doc, &page, &[]).is_empty(),
             "an ObjType-0 glued line never joins the crossing set"
+        );
+    }
+
+    /// Issue #340: a 1D glue connector WITHOUT ObjType — the #226
+    /// signature on its MASTER (`GlueType` + `BegTrigger`/`EndTrigger`
+    /// plus XForm1D, the corpus Line-arc master's own marking) — joins
+    /// the crossing set and hops. The utilisation-style arcs sat
+    /// outside the ObjType-only gate and every Add-line-jumps-to state
+    /// rendered identically empty; and the dropdown now visibly gates
+    /// them too (None empties the set).
+    #[test]
+    fn glue_signature_connectors_join_the_crossing_set() {
+        // The master carries the signature; the instance is a stub.
+        let mut root = straight_connector(1, (0.0, 5.0), (4.0, 5.0), None);
+        root.sheet.children.retain(|c| {
+            !matches!(c, vsdx::model::SheetChild::Cell(n, _) if n == "ObjType")
+        });
+        root.sheet.set_cell("GlueType", Cell::value("3"));
+        root.sheet.set_cell("BegTrigger", Cell::value("2"));
+        root.sheet.set_cell("EndTrigger", Cell::value("2"));
+        root.sheet.set_cell("BeginX", Cell::value("0"));
+        root.sheet.set_cell("BeginY", Cell::value("5"));
+        root.sheet.set_cell("EndX", Cell::value("4"));
+        root.sheet.set_cell("EndY", Cell::value("5"));
+        let inst = Shape {
+            id: 10,
+            master: Some(42),
+            master_shape: Some(1),
+            ..Shape::default()
+        };
+        let v = straight_connector(2, (2.0, 3.0), (2.0, 7.0), None);
+        let mut sheet = vsdx::model::Sheet::default();
+        sheet.set_cell("LineJumpCode", Cell::value("1"));
+        let page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            children: vec![vsdx::model::IndexChild::Sheet {
+                tag: "PageSheet".into(),
+                sheet,
+            }],
+            shapes: vec![inst, v],
+            ..vsdx::Page::default()
+        };
+        let doc = vsdx::Document {
+            masters: vec![vsdx::Master {
+                id: 42,
+                shapes: vec![root],
+                ..vsdx::Master::default()
+            }],
+            pages: vec![page.clone()],
+            ..vsdx::Document::default()
+        };
+        let js = page_jumps(&doc, &page, &[]);
+        assert_eq!(
+            js.len(),
+            1,
+            "the ObjType-less glue connector's crossing hops: {js:?}"
+        );
+        assert_eq!(js[0].jumper, 10, "the flatter run hops: {js:?}");
+        // The dropdown gates the new candidates too: None empties the
+        // set, so the selection finally differs on these files.
+        let mut off = page.clone();
+        off.sheet_mut()
+            .expect("page sheet")
+            .set_cell("LineJumpCode", Cell::value("0"));
+        assert!(
+            page_jumps(&doc, &off, &[]).is_empty(),
+            "None gates the glue-signature candidates off"
         );
     }
 
