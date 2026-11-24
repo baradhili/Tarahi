@@ -44,7 +44,18 @@ pub fn is_connector_in(doc: &vsdx::Document, chain: &[&Shape], s: &Shape) -> boo
     }
     let resolved = |n: &str| doc.resolve_cell(s, chain, n);
     let one_d = resolved("BeginX").is_some();
-    let triggers = resolved("BegTrigger").is_some() || resolved("EndTrigger").is_some();
+    // A trigger is the glue engine's `_XFTRIGGER(…)` write (or a
+    // nonzero value). The `V='0' F='No Formula'` every stylesheet
+    // carries is no trigger: once style resolution reaches those
+    // defaults, a presence test made every 1D line a connector (the
+    // network LLD's Staging page went from 176 to 1361 jump hops).
+    let trigger = |n: &str| {
+        resolved(n).is_some_and(|c| {
+            c.f.as_deref().is_some_and(|f| f.contains("_XFTRIGGER"))
+                || c.numeric().is_some_and(|v| v != 0.0)
+        })
+    };
+    let triggers = trigger("BegTrigger") || trigger("EndTrigger");
     // Glue-owned endpoints (#250): a STATIC glue write (`PAR(PNT(...))`)
     // leaves no ObjType and no trigger cells, but the formula is the
     // glue engine's own signature — user-authored connectors and
@@ -1454,6 +1465,48 @@ mod tests {
             color: (0, 0, 0),
             pts: pts.to_vec(),
         }
+    }
+
+    /// The stylesheet default `BegTrigger V='0' F='No Formula'` is no
+    /// glue trigger: a plain 1D line that resolves it stays a line,
+    /// one with the glue engine's `_XFTRIGGER` write is a connector.
+    #[test]
+    fn style_default_triggers_do_not_make_a_connector() {
+        let mut no_style = vsdx::model::StyleSheet::default();
+        no_style.sheet.set_cell(
+            "BegTrigger",
+            vsdx::Cell {
+                v: Some("0".into()),
+                f: Some("No Formula".into()),
+                ..vsdx::Cell::default()
+            },
+        );
+        let doc = vsdx::Document {
+            stylesheets: vec![no_style],
+            ..vsdx::Document::default()
+        };
+        let mut line = vsdx::Shape {
+            id: 1,
+            ..vsdx::Shape::default()
+        };
+        for (n, v) in [
+            ("BeginX", "0"),
+            ("BeginY", "0"),
+            ("EndX", "1"),
+            ("EndY", "0"),
+        ] {
+            line.sheet.set_cell(n, vsdx::Cell::value(v));
+        }
+        assert!(!super::is_connector_in(&doc, &[&line], &line));
+        line.sheet.set_cell(
+            "BegTrigger",
+            vsdx::Cell {
+                v: Some("2".into()),
+                f: Some("_XFTRIGGER(Sheet.9!EventXFMod)".into()),
+                ..vsdx::Cell::default()
+            },
+        );
+        assert!(super::is_connector_in(&doc, &[&line], &line));
     }
 
     /// #251: one crossing REGION hops once — a flattened curve's
