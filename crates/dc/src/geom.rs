@@ -914,8 +914,40 @@ pub fn geometry_hit_segments(
                 cur_local = Some(end_local);
                 }
             }
+            "PolylineTo" => {
+                if let Some(acc) = spline_acc.take() {
+                    if let Some(data) = acc.flush() {
+                        for p in crate::curve::SplineData::flatten(&data, 16)
+                            .into_iter()
+                            .skip(1)
+                        {
+                            pts.push(to_page(p));
+                        }
+                    }
+                }
+                // The POLYLINE() interior vertices, with the renderer's
+                // per-axis rule (the NURBSTo arm above): a fractional
+                // axis (type 0) lands in the frame's own dims, an
+                // absolute axis takes only the scale. Crossings then
+                // see the bends the renderer draws, not the chord
+                // (Greptile on PR #329).
+                let a_text = row
+                    .cell("A")
+                    .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                    .unwrap_or_default();
+                if let Some((xt, yt, verts)) = crate::curve::parse_polyline(&a_text) {
+                    let fx = if xt == 0.0 { frame.size.0 } else { scale.0 };
+                    let fy = if yt == 0.0 { frame.size.1 } else { scale.1 };
+                    for (vx, vy) in verts {
+                        pts.push(to_page((vx * fx, vy * fy)));
+                    }
+                }
+                pts.push(to_page(end));
+                cur = Some(end);
+                cur_local = Some(end_local);
+            }
             _ if t.ends_with("To") || t.contains("Spline") || t == "InfiniteLine" => {
-                // LineTo plus the v0.2 polyline/infinite-line chords.
+                // LineTo plus the v0.2 infinite-line chord.
                 if let Some(acc) = spline_acc.take() {
                     if let Some(data) = acc.flush() {
                         for p in crate::curve::SplineData::flatten(&data, 16)
@@ -1948,6 +1980,36 @@ mod tests {
         let y0 = pts.first().map(|(a, _)| a.1).unwrap_or(0.0);
         pts.iter()
             .all(|(a, b)| (a.1 - y0).abs() < 1e-6 && (b.1 - y0).abs() < 1e-6)
+    }
+
+    /// A PolylineTo row's POLYLINE() vertices are part of the hit
+    /// path, so crossings see the drawn bends (Greptile on PR #329).
+    #[test]
+    fn polyline_to_vertices_join_the_hit_path() {
+        let mut poly = mrow(2, "PolylineTo", &[("X", 2.0), ("Y", 0.0)]);
+        poly.cells.push((
+            "A".into(),
+            Cell {
+                v: Some("POLYLINE(1, 1, 0,1, 2,1)".into()),
+                ..Cell::default()
+            },
+        ));
+        let s = conn_shape(
+            7,
+            2.0,
+            1.0,
+            vec![mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]), poly],
+        );
+        let doc = vsdx::Document::default();
+        let chain = vec![&s];
+        let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
+        let segs = geometry_hit_segments(&s, None, &frame, None);
+        assert_eq!(segs.len(), 3, "M → (0,1) → (2,1) → (2,0): {segs:?}");
+        let ys: Vec<f64> = segs.iter().map(|(a, _)| a.1).collect();
+        assert!(
+            (ys[1] - ys[0] - 1.0).abs() < 1e-9 && (ys[2] - ys[1]).abs() < 1e-9,
+            "the walk climbs to the polyline's top run: {segs:?}"
+        );
     }
 
     /// #294 review: a degenerate (zero-length) straight row next to
