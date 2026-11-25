@@ -3294,7 +3294,7 @@ fn hatch_fill(pattern: f64, fg: &str, bg: &str, (w, h): (f64, f64)) -> Option<Ha
 }
 
 /// One gradient stop: color, alpha, position 0–1.
-type Stop = (String, f64, f64);
+pub(crate) type Stop = (String, f64, f64);
 
 /// The `<prefix>Gradient` stop rows (FillGradient / LineGradient)
 /// through the instance → master → style chain; per-row cells the
@@ -3386,15 +3386,71 @@ fn gradient_stops(doc: &Document, s: &Shape, chain: &[&Shape], prefix: &str) -> 
 }
 
 /// `<stop>` elements for `stops`.
-fn stop_elems(stops: &[Stop]) -> String {
+/// Sub-stops per gradient segment: SVG and PDF ramp linearly between
+/// stops, so Visio's eased ramp is sampled into this many pieces (the
+/// largest gap to the curve stays under 0.012 of the color span).
+pub(crate) const EASE_STEPS: usize = 8;
+
+/// `#rrggbb` → linear-light channels; `None` for anything else, which
+/// then ramps as given.
+fn linear_rgb(c: &str) -> Option<[f64; 3]> {
+    let h = c.trim().strip_prefix('#')?;
+    if h.len() != 6 || !h.is_ascii() {
+        return None;
+    }
+    let ch = |i: usize| -> Option<f64> {
+        let v = f64::from(u8::from_str_radix(&h[i..i + 2], 16).ok()?) / 255.0;
+        Some(if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        })
+    };
+    Some([ch(0)?, ch(2)?, ch(4)?])
+}
+
+/// Linear-light channels → `#rrggbb`.
+fn srgb_hex(l: [f64; 3]) -> String {
+    let enc = |v: f64| -> u8 {
+        let v = v.clamp(0.0, 1.0);
+        let s = if v <= 0.003_130_8 {
+            12.92 * v
+        } else {
+            1.055 * v.powf(1.0 / 2.4) - 0.055
+        };
+        (s * 255.0).round() as u8
+    };
+    format!("#{:02x}{:02x}{:02x}", enc(l[0]), enc(l[1]), enc(l[2]))
+}
+
+/// The SVG stops for a Visio gradient. Visio 2021 eases every segment
+/// between two stops with smoothstep (3u² − 2u³) and mixes the colors
+/// in linear light (witness: linear and radial ramps measured on
+/// Visio's own PNG export fit this to 0.01 RMS, against 0.10 for a
+/// plain sRGB ramp; the network LLD's cloud puffs came out far too
+/// dark). Each segment is sampled into [`EASE_STEPS`] pieces.
+pub(crate) fn stop_elems(stops: &[Stop]) -> String {
     let mut out = String::new();
-    for (c, a, p) in stops {
+    let mut emit = |c: &str, a: f64, p: f64| {
         let _ = write!(
             out,
             r#"<stop offset="{p:.4}" stop-color="{}"{}/>"#,
             escape_attr(c),
-            opacity_attr("stop-opacity", *a)
+            opacity_attr("stop-opacity", a)
         );
+    };
+    for (i, (c, a, p)) in stops.iter().enumerate() {
+        if let Some((pc, pa, pp)) = i.checked_sub(1).map(|j| &stops[j]) {
+            if let (Some(x), Some(y), true) = (linear_rgb(pc), linear_rgb(c), p > pp) {
+                for k in 1..EASE_STEPS {
+                    let u = k as f64 / EASE_STEPS as f64;
+                    let e = u * u * (3.0 - 2.0 * u);
+                    let mix = [0, 1, 2].map(|n| x[n] + (y[n] - x[n]) * e);
+                    emit(&srgb_hex(mix), pa + (a - pa) * e, pp + (p - pp) * u);
+                }
+            }
+        }
+        emit(c, *a, *p);
     }
     out
 }
