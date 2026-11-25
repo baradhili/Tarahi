@@ -489,13 +489,24 @@ pub(crate) fn wrap_tokens(para: &str) -> Vec<WrapToken<'_>> {
         // matches `Á中`; `カ\u{3099}ク` matches `ガク` — CodeRabbit
         // PR review).
         let mut base: Option<char> = None;
+        // Where the previous char starts: a hyphen opening the part
+        // (`-5`, `-x`) is a sign, not a break opportunity (UAX #14 LB20.1).
+        let mut prev_at = 0usize;
         for (i, c) in part.char_indices() {
             let left = if prev.is_some_and(is_combining) {
                 base
             } else {
                 prev
             };
-            if left.is_some_and(|p| cjk_break_between(p, c)) {
+            // A break after a hyphen inside a word (UAX #14 LB21: never
+            // before one; LB25: never before a digit, so `2026-11` and
+            // `-5` stay whole). Visio 2021 wraps `nsa1-ext` as
+            // `nsa1-` / `ext` in a narrow box.
+            let after_hyphen = matches!(prev, Some('-' | '\u{2010}'))
+                && prev_at > 0
+                && !c.is_ascii_digit()
+                && !matches!(c, '-' | '\u{2010}');
+            if after_hyphen || left.is_some_and(|p| cjk_break_between(p, c)) {
                 out.push(WrapToken {
                     sep: pending_sep,
                     tok: &part[sub_start..i],
@@ -504,6 +515,7 @@ pub(crate) fn wrap_tokens(para: &str) -> Vec<WrapToken<'_>> {
                 sub_start = i;
             }
             prev = Some(c);
+            prev_at = i;
             if !is_combining(c) {
                 base = Some(c);
             }
@@ -1223,6 +1235,22 @@ mod tests {
             vec![("".into(), "x".into()), (" ".into(), "".into())]
         );
         assert_eq!(toks(""), vec![("".into(), "".into())]);
+        // A hyphen inside a word is a break opportunity after it (Visio
+        // 2021: `nsa1-` / `ext`); not before a digit, not at the start.
+        assert_eq!(
+            toks("nsa1-ext x"),
+            vec![
+                ("".into(), "nsa1-".into()),
+                ("".into(), "ext".into()),
+                (" ".into(), "x".into()),
+            ]
+        );
+        assert_eq!(toks("2026-11-25"), vec![("".into(), "2026-11-25".into())]);
+        assert_eq!(toks("-x"), vec![("".into(), "-x".into())]);
+        assert_eq!(
+            toks("a--b"),
+            vec![("".into(), "a--".into()), ("".into(), "b".into())]
+        );
         // CJK: every ideograph is its own token, kinsoku-glued
         // punctuation rides its neighbor.
         assert_eq!(
