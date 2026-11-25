@@ -2595,6 +2595,54 @@ fn merged_geometry_pairs_sections_by_ix_and_keeps_rel_fractions() {
     assert!((x - 0.75).abs() < 1e-9, "a fraction, unscaled: {x}");
 }
 
+#[test]
+fn merged_geometry_scales_relative_arc_controls() {
+    let mut master = shape_at(1, (0.5, 0.5), 1.0, 1.0, 0.0);
+    push_geo(
+        &mut master,
+        vec![geo_row(
+            1,
+            "RelEllipticalArcTo",
+            &[
+                ("X", 0.75),
+                ("Y", 0.5),
+                ("A", 0.25),
+                ("B", 0.25),
+                ("C", 0.5),
+                ("D", 2.0),
+            ],
+        )],
+    );
+    let mut inst = shape_at(1, (4.0, 5.0), 4.0, 2.0, 0.0);
+    inst.master = Some(7);
+    push_geo(&mut inst, vec![geo_row(1, "RelEllipticalArcTo", &[])]);
+
+    let (mut doc, _page) = page_fixture(vec![inst.clone()]);
+    doc.masters.push(vsdx::model::Master {
+        id: 7,
+        shapes: vec![master],
+        ..vsdx::model::Master::default()
+    });
+    let chain = [&inst];
+    let env = shape_env(&doc, &inst, &chain);
+    let merged = crate::svg::shape_layer::merged_own_geometry(&doc, &inst, &chain, 4.0, 2.0, &env);
+    let row = &merged[0].rows[0];
+    for (name, expected) in [
+        ("X", 0.75),
+        ("Y", 0.5),
+        ("A", 1.0),
+        ("B", 0.5),
+        ("C", 0.5),
+        ("D", 2.0),
+    ] {
+        assert_eq!(
+            row.cell(name).and_then(|c| c.numeric()),
+            Some(expected),
+            "{name}"
+        );
+    }
+}
+
 /// An inherited Rel* FORMULA still evaluates live in the instance env
 /// when the inline copy dropped the whole row; only a literal fraction
 /// passes through unscaled (CodeRabbit on PR #381).
