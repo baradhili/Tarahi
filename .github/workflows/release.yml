@@ -319,6 +319,40 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Launcher asset names and SHA256SUMS.txt
+        # The ArtCraft Launcher (storytold/craft-launcher, #372) picks a
+        # release asset named <app>-<version>-<os>-<arch>[-portable].<ext>
+        # and verifies every download against the release's
+        # SHA256SUMS.txt. Copies under those names sit next to the
+        # existing files, whose names the AppImage update information
+        # (Tarahi_*_<arch>.AppImage.zsync) and earlier links rely on; the
+        # checksums cover every asset.
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME#v}"
+          cd dist
+          copy() {
+            if [ ! -f "$1" ]; then
+              echo "::error::launcher copy: missing $1"
+              exit 1
+            fi
+            cp -- "$1" "$2"
+          }
+          for arch in x86_64 aarch64; do
+            copy "Tarahi_${v}_${arch}.AppImage" "tarahi-${v}-linux-${arch}.AppImage"
+          done
+          for pair in amd64:x86_64 arm64:aarch64; do
+            copy "Tarahi_${v}_${pair%%:*}.rpm" "tarahi-${v}-linux-${pair##*:}.rpm"
+            # cargo-deb names the package from the crate metadata, so
+            # match it by architecture only.
+            deb=$(find . -maxdepth 1 -name "*_${pair%%:*}.deb" | head -n 1)
+            copy "${deb:-no deb for ${pair%%:*}}" "tarahi-${v}-linux-${pair##*:}.deb"
+          done
+          copy "Tarahi_${v}_windows_x64.zip" "tarahi-${v}-windows-x64-portable.zip"
+          copy "Tarahi_${v}_universal.dmg" "tarahi-${v}-macos-universal.dmg"
+          sha256sum -- * > ../SHA256SUMS.txt
+          mv ../SHA256SUMS.txt SHA256SUMS.txt
+          cat SHA256SUMS.txt
       - name: Prerelease?
         id: pre
         run: |
