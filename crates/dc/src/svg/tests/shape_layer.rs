@@ -1952,6 +1952,43 @@ fn rounding_rounds_polyline_corners() {
     assert!(open.starts_with("M 0.00000 0.00000") && open.ends_with("L 1.00000 -1.00000 "));
     assert_eq!(open.matches(" A ").count(), 1);
     assert!(round_corners("M 0 0 C 1 1 2 2 3 3 ", 0.25).is_none());
+    // A pill drawn as a flat end plus a shallow arc end (the network
+    // LLD's BVI labels): Rounding above half the height rounds both
+    // ends fully — the arc's bulge is shallower than the radius, so
+    // it rounds through as its chord.
+    // Radii too small for the chord scale up uniformly (SVG): this
+    // arc is half of a 0.49 × 0.05 ellipse, far deeper than the
+    // radius, so it stays (CodeRabbit on PR #354).
+    let wide = "M 0 0 L 0.77570 0 A 0.39349 0.03937 0 0 1 0.77570 -0.09843 L 0 -0.09843 L 0 0 ";
+    let w = round_corners(wide, 0.15748).expect("the straight corners round");
+    assert!(
+        w.contains("A 0.39349 0.03937 0 0 1 0.77570 -0.09843"),
+        "{w}"
+    );
+    assert_eq!(w.matches(" A 0.04921 0.04921").count(), 2, "{w}");
+    // As the renderer writes it: the arc row ends without a space,
+    // so the next `L` arrives glued to its last number.
+    let glued = "M 0.00000 -0.00000 L 0.77570 -0.00000 A 0.08228 0.05895 -90.0000 0 0 0.77570 -0.09843L 0.00000 -0.09843 L 0.00000 -0.00000 Z";
+    let g = round_corners(glued, 0.15748).expect("the glued pill rounds");
+    assert_eq!(g.matches(" A 0.04921 0.04921").count(), 4, "{g}");
+    // A deep arc stays a curve: its corners keep their shape and
+    // only the straight corners round.
+    let deep = "M 0 0 L 2 0 A 1 1 0 0 1 2 -2 L 0 -2 L 0 0 ";
+    let d = round_corners(deep, 0.25).expect("straight corners round");
+    assert!(
+        d.contains("A 1.00000 1.00000 0 0 1 2.00000 -2.00000"),
+        "{d}"
+    );
+    assert_eq!(d.matches(" A 0.25000 0.25000").count(), 2, "{d}");
+    // A shallow arc whose ends round no corner keeps its shape:
+    // only the right angle before it rounds (CodeRabbit on PR #354).
+    let tail = round_corners("M 1 0 L 1 -2 L 2 -2 A 1 0.25 0 0 1 3 -2 ", 0.1)
+        .expect("the right angle rounds");
+    assert!(
+        tail.ends_with("A 1.00000 0.25000 0 0 1 3.00000 -2.00000 "),
+        "{tail}"
+    );
+    assert_eq!(tail.matches(" A 0.10000 0.10000").count(), 1, "{tail}");
     // Through the renderer: the cell reaches the stroked outline.
     let mut s = rect_shape(1, (2.0, 2.0));
     s.sheet.set_cell("Rounding", Cell::value("0.125"));
