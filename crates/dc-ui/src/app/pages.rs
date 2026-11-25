@@ -1,0 +1,693 @@
+//! Pages: orientation and size, background pages, page setup, and
+//! the page-tab context menu.
+
+use super::*;
+
+impl App {
+    /// #113 (URS-1122): swap the page's width/height — portrait ↔
+    /// landscape, one undoable step, then refit the view.
+    pub(super) fn toggle_page_orientation(&mut self) {
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
+        let Some(ed) = self.ed.as_ref() else { return };
+        let Some(page) = ed.doc.pages.iter().find(|p| p.id == page_id) else {
+            return;
+        };
+        let Some(sheet) = page.sheet() else { return };
+        let get = |n: &str| sheet.cell(n).and_then(|c| c.numeric());
+        let Some((w, h)) = get("PageWidth").zip(get("PageHeight")) else {
+            return;
+        };
+        self.apply_page_size((h, w));
+    }
+}
+
+impl App {
+    pub(super) fn apply_page_size(&mut self, (w, h): (f64, f64)) {
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
+        let scope = Scope::PageSheet { page: page_id };
+        let cmds: Vec<Box<dyn dc_core::Command>> = vec![
+            Box::new(SetCell::new(
+                scope.clone(),
+                "PageWidth",
+                vsdx::Cell::value(format!("{w:.6}")),
+            )),
+            Box::new(SetCell::new(
+                scope,
+                "PageHeight",
+                vsdx::Cell::value(format!("{h:.6}")),
+            )),
+        ];
+        self.apply(Macro::new(crate::i18n::strs().msg_set_page_size(), cmds));
+        self.view.fit_pending = true;
+        self.layers.set_page(-1); // force re-key on the new geometry
+        self.status =
+            crate::i18n::strs().msg_page_size_set(self.view.unit.fmt(w), self.view.unit.fmt(h));
+    }
+}
+
+impl App {
+    /// #113 (URS-1158): the page's background assignment — the
+    /// `BackPage` pages-index attribute names a page ID; `Background`
+    /// marks the page itself as one. Corpus: `BackPage='4'` /
+    /// `Background='1'` on the `<Page>` entries.
+    pub(super) fn back_page_of(&self, page_id: i64) -> Option<i64> {
+        let ed = self.ed.as_ref()?;
+        let p = ed.doc.pages.iter().find(|p| p.id == page_id)?;
+        p.attrs
+            .iter()
+            .find(|(k, _)| k == "BackPage")
+            .and_then(|(_, v)| v.parse::<i64>().ok())
+    }
+
+    pub(super) fn is_background_page(&self, page_id: i64) -> bool {
+        let Some(ed) = self.ed.as_ref() else {
+            return false;
+        };
+        ed.doc
+            .pages
+            .iter()
+            .find(|p| p.id == page_id)
+            .is_some_and(|p| p.attrs.iter().any(|(k, v)| k == "Background" && v == "1"))
+    }
+
+    /// Assign/clear the current page's background (direct model
+    /// write — a page-index flag, like Visio's non-undoable page
+    /// setup properties).
+    pub(super) fn set_back_page(&mut self, bg: Option<i64>) {
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
+        let Some(ed) = self.ed.as_mut() else { return };
+        let Some(page) = ed.doc.pages.iter_mut().find(|p| p.id == page_id) else {
+            return;
+        };
+        page.attrs.retain(|(k, _)| k != "BackPage");
+        if let Some(bg) = bg {
+            page.attrs.push(("BackPage".to_string(), bg.to_string()));
+        }
+        self.dirty = true;
+        self.version += 1;
+        self.status = match bg {
+            Some(id) => {
+                let name = ed
+                    .doc
+                    .pages
+                    .iter()
+                    .find(|p| p.id == id)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| id.to_string());
+                crate::i18n::strs().msg_background_page_name(name)
+            }
+            None => crate::i18n::strs().msg_background_cleared(),
+        };
+    }
+
+    /// The Backgrounds dialog (#113, URS-1158): pick which page
+    /// renders behind the current one (chain: a background with its
+    /// own background stacks too), or none.
+    pub(super) fn backgrounds_window(&mut self, ctx: &egui::Context) {
+        if !self.backgrounds_open {
+            return;
+        }
+        let mut open = true;
+        let mut pick: Option<Option<i64>> = None; // Some(None) = clear
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
+        let Some(ed) = self.ed.as_ref() else { return };
+        // Visio's gallery lists BACKGROUND pages (the #113 mark makes
+        // one); a plain page never shows as a background choice.
+        let entries: Vec<(i64, String)> = ed
+            .doc
+            .pages
+            .iter()
+            .filter(|p| p.id != page_id && self.is_background_page(p.id))
+            .map(|p| (p.id, p.name.clone()))
+            .collect();
+        let current = self.back_page_of(page_id);
+        let this_is_bg = self.is_background_page(page_id);
+        egui::Window::new(crate::i18n::strs().msg_backgrounds())
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .default_width(280.0)
+            .show(ctx, |ui| {
+                // #257 item 3: the dialog pass mirrors every window
+                // (the Language-dialog exemplar — content right-aligns
+                // while RTL).
+                ui.with_layout(dialog_dir(), |ui| {
+                    ui.label(crate::i18n::strs().msg_this_page_renders_behind());
+                    if this_is_bg {
+                        ui.weak(crate::i18n::strs().msg_this_page_is_itself_a_background());
+                    }
+                    ui.separator();
+                    if ui
+                        .radio(current.is_none(), crate::i18n::strs().msg_no_background())
+                        .clicked()
+                    {
+                        pick = Some(None);
+                    }
+                    if entries.is_empty() {
+                        ui.weak(crate::i18n::strs().msg_no_background_pages_right_click());
+                    }
+                    for (id, name) in &entries {
+                        if ui
+                            .radio(
+                                current == Some(*id),
+                                crate::i18n::strs().msg_name_page_id(name, id),
+                            )
+                            .clicked()
+                        {
+                            pick = Some(Some(*id));
+                        }
+                    }
+                });
+            });
+        if let Some(bg) = pick {
+            self.set_back_page(bg);
+        }
+        if !open {
+            self.backgrounds_open = false;
+        }
+    }
+
+    /// #113 (URS-1158): the background chain's underlay quads —
+    /// deepest background first, each rasterized on demand at the
+    /// current zoom (cache keyed page/version/ppi-bucket).
+    pub(super) fn build_bg_underlays(&mut self, ctx: &egui::Context) -> Vec<crate::layers::ShapeQuad> {
+        let Some(page_id) = self.page_id() else {
+            return Vec::new();
+        };
+        // Walk the chain (cycle-guarded, depth cap).
+        let mut chain: Vec<i64> = Vec::new();
+        let mut cur = self.back_page_of(page_id);
+        while let Some(id) = cur {
+            if chain.contains(&id) || chain.len() >= 8 {
+                break;
+            }
+            chain.push(id);
+            cur = self.ed.as_ref().and_then(|ed| {
+                let p = ed.doc.pages.iter().find(|p| p.id == id)?;
+                p.attrs
+                    .iter()
+                    .find(|(k, _)| k == "BackPage")
+                    .and_then(|(_, v)| v.parse::<i64>().ok())
+            });
+        }
+        let bucket = (self.view.px_per_in() * 4.0).round().max(4.0) as u32;
+        let version = self.layer_base_version();
+        // Drop stale entries — page switch, version bump, zoom bucket
+        // (CodeRabbit: keeping version-stale handles leaked a texture
+        // per edit while a background was assigned).
+        self.bg_underlays
+            .retain(|(p, v, b, _)| chain.contains(p) && *b == bucket && *v == version);
+        let mut out: Vec<crate::layers::ShapeQuad> = Vec::new();
+        for id in chain.iter().rev() {
+            let Some(ed) = self.ed.as_ref() else { break };
+            let Some(bg) = ed.doc.pages.iter().find(|p| p.id == *id) else {
+                continue;
+            };
+            let version = self.layer_base_version();
+            let (w, h) = (
+                bg.sheet()
+                    .and_then(|s| s.cell("PageWidth"))
+                    .and_then(|c| c.numeric())
+                    .unwrap_or(8.5),
+                bg.sheet()
+                    .and_then(|s| s.cell("PageHeight"))
+                    .and_then(|c| c.numeric())
+                    .unwrap_or(11.0),
+            );
+            if let Some(hh) = self
+                .bg_underlays
+                .iter()
+                .find(|(p, v, b, _)| *p == *id && *v == version && *b == bucket)
+                .map(|(_, _, _, hh)| hh)
+            {
+                out.push(crate::layers::ShapeQuad {
+                    id: -1000 - id,
+                    tex: hh.id(),
+                    bbox: (0.0, 0.0, w, h),
+                });
+                continue;
+            }
+            // Rasterize this background page's own content.
+            let Ok(svg) = dc::svg::render_page(&ed.doc, bg) else {
+                continue;
+            };
+            let Ok(tree) = crate::svgimg::parse_svg(&svg, crate::perf::Kind::Thumb) else {
+                continue;
+            };
+            let Ok(img) = crate::svgimg::render_tree(
+                &tree,
+                w as f32 * self.view.px_per_in(),
+                crate::perf::Kind::Thumb,
+            ) else {
+                continue;
+            };
+            let tex = ctx.load_texture(format!("dc-bg-{id}"), img, egui::TextureOptions::default());
+            out.push(crate::layers::ShapeQuad {
+                id: -1000 - id,
+                tex: tex.id(),
+                bbox: (0.0, 0.0, w, h),
+            });
+            self.bg_underlays.push((*id, version, bucket, tex));
+        }
+        out
+    }
+
+    /// The layer store's base version — the underlay invalidation key.
+    pub(super) fn layer_base_version(&self) -> u64 {
+        self.version
+    }
+}
+
+impl App {
+    /// The Page Setup dialog (#113, URS-1122): ISO/ANSI presets plus
+    /// custom dimensions (display units) and orientation.
+    pub(super) fn page_setup_window(&mut self, ctx: &egui::Context) {
+        if !self.pagesetup_open {
+            return;
+        }
+        /// (name, portrait w, h) in inches — Visio's Printer paper
+        /// preset table, metric and ANSI families.
+        const SIZES: &[(&str, f64, f64)] = &[
+            ("A5", 5.83, 8.27),
+            ("A4", 8.27, 11.69),
+            ("A3", 11.69, 16.54),
+            ("A2", 16.54, 23.39),
+            ("A1", 23.39, 33.11),
+            ("A0", 33.11, 46.81),
+            ("Letter (ANSI A)", 8.5, 11.0),
+            ("Legal", 8.5, 14.0),
+            ("Tabloid (ANSI B)", 11.0, 17.0),
+            ("ANSI C", 17.0, 22.0),
+            ("ANSI D", 22.0, 34.0),
+            ("ANSI E", 34.0, 44.0),
+        ];
+        let unit = self.view.unit;
+        let geom = self.page_geom();
+        // Current dims in display units.
+        let (cw, ch) = (unit.from_in(geom.w_in), unit.from_in(geom.h_in));
+        let mut open = true;
+        let mut apply: Option<(f64, f64)> = None; // portrait pair, inches
+        let mut custom: Option<(f64, f64)> = None;
+        egui::Window::new(crate::i18n::strs().msg_page_size())
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .default_width(300.0)
+            .show(ctx, |ui| {
+                // #257 item 3: the dialog pass mirrors the window.
+                let mut __rtl_body = |ui: &mut Ui| {
+                    ui.label(crate::i18n::strs().msg_current());
+                    ui.label(format!(
+                        "{:.1} × {:.1} {}",
+                        cw.max(ch),
+                        cw.min(ch),
+                        unit.suffix()
+                    ));
+                    ui.separator();
+                    ui.strong(crate::i18n::strs().msg_preset_sizes());
+                    let mut picked: Option<(f64, f64)> = None;
+                    egui::Grid::new("dc-sizes")
+                        .num_columns(3)
+                        .spacing(egui::vec2(8.0, 4.0))
+                        .show(ui, |ui| {
+                            // #257: an RTL grid fills its rows right-to-left.
+                            let rows: Vec<Vec<(&str, f64, f64)>> = if crate::i18n::rtl() {
+                                SIZES
+                                    .chunks(3)
+                                    .map(|c| {
+                                        let mut v: Vec<_> = c.to_vec();
+                                        v.reverse();
+                                        v
+                                    })
+                                    .collect()
+                            } else {
+                                SIZES.chunks(3).map(|c| c.to_vec()).collect()
+                            };
+                            for chunk in rows {
+                                for (name, w, h) in chunk {
+                                    if ui.button(name).clicked() {
+                                        picked = Some((w, h));
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
+                    if let Some(p) = picked {
+                        apply = Some(p);
+                    }
+                    ui.separator();
+                    ui.strong(crate::i18n::strs().msg_custom());
+                    let mut wd = cw;
+                    let mut ht = ch;
+                    // The range is ~10 mm .. 2 m, expressed in display
+                    // units so inches never clamps at 10 in.
+                    let (lo, hi) = (unit.from_in(10.0 / 25.4), unit.from_in(2000.0 / 25.4));
+                    // #257: mirrored emission under RTL — ui::horizontal
+                    // keeps the wrap-aware measure (a with_layout flip here
+                    // reserves the parent's full cross space and balloons
+                    // the window).
+                    let wd_label = crate::i18n::strs().msg_width();
+                    let ht_label = crate::i18n::strs().msg_height();
+                    let width_first = !crate::i18n::rtl();
+                    ui.horizontal(|ui| {
+                        let (first_label, second_label) = if width_first {
+                            (wd_label.as_str(), ht_label.as_str())
+                        } else {
+                            (ht_label.as_str(), wd_label.as_str())
+                        };
+                        let mut first_val = if width_first { wd } else { ht };
+                        let mut second_val = if width_first { ht } else { wd };
+                        ui.label(first_label);
+                        ui.add(
+                            egui::DragValue::new(&mut first_val)
+                                .range(lo..=hi)
+                                .suffix(unit.suffix()),
+                        );
+                        ui.label(second_label);
+                        ui.add(
+                            egui::DragValue::new(&mut second_val)
+                                .range(lo..=hi)
+                                .suffix(unit.suffix()),
+                        );
+                        // The RTL dialog swaps the FIELDS (height first);
+                        // the write-back must swap with them — the fixed
+                        // order traded a Persian page's W and H on every
+                        // Apply (PR #269 review).
+                        wd = if width_first { first_val } else { second_val };
+                        ht = if width_first { second_val } else { first_val };
+                    });
+                    if ui
+                        .button(crate::i18n::strs().msg_apply_custom_size())
+                        .clicked()
+                        && wd > 0.0
+                        && ht > 0.0
+                    {
+                        custom = Some((unit.to_in(wd), unit.to_in(ht)));
+                    }
+                    ui.separator();
+                    ui.strong(crate::i18n::strs().msg_orientation());
+                    // #257: mirrored emission under RTL (horizontal keeps
+                    // the wrap-aware measure).
+                    let rtl_ori = crate::i18n::rtl();
+                    let (mut p_clicked, mut l_clicked) = (false, false);
+                    ui.horizontal(|ui| {
+                        if rtl_ori {
+                            if ui
+                                .selectable_label(
+                                    geom.w_in > geom.h_in,
+                                    crate::i18n::strs().msg_landscape(),
+                                )
+                                .clicked()
+                                && geom.w_in <= geom.h_in
+                            {
+                                l_clicked = true;
+                            }
+                            if ui
+                                .selectable_label(
+                                    geom.w_in <= geom.h_in,
+                                    crate::i18n::strs().msg_portrait(),
+                                )
+                                .clicked()
+                                && geom.w_in > geom.h_in
+                            {
+                                p_clicked = true;
+                            }
+                        } else {
+                            if ui
+                                .selectable_label(
+                                    geom.w_in <= geom.h_in,
+                                    crate::i18n::strs().msg_portrait(),
+                                )
+                                .clicked()
+                                && geom.w_in > geom.h_in
+                            {
+                                p_clicked = true;
+                            }
+                            if ui
+                                .selectable_label(
+                                    geom.w_in > geom.h_in,
+                                    crate::i18n::strs().msg_landscape(),
+                                )
+                                .clicked()
+                                && geom.w_in <= geom.h_in
+                            {
+                                l_clicked = true;
+                            }
+                        }
+                    });
+                    if p_clicked {
+                        apply = Some((geom.w_in.min(geom.h_in), geom.w_in.max(geom.h_in)));
+                    }
+                    if l_clicked {
+                        apply = Some((geom.h_in.max(geom.w_in), geom.h_in.min(geom.w_in)));
+                    }
+                    // Layout and Routing (#251): the line-jump display
+                    // switch and jump size — Visio's Page Setup group,
+                    // persisted on the PageSheet.
+                    ui.separator();
+                    ui.strong(crate::i18n::strs().msg_line_jumps());
+                    let mut show_toggle = self
+                        .ed
+                        .as_ref()
+                        .map(|ed| {
+                            ed.doc.pages[self.page_idx.min(ed.doc.pages.len() - 1)]
+                                .line_jumps_shown()
+                        })
+                        .unwrap_or(true);
+                    if ui
+                        .checkbox(&mut show_toggle, crate::i18n::strs().msg_show_line_jumps())
+                        .changed()
+                    {
+                        self.apply_line_jumps_shown(show_toggle);
+                    }
+                    let doc_factor = self
+                        .ed
+                        .as_ref()
+                        .map(|ed| {
+                            let page = &ed.doc.pages[self.page_idx.min(ed.doc.pages.len() - 1)];
+                            // #294: the RESOLVED factor — the page
+                            // usually carries no inline cell and rides
+                            // the style chain.
+                            ed.doc.page_line_jump_factor(page)
+                        })
+                        .unwrap_or(2.0 / 3.0) as f32;
+                    let mut jump_factor = self.line_jump_draft.unwrap_or(doc_factor);
+                    // #257: mirrored emission under RTL (horizontal).
+                    let jump_label = crate::i18n::strs().msg_jump_size();
+                    ui.horizontal(|ui| {
+                        let mut factor_row = |ui: &mut egui::Ui| {
+                            let r = ui.add(
+                                egui::DragValue::new(&mut jump_factor)
+                                    .range(0.5..=3.0)
+                                    .speed(0.05)
+                                    .suffix("×"),
+                            );
+                            // Draft while dragging; commit ONCE at drag end
+                            // (or immediately for typed input) — the value
+                            // reloads from the document each frame, so the
+                            // draft is what carries the drag (#218 review).
+                            if r.dragged() {
+                                self.line_jump_draft = Some(jump_factor);
+                            }
+                            if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                self.line_jump_draft = None;
+                                if (jump_factor - doc_factor).abs() > 1e-6 {
+                                    self.apply_line_jump_factor(jump_factor as f64);
+                                }
+                            }
+                        };
+                        if !crate::i18n::rtl() {
+                            ui.label(jump_label);
+                            factor_row(ui);
+                        } else {
+                            factor_row(ui);
+                            ui.label(jump_label);
+                        }
+                    });
+                };
+                if crate::i18n::rtl() {
+                    ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
+                        __rtl_body(ui)
+                    });
+                } else {
+                    __rtl_body(ui);
+                }
+            });
+        if let Some((w, h)) = apply.or(custom) {
+            self.apply_page_size((w, h));
+        }
+        if !open {
+            self.pagesetup_open = false;
+        }
+    }
+}
+
+impl App {
+    /// The page-tab context menu (#54): Visio's tab affordances —
+    /// insert, duplicate, delete (never the last page), rename, and
+    /// The page-tab context menu (#54), copying the shipped Visio
+    /// reference (owner screenshots 2026-10-24): Insert, Delete, Rename,
+    /// Duplicate, then Page Setup (later milestone) and Reorder Pages….
+    /// All live items run through the undoable command layer.
+    pub(super) fn tab_context_menu(&mut self, ctx: &egui::Context) {
+        let Some((idx, anchor)) = self.tab_menu else {
+            return;
+        };
+        let n = self.ed().map(|e| e.doc.pages.len()).unwrap_or(0);
+        if idx >= n {
+            self.tab_menu = None;
+            return;
+        }
+        #[derive(Clone, Copy, PartialEq)]
+        enum Act {
+            Insert,
+            Delete,
+            Rename,
+            Duplicate,
+            MarkBg,
+            Reorder,
+        }
+        let mut act: Option<Act> = None;
+        let menu = egui::Popup::new(
+            egui::Id::unique("dc-tab-ctx-menu"),
+            ctx.clone(),
+            anchor,
+            egui::LayerId::background(),
+        )
+        .kind(egui::PopupKind::Menu)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .width(232.0);
+        let popup = menu.show(|ui| {
+            ui.set_min_width(232.0);
+            let tokens = theme::menu_tokens(ui.visuals());
+            ui.visuals_mut().widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+            ui.visuals_mut().widgets.hovered.bg_fill = tokens.hover_fill;
+            ui.visuals_mut().widgets.noninteractive.bg_stroke.color = tokens.separator;
+            if ctx_item(ui, None, &crate::i18n::strs().msg_insert_page(), "", true) {
+                act = Some(Act::Insert);
+            }
+            if ctx_item(
+                ui,
+                Some(crate::ribbon::Icon::Delete),
+                &crate::i18n::strs().msg_delete_page(),
+                "",
+                n > 1,
+            ) {
+                act = Some(Act::Delete);
+            }
+            if ctx_item(ui, None, &crate::i18n::strs().msg_rename_page(), "", true) {
+                act = Some(Act::Rename);
+            }
+            if ctx_item(
+                ui,
+                None,
+                &crate::i18n::strs().msg_duplicate_page(),
+                "",
+                true,
+            ) {
+                act = Some(Act::Duplicate);
+            }
+            // #113 remainder: mark a page AS a background (Visio's Page
+            // Setup ▸ Page Properties ▸ Type: Background, surfaced on
+            // the tab the way Visio surfaces page commands).
+            let marked = self
+                .ed()
+                .and_then(|e| e.doc.pages.get(idx))
+                .is_some_and(|p| self.is_background_page(p.id));
+            let bg_label = if marked {
+                crate::i18n::strs().msg_remove_background_mark()
+            } else {
+                crate::i18n::strs().msg_set_as_background()
+            };
+            if ctx_item(ui, None, &bg_label, "", true) {
+                act = Some(Act::MarkBg);
+            }
+            ui.separator();
+            ctx_item(
+                ui,
+                None,
+                &crate::i18n::strs().msg_page_setup_menu(),
+                "(later milestone)",
+                false,
+            );
+            if ctx_item(
+                ui,
+                None,
+                &crate::i18n::strs().msg_reorder_pages_menu(),
+                "",
+                true,
+            ) {
+                act = Some(Act::Reorder);
+            }
+        });
+        // Close on an outside primary click (the shape menu's idiom).
+        let outside_primary = ctx.input(|i| i.pointer.primary_clicked());
+        if let Some(ir) = &popup {
+            if outside_primary
+                && !ir
+                    .response
+                    .rect
+                    .contains(ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default())
+            {
+                self.tab_menu = None;
+            }
+        }
+        let Some(a) = act else { return };
+        self.tab_menu = None;
+        match a {
+            Act::Insert => self.tab_cmd_insert(idx),
+            Act::Delete => self.tab_cmd_delete(idx),
+            Act::Rename => {
+                let id = self.ed().and_then(|e| e.doc.pages.get(idx)).map(|p| p.id);
+                let name = self
+                    .ed()
+                    .and_then(|e| e.doc.pages.get(idx))
+                    .map(|p| p.name.clone());
+                if let (Some(id), Some(name)) = (id, name) {
+                    self.tab_rename = Some((id, name));
+                }
+            }
+            Act::Duplicate => self.tab_cmd_duplicate(idx),
+            Act::MarkBg => self.toggle_background_mark(idx),
+            Act::Reorder => self.reorder_open = true,
+        }
+    }
+
+    /// #113 remainder: the page-tab menu's background mark — the
+    /// `Background="1"` page attribute (the same attribute the
+    /// underlay chain and the Backgrounds gallery read), assigned the
+    /// same direct-mutation way `set_back_page` works.
+    pub(super) fn toggle_background_mark(&mut self, idx: usize) {
+        let Some(page_id) = self.ed().and_then(|e| e.doc.pages.get(idx)).map(|p| p.id) else {
+            return;
+        };
+        let Some(ed) = self.ed.as_mut() else { return };
+        let Some(page) = ed.doc.pages.iter_mut().find(|p| p.id == page_id) else {
+            return;
+        };
+        let marked = page
+            .attrs
+            .iter()
+            .any(|(k, v)| k == "Background" && v == "1");
+        page.attrs.retain(|(k, _)| k != "Background");
+        let name = page.name.clone();
+        if !marked {
+            page.attrs.push(("Background".to_string(), "1".to_string()));
+        }
+        self.dirty = true;
+        self.version += 1;
+        self.status = if marked {
+            crate::i18n::strs().msg_page_name_is_a_foreground_page_a(name)
+        } else {
+            crate::i18n::strs().msg_page_name_marked_as_a_background(name)
+        };
+    }
+}
