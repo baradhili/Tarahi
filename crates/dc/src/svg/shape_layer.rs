@@ -3524,60 +3524,153 @@ fn gradient_paint(
     Some(GradientPaint::Url(format!("url(#{id})")))
 }
 
-/// Round the corners of a straight-line path (`M`/`L`/`Z` only, the
-/// renderer's own number format) with radius `r`, the way Visio's
-/// Rounding cell does: each corner is replaced by a circular arc
-/// tangent to both legs, the tangent length clamped to half of the
-/// shorter leg so neighboring arcs never overlap. A walk that returns
-/// to its start rounds that corner too. `None` (path unchanged) for
-/// any path with curves — those keep their authored shape — or with
-/// more than one subpath.
+/// Round the corners of a path (the renderer's own number format) with
+/// radius `r`, the way Visio's Rounding cell does: each corner is
+/// replaced by a circular arc tangent to both legs, the tangent length
+/// clamped to half of the shorter leg so neighboring arcs never
+/// overlap. A walk that returns to its start rounds that corner too.
+///
+/// Curves keep their authored shape and their corners stay sharp, with
+/// one exception: an elliptical arc (`A`) whose bulge is no deeper than
+/// `r` counts as its chord, because Visio's rounding swallows it — a
+/// pill drawn as a flat end plus a shallow arc end with `Rounding`
+/// above half its height comes out fully round at both ends (the
+/// network LLD's BVI and label pills). Such an arc turns into its chord
+/// only where a corner at one of its ends actually rounds; elsewhere it
+/// keeps its authored shape. `None` (path unchanged) when no corner
+/// rounds, or for more than one subpath.
 pub(crate) fn round_corners(d: &str, r: f64) -> Option<String> {
-    let mut pts: Vec<(f64, f64)> = Vec::new();
-    let mut toks = d.split_whitespace();
+    // One segment of the walk: its end point, and the original command
+    // text when it is a curve (`None` = straight, or an arc flat enough
+    // to round through). `arc` keeps such a flat arc's command for when
+    // no corner at its ends rounds.
+    struct Seg {
+        to: (f64, f64),
+        curve: Option<String>,
+        arc: Option<String>,
+    }
+    let mut start: Option<(f64, f64)> = None;
+    let mut segs: Vec<Seg> = Vec::new();
+    // Curve rows end without a space, so the next command letter can
+    // arrive glued to the last number (`… -0.09843L 0 …`): split every
+    // letter off as its own token. Our numbers carry no exponent.
+    let tokens: Vec<&str> = d
+        .split_whitespace()
+        .flat_map(|w| {
+            let mut parts = Vec::new();
+            let mut from = 0;
+            for (i, c) in w.char_indices() {
+                if c.is_ascii_alphabetic() {
+                    if i > from {
+                        parts.push(&w[from..i]);
+                    }
+                    parts.push(&w[i..i + 1]);
+                    from = i + 1;
+                }
+            }
+            if from < w.len() {
+                parts.push(&w[from..]);
+            }
+            parts
+        })
+        .collect();
+    let mut toks = tokens.into_iter().peekable();
     let mut moves = 0;
+    let num = |t: Option<&str>| -> Option<f64> { t?.parse().ok() };
+    let mut cur = (0.0, 0.0);
     while let Some(t) = toks.next() {
         match t {
-            "M" | "L" => {
-                if t == "M" {
-                    moves += 1;
+            "M" => {
+                moves += 1;
+                let p = (num(toks.next())?, num(toks.next())?);
+                start = Some(p);
+                cur = p;
+            }
+            "L" => {
+                let p = (num(toks.next())?, num(toks.next())?);
+                if (p.0 - cur.0).hypot(p.1 - cur.1) > 1e-9 {
+                    segs.push(Seg {
+                        to: p,
+                        curve: None,
+                        arc: None,
+                    });
                 }
-                let x: f64 = toks.next()?.parse().ok()?;
-                let y: f64 = toks.next()?.parse().ok()?;
-                if pts
-                    .last()
-                    .is_none_or(|p: &(f64, f64)| (p.0 - x).hypot(p.1 - y) > 1e-9)
-                {
-                    pts.push((x, y));
+                cur = p;
+            }
+            "A" => {
+                let mut v = [0.0f64; 7];
+                for x in v.iter_mut() {
+                    *x = num(toks.next())?;
                 }
+                let p = (v[5], v[6]);
+                let flat = v[3] == 0.0 && arc_sagitta(cur, p, v[0], v[1], v[2], v[4] != 0.0) <= r;
+                let text = format!(
+                    "A {:.5} {:.5} {} {} {} {:.5} {:.5} ",
+                    v[0], v[1], v[2], v[3], v[4], p.0, p.1
+                );
+                let (curve, arc) = if flat {
+                    (None, Some(text))
+                } else {
+                    (Some(text), None)
+                };
+                segs.push(Seg { to: p, curve, arc });
+                cur = p;
+            }
+            "C" | "Q" => {
+                let n = if t == "C" { 6 } else { 4 };
+                let mut v = Vec::with_capacity(n);
+                for _ in 0..n {
+                    v.push(num(toks.next())?);
+                }
+                let p = (v[n - 2], v[n - 1]);
+                let mut text = format!("{t} ");
+                for x in &v {
+                    let _ = write!(text, "{x:.5} ");
+                }
+                segs.push(Seg {
+                    to: p,
+                    curve: Some(text),
+                    arc: None,
+                });
+                cur = p;
             }
             "Z" => {}
             _ => return None,
         }
     }
-    if moves != 1 || pts.len() < 3 {
+    let start = start?;
+    if moves != 1 || segs.len() < 2 {
         return None;
     }
     let closed = {
-        let (a, b) = (pts[0], pts[pts.len() - 1]);
-        (a.0 - b.0).hypot(a.1 - b.1) < 1e-6
+        let b = segs[segs.len() - 1].to;
+        (start.0 - b.0).hypot(start.1 - b.1) < 1e-6
     };
-    if closed {
-        pts.pop();
-        if pts.len() < 3 {
-            return None;
-        }
-    }
-    let n = pts.len();
-    // The corner at pts[i] between its neighbors: (T1, T2, radius,
-    // sweep) or None for a straight/degenerate corner.
+    let n = segs.len();
+    // Vertex i is where segment i ends (segment i+1 starts); its point.
+    let at = |i: usize| segs[i % n].to;
+    // The point a segment starts from.
+    let from = |i: usize| if i == 0 { start } else { segs[i - 1].to };
     // (tangent point on the incoming leg, on the outgoing leg, arc
     // radius, SVG sweep flag)
     type Corner = ((f64, f64), (f64, f64), f64, u8);
+    // The corner at the end of segment `i`, between it and segment
+    // `i + 1` (wrapping for a closed walk) — only where both are
+    // straight.
     let corner = |i: usize| -> Option<Corner> {
-        let p = pts[i];
-        let a = pts[(i + n - 1) % n];
-        let b = pts[(i + 1) % n];
+        let j = if i + 1 < n {
+            i + 1
+        } else if closed {
+            0
+        } else {
+            return None;
+        };
+        if segs[i].curve.is_some() || segs[j].curve.is_some() {
+            return None;
+        }
+        let p = at(i);
+        let a = from(i);
+        let b = segs[j].to;
         let (la, lb) = ((a.0 - p.0).hypot(a.1 - p.1), (b.0 - p.0).hypot(b.1 - p.1));
         if la < 1e-9 || lb < 1e-9 {
             return None;
@@ -3598,39 +3691,93 @@ pub(crate) fn round_corners(d: &str, r: f64) -> Option<String> {
         let cross = (p.0 - a.0) * (b.1 - p.1) - (p.1 - a.1) * (b.0 - p.0);
         Some((t1, t2, rr, u8::from(cross > 0.0)))
     };
+    let corners: Vec<Option<Corner>> = (0..n).map(corner).collect();
+    if corners.iter().all(Option::is_none) {
+        return None;
+    }
     let mut out = String::new();
-    let arc_to = |out: &mut String, c: Corner| {
-        let ((x1, y1), (x2, y2), rr, sw) = c;
-        let _ = write!(
-            out,
-            "L {x1:.5} {y1:.5} A {rr:.5} {rr:.5} 0 0 {sw} {x2:.5} {y2:.5} "
-        );
-    };
-    if closed {
-        let start = corner(0).map_or(pts[0], |c| c.1);
-        let _ = write!(out, "M {:.5} {:.5} ", start.0, start.1);
-        for i in (1..n).chain(std::iter::once(0)) {
-            match corner(i) {
-                Some(c) => arc_to(&mut out, c),
-                None => {
-                    let _ = write!(out, "L {:.5} {:.5} ", pts[i].0, pts[i].1);
-                }
-            }
-        }
-        out.push_str("Z ");
+    // A closed walk starts where the corner at the start leaves off.
+    let first = if closed {
+        corners[n - 1].map_or(start, |c| c.1)
     } else {
-        let _ = write!(out, "M {:.5} {:.5} ", pts[0].0, pts[0].1);
-        for (i, p) in pts.iter().enumerate().take(n - 1).skip(1) {
-            match corner(i) {
-                Some(c) => arc_to(&mut out, c),
-                None => {
-                    let _ = write!(out, "L {:.5} {:.5} ", p.0, p.1);
+        start
+    };
+    let _ = write!(out, "M {:.5} {:.5} ", first.0, first.1);
+    for (i, seg) in segs.iter().enumerate() {
+        match (&seg.curve, corners[i]) {
+            (Some(text), _) => out.push_str(text),
+            (None, Some(((x1, y1), (x2, y2), rr, sw))) => {
+                let _ = write!(
+                    out,
+                    "L {x1:.5} {y1:.5} A {rr:.5} {rr:.5} 0 0 {sw} {x2:.5} {y2:.5} "
+                );
+            }
+            (None, None) => {
+                // The corner this segment leaves from.
+                let before = if i > 0 {
+                    corners[i - 1]
+                } else if closed {
+                    corners[n - 1]
+                } else {
+                    None
+                };
+                match &seg.arc {
+                    // A flat arc no rounded corner touches keeps its shape.
+                    Some(text) if before.is_none() => out.push_str(text),
+                    _ => {
+                        let _ = write!(out, "L {:.5} {:.5} ", seg.to.0, seg.to.1);
+                    }
                 }
             }
         }
-        let _ = write!(out, "L {:.5} {:.5} ", pts[n - 1].0, pts[n - 1].1);
+    }
+    if closed {
+        out.push_str("Z ");
     }
     Some(out)
+}
+
+/// The bulge depth of an SVG arc from `a` to `b` (radii `rx`/`ry`,
+/// x-axis rotation `rot_deg`, small arc): the largest distance of the
+/// arc from its chord. When the radii cannot span the chord they scale
+/// up uniformly, as SVG does, and the arc is half of that ellipse.
+fn arc_sagitta(a: (f64, f64), b: (f64, f64), rx: f64, ry: f64, rot_deg: f64, sweep: bool) -> f64 {
+    let (rx, ry) = (rx.abs(), ry.abs());
+    if rx < 1e-12 || ry < 1e-12 {
+        return 0.0;
+    }
+    let (sn, cs) = rot_deg.to_radians().sin_cos();
+    // Into the frame where the ellipse is the unit circle.
+    let to_unit = |p: (f64, f64)| {
+        let (x, y) = (p.0 * cs + p.1 * sn, -p.0 * sn + p.1 * cs);
+        (x / rx, y / ry)
+    };
+    let from_unit = |p: (f64, f64)| {
+        let (x, y) = (p.0 * rx, p.1 * ry);
+        (x * cs - y * sn, x * sn + y * cs)
+    };
+    let (ua, ub) = (to_unit(a), to_unit(b));
+    let c = (ub.0 - ua.0).hypot(ub.1 - ua.1);
+    if c < 1e-12 {
+        return 0.0;
+    }
+    // Radii too small for the chord scale up by `k`: in the scaled unit
+    // frame the chord is a diameter (SVG 2 implementation notes, F.6.6).
+    let k = (c / 2.0).max(1.0);
+    let (ua, ub) = ((ua.0 / k, ua.1 / k), (ub.0 / k, ub.1 / k));
+    let from_unit = |p: (f64, f64)| from_unit((p.0 * k, p.1 * k));
+    let (dx, dy) = (ub.0 - ua.0, ub.1 - ua.1);
+    let c = c / k;
+    let s = 1.0 - (1.0 - (c / 2.0).powi(2)).max(0.0).sqrt();
+    // The unit-frame apex: the chord's midpoint pushed out by the
+    // sagitta, on the side the sweep bulges to.
+    let (nx, ny) = (-dy / c, dx / c);
+    let side = if sweep { -1.0 } else { 1.0 };
+    let mid = ((ua.0 + ub.0) / 2.0, (ua.1 + ub.1) / 2.0);
+    let apex = from_unit((mid.0 + side * nx * s, mid.1 + side * ny * s));
+    let (cx, cy) = (b.0 - a.0, b.1 - a.1);
+    let len = cx.hypot(cy);
+    ((apex.0 - a.0) * cy - (apex.1 - a.1) * cx).abs() / len
 }
 
 /// Does a ShapeSheet formula reference the shape's own `Width` or
