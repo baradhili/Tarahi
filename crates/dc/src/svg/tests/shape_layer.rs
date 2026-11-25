@@ -2500,3 +2500,64 @@ fn trim_path_cuts_open_contours_only_and_exactly() {
 
 // ------------------------------------------------------------------
 // Wave-4 text stack (GitHub #232 #230 #229 #231 #234 #235).
+
+/// The inline/master Geometry merge pairs SECTIONS by IX and keeps
+/// inherited Rel* coordinates as fractions (CodeRabbit on PR #381): an
+/// inline copy that keeps only Geometry IX=1 takes IX=1's section
+/// cells (not IX=0's NoShow), and its RelLineTo's inherited X stays
+/// 0.75 of the width for the painter to scale.
+#[test]
+fn merged_geometry_pairs_sections_by_ix_and_keeps_rel_fractions() {
+    let section = |ix: i64, rows: Vec<Row>, cells: Vec<(String, Cell)>| {
+        SheetChild::Section(Section {
+            name: "Geometry".into(),
+            ix,
+            rows,
+            cells,
+            ..Section::default()
+        })
+    };
+    let mut master = shape_at(1, (0.5, 0.5), 1.0, 1.0, 0.0);
+    master.sheet.children.push(section(
+        0,
+        vec![geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)])],
+        vec![("NoShow".into(), Cell::value("1"))],
+    ));
+    master.sheet.children.push(section(
+        1,
+        vec![
+            geo_row(1, "RelMoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "RelLineTo", &[("X", 0.75), ("Y", 0.5)]),
+        ],
+        vec![],
+    ));
+    let mut inst = shape_at(1, (4.0, 5.0), 4.0, 1.0, 0.0);
+    inst.master = Some(7);
+    inst.sheet.children.push(section(
+        1,
+        vec![
+            geo_row(1, "RelMoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "RelLineTo", &[("Y", 0.25)]),
+        ],
+        vec![],
+    ));
+    let (mut doc, _page) = page_fixture(vec![inst.clone()]);
+    doc.masters.push(vsdx::model::Master {
+        id: 7,
+        shapes: vec![master],
+        ..vsdx::model::Master::default()
+    });
+    let chain = [&inst];
+    let env = shape_env(&doc, &inst, &chain);
+    let merged = crate::svg::shape_layer::merged_own_geometry(&doc, &inst, &chain, 4.0, 1.0, &env);
+    assert_eq!(merged.len(), 1);
+    assert!(
+        merged[0].cell("NoShow").is_none(),
+        "IX=1 has no NoShow; IX=0's must not leak in"
+    );
+    let x = merged[0].rows[1]
+        .cell("X")
+        .and_then(|c| c.numeric())
+        .expect("the inherited X");
+    assert!((x - 0.75).abs() < 1e-9, "a fraction, unscaled: {x}");
+}

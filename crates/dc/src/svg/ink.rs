@@ -352,6 +352,12 @@ fn node_ink_box(
     for (walk_ix, (geo, gscale)) in walk.into_iter().enumerate() {
         // Shared: writebacks persist for later sections of the frame.
         let genv = &mut frame_env;
+        // A hidden section never paints, so it bounds nothing — an
+        // inherited NoShow=1 kept its far-off endpoints in the layer
+        // (CodeRabbit on PR #381).
+        if super::shape_layer::section_flag(geo, "NoShow", genv) {
+            continue;
+        }
         let gname = format!("Geometry{}", walk_ix + 1);
         let mut cur = (0.0f64, 0.0f64);
         let mut first_pt: Option<(f64, f64)> = None;

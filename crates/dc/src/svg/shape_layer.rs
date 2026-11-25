@@ -821,6 +821,26 @@ pub(crate) fn base64(data: &[u8]) -> String {
     out
 }
 
+/// A Geometry section's NoFill/NoLine/NoShow flag as the painter reads
+/// it: the formula evaluated in `env` first, the cached V as fallback.
+/// The ink-bounds walk skips a NoShow section through the same rule
+/// (CodeRabbit on PR #381).
+pub(crate) fn section_flag(section: &vsdx::Section, name: &str, env: &vsdx::formula::Env) -> bool {
+    section.cell(name).is_some_and(|c| {
+        let by_formula =
+            c.f.as_deref()
+                .and_then(|f| {
+                    if f == "Inh" || f == "No Formula" {
+                        None
+                    } else {
+                        vsdx::formula::eval(f, env).ok().and_then(|v| v.as_f64())
+                    }
+                })
+                .filter(|v| v.is_finite());
+        by_formula.or_else(|| c.numeric()).is_some_and(|v| v != 0.0)
+    })
+}
+
 /// A shape's OWN Geometry sections merged over its master source's, in
 /// instance units: what [`render_all_geometry`] paints for a shape that
 /// carries inline geometry. Inline copies often keep only some cells
@@ -844,11 +864,14 @@ pub(crate) fn merged_own_geometry(
     // scaled into instance units here.
     let src = doc.instance_source(s, chain);
     let mut merged: Vec<vsdx::Section> = Vec::with_capacity(own.len());
-    for (si, geo) in own.iter().enumerate() {
+    for geo in own.iter() {
         let mut m = (*geo).clone();
         if let Some(src) = src {
             let src_secs = src.sheet.sections_named("Geometry");
-            let src_geo = src_secs.get(si);
+            // The master section of the SAME IX: an inline copy that
+            // keeps only Geometry IX=1 pairs with the master's IX=1,
+            // not with whatever sits first (CodeRabbit on PR #381).
+            let src_geo = src_secs.iter().find(|g| g.ix == geo.ix);
             // Section-level cells (Geometry NoFill/NoLine/NoShow)
             // inherit from the master section just like rows do:
             // inline copies keep only row caches, and a lost NoShow
@@ -885,9 +908,13 @@ pub(crate) fn merged_own_geometry(
             // (omitted = unchanged) value never scales with the
             // instance size (a stretched U-Turn arrow turned D=1
             // into a 9:1 ratio and its quarter circles into blobs).
+            // A Rel* row's coordinates are FRACTIONS of Width/Height
+            // that the painter scales itself; scaling the inherited
+            // fraction too placed the point Width times too far
+            // (CodeRabbit on PR #381).
             let not_coord = |t: Option<&str>, name: &str| {
-                matches!(t, Some("EllipticalArcTo") | Some("RelEllipticalArcTo"))
-                    && matches!(name, "C" | "D")
+                t.is_some_and(|t| t.starts_with("Rel"))
+                    || (matches!(t, Some("EllipticalArcTo")) && matches!(name, "C" | "D"))
             };
             // Pair each inline row with the master row of the SAME
             // IX. Inline copies drop rows whose cells are fully
@@ -1294,21 +1321,7 @@ fn render_geometry(
     // cache reflects its default style while the formula re-evaluates
     // per instance — NoShow=OR(User.hidden,User.CStyle<>7) gates the
     // container heading's geometry bands by container style.
-    let flag = |name: &str| -> bool {
-        section.cell(name).is_some_and(|c| {
-            let by_formula =
-                c.f.as_deref()
-                    .and_then(|f| {
-                        if f == "Inh" || f == "No Formula" {
-                            None
-                        } else {
-                            vsdx::formula::eval(f, env).ok().and_then(|v| v.as_f64())
-                        }
-                    })
-                    .filter(|v| v.is_finite());
-            by_formula.or_else(|| c.numeric()).is_some_and(|v| v != 0.0)
-        })
-    };
+    let flag = |name: &str| -> bool { section_flag(section, name, env) };
     let no_fill = flag("NoFill");
     let no_show = flag("NoShow");
     if no_show {
