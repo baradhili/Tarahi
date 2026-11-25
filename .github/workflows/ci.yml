@@ -43,3 +43,69 @@ jobs:
             echo "::warning::test attempt $i failed; retrying"
           done
           exit 1
+
+  file-sizes:
+    # #364: the file-size guard — a warning-only measuring stick for the
+    # decomposition effort: files over the 1,500-line cap are reported
+    # (as PR annotations) but stay green until the backlog drains; the
+    # flip to a hard gate is FILE_SIZE_ENFORCE=1 on the script run here.
+    if: ${{ !startsWith(github.head_ref, 'renovate/') }}
+    runs-on: ubuntu-latest
+    permissions:
+      # Job-scoped on purpose (contents: read is what checkout needs;
+      # issues: write is the #366 sticky PR comment) — never workflow-wide.
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./scripts/file_size_guard.sh
+        env:
+          FILE_SIZE_REPORT: size-report.md
+      # #366: mirror the report as a sticky conversation comment — the
+      # bot's previous comment (matched by the marker inside the body)
+      # is UPDATED, not re-posted, so pushes edit one living table
+      # instead of spamming the thread. Warning-only all the way down:
+      # a comment failure is core.warning, never a red job.
+      - if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- file-size-guard:sticky -->';
+            let body;
+            try {
+              body = fs.readFileSync('size-report.md', 'utf8');
+            } catch (e) {
+              core.warning('size-report.md missing — skipping the PR comment');
+              return;
+            }
+            try {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                per_page: 100,
+              });
+              const prior = comments.find(
+                (c) => c.user.type === 'Bot' && (c.body || '').includes(marker)
+              );
+              if (prior) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: prior.id,
+                  body,
+                });
+                core.info('updated the sticky file-size comment');
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body,
+                });
+                core.info('created the sticky file-size comment');
+              }
+            } catch (e) {
+              core.warning(`file-size PR comment failed (warning-only): ${e.message}`);
+            }
