@@ -117,8 +117,14 @@ pub fn render_tree_transform(
 ) -> anyhow::Result<ColorImage> {
     let _r = crate::perf::span(crate::perf::Stage::Render(kind));
     let pixmap = dc::raster::render_pixmap(tree, t, w, h)?;
+    // tiny-skia pixmaps hold PREMULTIPLIED RGBA. Reading them as
+    // unmultiplied applied every partly transparent pixel's alpha twice:
+    // a 76 %-transparent #ffc000 container fill painted (209, 205, 194)
+    // on the canvas instead of Visio's (255, 240, 194), and every
+    // anti-aliased edge came out too dark. The export never had it — it
+    // writes the pixmap as PNG, which demultiplies.
     let data: &[u8] = pixmap.data();
-    Ok(ColorImage::from_rgba_unmultiplied(
+    Ok(ColorImage::from_rgba_premultiplied(
         [w as usize, h as usize],
         data,
     ))
@@ -320,6 +326,21 @@ impl TextureCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A partly transparent fill reaches the texture with its alpha
+    /// applied ONCE: half-transparent red is premultiplied (≈128, 0, 0,
+    /// ≈128), not (≈64, 0, 0, ≈128) — composited over the page's white
+    /// that is Visio's pink, not a dark rose.
+    #[test]
+    fn transparent_fills_keep_their_color() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><rect width="10" height="10" fill="#ff0000" fill-opacity="0.5"/></svg>"##;
+        let img = rasterize(svg, 10.0, crate::perf::Kind::Icon).unwrap();
+        let px = img.pixels[55];
+        assert!((px.a() as i32 - 128).abs() <= 1, "{px:?}");
+        assert!((px.r() as i32 - 128).abs() <= 1, "{px:?}");
+        let [r, g, b, _] = px.to_srgba_unmultiplied();
+        assert!(r >= 254 && g == 0 && b == 0, "{px:?}");
+    }
 
     /// Face stability under the pinned (kittest) mode: the pinned
     /// database resolves the VENDORED faces (#145), so an Arial chain

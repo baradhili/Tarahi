@@ -1,0 +1,1187 @@
+//! The geometry placement frame, hit walk, and connector-crossing
+//! math (#187): the pieces the EXPORT path needs on the dc side —
+//! moved verbatim from dc-ui's `connectors.rs` (which re-exports them,
+//! so every call site stayed put). The line-jump overlay the canvas
+//! paints and the one `dc::svg` now appends share THIS code, so the
+//! two can't drift.
+//!
+//! The pieces live along their internal boundaries:
+//! `connector` (identity checks), `hitframe` (the placement frame),
+//! `rows` (row-cell resolution + the curve seats), `segments` (the
+//! hit walk), `jumps` (crossing math) — re-exported here so every
+//! `dc::geom::…` path stays put.
+
+mod connector;
+mod hitframe;
+mod jumps;
+mod rows;
+mod segments;
+
+pub use connector::{is_connector, is_connector_in};
+pub use hitframe::{hit_frame, HitFrame};
+pub use jumps::{
+    is_stored_jump_arc, jump_radii_in, jump_radius_in, jump_radius_y_in, line_jumps, page_jumps,
+    page_jumps_stripping, seg_cross, Jump, JumpLine,
+};
+pub use rows::{arc_row, cubic_row, row_cell_value, ArcRow, CubicRow};
+pub use segments::{geometry_hit_segments, MAX_WALK_ROWS};
+
+#[cfg(test)]
+mod tests {
+    /// The tests' hop radius — Visio's default (0.125 in × 2/3 / 2,
+    /// the #294 identity).
+    const TEST_JUMP_RADIUS: f64 = 0.125 * (2.0 / 3.0) / 2.0;
+
+    /// A plain black 0.01-in test line.
+    fn jline(id: i64, z: usize, pts: &[(f64, f64)]) -> JumpLine {
+        JumpLine {
+            id,
+            z,
+            weight: 0.01,
+            color: (0, 0, 0),
+            pts: pts.to_vec(),
+        }
+    }
+
+    /// The stylesheet default `BegTrigger V='0' F='No Formula'` is no
+    /// glue trigger: a plain 1D line that resolves it stays a line,
+    /// one with the glue engine's `_XFTRIGGER` write is a connector.
+    #[test]
+    fn style_default_triggers_do_not_make_a_connector() {
+        let mut no_style = vsdx::model::StyleSheet::default();
+        no_style.sheet.set_cell(
+            "BegTrigger",
+            vsdx::Cell {
+                v: Some("0".into()),
+                f: Some("No Formula".into()),
+                ..vsdx::Cell::default()
+            },
+        );
+        let doc = vsdx::Document {
+            stylesheets: vec![no_style],
+            ..vsdx::Document::default()
+        };
+        let mut line = vsdx::Shape {
+            id: 1,
+            ..vsdx::Shape::default()
+        };
+        for (n, v) in [
+            ("BeginX", "0"),
+            ("BeginY", "0"),
+            ("EndX", "1"),
+            ("EndY", "0"),
+        ] {
+            line.sheet.set_cell(n, vsdx::Cell::value(v));
+        }
+        assert!(!super::is_connector_in(&doc, &[&line], &line));
+        line.sheet.set_cell(
+            "BegTrigger",
+            vsdx::Cell {
+                v: Some("2".into()),
+                f: Some("_XFTRIGGER(Sheet.9!EventXFMod)".into()),
+                ..vsdx::Cell::default()
+            },
+        );
+        assert!(super::is_connector_in(&doc, &[&line], &line));
+    }
+
+    /// #251: one crossing REGION hops once — a flattened curve's
+    /// entry/exit sample windows converge onto the same pixels and
+    /// merge to a single arc; distinct crossings beyond the hop
+    /// radius stay separate.
+    #[test]
+    fn line_jumps_cluster_converging_crossings() {
+        let l = |id: i64, z: usize, pts: &[(f64, f64)]| JumpLine {
+            id,
+            z,
+            weight: 0.01,
+            color: (0, 0, 0),
+            pts: pts.to_vec(),
+        };
+        // A shallow arc's belly crossed by a line: entry and exit sit
+        // within the hop radius of each other.
+        let arc = vec![
+            (0.0, 1.0),
+            (0.5, 1.04),
+            (1.0, 1.06),
+            (1.5, 1.04),
+            (2.0, 1.0),
+        ];
+        let js = line_jumps(
+            &[
+                l(1, 0, &arc),
+                l(2, 1, &[(0.8, 2.0), (1.2, 0.0)]),
+            ],
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
+        );
+        assert_eq!(js.len(), 1, "the converging pair merges: {js:?}");
+        // Two crossings far apart stay two hops.
+        let js = line_jumps(
+            &[
+                l(1, 0, &[(0.0, 1.0), (1.0, 1.0), (1.0, 3.0), (4.0, 3.0)]),
+                l(2, 1, &[(2.0, 0.0), (2.0, 4.0)]),
+            ],
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
+        );
+        assert_eq!(js.len(), 1, "one real crossing");
+        let js = line_jumps(
+            &[
+                l(1, 0, &[(0.0, 1.0), (3.0, 1.0)]),
+                l(2, 1, &[(1.0, 0.0), (1.0, 2.0), (2.5, 2.0), (2.5, 0.0)]),
+            ],
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
+        );
+        assert_eq!(js.len(), 2, "distinct crossings stay separate: {js:?}");
+    }
+
+    /// #294: the stored-jump detector recognizes Visio's saved jump
+    /// row (the repro's `X 1.4583→1.5417, A −0.0416667` — chord ON the
+    /// run) and leaves corner arcs (diagonal chord), authored shallow
+    /// bumps and artwork-sized arcs alone.
+    #[test]
+    fn stored_jump_arcs_match_the_repro_row() {
+        // Mid-run with collinear continuation on both sides (the run).
+        assert!(is_stored_jump_arc(
+
+            -0.041_666_7,
+            (0.083_333_3, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            0.041_666_7,
+            0.041_666_7,
+        ));
+        // A corner arc cuts across the run — never a jump.
+        assert!(!is_stored_jump_arc(
+
+            0.09,
+            (0.5, 0.5),
+            Some((1.0, 0.0)),
+            Some((0.0, 1.0)),
+            0.041_666_7,
+            0.041_666_7,
+        ));
+        // An authored shallow bump (the #294 review's control) is a
+        // curve: |A| ≪ the semicircle band.
+        assert!(!is_stored_jump_arc(
+
+            0.25,
+            (4.0, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            0.25,
+            0.25,
+        ));
+        // A large SHALLOW arc stays a curve — size alone never makes
+        // a jump (the semicircle band does the work; the old 0.5 in
+        // cap wrongly rejected documented factor-10 jumps, #294
+        // review).
+        assert!(!is_stored_jump_arc(
+
+            1.0,
+            (0.0, 4.0),
+            Some((0.0, 1.0)),
+            Some((0.0, 1.0)),
+            1.0,
+            1.0,
+        ));
+        // A large SEMICIRCLE with full route context is a jump at any
+        // size (LineJumpFactorX=10 → 0.625 in at the defaults).
+        assert!(is_stored_jump_arc(
+
+            2.0,
+            (0.0, 4.0),
+            Some((0.0, 1.0)),
+            Some((0.0, 1.0)),
+            2.0,
+            2.0,
+        ));
+        // Degenerate: zero chord and a zero-sagitta straight row
+        // (which the ink path already emits as a line).
+        assert!(!is_stored_jump_arc(
+
+            0.0,
+            (0.0, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            0.041_666_7,
+            0.041_666_7,
+        ));
+        assert!(!is_stored_jump_arc(
+
+            0.0,
+            (0.0, 1.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            0.041_666_7,
+            0.041_666_7,
+        ));
+        // An authored whole-route semicircle (#294 review) has no
+        // continuing runs — it stays a curve.
+        assert!(!is_stored_jump_arc(0.25, (0.5, 0.0), None, None, 0.25, 0.25));
+        // Mid-run geometry but a run that stops at the arc (an
+        // authored end-arc) is not a jump either.
+        assert!(!is_stored_jump_arc(
+
+            -0.041_666_7,
+            (0.083_333_3, 0.0),
+            Some((1.0, 0.0)),
+            None,
+            0.041_666_7,
+            0.041_666_7,
+        ));
+        // Radius evidence (CodeRabbit rounds 1–2 on #121): the shape
+        // checks alone cannot tell an AUTHORED semicircle between two
+        // straight runs from a stored jump — a 1-inch arc with A=−0.5
+        // matches every geometric test. The page radius decides.
+        assert!(!is_stored_jump_arc(
+            -0.5,
+            (1.0, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            0.041_666_7, // the page's radius is far smaller: authored ink
+            0.5,
+        ));
+        assert!(is_stored_jump_arc(
+            -0.5,
+            (1.0, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            0.5, // the page's radius matches: a stored jump
+            0.5,
+        ));
+        // Writer rounding rides inside the 5% band.
+        assert!(is_stored_jump_arc(
+            -0.041_666_67,
+            (0.083_333_3, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            0.041_666_691, // 0.125 × 0.66667 / 2, the No Style values
+            0.041_666_691,
+        ));
+        // No radius evidence (0) never strips — preserve the arc.
+        assert!(!is_stored_jump_arc(
+
+            -0.041_666_7,
+            (0.083_333_3, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            0.0,
+            0.0,
+        ));
+        // Round 3 (PR #299 review): only the CHOSEN axis's radius must
+        // be positive — a FactorY=0 page still recognizes horizontal
+        // stored jumps, and a zero on the arc's own axis never strips.
+        assert!(is_stored_jump_arc(
+            -0.041_666_7,
+            (0.083_333_3, 0.0),
+            Some((1.0, 0.0)),
+            Some((1.0, 0.0)),
+            0.041_666_7,
+            0.0,
+        ));
+        assert!(!is_stored_jump_arc(
+            -0.041_666_7,
+            (0.0, 0.083_333_3),
+            Some((0.0, 1.0)),
+            Some((0.0, 1.0)),
+            0.041_666_7,
+            0.0,
+        ));
+    }
+
+    /// Round 3 (PR #299 review): the cluster reach is the crossing's
+    /// OWN axis radius — the unrelated axis's radius must not merge
+    /// two crossings the drawn arcs never overlap. ONE pair must
+    /// produce BOTH crossings (clustering merges within a pair only),
+    /// and the weights stay tiny so the stroke-width reach cannot
+    /// mask the radius difference (round-4 review).
+    #[test]
+    fn line_jumps_clusters_on_the_crossing_axis_radius() {
+        let lines = [
+            // The jumper: one horizontal run.
+            JumpLine {
+                id: 1,
+                z: 1,
+                weight: 0.01,
+                color: (0, 0, 0),
+                pts: vec![(0.0, 1.0), (2.0, 1.0)],
+            },
+            // The crossed line: a U crossing the run TWICE — at x=1
+            // and x=1.5. One pair, two crossings 0.5 in apart.
+            JumpLine {
+                id: 2,
+                z: 2,
+                weight: 0.01,
+                color: (0, 0, 0),
+                pts: vec![(1.0, 0.0), (1.0, 2.0), (1.5, 2.0), (1.5, 0.0)],
+            },
+        ];
+        // X radius tiny, Y radius huge: the horizontal hops draw at
+        // the X radius, so 0.5 in apart they stay TWO hops — the old
+        // max-axis reach (1.0 in) merged them into one hop at their
+        // midpoint, x=1.25, where no crossing exists.
+        let js = line_jumps(&lines, (0.041_666_7, 0.5));
+        assert_eq!(js.len(), 2, "no unrelated-axis clustering: {js:?}");
+        assert!(
+            js.iter().all(|j| j.dir.1.abs() < 1e-9),
+            "the horizontal line hops: {js:?}"
+        );
+        // And the hops sit ON the crossings, not at a centroid.
+        assert!(
+            js.iter().any(|j| (j.at.0 - 1.0).abs() < 1e-9)
+                && js.iter().any(|j| (j.at.0 - 1.5).abs() < 1e-9),
+            "the hops stay at their crossings: {js:?}"
+        );
+    }
+
+    /// #293: an instance `<Row Del="1" IX="3" T="LineTo"/>` (no
+    /// cells) kills the master's row 3 — the merged walk skips it, so
+    /// the master's hook never joins the hit polyline (and the
+    /// crossing set). A master-only deleted row is dead too; an
+    /// instance re-declaring the row alive keeps it.
+    #[test]
+    fn deleted_row_kills_the_merged_master_row() {
+        let master_rows = |del_master: bool| {
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: vec![("X".to_string(), Cell::value("0.125"))],
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 2,
+                    cells: vec![
+                        ("X".to_string(), Cell::value("0.125")),
+                        ("Y".to_string(), Cell::value("2.2")),
+                    ],
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 3,
+                    attrs: if del_master {
+                        vec![("Del".to_string(), "1".to_string())]
+                    } else {
+                        Vec::new()
+                    },
+                    cells: vec![
+                        ("X".to_string(), Cell::value("1")),
+                        ("Y".to_string(), Cell::value("-1")),
+                    ],
+                    ..Row::default()
+                },
+            ]
+        };
+        let root = |del_master: bool| {
+            let mut r = Shape {
+                id: 1,
+                ..Shape::default()
+            };
+            r.sheet.set_cell("Width", Cell::value("0.25"));
+            r.sheet.set_cell("Height", Cell::value("2.2"));
+            r.sheet.children.push(SheetChild::Section(Section {
+                name: "Geometry".into(),
+                ix: 0,
+                rows: master_rows(del_master),
+                ..Section::default()
+            }));
+            r
+        };
+        let inst = |row3: Option<Row>| {
+            let mut s = Shape {
+                id: 2,
+                master: Some(1),
+                ..Shape::default()
+            };
+            let mut rows = vec![Row {
+                t: Some("MoveTo".into()),
+                ix: 1,
+                cells: vec![("X".to_string(), Cell::value("0.125"))],
+                ..Row::default()
+            }];
+            if let Some(r3) = row3 {
+                rows.push(Row {
+                    t: Some("LineTo".into()),
+                    ix: 2,
+                    cells: vec![
+                        ("X".to_string(), Cell::value("0.125")),
+                        ("Y".to_string(), Cell::value("2.2")),
+                    ],
+                    ..Row::default()
+                });
+                rows.push(r3);
+            }
+            s.sheet.children.push(SheetChild::Section(Section {
+                name: "Geometry".into(),
+                ix: 0,
+                rows,
+                ..Section::default()
+            }));
+            s
+        };
+        let del_row = || Row {
+            t: Some("LineTo".into()),
+            ix: 3,
+            attrs: vec![("Del".to_string(), "1".to_string())],
+            ..Row::default()
+        };
+        let doc = vsdx::Document::default();
+        // The #293 repro: the instance deletes the master's hook row.
+        let root1 = root(false);
+        let s1 = inst(Some(del_row()));
+        let frame = hit_frame(&doc, &[&s1, &root1], &s1, (0.25, 2.2));
+        let segs = geometry_hit_segments(&s1, Some(&root1), &frame, None);
+        // Exactly the surviving shaft: one segment on the run's page x
+        // spanning the frame height (the hook's page x would differ by
+        // LocPinX, and an empty walk would also pass a vaguer check).
+        assert_eq!(segs.len(), 1, "only the shaft survives: {segs:?}");
+        let (a, b) = segs[0];
+        assert!(
+            (a.0 - b.0).abs() < 1e-9 && (b.1 - a.1).abs() - 2.2 < 1e-6,
+            "the shaft is one straight span of the frame height: {segs:?}"
+        );
+        // The marker lives on the MASTER row alone (a master-only
+        // deletion) — dead as well.
+        let root2 = root(true);
+        let s2 = inst(None);
+        let frame = hit_frame(&doc, &[&s2, &root2], &s2, (0.25, 2.2));
+        let segs = geometry_hit_segments(&s2, Some(&root2), &frame, None);
+        assert!(
+            segs.iter().all(|(a, b)| a.0.abs() < 1.0 && b.0.abs() < 1.0),
+            "a master-only deleted row is dead too: {segs:?}"
+        );
+    }
+
+    /// #294 review: a crossing exactly ON an interior vertex of the
+    /// under polyline still hops — the strict-interior intersection
+    /// used to drop it (and with stored jump arcs straightened, the
+    /// replacement hop vanished with it). A crossing at a connector's
+    /// glue END never hops.
+    #[test]
+    fn line_jumps_hop_at_interior_vertices_not_at_glue_ends() {
+        // The vertical's corner (2,1) sits exactly on the horizontal.
+        let js = line_jumps(
+            &[
+                jline(1, 0, &[(1.0, 1.0), (3.0, 1.0)]),
+                jline(2, 1, &[(2.0, 0.0), (2.0, 1.0), (2.0, 2.0)]),
+            ],
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
+        );
+        assert_eq!(
+            js.len(),
+            1,
+            "the T-junction at the interior vertex hops: {js:?}"
+        );
+        // The same corner AT the horizontal's glue end: no hop.
+        let js = line_jumps(
+            &[
+                jline(1, 0, &[(1.0, 1.0), (2.0, 1.0)]),
+                jline(2, 1, &[(2.0, 0.0), (2.0, 1.0), (2.0, 2.0)]),
+            ],
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
+        );
+        assert_eq!(js.len(), 0, "a glue end never hops: {js:?}");
+        // A V that only TOUCHES the horizontal (both runs on the same
+        // side) is a tangency, not a crossing — no hop (#294 review).
+        let js = line_jumps(
+            &[
+                jline(1, 0, &[(-1.0, 0.0), (3.0, 0.0)]),
+                jline(2, 1, &[(0.0, 1.0), (1.0, 0.0), (2.0, 1.0)]),
+            ],
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
+        );
+        assert_eq!(js.len(), 0, "a tangency never hops: {js:?}");
+        // BOTH routes turning at the shared contact: the four runs
+        // must alternate by route around the vertex. An L meeting a V
+        // groups two L-runs and two V-runs — a touch, no hop (#294
+        // review).
+        let js = line_jumps(
+            &[
+                jline(1, 0, &[(1.0, 0.0), (0.0, 0.0), (0.0, 1.0)]),
+                jline(2, 1, &[(-1.0, 1.0), (0.0, 0.0), (-1.0, -1.0)]),
+            ],
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
+        );
+        assert_eq!(js.len(), 0, "a two-corner touch never hops: {js:?}");
+        // Two routes cornering THROUGH each other interleave — a real
+        // crossing hops.
+        let js = line_jumps(
+            &[
+                jline(1, 0, &[(-1.0, 1.0), (0.0, 0.0), (1.0, 0.0)]),
+                jline(2, 1, &[(1.0, 1.0), (0.0, 0.0), (-1.0, 0.0)]),
+            ],
+            (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
+        );
+        assert_eq!(js.len(), 1, "interleaved corner runs cross: {js:?}");
+    }
+
+    /// A hit segment: start and end in page space.
+    type Seg = ((f64, f64), (f64, f64));
+
+    /// A minimal 1-section connector shape with the given geometry rows.
+    fn conn_shape(id: i64, w: f64, h: f64, rows: Vec<Row>) -> Shape {
+        let mut s = Shape {
+            id,
+            type_: Some("Shape".into()),
+            ..Shape::default()
+        };
+        s.sheet.set_cell("ObjType", Cell::value("2"));
+        s.sheet.set_cell("Width", Cell::value(fmt_width(w)));
+        s.sheet.set_cell("Height", Cell::value(fmt_width(h)));
+        let sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            rows,
+            ..Section::default()
+        };
+        s.sheet.children.push(SheetChild::Section(sec));
+        s
+    }
+
+    fn fmt_width(v: f64) -> String {
+        format!("{v}")
+    }
+
+    fn mrow(ix: i64, t: &str, cells: &[(&str, f64)]) -> Row {
+        Row {
+            t: Some(t.into()),
+            ix,
+            cells: cells
+                .iter()
+                .map(|(n, v)| (n.to_string(), Cell::value(format!("{v}"))))
+                .collect(),
+            ..Row::default()
+        }
+    }
+
+    /// The stored-jump row set of the #294 repro (cleanroom values):
+    /// MoveTo, a run in, the jump arc, a run out.
+    fn jump_rows() -> Vec<Row> {
+        vec![
+            mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            mrow(2, "LineTo", &[("X", 1.0), ("Y", 0.0)]),
+            mrow(
+                3,
+                "ArcTo",
+                &[("X", 1.083_333_3), ("Y", 0.0), ("A", -0.041_666_7)],
+            ),
+            mrow(4, "LineTo", &[("X", 3.0), ("Y", 0.0)]),
+        ]
+    }
+
+    fn flat(pts: &[Seg]) -> bool {
+        // Every segment horizontal at y = pts[0].0's y: a straight run
+        // (a retained arc would sample off it).
+        let y0 = pts.first().map(|(a, _)| a.1).unwrap_or(0.0);
+        pts.iter()
+            .all(|(a, b)| (a.1 - y0).abs() < 1e-6 && (b.1 - y0).abs() < 1e-6)
+    }
+
+    /// A PolylineTo row's POLYLINE() vertices are part of the hit
+    /// path, so crossings see the drawn bends (Greptile on PR #329).
+    #[test]
+    fn polyline_to_vertices_join_the_hit_path() {
+        let mut poly = mrow(2, "PolylineTo", &[("X", 2.0), ("Y", 0.0)]);
+        poly.cells.push((
+            "A".into(),
+            Cell {
+                v: Some("POLYLINE(1, 1, 0,1, 2,1)".into()),
+                ..Cell::default()
+            },
+        ));
+        let s = conn_shape(
+            7,
+            2.0,
+            1.0,
+            vec![mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]), poly],
+        );
+        let doc = vsdx::Document::default();
+        let chain = vec![&s];
+        let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
+        let segs = geometry_hit_segments(&s, None, &frame, None);
+        assert_eq!(segs.len(), 3, "M → (0,1) → (2,1) → (2,0): {segs:?}");
+        let ys: Vec<f64> = segs.iter().map(|(a, _)| a.1).collect();
+        assert!(
+            (ys[1] - ys[0] - 1.0).abs() < 1e-9 && (ys[2] - ys[1]).abs() < 1e-9,
+            "the walk climbs to the polyline's top run: {segs:?}"
+        );
+    }
+
+    /// #294 review: a degenerate (zero-length) straight row next to
+    /// the stored jump does not break the run lookup — the arc still
+    /// strips.
+    #[test]
+    fn stored_jumps_survive_degenerate_neighbor_rows() {
+        let mut rows = jump_rows();
+        // A collapsed elbow between the arc and the continuing run.
+        rows.insert(
+            3,
+            mrow(4, "LineTo", &[("X", 1.083_333_3), ("Y", 0.0)]),
+        );
+        rows[4].ix = 5;
+        let s = conn_shape(7, 3.0, 0.25, rows);
+        let doc = vsdx::Document::default();
+        let chain = vec![&s];
+        let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
+        let segs = geometry_hit_segments(&s, None, &frame, Some((0.041_666_7, 0.041_666_7)));
+        assert!(!segs.is_empty());
+        assert!(flat(&segs), "the arc strips past the degenerate row");
+    }
+
+    /// #294 review: classification happens in the LOCAL row frame in
+    /// BOTH walks — instance scaling (uniform or stretched) must not
+    /// make the hit walk retain a bump the ink path straightens.
+    #[test]
+    fn stored_jumps_classify_in_the_local_frame_at_any_scale() {
+        for (iw, ih) in [(2.0, 2.0), (2.0, 1.0)] {
+            let root = conn_shape(1, 2.0, 0.5, jump_rows());
+            let mut inst = Shape {
+                id: 2,
+                type_: Some("Shape".into()),
+                master: Some(1),
+                ..Shape::default()
+            };
+            inst.sheet.set_cell("ObjType", Cell::value("2"));
+            inst.sheet
+                .set_cell("Width", Cell::value(format!("{}", 2.0 * iw)));
+            inst.sheet
+                .set_cell("Height", Cell::value(format!("{}", 0.5 * ih)));
+            let doc = vsdx::Document::default();
+            let chain = vec![&inst, &root];
+            let frame = hit_frame(&doc, &chain, &inst, (2.0, 0.5));
+            let segs = geometry_hit_segments(&inst, Some(&root), &frame, Some((0.041_666_7, 0.041_666_7)));
+            assert!(!segs.is_empty());
+            assert!(
+                flat(&segs),
+                "the arc strips at instance scale ({iw}, {ih})"
+            );
+        }
+    }
+
+    /// CodeRabbit rounds 1–2 on #121: the shape checks alone cannot
+    /// tell an AUTHORED semicircle between two straight runs from a
+    /// stored jump. Through the hit walk: the authored arc PRESERVES
+    /// with a non-matching page radius; a stored jump with the page's
+    /// own radius strips; and the walks agree — the ink path's strip
+    /// carries the same evidence.
+    #[test]
+    fn authored_semicircles_preserve_unless_the_page_radius_matches() {
+        // An authored 1-inch semicircle (A=−0.5) mid-run, straight
+        // continuation on both sides — every geometric test passes.
+        let rows = vec![
+            mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            mrow(2, "LineTo", &[("X", 0.5), ("Y", 0.0)]),
+            mrow(3, "ArcTo", &[("X", 1.5), ("Y", 0.0), ("A", -0.5)]),
+            mrow(4, "LineTo", &[("X", 2.5), ("Y", 0.0)]),
+        ];
+        let s = conn_shape(7, 2.5, 1.0, rows);
+        let doc = vsdx::Document::default();
+        let chain = vec![&s];
+        let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
+        // The page's radius is the default jump spacing — far from 0.5:
+        // the arc is AUTHORED ink and stays a curve.
+        let segs = geometry_hit_segments(&s, None, &frame, Some((0.041_666_7, 0.041_666_7)));
+        assert!(!segs.is_empty());
+        assert!(!flat(&segs), "authored arc preserved: {segs:?}");
+    }
+
+    /// CodeRabbit round 1: a full-route `EllipticalArcTo` (the drawn
+    /// curve IS the route) never strips — the classifier is an ArcTo
+    /// row's evidence chain, and elliptical rows keep their ink.
+    #[test]
+    fn full_route_elliptical_arcs_never_strip() {
+        let rows = vec![
+            mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            mrow(2, "LineTo", &[("X", 0.5), ("Y", 0.0)]),
+            mrow(
+                3,
+                "EllipticalArcTo",
+                &[("X", 1.5), ("Y", 0.0), ("A", 1.0), ("B", 0.25)],
+            ),
+            mrow(4, "LineTo", &[("X", 2.5), ("Y", 0.0)]),
+        ];
+        let s = conn_shape(7, 2.5, 1.0, rows);
+        let doc = vsdx::Document::default();
+        let chain = vec![&s];
+        let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
+        let segs = geometry_hit_segments(&s, None, &frame, Some((0.041_666_7, 0.041_666_7)));
+        assert!(!segs.is_empty());
+        assert!(!flat(&segs), "the full-route arc stays curved: {segs:?}");
+    }
+
+    /// CodeRabbit round 2: the hit walk's per-cell master-fallback
+    /// literals scale master→instance like the ink path's merge, so an
+    /// inherited inline arc classifies in the SAME (instance) frame the
+    /// ink walks — the stretched bump appears in BOTH walks' verdicts
+    /// (here: preserved, since the stretched radius no longer matches
+    /// the page's).
+    #[test]
+    fn inherited_inline_arcs_scale_like_the_ink_path() {
+        // Master: a stored-jump-shaped arc row with CACHED LITERALS
+        // (chord 0.0833 over the run, A −0.0416667 — the #294 shape).
+        let mut root = Shape {
+            id: 1,
+            type_: Some("Shape".into()),
+            ..Shape::default()
+        };
+        root.sheet.set_cell("ObjType", Cell::value("2"));
+        root.sheet.set_cell("Width", Cell::value("3"));
+        root.sheet.set_cell("Height", Cell::value("0.25"));
+        let sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            rows: vec![
+                mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                mrow(2, "LineTo", &[("X", 1.4583), ("Y", 0.0)]),
+                mrow(3, "ArcTo", &[("X", 1.5417), ("Y", 0.0), ("A", -0.041_666_7)]),
+                mrow(4, "LineTo", &[("X", 3.0), ("Y", 0.0)]),
+            ],
+            ..Section::default()
+        };
+        root.sheet.children.push(SheetChild::Section(sec));
+        // Instance: an OWN section whose rows are all F="Inh" (the
+        // owner-file pattern), at 2× the master width. The inherited
+        // literals scale into instance units — the arc's chord doubles.
+        let mut inst = Shape {
+            id: 2,
+            type_: Some("Shape".into()),
+            master: Some(1),
+            ..Shape::default()
+        };
+        inst.sheet.set_cell("ObjType", Cell::value("2"));
+        inst.sheet.set_cell("Width", Cell::value("6"));
+        inst.sheet.set_cell("Height", Cell::value("0.25"));
+        let inh = || Cell {
+            f: Some("Inh".into()),
+            ..Cell::default()
+        };
+        let sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            rows: vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: vec![("X".to_string(), inh())],
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 2,
+                    cells: vec![("X".to_string(), inh())],
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("ArcTo".into()),
+                    ix: 3,
+                    cells: vec![
+                        ("X".to_string(), inh()),
+                        ("A".to_string(), inh()),
+                    ],
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 4,
+                    cells: vec![("X".to_string(), inh())],
+                    ..Row::default()
+                },
+            ],
+            ..Section::default()
+        };
+        inst.sheet.children.push(SheetChild::Section(sec));
+        let doc = vsdx::Document::default();
+        let chain = vec![&inst, &root];
+        let frame = hit_frame(&doc, &chain, &inst, (3.0, 0.25));
+        // The stretched bump: chord 0.1666, rendered A 0.0833 — twice
+        // the page radius, so the evidence declines and the arc keeps
+        // its ink. The decisive assertion is the WALKS AGREE: the hit
+        // polyline keeps the bump exactly like the ink does (the old
+        // code retained it here while the ink stripped — or vice versa
+        // — depending on the scale).
+        let segs = geometry_hit_segments(&inst, Some(&root), &frame, Some((0.041_666_7, 0.041_666_7)));
+        assert!(!segs.is_empty());
+        assert!(
+            !flat(&segs),
+            "the stretched stored arc keeps its bump in BOTH walks: {segs:?}"
+        );
+    }
+
+    /// CodeRabbit round 2: the hit walk feeds evaluated row
+    /// coordinates back into the env (`Geometry1.X2`) like the ink
+    /// path — row-to-row references resolve against the LIVE route,
+    /// not the stale cached V.
+    #[test]
+    fn hit_walk_feeds_row_coordinates_for_formula_references() {
+        let mut s = Shape {
+            id: 1,
+            type_: Some("Shape".into()),
+            ..Shape::default()
+        };
+        s.sheet.set_cell("ObjType", Cell::value("2"));
+        s.sheet.set_cell("Width", Cell::value("2"));
+        s.sheet.set_cell("Height", Cell::value("0.5"));
+        let sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            rows: vec![
+                mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                // A live formula whose cached V is STALE (1 vs 2): the
+                // ink path evaluates the formula; the hit walk must
+                // agree.
+                Row {
+                    t: Some("LineTo".into()),
+                    ix: 2,
+                    cells: vec![(
+                        "X".to_string(),
+                        Cell {
+                            v: Some("2".into()),
+                            f: Some("1".into()),
+                            ..Cell::default()
+                        },
+                    )],
+                    ..Row::default()
+                },
+                // The arc rides Geometry1.X2: live 1 + 0.5 = 1.5, not
+                // the stale 2.5.
+                Row {
+                    t: Some("ArcTo".into()),
+                    ix: 3,
+                    cells: vec![(
+                        "X".to_string(),
+                        Cell {
+                            v: Some("2.5".into()),
+                            f: Some("Geometry1.X2+0.5".into()),
+                            ..Cell::default()
+                        },
+                    )],
+                    ..Row::default()
+                },
+            ],
+            ..Section::default()
+        };
+        s.sheet.children.push(SheetChild::Section(sec));
+        let doc = vsdx::Document::default();
+        let chain = vec![&s];
+        let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
+        let segs = geometry_hit_segments(&s, None, &frame, Some((0.041_666_7, 0.041_666_7)));
+        let last = segs.last().expect("segments").1;
+        // Local (1.5, 0) through the frame (pin 0, locpin 1/0.25).
+        let expected = frame.to_page((1.5, 0.0));
+        assert!(
+            (last.0 - expected.0).abs() < 1e-9 && (last.1 - expected.1).abs() < 1e-9,
+            "the arc lands at the LIVE Geometry1.X2+0.5 = 1.5 (page {expected:?}), \
+             not the stale 2.5: {last:?}"
+        );
+        assert!(
+            (last.0 - 2.5 + 1.0).abs() > 1e-9,
+            "guard: the stale reading would land elsewhere"
+        );
+    }
+
+    use super::*;
+    use vsdx::model::{Cell, Row, Section, SheetChild, Shape};
+
+    /// #188: a NURBSTo row's hit segments follow the EVALUATED curve
+    /// (the E formula's interior points pull the polyline off the
+    /// MoveTo→endpoint chord), so a click on the curve's belly hits.
+    #[test]
+    fn nurbs_hit_segments_leave_the_chord() {
+        let mut s = Shape {
+            id: 1,
+            type_: Some("Shape".into()),
+            ..Shape::default()
+        };
+        for (n, v) in [
+            ("PinX", 2.0),
+            ("PinY", 1.0),
+            ("Width", 4.0),
+            ("Height", 2.0),
+            ("LocPinX", 2.0),
+            ("LocPinY", 1.0),
+        ] {
+            s.sheet.set_cell(n, Cell::value(format!("{v}")));
+        }
+        let e = "NURBS(1, 3, 0, 0, 1,0.5,0,1, 3,1.5,0,1)";
+        let row = |t: &str, ix: i64, cells: Vec<(&str, f64)>| Row {
+            t: Some(t.into()),
+            ix,
+            cells: cells
+                .into_iter()
+                .map(|(n, v)| (n.to_string(), Cell::value(format!("{v}"))))
+                .collect(),
+            ..Row::default()
+        };
+        let mut sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec.rows = vec![
+            row("MoveTo", 1, vec![("X", 0.0), ("Y", 0.0)]),
+            row(
+                "NURBSTo",
+                2,
+                vec![
+                    ("X", 4.0),
+                    ("Y", 2.0),
+                    ("A", 0.0),
+                    ("B", 1.0),
+                    ("C", 0.0),
+                    ("D", 1.0),
+                ],
+            ),
+        ];
+        let nurbs_row = &mut sec.rows[1];
+        nurbs_row.cells.push((
+            "E".to_string(),
+            Cell {
+                v: Some(e.to_string()),
+                f: Some(e.to_string()),
+                ..Cell::default()
+            },
+        ));
+        s.sheet
+            .children
+            .push(SheetChild::Section(std::mem::take(&mut sec)));
+
+        let doc = vsdx::Document::default();
+        let chain = vec![&s];
+        let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
+        let segs = geometry_hit_segments(&s, None, &frame, None);
+        // Segments are page space (the frame is identity here); some
+        // sample must sit off the (0,0)→(4,2) chord — the interior
+        // points pull the belly above it.
+        assert!(
+            segs.len() > 8,
+            "the NURBS hit polyline is dense: {}",
+            segs.len()
+        );
+        let off = segs
+            .iter()
+            .any(|(a, _)| (0.5 * a.0 + 2.0 - a.1).abs() > 0.05);
+        assert!(off, "hit samples leave the chord");
+    }
+
+    /// #187: two crossing connectors produce one hop; a rotated
+    /// jumper crosses too (slice 2 — the Angle gate is gone).
+    #[test]
+    fn zero_width_arcs_and_zero_weight_connectors_leave_interaction() {
+        // #278 review (Greptile P1 + CodeRabbit): an authored D=0 arc
+        // renders the chord, so its on-curve control is dead — no
+        // curve handle seat floats off the ink — and a zero-weight
+        // connector paints nothing, so nothing hops over it.
+        let arc_shape = |d: &str| {
+            let mut s = Shape {
+                id: 1,
+                type_: Some("Shape".into()),
+                ..Shape::default()
+            };
+            for (n, v) in [
+                ("Width", "2"),
+                ("Height", "2"),
+                ("LocPinX", "1"),
+                ("LocPinY", "1"),
+                ("ObjType", "2"),
+            ] {
+                s.sheet.set_cell(n, Cell::value(v));
+            }
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            sec.rows = vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: vec![
+                        ("X".to_string(), Cell::value("0")),
+                        ("Y".to_string(), Cell::value("0")),
+                    ],
+                    ..Row::default()
+                },
+                Row {
+                    t: Some("EllipticalArcTo".into()),
+                    ix: 2,
+                    cells: vec![
+                        ("X".to_string(), Cell::value("1")),
+                        ("Y".to_string(), Cell::value("0")),
+                        ("A".to_string(), Cell::value("0.5")),
+                        ("B".to_string(), Cell::value("1")),
+                        ("C".to_string(), Cell::value("0")),
+                        ("D".to_string(), Cell::value(d)),
+                    ],
+                    ..Row::default()
+                },
+            ];
+            s.sheet.children.push(SheetChild::Section(sec));
+            s
+        };
+        let doc = vsdx::Document::default();
+        let flat = arc_shape("0");
+        let chain = [&flat];
+        let frame = hit_frame(&doc, &chain, &flat, (1.0, 1.0));
+        assert!(
+            arc_row(&flat, None, &frame).is_none(),
+            "a D=0 arc has no curve seat — the control is dead ink"
+        );
+        let live = arc_shape("0.5");
+        let chain2 = [&live];
+        let frame2 = hit_frame(&doc, &chain2, &live, (1.0, 1.0));
+        let arc = arc_row(&live, None, &frame2).expect("a live arc yields its seat");
+        assert_eq!(arc.on_curve, (0.5, 1.0));
+
+        // A zero-weight connector is excluded from the crossing set:
+        // the horizontal axis line no longer hops over it.
+        let connector = |id: i64, pin: (f64, f64), w: f64, h: f64, angle: f64, weight: Option<f64>| {
+            let mut c = Shape {
+                id,
+                type_: Some("Shape".into()),
+                ..Shape::default()
+            };
+            for (n, v) in [
+                ("PinX", pin.0),
+                ("PinY", pin.1),
+                ("Width", w),
+                ("Height", h),
+                ("LocPinX", w / 2.0),
+                ("LocPinY", h / 2.0),
+                ("Angle", angle),
+                ("ObjType", 2.0),
+            ] {
+                c.sheet.set_cell(n, Cell::value(format!("{v}")));
+            }
+            if let Some(wt) = weight {
+                c.sheet.set_cell("LineWeight", Cell::value(format!("{wt}")));
+            }
+            let row = |ix: i64, x: f64, y: f64| Row {
+                t: Some("LineTo".into()),
+                ix,
+                cells: vec![
+                    ("X".to_string(), Cell::value(format!("{x}"))),
+                    ("Y".to_string(), Cell::value(format!("{y}"))),
+                ],
+                ..Row::default()
+            };
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            sec.rows = vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: vec![
+                        ("X".to_string(), Cell::value("0")),
+                        ("Y".to_string(), Cell::value("0")),
+                    ],
+                    ..Row::default()
+                },
+                row(2, w, h),
+            ];
+            c.sheet.children.push(SheetChild::Section(sec));
+            c
+        };
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        page.shapes.push(connector(1, (3.0, 1.0), 4.0, 0.0, 0.0, Some(0.0)));
+        page.shapes.push(connector(
+            2,
+            (3.0, 1.0),
+            3.0,
+            0.0,
+            -std::f64::consts::FRAC_PI_4,
+            None,
+        ));
+        let jumps = page_jumps(&doc, &page, &[]);
+        assert!(
+            jumps.is_empty(),
+            "an invisible shaft forces no hop: {jumps:?}"
+        );
+    }
+
+    #[test]
+    fn page_jumps_crosses_axis_and_rotated() {
+        let connector = |id: i64, pin: (f64, f64), w: f64, h: f64, angle: f64| {
+            let mut s = Shape {
+                id,
+                type_: Some("Shape".into()),
+                ..Shape::default()
+            };
+            for (n, v) in [
+                ("PinX", pin.0),
+                ("PinY", pin.1),
+                ("Width", w),
+                ("Height", h),
+                ("LocPinX", w / 2.0),
+                ("LocPinY", h / 2.0),
+                ("Angle", angle),
+                ("ObjType", 2.0),
+            ] {
+                s.sheet.set_cell(n, Cell::value(format!("{v}")));
+            }
+            let row = |ix: i64, x: f64, y: f64| Row {
+                t: Some("LineTo".into()),
+                ix,
+                cells: vec![
+                    ("X".to_string(), Cell::value(format!("{x}"))),
+                    ("Y".to_string(), Cell::value(format!("{y}"))),
+                ],
+                ..Row::default()
+            };
+            let mut sec = Section {
+                name: "Geometry".into(),
+                ix: 0,
+                ..Section::default()
+            };
+            sec.rows = vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: vec![
+                        ("X".to_string(), Cell::value("0")),
+                        ("Y".to_string(), Cell::value("0")),
+                    ],
+                    ..Row::default()
+                },
+                row(2, w, h),
+            ];
+            s.sheet.children.push(SheetChild::Section(sec));
+            s
+        };
+        // A horizontal connector (1,1)..(5,1) and a 45°-rotated one
+        // through the same page area.
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        page.shapes.push(connector(1, (3.0, 1.0), 4.0, 0.0, 0.0));
+        page.shapes.push(connector(
+            2,
+            (3.0, 1.0),
+            3.0,
+            0.0,
+            -std::f64::consts::FRAC_PI_4,
+        ));
+        let doc = vsdx::Document::default();
+        let jumps = page_jumps(&doc, &page, &[]);
+        assert_eq!(jumps.len(), 1, "one crossing: {jumps:?}");
+        // The more-horizontal line hops: the AXIS line jumps (dy 0
+        // beats the 45° line's 0.707); the rotated one is the under.
+        let j = &jumps[0];
+        assert!(
+            j.dir.1.abs() < 1e-6 && j.under.0.abs() > 0.5,
+            "the axis line hops over the rotated one: dir {:?} under {:?}",
+            j.dir,
+            j.under
+        );
+    }
+}
