@@ -1936,22 +1936,32 @@ fn text_runs(doc: &Document, s: &Shape, chain: &[&Shape], tb: &TextBlock) -> Opt
     for i in idx.iter_mut() {
         *i = used.binary_search(i).unwrap_or(0);
     }
-    let row_cell = |ix: usize, name: &str| -> Option<Cell> {
+    // `themed`: also take a `THEMEVAL()` cell (not `Inh`) as the row's
+    // value instead of looking past it to the master's row.
+    let row_cell_with = |ix: usize, name: &str, themed: bool| -> Option<Cell> {
         let find = |sh: &Sheet| {
             sh.sections_named("Character")
                 .into_iter()
                 .next()
                 .and_then(|sec| sec.rows.iter().find(|r| r.ix == ix as i64))
                 .and_then(|r| r.cell(name))
-                .filter(|c| !c.is_inherited() && !c.is_themed())
+                .filter(|c| {
+                    (!c.is_inherited() && !c.is_themed()) || (themed && c.is_theme_eval())
+                })
                 .cloned()
         };
         find(&s.sheet).or_else(|| doc.instance_source(s, chain).and_then(|m| find(&m.sheet)))
     };
+    let row_cell = |ix: usize, name: &str| row_cell_with(ix, name, false);
     let styles: Vec<RunStyle> = used
         .iter()
         .map(|&ix| {
-            let color = row_cell(ix, "Color")
+            // A run colored `THEMEVAL()` resolves like the block's own
+            // color: a theme variant when the theme defines it, else the
+            // No Style black. Skipping it painted the run in the first
+            // row's color (the network LLD: address lines under a green
+            // heading came out green, Visio draws them black).
+            let color = row_cell_with(ix, "Color", true)
                 .map(|c| color_value(doc, c.v.as_deref().unwrap_or(""), c.f.as_deref()))
                 .filter(|c| !c.eq_ignore_ascii_case(&tb.color));
             let bits = row_cell(ix, "Style")
