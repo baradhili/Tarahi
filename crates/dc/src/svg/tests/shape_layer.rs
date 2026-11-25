@@ -2594,3 +2594,56 @@ fn merged_geometry_pairs_sections_by_ix_and_keeps_rel_fractions() {
         .expect("the inherited X");
     assert!((x - 0.75).abs() < 1e-9, "a fraction, unscaled: {x}");
 }
+
+/// An inherited Rel* FORMULA still evaluates live in the instance env
+/// when the inline copy dropped the whole row; only a literal fraction
+/// passes through unscaled (CodeRabbit on PR #381).
+#[test]
+fn merged_geometry_evaluates_inherited_rel_formulas() {
+    let mut master = shape_at(1, (0.5, 0.5), 1.0, 1.0, 0.0);
+    let mut line = geo_row(3, "RelLineTo", &[("X", 0.25), ("Y", 0.5)]);
+    line.cells[0].1.f = Some("Width/4".into());
+    push_geo(
+        &mut master,
+        vec![
+            geo_row(1, "RelMoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "RelLineTo", &[("X", 0.5), ("Y", 0.0)]),
+            line,
+        ],
+    );
+    let mut inst = shape_at(1, (4.0, 5.0), 4.0, 1.0, 0.0);
+    inst.master = Some(7);
+    // Row 3 dropped entirely; row 2 kept.
+    push_geo(
+        &mut inst,
+        vec![
+            geo_row(1, "RelMoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "RelLineTo", &[("X", 0.5), ("Y", 0.0)]),
+        ],
+    );
+    let (mut doc, _page) = page_fixture(vec![inst.clone()]);
+    doc.masters.push(vsdx::model::Master {
+        id: 7,
+        shapes: vec![master],
+        ..vsdx::model::Master::default()
+    });
+    let chain = [&inst];
+    let env = shape_env(&doc, &inst, &chain);
+    let merged = crate::svg::shape_layer::merged_own_geometry(&doc, &inst, &chain, 4.0, 1.0, &env);
+    let row = merged[0]
+        .rows
+        .iter()
+        .find(|r| r.ix == 3)
+        .expect("the restored row");
+    let num = |n: &str| row.cell(n).and_then(|c| c.numeric()).unwrap();
+    assert!(
+        (num("X") - 1.0).abs() < 1e-9,
+        "Width/4 at width 4: {}",
+        num("X")
+    );
+    assert!(
+        (num("Y") - 0.5).abs() < 1e-9,
+        "the literal fraction: {}",
+        num("Y")
+    );
+}

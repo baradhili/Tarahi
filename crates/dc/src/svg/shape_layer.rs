@@ -908,14 +908,17 @@ pub(crate) fn merged_own_geometry(
             // (omitted = unchanged) value never scales with the
             // instance size (a stretched U-Turn arrow turned D=1
             // into a 9:1 ratio and its quarter circles into blobs).
-            // A Rel* row's coordinates are FRACTIONS of Width/Height
-            // that the painter scales itself; scaling the inherited
-            // fraction too placed the point Width times too far
-            // (CodeRabbit on PR #381).
             let not_coord = |t: Option<&str>, name: &str| {
-                t.is_some_and(|t| t.starts_with("Rel"))
-                    || (matches!(t, Some("EllipticalArcTo")) && matches!(name, "C" | "D"))
+                matches!(t, Some("EllipticalArcTo") | Some("RelEllipticalArcTo"))
+                    && matches!(name, "C" | "D")
             };
+            // A Rel* row's coordinates are FRACTIONS of Width/Height
+            // that the painter scales itself: an inherited literal
+            // fraction stays as it is (scaling it placed the point
+            // Width times too far), while an inherited formula still
+            // evaluates live in the instance env (CodeRabbit on
+            // PR #381).
+            let is_rel = |t: Option<&str>| t.is_some_and(|t| t.starts_with("Rel"));
             // Pair each inline row with the master row of the SAME
             // IX. Inline copies drop rows whose cells are fully
             // inherited-identical, keeping the survivors' original
@@ -962,6 +965,8 @@ pub(crate) fn merged_own_geometry(
                                             .and_then(|e| e.as_f64())
                                             .filter(|e| e.is_finite() && e.abs() <= bound)
                                             .unwrap_or(v)
+                                    } else if is_rel(src_row.t.as_deref()) {
+                                        v
                                     } else {
                                         scaled(cname, v)
                                     };
@@ -1061,7 +1066,10 @@ pub(crate) fn merged_own_geometry(
                     // keep those unscaled while the body stretches.
                     let proportional = scell.f.as_deref().map(refs_own_size).unwrap_or(true);
                     let placed = |v: f64| {
-                        if proportional && !not_coord(src_row.t.as_deref(), cname) {
+                        if proportional
+                            && !not_coord(src_row.t.as_deref(), cname)
+                            && !is_rel(src_row.t.as_deref())
+                        {
                             scaled(cname, v)
                         } else {
                             v

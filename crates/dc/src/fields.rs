@@ -395,7 +395,7 @@ fn field_envs(
     // read through a fork that adds the master-local `Sheet.N!` layer
     // (#378). The instance's own formulas keep the page scope.
     let strs = std::sync::Arc::new(strs);
-    let master_strs = master_local_env(doc, s, chain, &strs);
+    let master_strs = master_local_env(doc, s, chain);
     (env, strs, master_strs, fctx)
 }
 
@@ -629,7 +629,7 @@ fn seed_sheet_strings(doc: &Document, s: &Shape, chain: &[&Shape], strs: &mut fo
 /// master root. Visio reads that through the instance's counterpart of
 /// master shape 5; resolved against the page, it hit page shape 5
 /// (another box) and every box showed that box's name. The returned
-/// fork over the page scope seeds each master shape's rows under its
+/// scope seeds each master shape's rows under its
 /// master-local `Sheet.N!` id: the master's rows first, then the rows
 /// of its instance counterpart over them. Page-level `Sheet.N!` refs in
 /// the instance's own formulas never see this layer.
@@ -640,12 +640,7 @@ fn seed_sheet_strings(doc: &Document, s: &Shape, chain: &[&Shape], strs: &mut fo
 /// `instance_source` is that master shape: the owner for the root it
 /// targets, `MasterShape` sub-shapes, and bare inline copies matched by
 /// ID or `NameU` (CodeRabbit on PR #381).
-fn master_local_env(
-    doc: &Document,
-    s: &Shape,
-    chain: &[&Shape],
-    page: &std::sync::Arc<formula::StrEnv>,
-) -> Option<formula::StrEnv> {
+fn master_local_env(doc: &Document, s: &Shape, chain: &[&Shape]) -> Option<formula::StrEnv> {
     let src = doc.instance_source(s, chain)?;
     src.sheet.section("Field", 0)?;
     // The owner and its ancestors.
@@ -678,7 +673,16 @@ fn master_local_env(
     let mut pairs = Vec::new();
     let mut anc: Vec<&Shape> = owner_anc.to_vec();
     pair(doc, owner, &mut anc, &mut pairs);
-    let mut env = formula::StrEnv::fork(page);
+    // A scope of its own, not a fork of the page's: a master formula
+    // never reaches page shapes, so a `Sheet.N!` row the master lacks
+    // stays unresolved (the field keeps its cached display) instead of
+    // falling through to page shape N (CodeRabbit on PR #381). The
+    // bare `User.`/`Prop.` rows layer as in the page scope.
+    let mut env = formula::StrEnv::new();
+    seed_rows(&src.sheet, "User", "User", &mut env);
+    seed_rows(&src.sheet, "Prop", "Prop", &mut env);
+    seed_rows(&s.sheet, "User", "User", &mut env);
+    seed_rows(&s.sheet, "Prop", "Prop", &mut env);
     fn walk(ms: &Shape, pairs: &[(*const Shape, &Shape)], env: &mut formula::StrEnv) {
         seed_sheet_rows_under(&ms.sheet, ms.id, env);
         if let Some((_, inst)) = pairs.iter().find(|(p, _)| std::ptr::eq(*p, ms)) {
@@ -1425,6 +1429,40 @@ mod tests {
         assert_eq!(
             substituted_text(&doc, &inst9, &[&group, &inst9], Some(&fctx)).as_deref(),
             Some("inline-header")
+        );
+    }
+
+    /// A master formula never reaches page shapes: a `Sheet.5!` row the
+    /// master lacks stays unresolved (the marker's cached display), even
+    /// with a page shape 5 carrying that row (CodeRabbit on PR #381).
+    #[test]
+    fn master_formula_does_not_fall_through_to_the_page() {
+        let mut doc = Document::default();
+        doc.masters.push(vsdx::model::Master {
+            id: 8,
+            shapes: vec![Shape {
+                id: 5,
+                sheet: labelled(None, &[(0, "Sheet.5!User.Label")]),
+                ..Shape::default()
+            }],
+            ..vsdx::model::Master::default()
+        });
+        let mut page = Page::default();
+        page.shapes.push(Shape {
+            id: 5,
+            sheet: labelled(Some("page-five"), &[]),
+            ..Shape::default()
+        });
+        let fctx = FieldsCtx::for_page(&doc, &page);
+        let mut inst = Shape {
+            id: 11,
+            master: Some(8),
+            ..Shape::default()
+        };
+        inst.sheet.text_raw = Some("<fld IX='0'>cached</fld>".into());
+        assert_eq!(
+            substituted_text(&doc, &inst, &[&inst], Some(&fctx)).as_deref(),
+            Some("cached")
         );
     }
 }
