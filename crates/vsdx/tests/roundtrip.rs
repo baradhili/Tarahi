@@ -25,9 +25,10 @@ fn write_messy_package(dir: &Path) -> PathBuf {
 <Default Extension="bin" ContentType="application/octet-stream"/>
 <Override PartName="/visio/document.xml" ContentType="application/vnd.ms-visio.drawing.main+xml"/>
 <Override PartName="/visio/pages/pages.xml" ContentType="application/vnd.ms-visio.pages+xml"/>
-<Override PartName="/visio/pages/page1.xml" ContentType="application/vnd.ms-visio.pages+xml"/>
+<Override PartName="/visio/pages/page1.xml" ContentType="application/vnd.ms-visio.page+xml"/>
 <Override PartName="/visio/masters/masters.xml" ContentType="application/vnd.ms-visio.masters+xml"/>
 <Override PartName="/visio/masters/master1.xml" ContentType="application/vnd.ms-visio.master+xml"/>
+<Override PartName="/visio/windows.xml" ContentType="application/vnd.ms-visio.windows+xml"/>
 </Types>"#;
 
     let root_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -63,6 +64,7 @@ fn write_messy_package(dir: &Path) -> PathBuf {
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.microsoft.com/visio/2010/relationships/pages" Target="pages/pages.xml"/>
 <Relationship Id="rId2" Type="http://schemas.microsoft.com/visio/2010/relationships/masters" Target="masters/masters.xml"/>
+<Relationship Id="rId3" Type="http://schemas.microsoft.com/visio/2010/relationships/windows" Target="windows.xml"/>
 </Relationships>"#;
 
     // Page index with attrs, inline PageSheet with an interleaved Trigger,
@@ -192,6 +194,12 @@ fn write_messy_package(dir: &Path) -> PathBuf {
             masters_rels.as_bytes().to_vec(),
         ),
         ("visio/masters/master1.xml", master1.as_bytes().to_vec()),
+        // A valid drawing carries a windows part (#345: Visio refuses
+        // one without); the writer keeps it verbatim.
+        (
+            "visio/windows.xml",
+            br#"<Windows xmlns='http://schemas.microsoft.com/office/visio/2012/main'/>"#.to_vec(),
+        ),
         ("docProps/core.xml", core.as_bytes().to_vec()),
         ("custom/blob.bin", vec![0x00, 0x01, 0xFE, 0xFF, 0x7F, 0x80]),
     ];
@@ -484,9 +492,25 @@ fn writes_fresh_document_from_model() {
         "visio/pages/pages.xml",
         "visio/pages/_rels/pages.xml.rels",
         "visio/pages/page1.xml",
+        // #345: Visio 2021 refuses a drawing without a windows part.
+        "visio/windows.xml",
     ] {
         assert!(names.contains(&expected), "missing {expected} in {names:?}");
     }
+    // #345: the index is `pages+xml`, a page `page+xml` (Visio empties
+    // a page declared with the index type).
+    assert_eq!(
+        pkg.content_type_of("visio/pages/pages.xml").unwrap(),
+        "application/vnd.ms-visio.pages+xml"
+    );
+    assert_eq!(
+        pkg.content_type_of("visio/pages/page1.xml").unwrap(),
+        "application/vnd.ms-visio.page+xml"
+    );
+    assert_eq!(
+        pkg.content_type_of("visio/windows.xml").unwrap(),
+        "application/vnd.ms-visio.windows+xml"
+    );
     assert_eq!(
         pkg.content_type_of("visio/document.xml").unwrap(),
         "application/vnd.ms-visio.drawing.main+xml"
@@ -551,4 +575,82 @@ fn writes_fresh_document_from_model() {
     // helper), pinning serializer conventions the model API does not
     // guarantee. Attribute fidelity is already proven where it is the
     // spec — the messy-package canonical-XML oracle above.
+}
+
+/// #345: a drawing Tarahi saved before the fix (its blank template had
+/// no windows part and typed the page `pages+xml`) comes back from a
+/// save as one Visio 2021 opens: the page typed `page+xml`, and an empty
+/// windows part with its relationship and content type. Visio witness:
+/// the old file fails with "parts are missing or invalid"; adding only
+/// an empty `<Windows/>` opens it, and only the page type fix brings its
+/// 59 shapes back.
+#[test]
+fn saving_repairs_drawings_visio_refused() {
+    use std::io::Read;
+    let tmp = tempfile::tempdir().unwrap();
+    let blank = Path::new(env!("CARGO_MANIFEST_DIR")).join("../dc-core/assets/blank.vsdx");
+    let old = tmp.path().join("old.vsdx");
+    {
+        let mut src = zip::ZipArchive::new(std::fs::File::open(&blank).unwrap()).unwrap();
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&old).unwrap());
+        for i in 0..src.len() {
+            let mut f = src.by_index(i).unwrap();
+            let name = f.name().unwrap().to_string();
+            if name == "visio/windows.xml" {
+                continue;
+            }
+            let mut data = String::new();
+            f.read_to_string(&mut data).unwrap();
+            let data = match name.as_str() {
+                "[Content_Types].xml" => data
+                    .replace(
+                        "application/vnd.ms-visio.page+xml",
+                        "application/vnd.ms-visio.pages+xml",
+                    )
+                    .lines()
+                    .filter(|l| !l.contains("windows"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                "visio/_rels/document.xml.rels" => data
+                    .lines()
+                    .filter(|l| !l.contains("windows"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => data,
+            };
+            w.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            w.write_all(data.as_bytes()).unwrap();
+        }
+        w.finish().unwrap();
+    }
+    let before = vsdx::Package::open(&old).unwrap();
+    assert!(!before.part_names().contains(&"visio/windows.xml"));
+    assert_eq!(
+        before.content_type_of("visio/pages/page1.xml").unwrap(),
+        "application/vnd.ms-visio.pages+xml"
+    );
+
+    let doc = vsdx::parse::parse(&old).unwrap();
+    let out = tmp.path().join("saved.vsdx");
+    vsdx::write::save(&doc, &out).unwrap();
+    let pkg = vsdx::Package::open(&out).unwrap();
+    assert_eq!(
+        pkg.content_type_of("visio/pages/page1.xml").unwrap(),
+        "application/vnd.ms-visio.page+xml"
+    );
+    assert_eq!(
+        pkg.content_type_of("visio/pages/pages.xml").unwrap(),
+        "application/vnd.ms-visio.pages+xml"
+    );
+    assert_eq!(
+        pkg.content_type_of("visio/windows.xml").unwrap(),
+        "application/vnd.ms-visio.windows+xml"
+    );
+    assert!(pkg
+        .relationships("visio/document.xml")
+        .iter()
+        .any(|(_, ty, target)| ty.ends_with("/windows") && target.ends_with("windows.xml")));
+    // The model survives untouched.
+    assert!(doc.same_model(&vsdx::parse::parse(&out).unwrap()));
 }

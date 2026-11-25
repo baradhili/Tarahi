@@ -647,6 +647,12 @@ pub fn build_parts(doc: &Document) -> BTreeMap<String, Vec<u8>> {
         reconcile_page_parts(&mut parts, doc, pkg);
         reconcile_master_parts(&mut parts, doc, pkg);
         reconcile_media(&mut parts, doc, pkg);
+        ensure_visio_parts(
+            &mut parts,
+            &doc.doc_part,
+            &doc.pages_part,
+            !doc.pages.is_empty(),
+        );
         return parts;
     }
 
@@ -719,6 +725,7 @@ pub fn build_parts(doc: &Document) -> BTreeMap<String, Vec<u8>> {
         "[Content_Types].xml".to_string(),
         content_types_xml(&parts, &doc_part, &pages_part, doc).into_bytes(),
     );
+    ensure_visio_parts(&mut parts, &doc_part, &pages_part, !doc.pages.is_empty());
     parts
 }
 
@@ -818,7 +825,14 @@ fn content_types_xml(
     };
     override_part(doc_part, doc_ct, &mut out);
     for part in &page_set {
-        override_part(part, "application/vnd.ms-visio.pages+xml", &mut out);
+        // The pages INDEX is `pages+xml`; each page part is `page+xml`
+        // (#345: Visio drops a page declared with the index type).
+        let ct = if part == pages_part {
+            CT_PAGES
+        } else {
+            CT_PAGE
+        };
+        override_part(part, ct, &mut out);
     }
     if let Some(mp) = &masters_part {
         override_part(mp, "application/vnd.ms-visio.masters+xml", &mut out);
@@ -1059,7 +1073,93 @@ fn build_content_types(defaults: &[(String, String)], overrides: &[(String, Stri
     out.into_bytes()
 }
 
-const CT_PAGE: &str = "application/vnd.ms-visio.pages+xml";
+const CT_PAGE: &str = "application/vnd.ms-visio.page+xml";
+const CT_PAGES: &str = "application/vnd.ms-visio.pages+xml";
+const CT_WINDOWS: &str = "application/vnd.ms-visio.windows+xml";
+
+/// An empty windows part — what Visio's own shipped stencils persist.
+const EMPTY_WINDOWS: &str = "<Windows xmlns=\"http://schemas.microsoft.com/office/visio/2012/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"/>";
+
+/// Make a written package one Visio 2021 opens (#345):
+/// - every page part is typed `page+xml`. A page declared with the
+///   pages-index type `pages+xml` (Tarahi's blank template and earlier
+///   saves) opens with its page silently emptied;
+/// - the package has a windows part. Without one, Visio refuses the
+///   whole file ("Visio cannot open the file or a component in the file
+///   because parts are missing or invalid"). An empty `<Windows/>` is
+///   enough; a package that has one keeps it untouched. Only drawings
+///   (a document with pages) get one: stencils were not measured.
+///
+/// Packages Visio wrote already satisfy both, so their round-trip is
+/// unchanged.
+fn ensure_visio_parts(
+    parts: &mut BTreeMap<String, Vec<u8>>,
+    doc_part: &str,
+    pages_part: &str,
+    drawing: bool,
+) {
+    let Some(ct_bytes) = parts.get("[Content_Types].xml").cloned() else {
+        return;
+    };
+    let (defaults, mut overrides) = parse_content_types(&ct_bytes);
+    let mut changed = false;
+    // The page parts the pages index points at.
+    let index_dir = dir_of(pages_part);
+    let page_parts: Vec<String> = parts
+        .get(&rels_part_of(pages_part))
+        .map(|b| parse_rels(b))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.type_ == rel_type("page"))
+        .map(|e| format!("/{}", resolve_target(&index_dir, &e.target)))
+        .collect();
+    for (part, ct) in overrides.iter_mut() {
+        if page_parts.contains(part) && ct != CT_PAGE {
+            *ct = CT_PAGE.to_string();
+            changed = true;
+        }
+    }
+    if drawing && !overrides.iter().any(|(_, ct)| ct == CT_WINDOWS) {
+        let dir = dir_of(doc_part);
+        let windows = if dir.is_empty() {
+            "windows.xml".to_string()
+        } else {
+            format!("{dir}/windows.xml")
+        };
+        if !parts.contains_key(&windows) {
+            parts.insert(
+                windows.clone(),
+                format!("{}{EMPTY_WINDOWS}", decl()).into_bytes(),
+            );
+        }
+        overrides.push((format!("/{windows}"), CT_WINDOWS.to_string()));
+        let doc_rels = rels_part_of(doc_part);
+        let mut entries = parts
+            .get(&doc_rels)
+            .map(|b| parse_rels(b))
+            .unwrap_or_default();
+        if !entries.iter().any(|e| e.type_ == rel_type("windows")) {
+            let next = 1 + entries
+                .iter()
+                .filter_map(|e| e.id.strip_prefix("rId").and_then(|n| n.parse::<u32>().ok()))
+                .max()
+                .unwrap_or(0);
+            entries.push(RelEntry {
+                id: format!("rId{next}"),
+                type_: rel_type("windows"),
+                target: relative_target(&dir, &windows),
+            });
+            parts.insert(doc_rels, build_rels(&entries));
+        }
+        changed = true;
+    }
+    if changed {
+        parts.insert(
+            "[Content_Types].xml".to_string(),
+            build_content_types(&defaults, &overrides),
+        );
+    }
+}
 
 /// Synchronize `parts` with the model's page set: new pages get their
 /// part, a pages-index relationship, and a content-types override;
