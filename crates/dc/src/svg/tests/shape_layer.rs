@@ -1867,6 +1867,29 @@ fn gradient_fill_directions_and_line_gradient() {
     assert!(stroke.contains(r#"stroke="url(#dc-grad"#), "{stroke}");
 }
 
+/// Visio eases each gradient segment with smoothstep and mixes in
+/// linear light (Visio 2021 witness: its own PNG export of linear and
+/// radial ramps fits this to 0.01 RMS). Black → white: the halfway
+/// sub-stop is the linear-light midpoint #bcbcbc, not sRGB #808080,
+/// and the quarter stop sits low on the eased curve.
+#[test]
+fn gradient_stops_ease_in_linear_light() {
+    let svg = stop_elems(&[("#000000".into(), 1.0, 0.0), ("#ffffff".into(), 1.0, 1.0)]);
+    assert_eq!(svg.matches("<stop ").count(), EASE_STEPS + 1, "{svg}");
+    assert!(
+        svg.contains(r##"<stop offset="0.5000" stop-color="#bcbcbc"/>"##),
+        "{svg}"
+    );
+    // u = 0.25 → smoothstep 0.15625 → linear 0.156 → sRGB #6e6e6e.
+    assert!(
+        svg.contains(r##"<stop offset="0.2500" stop-color="#6e6e6e"/>"##),
+        "{svg}"
+    );
+    // Non-hex colors keep a plain two-stop ramp.
+    let named = stop_elems(&[("red".into(), 1.0, 0.0), ("blue".into(), 1.0, 1.0)]);
+    assert_eq!(named.matches("<stop ").count(), 2, "{named}");
+}
+
 /// Legacy fill patterns (Visio 2021 witness t12): 2–7 draw 1/96 in
 /// lines at a 1/12 in period in FillForegnd over FillBkgnd, clipped
 /// to the outline; dither patterns mix the two colors.
