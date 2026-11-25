@@ -1298,7 +1298,7 @@ pub fn show(
     let page_tl = view.pan.to_pos2();
     out.page_rect = Rect::from_min_size(page_tl, page_px);
 
-    // Paint order: desk, page shadow+paper, texture, grid, selection.
+    // Paint order: desk, page shadow+paper, grid, texture, selection.
     // The desk and rulers follow the visual mode; the page paper stays
     // white — it is the document, not the shell (GitHub #52).
     let t = theme::shell_tokens(ui.visuals());
@@ -1317,6 +1317,37 @@ pub fn show(
         Stroke::new(1.0, t.page_edge),
         egui::StrokeKind::Middle,
     );
+    // Grid (5 mm spacing in display units): on the paper, beneath every
+    // shape and background page, as in Visio — drawn after the layers
+    // it showed through filled shapes (#306).
+    if view.show_grid {
+        let step_px = grid_step_in(view) as f32 * view.px_per_in();
+        if step_px >= 5.0 {
+            let mut x = out.page_rect.left() + step_px;
+            while x < out.page_rect.right() {
+                p.line_segment(
+                    [
+                        Pos2::new(x, out.page_rect.top()),
+                        Pos2::new(x, out.page_rect.bottom()),
+                    ],
+                    Stroke::new(0.5, Color32::from_gray(216)),
+                );
+                x += step_px;
+            }
+            let mut y = out.page_rect.top() + step_px;
+            while y < out.page_rect.bottom() {
+                p.line_segment(
+                    [
+                        Pos2::new(out.page_rect.left(), y),
+                        Pos2::new(out.page_rect.right(), y),
+                    ],
+                    Stroke::new(0.5, Color32::from_gray(216)),
+                );
+                y += step_px;
+            }
+        }
+    }
+
     // Background pages (#113, URS-1158): stacked beneath everything
     // drawn on this page — deepest background first.
     for q in underlays {
@@ -1351,35 +1382,6 @@ pub fn show(
             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
             Color32::WHITE,
         );
-    }
-
-    // Grid (5 mm spacing in display units).
-    if view.show_grid {
-        let step_px = grid_step_in(view) as f32 * view.px_per_in();
-        if step_px >= 5.0 {
-            let mut x = out.page_rect.left() + step_px;
-            while x < out.page_rect.right() {
-                p.line_segment(
-                    [
-                        Pos2::new(x, out.page_rect.top()),
-                        Pos2::new(x, out.page_rect.bottom()),
-                    ],
-                    Stroke::new(0.5, Color32::from_gray(216)),
-                );
-                x += step_px;
-            }
-            let mut y = out.page_rect.top() + step_px;
-            while y < out.page_rect.bottom() {
-                p.line_segment(
-                    [
-                        Pos2::new(out.page_rect.left(), y),
-                        Pos2::new(out.page_rect.right(), y),
-                    ],
-                    Stroke::new(0.5, Color32::from_gray(216)),
-                );
-                y += step_px;
-            }
-        }
     }
 
     // Guides (#113): dashed teal lines / point crosshairs above the
