@@ -308,8 +308,20 @@ fn render_shape_local<'a>(
     };
     let width = get("Width").unwrap_or(1.0);
     let height = get("Height").unwrap_or(1.0);
+    // A group member mirrors about its own LocPin like a page shape
+    // (Visio 2021 witness: the network Router master's arrow sub-shapes
+    // carry FlipX=1, and drawn unflipped two of the four arrows pointed
+    // the wrong way).
+    let flip = |n: &str| {
+        if get(n).unwrap_or(0.0) != 0.0 {
+            -1.0
+        } else {
+            1.0
+        }
+    };
+    let (sx, sy) = (flip("FlipX"), flip("FlipY"));
     let transform = format!(
-        "translate({px:.6},{py:.6}) rotate({deg:.6}) translate({lx:.6},{ly:.6})",
+        "translate({px:.6},{py:.6}) rotate({deg:.6}) scale({sx},{sy}) translate({lx:.6},{ly:.6})",
         px = get("PinX").unwrap_or(0.0),
         // group-local Y is already flipped by the parent group's scale
         py = -get("PinY").unwrap_or(0.0),
@@ -345,16 +357,16 @@ fn render_shape_local<'a>(
         render_shape_local(doc, sub, &chain, part, skip_text, greek, cull, fields, out);
     }
     mirror_master(doc, s, &chain, width, height, greek, fields, out);
-    // Group-local rendering applies no flip scale of its own, so the text
-    // needs no flip compensation here.
+    // The text keeps its glyphs upright inside the member's flip, as on
+    // the page.
     emit_text(
         doc,
         s,
         &chain,
         width,
         height,
-        1.0,
-        1.0,
+        sx,
+        sy,
         skip_text == Some(s.id),
         greek,
         fields,

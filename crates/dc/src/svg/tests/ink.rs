@@ -286,3 +286,44 @@ fn inherited_polyline_vertices_bound_the_ink() {
     // reach 3 in.
     assert!(b.3 > 2.5, "the box reaches the vertices: {b:?}");
 }
+
+/// A group member mirrors about its own LocPin, like a page shape
+/// (Visio 2021 witness: the network Router master's arrow sub-shapes
+/// carry FlipX=1). The rendered transform carries the flip, and the
+/// ink walk mirrors the box with it: with LocPinX at the left edge
+/// the flipped member extends LEFT of its pin.
+#[test]
+fn group_members_flip_about_their_loc_pin() {
+    let build = |flip: &str| {
+        let mut member = shape_at(2, (1.0, 0.5), 0.5, 0.4, 0.0);
+        member.sheet.set_cell("LocPinX", Cell::value("0"));
+        member.sheet.set_cell("FlipX", Cell::value(flip));
+        push_geo(
+            &mut member,
+            vec![
+                geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                geo_row(2, "LineTo", &[("X", 0.5), ("Y", 0.0)]),
+                geo_row(3, "LineTo", &[("X", 0.0), ("Y", 0.4)]),
+                geo_row(4, "LineTo", &[("X", 0.0), ("Y", 0.0)]),
+            ],
+        );
+        let mut group = shape_at(1, (2.0, 2.0), 2.0, 1.0, 0.0);
+        group.type_ = Some("Group".into());
+        group.sub_shapes = vec![member];
+        page_fixture(vec![group])
+    };
+    let (doc, page) = build("1");
+    let svg = render_page(&doc, &page).unwrap();
+    assert!(svg.contains("scale(-1,1)"), "{svg}");
+    let flipped = shape_ink_bounds_focused(&doc, &page, 1, Some(2)).unwrap();
+    let (doc0, page0) = build("0");
+    let plain = shape_ink_bounds_focused(&doc0, &page0, 1, Some(2)).unwrap();
+    // Same size; the flipped box sits one member width further left.
+    assert!((flipped.2 - plain.2).abs() < 1e-9);
+    assert!(
+        (plain.0 - flipped.0 - 0.5).abs() < 1e-9,
+        "plain x={} flipped x={}",
+        plain.0,
+        flipped.0
+    );
+}
