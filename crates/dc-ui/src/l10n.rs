@@ -5798,6 +5798,34 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "ss-view-formulas",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "ss-view-formulas-tip",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "ss-view-values",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "ss-view-values-tip",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "stamp-tool",
         attribute: None,
         vars: &[],
@@ -6925,13 +6953,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..48787,
-            Self::En => 48787..95891,
-            Self::Es => 95891..147744,
-            Self::Fa => 147744..209482,
-            Self::Ja => 209482..261706,
-            Self::Ko => 261706..309787,
-            Self::ZhHans => 309787..351924,
+            Self::De => 0..48955,
+            Self::En => 48955..96213,
+            Self::Es => 96213..148239,
+            Self::Fa => 148239..210182,
+            Self::Ja => 210182..262556,
+            Self::Ko => 262556..310785,
+            Self::ZhHans => 310785..353078,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -10146,6 +10174,18 @@ impl L10nLanguage {
     }
     pub fn msg_ss_shape_not_found(&self) -> String {
         self.0.msg("ss-shape-not-found", None).unwrap()
+    }
+    pub fn msg_ss_view_formulas(&self) -> String {
+        self.0.msg("ss-view-formulas", None).unwrap()
+    }
+    pub fn msg_ss_view_formulas_tip(&self) -> String {
+        self.0.msg("ss-view-formulas-tip", None).unwrap()
+    }
+    pub fn msg_ss_view_values(&self) -> String {
+        self.0.msg("ss-view-values", None).unwrap()
+    }
+    pub fn msg_ss_view_values_tip(&self) -> String {
+        self.0.msg("ss-view-values-tip", None).unwrap()
     }
     pub fn msg_stamp_tool(&self) -> String {
         self.0.msg("stamp-tool", None).unwrap()
