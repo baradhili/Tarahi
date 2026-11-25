@@ -23,6 +23,26 @@ fn code_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<super::
                 .selected(ctx.shapesheet_open)
                 .tip(s.msg_inspect_the_selected_shape_s_cel()),
         ),
+        // #272: Visio's Show ShapeSheet also opens the page's and the
+        // document's sheets (its split button's Page and Document).
+        stack(vec![
+            RibbonButton::new(
+                Icon::ShapeSheet,
+                s.msg_page_shapesheet(),
+                Action::ShowPageSheet,
+            )
+            .enabled(ctx.has_doc)
+            .selected(ctx.page_sheet_open)
+            .tip(s.msg_inspect_the_current_page_cells()),
+            RibbonButton::new(
+                Icon::ShapeSheet,
+                s.msg_document_shapesheet(),
+                Action::ShowDocumentSheet,
+            )
+            .enabled(ctx.has_doc)
+            .selected(ctx.doc_sheet_open)
+            .tip(s.msg_inspect_the_document_cells()),
+        ]),
         grid(vec![
             vec![
                 RibbonButton::new(Icon::Macro, "", Action::Macros)

@@ -505,17 +505,22 @@ impl App {
         }
     }
 
-    /// #192 spec: toggle one shape's ShapeSheet window (open order
-    /// kept; re-toggling removes).
-    pub(super) fn toggle_shapesheet(&mut self, shape: i64) {
-        if let Some(i) = self.shapesheets.iter().position(|sid| *sid == shape) {
+    /// #192 spec: toggle one ShapeSheet window (open order kept;
+    /// re-toggling removes). #272: shapes, pages and the document.
+    pub(super) fn toggle_shapesheet(&mut self, target: crate::shapesheet::SheetTarget) {
+        if let Some(i) = self.shapesheets.iter().position(|t| *t == target) {
             self.shapesheets.remove(i);
         } else {
-            self.shapesheets.push(shape);
+            self.shapesheets.push(target);
         }
     }
 
-    pub(super) fn shapesheet_panel(&mut self, ui: &mut Ui, shape_id: i64, max_w: f32) {
+    pub(super) fn shapesheet_panel(
+        &mut self,
+        ui: &mut Ui,
+        target: crate::shapesheet::SheetTarget,
+        max_w: f32,
+    ) {
         // #190/#192: the window's title bar carries the close; this is
         // pure content, bound to the sheet's OWN shape (not the live
         // selection). #189: the body itself lives in `shapesheet.rs`
@@ -526,7 +531,7 @@ impl App {
                 return;
             };
             let Some(ed) = self.ed() else { return };
-            crate::shapesheet::panel(ui, &ed.doc, page_id, shape_id, max_w);
+            crate::shapesheet::panel_for(ui, &ed.doc, page_id, target, max_w);
         });
     }
 }

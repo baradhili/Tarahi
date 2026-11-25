@@ -3453,13 +3453,32 @@ fn srgb_hex(l: [f64; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", enc(l[0]), enc(l[1]), enc(l[2]))
 }
 
-/// The SVG stops for a Visio gradient. Visio 2021 eases every segment
-/// between two stops with smoothstep (3u² − 2u³) and mixes the colors
-/// in linear light (witness: linear and radial ramps measured on
-/// Visio's own PNG export fit this to 0.01 RMS, against 0.10 for a
-/// plain sRGB ramp; the network LLD's cloud puffs came out far too
-/// dark). Each segment is sampled into [`EASE_STEPS`] pieces.
+/// Whether Visio draws `stops` as an eased two-colour ramp. Visio 2021
+/// (witness: per-variant ramps on its own PNG export) eases and mixes in
+/// linear light only a true two-colour gradient spanning the whole box:
+/// two stops at exactly 0 and 1, or a mirrored A-B-A with its ends at 0
+/// and 1 (the middle stop anywhere). Every other gradient, with an end
+/// stop inset (0.01, 0.99, 0.2/0.8), three distinct colours or four
+/// stops, ramps linearly in sRGB (fits to 0.4–0.9 of 255).
+fn eased_two_colour(stops: &[Stop]) -> bool {
+    let at = |p: f64, v: f64| (p - v).abs() < 1e-9;
+    match stops {
+        [(_, _, p0), (_, _, p1)] => at(*p0, 0.0) && at(*p1, 1.0),
+        [(c0, a0, p0), _, (c2, a2, p2)] => {
+            at(*p0, 0.0) && at(*p2, 1.0) && c0.eq_ignore_ascii_case(c2) && (a0 - a2).abs() < 1e-9
+        }
+        _ => false,
+    }
+}
+
+/// The SVG stops for a Visio gradient. A true two-colour ramp (see
+/// [`eased_two_colour`]) is eased with smoothstep (3u² − 2u³) and mixed
+/// in linear light, as Visio 2021 draws it (the network LLD's cloud
+/// puffs came out far too dark as a plain sRGB ramp); each segment is
+/// sampled into [`EASE_STEPS`] pieces. Every other gradient keeps its
+/// stops as given, which SVG ramps linearly in sRGB, like Visio.
 pub(crate) fn stop_elems(stops: &[Stop]) -> String {
+    let eased = eased_two_colour(stops);
     let mut out = String::new();
     let mut emit = |c: &str, a: f64, p: f64| {
         let _ = write!(
@@ -3471,7 +3490,7 @@ pub(crate) fn stop_elems(stops: &[Stop]) -> String {
     };
     for (i, (c, a, p)) in stops.iter().enumerate() {
         if let Some((pc, pa, pp)) = i.checked_sub(1).map(|j| &stops[j]) {
-            if let (Some(x), Some(y), true) = (linear_rgb(pc), linear_rgb(c), p > pp) {
+            if let (true, Some(x), Some(y), true) = (eased, linear_rgb(pc), linear_rgb(c), p > pp) {
                 for k in 1..EASE_STEPS {
                     let u = k as f64 / EASE_STEPS as f64;
                     let e = u * u * (3.0 - 2.0 * u);

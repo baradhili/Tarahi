@@ -1867,11 +1867,12 @@ fn gradient_fill_directions_and_line_gradient() {
     assert!(stroke.contains(r#"stroke="url(#dc-grad"#), "{stroke}");
 }
 
-/// Visio eases each gradient segment with smoothstep and mixes in
-/// linear light (Visio 2021 witness: its own PNG export of linear and
-/// radial ramps fits this to 0.01 RMS). Black → white: the halfway
-/// sub-stop is the linear-light midpoint #bcbcbc, not sRGB #808080,
-/// and the quarter stop sits low on the eased curve.
+/// Visio eases a two-colour gradient spanning the box with smoothstep
+/// and mixes in linear light (Visio 2021 witness: its own PNG export of
+/// linear and radial ramps fits this to 0.01 RMS). Black → white: the
+/// halfway sub-stop is the linear-light midpoint #bcbcbc, not sRGB
+/// #808080, and the quarter stop sits low on the eased curve. Other
+/// gradients keep a linear sRGB ramp.
 #[test]
 fn gradient_stops_ease_in_linear_light() {
     let svg = stop_elems(&[("#000000".into(), 1.0, 0.0), ("#ffffff".into(), 1.0, 1.0)]);
@@ -1885,6 +1886,38 @@ fn gradient_stops_ease_in_linear_light() {
         svg.contains(r##"<stop offset="0.2500" stop-color="#6e6e6e"/>"##),
         "{svg}"
     );
+    // A mirrored A-B-A spanning the box eases too (each half).
+    let mirrored = stop_elems(&[
+        ("#000000".into(), 1.0, 0.0),
+        ("#ffffff".into(), 1.0, 0.4),
+        ("#000000".into(), 1.0, 1.0),
+    ]);
+    assert_eq!(mirrored.matches("<stop ").count(), 2 * EASE_STEPS + 1);
+    // Anything else ramps linearly in sRGB, as Visio draws it: an end
+    // stop inset from the box edge (the network LLD's router discs,
+    // 0.01/0.5/1), three distinct colours, or four stops.
+    for stops in [
+        vec![
+            ("#990099".into(), 1.0, 0.01),
+            ("#ccccff".into(), 1.0, 0.5),
+            ("#990099".into(), 1.0, 1.0),
+        ],
+        vec![
+            ("#990099".into(), 1.0, 0.0),
+            ("#cc804d".into(), 1.0, 0.5),
+            ("#ffff00".into(), 1.0, 1.0),
+        ],
+        vec![("#990099".into(), 1.0, 0.0), ("#ffff00".into(), 1.0, 0.99)],
+        vec![
+            ("#990099".into(), 1.0, 0.0),
+            ("#ffff00".into(), 1.0, 0.33),
+            ("#990099".into(), 1.0, 0.67),
+            ("#ffff00".into(), 1.0, 1.0),
+        ],
+    ] {
+        let svg = stop_elems(&stops);
+        assert_eq!(svg.matches("<stop ").count(), stops.len(), "{svg}");
+    }
     // Non-hex colors keep a plain two-stop ramp.
     let named = stop_elems(&[("red".into(), 1.0, 0.0), ("blue".into(), 1.0, 1.0)]);
     assert_eq!(named.matches("<stop ").count(), 2, "{named}");

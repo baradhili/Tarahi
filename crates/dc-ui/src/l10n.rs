@@ -1584,6 +1584,20 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "document-shapesheet",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "document-sheet-name",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "document-stencil",
         attribute: None,
         vars: &[],
@@ -2117,6 +2131,27 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "insert-field",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "inspect-the-current-page-cells",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "inspect-the-document-cells",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "page-shapesheet",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -5623,7 +5658,21 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "ss-empty-sheet",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "ss-section-1d-endpoints",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "ss-section-additional-cells",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -5638,6 +5687,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "ss-section-control-points",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "ss-section-document-properties",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -6869,13 +6925,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..48358,
-            Self::En => 48358..95056,
-            Self::Es => 95056..146456,
-            Self::Fa => 146456..207722,
-            Self::Ja => 207722..259444,
-            Self::Ko => 259444..307104,
-            Self::ZhHans => 307104..348847,
+            Self::De => 0..48787,
+            Self::En => 48787..95891,
+            Self::Es => 95891..147744,
+            Self::Fa => 147744..209482,
+            Self::Ja => 209482..261706,
+            Self::Ko => 261706..309787,
+            Self::ZhHans => 309787..351924,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -7817,6 +7873,12 @@ impl L10nLanguage {
             .msg("document-protection-arrives-with", None)
             .unwrap()
     }
+    pub fn msg_document_shapesheet(&self) -> String {
+        self.0.msg("document-shapesheet", None).unwrap()
+    }
+    pub fn msg_document_sheet_name(&self) -> String {
+        self.0.msg("document-sheet-name", None).unwrap()
+    }
     pub fn msg_document_stencil(&self) -> String {
         self.0.msg("document-stencil", None).unwrap()
     }
@@ -8075,6 +8137,15 @@ impl L10nLanguage {
     }
     pub fn msg_insert_field(&self) -> String {
         self.0.msg("insert-field", None).unwrap()
+    }
+    pub fn msg_inspect_the_current_page_cells(&self) -> String {
+        self.0.msg("inspect-the-current-page-cells", None).unwrap()
+    }
+    pub fn msg_inspect_the_document_cells(&self) -> String {
+        self.0.msg("inspect-the-document-cells", None).unwrap()
+    }
+    pub fn msg_page_shapesheet(&self) -> String {
+        self.0.msg("page-shapesheet", None).unwrap()
     }
     pub fn msg_select_a_shape_to_insert_a_field(&self) -> String {
         self.0
@@ -10013,14 +10084,23 @@ impl L10nLanguage {
     pub fn msg_split_view_planned(&self) -> String {
         self.0.msg("split-view-planned", None).unwrap()
     }
+    pub fn msg_ss_empty_sheet(&self) -> String {
+        self.0.msg("ss-empty-sheet", None).unwrap()
+    }
     pub fn msg_ss_section_1d_endpoints(&self) -> String {
         self.0.msg("ss-section-1d-endpoints", None).unwrap()
+    }
+    pub fn msg_ss_section_additional_cells(&self) -> String {
+        self.0.msg("ss-section-additional-cells", None).unwrap()
     }
     pub fn msg_ss_section_connection_points(&self) -> String {
         self.0.msg("ss-section-connection-points", None).unwrap()
     }
     pub fn msg_ss_section_control_points(&self) -> String {
         self.0.msg("ss-section-control-points", None).unwrap()
+    }
+    pub fn msg_ss_section_document_properties(&self) -> String {
+        self.0.msg("ss-section-document-properties", None).unwrap()
     }
     pub fn msg_ss_section_fill_gradient_stops(&self) -> String {
         self.0.msg("ss-section-fill-gradient-stops", None).unwrap()

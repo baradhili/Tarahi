@@ -156,10 +156,19 @@ impl App {
                 // selection's sheet (toggling); without a selection it
                 // closes every open sheet.
                 if let Some((_, sid)) = self.sel {
-                    self.toggle_shapesheet(sid);
+                    self.toggle_shapesheet(crate::shapesheet::SheetTarget::Shape(sid));
                 } else {
                     self.shapesheets.clear();
                 }
+            }
+            // #272: Visio's Show ShapeSheet ▸ Page / Document.
+            Action::ShowPageSheet => {
+                if let Some(page_id) = self.page_id() {
+                    self.toggle_shapesheet(crate::shapesheet::SheetTarget::Page(page_id));
+                }
+            }
+            Action::ShowDocumentSheet => {
+                self.toggle_shapesheet(crate::shapesheet::SheetTarget::Document);
             }
             Action::Macros => {
                 self.status = crate::i18n::strs().msg_macros_arrive_with_m7_vba_vsdm_m()
@@ -615,9 +624,17 @@ impl App {
             show_comments: self.show_comments,
             dynamic_grid: self.snap.dynamic_grid,
             snap_dlg_open: self.snap_dlg_open,
-            shapesheet_open: self
-                .sel
-                .is_some_and(|(_, sid)| self.shapesheets.contains(&sid)),
+            shapesheet_open: self.sel.is_some_and(|(_, sid)| {
+                self.shapesheets
+                    .contains(&crate::shapesheet::SheetTarget::Shape(sid))
+            }),
+            page_sheet_open: self.page_id().is_some_and(|p| {
+                self.shapesheets
+                    .contains(&crate::shapesheet::SheetTarget::Page(p))
+            }),
+            doc_sheet_open: self
+                .shapesheets
+                .contains(&crate::shapesheet::SheetTarget::Document),
             sel_group: self.selection_has_group(),
             sel_container: self.sel_is_container(),
             container_highlight: self.container_highlight_on(),
