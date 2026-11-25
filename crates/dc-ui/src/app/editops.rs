@@ -224,6 +224,54 @@ impl App {
         let Some((page_id, shape_id)) = self.sel else {
             return;
         };
+        let Some(ed) = self.ed.as_ref() else { return };
+        let Ok(chain) = shape_chain(&ed.doc, page_id, shape_id) else {
+            return;
+        };
+        // #95: a member's cells are parent-local — convert the
+        // page-space drag delta through the renderer's affine (any
+        // base point works; the translation cancels in the
+        // difference).
+        let (dx, dy) = if chain.len() >= 2 {
+            let page_h = Self::page_height(ed, page_id);
+            let l0 = dc::svg::page_point_to_parent_local(&ed.doc, &chain, page_h, (0.0, 0.0));
+            let l1 = dc::svg::page_point_to_parent_local(&ed.doc, &chain, page_h, (dx, dy));
+            (l1.0 - l0.0, l1.1 - l0.1)
+        } else {
+            (dx, dy)
+        };
+        // y-down delta → y-up geometry deltas per corner.
+        let (dw, dh) = match corner {
+            canvas::Corner::TopLeft => (-dx, -dy),
+            canvas::Corner::TopRight => (dx, -dy),
+            canvas::Corner::BottomLeft => (-dx, dy),
+            canvas::Corner::BottomRight => (dx, dy),
+        };
+        // Anchor the OPPOSITE corner: fractions (0|1) of its y-up bbox
+        // position, selected by the dragged (screen-oriented) corner.
+        let anchor = match corner {
+            canvas::Corner::TopLeft => (1.0, 0.0),  // anchor bottom-right
+            canvas::Corner::TopRight => (0.0, 0.0), // anchor bottom-left
+            canvas::Corner::BottomLeft => (1.0, 1.0), // anchor top-right
+            canvas::Corner::BottomRight => (0.0, 1.0), // anchor top-left
+        };
+        self.resize_core(|w, h| (w + dw, h + dh), Some(anchor));
+    }
+
+    /// The resize commit shared by the corner handles and the Size &
+    /// Position window (#210): `target` maps the current (Width,
+    /// Height) to the wanted one; `anchor` holds that bbox point (y-up
+    /// fractions) in place, `None` the pin (the window's edits grow the
+    /// shape about its pin, as Visio's do). Guarded axes keep their
+    /// size with a status note (#59); LocPin stays proportional.
+    pub(super) fn resize_core(
+        &mut self,
+        target: impl Fn(f64, f64) -> (f64, f64),
+        anchor: Option<(f64, f64)>,
+    ) {
+        let Some((page_id, shape_id)) = self.sel else {
+            return;
+        };
         let (w_guard, h_guard) = (
             self.resize_guard("Width", "LockWidth"),
             self.resize_guard("Height", "LockHeight"),
@@ -245,18 +293,6 @@ impl App {
         let Ok(chain) = shape_chain(&ed.doc, page_id, shape_id) else {
             return;
         };
-        // #95: a member's cells are parent-local — convert the
-        // page-space drag delta through the renderer's affine (any
-        // base point works; the translation cancels in the
-        // difference).
-        let (dx, dy) = if chain.len() >= 2 {
-            let page_h = Self::page_height(ed, page_id);
-            let l0 = dc::svg::page_point_to_parent_local(&ed.doc, &chain, page_h, (0.0, 0.0));
-            let l1 = dc::svg::page_point_to_parent_local(&ed.doc, &chain, page_h, (dx, dy));
-            (l1.0 - l0.0, l1.1 - l0.1)
-        } else {
-            (dx, dy)
-        };
         let get = |n: &str| ed.doc.resolve_cell(sh, &chain, n).and_then(|c| c.numeric());
         let (Some(px), Some(py), Some(w), Some(h), Some(lx), Some(ly)) = (
             get("PinX"),
@@ -268,25 +304,11 @@ impl App {
         ) else {
             return;
         };
-        // y-down delta → y-up geometry deltas per corner.
-        let (dw, dh) = match corner {
-            canvas::Corner::TopLeft => (-dx, -dy),
-            canvas::Corner::TopRight => (dx, -dy),
-            canvas::Corner::BottomLeft => (-dx, dy),
-            canvas::Corner::BottomRight => (dx, dy),
-        };
         let (w, h) = (w.max(1e-6), h.max(1e-6)); // ratio guards
-                                                 // A guarded axis keeps its size; only the free axis changes.
-        let nw = if w_guard.is_some() {
-            w
-        } else {
-            (w + dw).max(0.05)
-        };
-        let nh = if h_guard.is_some() {
-            h
-        } else {
-            (h + dh).max(0.05)
-        };
+        let (tw, th) = target(w, h);
+        // A guarded axis keeps its size; only the free axis changes.
+        let nw = if w_guard.is_some() { w } else { tw.max(0.05) };
+        let nh = if h_guard.is_some() { h } else { th.max(0.05) };
         if (nw - w).abs() < 1e-9 && (nh - h).abs() < 1e-9 {
             self.status = crate::i18n::strs().msg_resize_refused_shape_is_protecte();
             return;
@@ -298,15 +320,10 @@ impl App {
             (_, Some(g)) => Some(crate::i18n::strs().msg_height_not_resized_guard(g.clone())),
             _ => None,
         };
-        // Anchor the OPPOSITE corner: fractions (0|1) of its y-up bbox
-        // position, selected by the dragged (screen-oriented) corner.
-        // LocPin stays proportional (Visio's Width*0.5 semantics).
-        let (ax, ay) = match corner {
-            canvas::Corner::TopLeft => (1.0, 0.0),  // anchor bottom-right
-            canvas::Corner::TopRight => (0.0, 0.0), // anchor bottom-left
-            canvas::Corner::BottomLeft => (1.0, 1.0), // anchor top-right
-            canvas::Corner::BottomRight => (0.0, 1.0), // anchor top-left
-        };
+        // The anchored bbox point stays put; LocPin stays proportional
+        // (Visio's Width*0.5 semantics). Anchoring at the LocPin's
+        // fractions keeps the pin itself in place.
+        let (ax, ay) = anchor.unwrap_or((lx / w, ly / h));
         let anchor = (px + ax * w - lx, py + ay * h - ly);
         let nlx = lx * nw / w;
         let nly = ly * nh / h;

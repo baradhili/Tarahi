@@ -204,6 +204,7 @@ impl App {
         self.spell_window(&ctx);
         self.comment_window(&ctx);
         self.shape_data_window(&ctx);
+        self.size_pos_window(&ctx);
         self.color_palette_window(&ctx);
 
         // The eframe root Ui paints no background and eframe's clear

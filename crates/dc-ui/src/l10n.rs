@@ -5455,6 +5455,20 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "size-position",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "size-position-tip",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "size-pt",
         attribute: None,
         vars: &[],
@@ -5526,6 +5540,111 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "solid",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-angle",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-begin-x",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-begin-y",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-end-x",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-end-y",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-height",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-length",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-member-position-read-only",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-no-selection",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-refused",
+        attribute: None,
+        vars: &["reason"],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-undo-angle",
+        attribute: None,
+        vars: &["shape"],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-undo-position",
+        attribute: None,
+        vars: &["shape"],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-width",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-x",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "sp-y",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -6925,13 +7044,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..48787,
-            Self::En => 48787..95891,
-            Self::Es => 95891..147744,
-            Self::Fa => 147744..209482,
-            Self::Ja => 209482..261706,
-            Self::Ko => 261706..309787,
-            Self::ZhHans => 309787..351924,
+            Self::De => 0..49425,
+            Self::En => 49425..97115,
+            Self::Es => 97115..149618,
+            Self::Fa => 149618..212124,
+            Self::Ja => 212124..265007,
+            Self::Ko => 265007..313723,
+            Self::ZhHans => 313723..356432,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -9986,6 +10105,12 @@ impl L10nLanguage {
             .msg("size-cell-is-formula-driven-f", Some(_args))
             .unwrap()
     }
+    pub fn msg_size_position(&self) -> String {
+        self.0.msg("size-position", None).unwrap()
+    }
+    pub fn msg_size_position_tip(&self) -> String {
+        self.0.msg("size-position-tip", None).unwrap()
+    }
     pub fn msg_size_pt(&self) -> String {
         self.0.msg("size-pt", None).unwrap()
     }
@@ -10020,6 +10145,57 @@ impl L10nLanguage {
     }
     pub fn msg_solid(&self) -> String {
         self.0.msg("solid", None).unwrap()
+    }
+    pub fn msg_sp_angle(&self) -> String {
+        self.0.msg("sp-angle", None).unwrap()
+    }
+    pub fn msg_sp_begin_x(&self) -> String {
+        self.0.msg("sp-begin-x", None).unwrap()
+    }
+    pub fn msg_sp_begin_y(&self) -> String {
+        self.0.msg("sp-begin-y", None).unwrap()
+    }
+    pub fn msg_sp_end_x(&self) -> String {
+        self.0.msg("sp-end-x", None).unwrap()
+    }
+    pub fn msg_sp_end_y(&self) -> String {
+        self.0.msg("sp-end-y", None).unwrap()
+    }
+    pub fn msg_sp_height(&self) -> String {
+        self.0.msg("sp-height", None).unwrap()
+    }
+    pub fn msg_sp_length(&self) -> String {
+        self.0.msg("sp-length", None).unwrap()
+    }
+    pub fn msg_sp_member_position_read_only(&self) -> String {
+        self.0.msg("sp-member-position-read-only", None).unwrap()
+    }
+    pub fn msg_sp_no_selection(&self) -> String {
+        self.0.msg("sp-no-selection", None).unwrap()
+    }
+    pub fn msg_sp_refused<'a, F0: Into<FluentValue<'a>>>(&self, reason: F0) -> String {
+        let mut _args = FluentArgs::new();
+        _args.set("reason", reason);
+        self.0.msg("sp-refused", Some(_args)).unwrap()
+    }
+    pub fn msg_sp_undo_angle<'a, F0: Into<FluentValue<'a>>>(&self, shape: F0) -> String {
+        let mut _args = FluentArgs::new();
+        _args.set("shape", shape);
+        self.0.msg("sp-undo-angle", Some(_args)).unwrap()
+    }
+    pub fn msg_sp_undo_position<'a, F0: Into<FluentValue<'a>>>(&self, shape: F0) -> String {
+        let mut _args = FluentArgs::new();
+        _args.set("shape", shape);
+        self.0.msg("sp-undo-position", Some(_args)).unwrap()
+    }
+    pub fn msg_sp_width(&self) -> String {
+        self.0.msg("sp-width", None).unwrap()
+    }
+    pub fn msg_sp_x(&self) -> String {
+        self.0.msg("sp-x", None).unwrap()
+    }
+    pub fn msg_sp_y(&self) -> String {
+        self.0.msg("sp-y", None).unwrap()
     }
     pub fn msg_spacing(&self) -> String {
         self.0.msg("spacing", None).unwrap()

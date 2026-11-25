@@ -169,6 +169,13 @@ pub struct App {
     show_comments: bool,
     /// The Shape Data dialog is open for this shape (#30).
     shape_data_open: Option<i64>,
+    /// #210: the Size & Position window, and its edit buffers keyed by
+    /// the selection they belong to.
+    size_pos_open: bool,
+    size_pos_bufs: (
+        Option<(i64, i64)>,
+        std::collections::HashMap<sizepos::SizePosField, String>,
+    ),
     /// The Format Shape pane is open (#31).
     format_pane_open: bool,
     /// #149 item 2: the pane section a mini-toolbar Format icon
@@ -1229,6 +1236,7 @@ mod pictures;
 mod pointer;
 mod selection;
 mod shell;
+mod sizepos;
 mod snap;
 mod spell;
 

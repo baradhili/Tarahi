@@ -53,6 +53,7 @@ impl App {
             Action::ToggleGrid => self.view.show_grid = !self.view.show_grid,
             Action::ToggleRulers => self.view.show_rulers = !self.view.show_rulers,
             Action::ToggleComments => self.show_comments = !self.show_comments,
+            Action::ToggleSizePosition => self.size_pos_open = !self.size_pos_open,
             Action::ToggleDynamicGrid => {
                 self.snap.dynamic_grid = !self.snap.dynamic_grid;
                 self.apply_snap_settings();
@@ -622,6 +623,7 @@ impl App {
             show_rulers: self.view.show_rulers,
             show_grid: self.view.show_grid,
             show_comments: self.show_comments,
+            size_pos_open: self.size_pos_open,
             dynamic_grid: self.snap.dynamic_grid,
             snap_dlg_open: self.snap_dlg_open,
             shapesheet_open: self.sel.is_some_and(|(_, sid)| {

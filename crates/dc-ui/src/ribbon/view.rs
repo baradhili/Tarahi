@@ -53,6 +53,16 @@ fn show_grid(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<super::
             RibbonButton::new(Icon::Shapes, s.msg_task_panes(), Action::Macros)
                 .enabled(false)
                 .tip(s.msg_task_panes_shapes_pan_zoom_plann()),
+            // #210: Visio lists Size & Position under Task Panes; the
+            // pane toggles on its own until Task Panes is a menu.
+            RibbonButton::new(
+                Icon::Shapes,
+                s.msg_size_position(),
+                Action::ToggleSizePosition,
+            )
+            .enabled(ctx.has_doc)
+            .selected(ctx.size_pos_open)
+            .tip(s.msg_size_position_tip()),
         ],
     ])]
 }

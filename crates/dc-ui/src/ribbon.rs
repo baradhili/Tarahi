@@ -41,6 +41,7 @@ pub(crate) struct TabCtx {
     pub show_rulers: bool,
     pub show_grid: bool,
     pub show_comments: bool,
+    pub size_pos_open: bool,
     pub dynamic_grid: bool,
     pub snap_dlg_open: bool,
     /// A shapesheet window is open for the selection.
@@ -160,6 +161,8 @@ pub enum Action {
     ToggleGrid,
     ToggleRulers,
     ToggleComments,
+    /// #210: the Size & Position window.
+    ToggleSizePosition,
     ToggleUnits,
     ToggleDynamicGrid,
     SnapGlue,

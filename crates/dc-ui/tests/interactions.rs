@@ -10477,3 +10477,139 @@ fn page_and_document_shapesheets_open_from_the_page_and_the_ribbon() {
     assert!(h.query_by_label_contains("Show ShapeSheet").is_none());
     assert_eq!(h.state().debug_sheet_targets(), vec![SheetTarget::Document]);
 }
+
+/// #210: the Size & Position window edits the primary selection — a
+/// typed Width resizes the shape in one undo step; a guarded Width is
+/// grayed and never written.
+#[test]
+fn size_position_window_edits_width_with_undo_and_guard() {
+    use egui_kittest::kittest::{By, Queryable};
+    let mut h = harness_with_blank();
+    h.run();
+    h.run();
+    let (page, sid) = place_master(&mut h, 2);
+    let width_in = |h: &Harness<'_, App>| {
+        h.state()
+            .debug_cell(page, sid, "Width")
+            .and_then(|(v, _)| v.parse::<f64>().ok())
+            .unwrap()
+    };
+    let before = width_in(&h);
+    h.get_by_label("View").click();
+    h.run();
+    h.get_by_label("Size & Position").click();
+    h.run();
+    let field = |h: &Harness<'_, App>| {
+        h.get(
+            By::default()
+                .role(egui::Role::TextInput)
+                .label("Shape width"),
+        )
+        .rect()
+        .center()
+    };
+    let at = field(&h);
+    click_at(&mut h, at, egui::PointerButton::Primary);
+    h.get(
+        By::default()
+            .role(egui::Role::TextInput)
+            .label("Shape width"),
+    )
+    .set_text_value_accesskit("50");
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    h.run();
+    let after = width_in(&h);
+    assert!(
+        (after - 50.0 / 25.4).abs() < 1e-3,
+        "Width is 50 mm: {after}"
+    );
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run();
+    assert!(
+        (width_in(&h) - before).abs() < 1e-6,
+        "one undo step restores the width"
+    );
+
+    // A guarded Width: the field is disabled, nothing is written.
+    h.state_mut()
+        .set_cell_for_test(page, sid, "Width", "1", Some("GUARD(1)"));
+    h.run();
+    h.run();
+    let node = h.get(
+        By::default()
+            .role(egui::Role::TextInput)
+            .label("Shape width"),
+    );
+    assert!(
+        format!("{node:?}").contains("disabled: true"),
+        "a guarded Width is grayed"
+    );
+}
+
+/// #210: a 1-D selection swaps to Begin/End, Length and Angle; a typed
+/// Length keeps the begin point and moves the end along the line.
+#[test]
+fn size_position_window_edits_a_line_length() {
+    use egui_kittest::kittest::{By, Queryable};
+    let mut h = harness_with_blank();
+    h.run();
+    h.run();
+    let (page, sid) = place_master(&mut h, 2);
+    // Make it 1-D: a horizontal line from (1, 2) to (3, 2) in.
+    for (n, v) in [
+        ("BeginX", "1"),
+        ("BeginY", "2"),
+        ("EndX", "3"),
+        ("EndY", "2"),
+    ] {
+        h.state_mut().set_cell_for_test(page, sid, n, v, None);
+    }
+    h.run();
+    h.get_by_label("View").click();
+    h.run();
+    h.get_by_label("Size & Position").click();
+    h.run();
+    assert!(
+        h.query(
+            By::default()
+                .role(egui::Role::TextInput)
+                .label("X position")
+        )
+        .is_none(),
+        "the 2-D rows gave way"
+    );
+    let at = h
+        .get(
+            By::default()
+                .role(egui::Role::TextInput)
+                .label("Line length"),
+        )
+        .rect()
+        .center();
+    click_at(&mut h, at, egui::PointerButton::Primary);
+    h.get(
+        By::default()
+            .role(egui::Role::TextInput)
+            .label("Line length"),
+    )
+    .set_text_value_accesskit("101.6");
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    h.run();
+    let cell = |n: &str| {
+        h.state()
+            .debug_cell(page, sid, n)
+            .and_then(|(v, _)| v.parse::<f64>().ok())
+            .unwrap()
+    };
+    assert!((cell("BeginX") - 1.0).abs() < 1e-6, "begin stays");
+    assert!(
+        (cell("EndX") - 5.0).abs() < 1e-3,
+        "4 in long: {}",
+        cell("EndX")
+    );
+    assert!((cell("EndY") - 2.0).abs() < 1e-3, "same direction");
+}
