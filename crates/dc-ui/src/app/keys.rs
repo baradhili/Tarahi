@@ -65,7 +65,9 @@ impl App {
             // Esc closes the frontmost open dialog first (#110
             // tab-order audit: Visio dismisses a dialog on Esc);
             // only with none open do the tool/painter shortcuts run.
-            if i.key_pressed(egui::Key::Escape) && !kb_owned {
+            // An open empty-page menu owns Esc (#272): it closes
+            // itself in `page_context_menu`, and nothing behind it.
+            if i.key_pressed(egui::Key::Escape) && !kb_owned && self.page_menu.is_none() {
                 let consumed = self.close_front_dialog();
                 if !consumed {
                     if matches!(

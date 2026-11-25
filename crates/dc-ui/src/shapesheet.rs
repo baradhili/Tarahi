@@ -331,6 +331,8 @@ const PAIRS_SECTIONS: &[(&str, &[&str], usize)] = &[
     ),
 ];
 
+const ADDITIONAL_CELLS_TITLE: &str = "Additional Cells";
+
 /// A pairs section's rank in the render order (between the real
 /// sections it sits among).
 fn pairs_rank(title: &str) -> i32 {
@@ -352,6 +354,14 @@ fn pairs_rank(title: &str) -> i32 {
         "Theme Properties" => 230,
         "Quick Style" => 240,
         "Change Shape Behavior" => 250,
+        // #272: the page and document sheets' fixed sections.
+        // (keyed by model section name; painted through
+        // `pairs_heading`).
+        "PagesXForm" => 10,
+        "PageLayout" => 20,
+        "PrintPageSetup" => 30,
+        "RulerGrid" => 35,
+        "DocumentProperties" => 10,
         _ => 900, // "Additional Cells" lands after the known catalog
     }
 }
@@ -382,6 +392,21 @@ fn section_rank(name: &str) -> i32 {
         "Scratch" => 340,
         name if name.starts_with("Geometry") => 400,
         _ => 1000,
+    }
+}
+
+/// The heading a fixed (pairs) section paints (#272): the page and
+/// document sheets' sections are keyed by their model section names and
+/// show the routed display names. Additional Cells is translated here
+/// so its stored title stays stable for sorting.
+fn pairs_heading(title: &str) -> String {
+    match title {
+        "PagesXForm" | "PageLayout" | "PrintPageSetup" | "RulerGrid" => {
+            section_display_name(title, 0)
+        }
+        "DocumentProperties" => crate::i18n::strs().msg_ss_section_document_properties(),
+        ADDITIONAL_CELLS_TITLE => crate::i18n::strs().msg_ss_section_additional_cells(),
+        other => other.to_string(),
     }
 }
 
@@ -803,6 +828,211 @@ fn deeper_sheets<'a>(
     levels
 }
 
+/// What a ShapeSheet window shows (#272): Visio's Show ShapeSheet has
+/// three targets — a shape, a page (its PageSheet) and the document
+/// (its DocumentSheet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SheetTarget {
+    /// A shape on the drawing's current page.
+    Shape(i64),
+    /// A page's PageSheet, by page id (the window outlives a tab switch).
+    Page(i64),
+    /// The document's DocumentSheet.
+    Document,
+}
+
+/// The PageSheet's fixed sections in Visio's display order (#272): the
+/// corpus field list of the issue, grouped under Visio's headings.
+const PAGE_SECTIONS: &[(&str, &[&str], usize)] = &[
+    (
+        "PagesXForm",
+        &[
+            "PageWidth",
+            "PageHeight",
+            "ShdwOffsetX",
+            "ShdwOffsetY",
+            "PageScale",
+            "DrawingScale",
+            "DrawingSizeType",
+            "DrawingScaleType",
+            "InhibitSnap",
+            "PageLockReplace",
+            "PageLockDuplicate",
+            "UIVisibility",
+            "ShdwType",
+            "ShdwObliqueAngle",
+            "ShdwScaleFactor",
+            "DrawingResizeType",
+            "PageShapeSplit",
+        ],
+        3,
+    ),
+    (
+        "PageLayout",
+        &[
+            "ResizePage",
+            "EnableGrid",
+            "DynamicsOff",
+            "CtrlAsInput",
+            "PlaceStyle",
+            "RouteStyle",
+            "PlaceDepth",
+            "PlowCode",
+            "LineJumpCode",
+            "LineJumpStyle",
+            "PageLineJumpDirX",
+            "PageLineJumpDirY",
+            "LineToNodeX",
+            "LineToNodeY",
+            "BlockSizeX",
+            "BlockSizeY",
+            "AvenueSizeX",
+            "AvenueSizeY",
+            "LineToLineX",
+            "LineToLineY",
+            "LineJumpFactorX",
+            "LineJumpFactorY",
+            "LineAdjustFrom",
+            "LineAdjustTo",
+            "PlaceFlip",
+            "LineRouteExt",
+        ],
+        3,
+    ),
+    (
+        "PrintPageSetup",
+        &[
+            "PageLeftMargin",
+            "PageRightMargin",
+            "PageTopMargin",
+            "PageBottomMargin",
+            "ScaleX",
+            "ScaleY",
+            "PagesX",
+            "PagesY",
+            "CenterX",
+            "CenterY",
+            "OnPage",
+            "PrintGrid",
+            "PrintPageOrientation",
+            "PaperKind",
+            "PaperSource",
+        ],
+        3,
+    ),
+    (
+        "RulerGrid",
+        &[
+            "XRulerDensity",
+            "YRulerDensity",
+            "XRulerOrigin",
+            "YRulerOrigin",
+            "XGridDensity",
+            "YGridDensity",
+            "XGridSpacing",
+            "YGridSpacing",
+            "XGridOrigin",
+            "YGridOrigin",
+        ],
+        2,
+    ),
+];
+
+/// The DocumentSheet's fixed section (#272): Visio groups these cells
+/// under Document Properties; the corpus carries them on essentially
+/// every document.
+const DOCUMENT_SECTIONS: &[(&str, &[&str], usize)] = &[(
+    "DocumentProperties",
+    &[
+        "OutputFormat",
+        "LockPreview",
+        "AddMarkup",
+        "ViewMarkup",
+        "DocLockReplace",
+        "NoCoauth",
+        "DocLockDuplicatePage",
+        "PreviewQuality",
+        "PreviewScope",
+        "DocLangID",
+    ],
+    3,
+)];
+
+fn target_sheet(doc: &Document, target: SheetTarget) -> Option<&Sheet> {
+    match target {
+        SheetTarget::Page(id) => doc.pages.iter().find(|p| p.id == id)?.sheet(),
+        SheetTarget::Document => Some(&doc.sheet),
+        SheetTarget::Shape(_) => None,
+    }
+}
+
+/// The section list for a page's or the document's own sheet (#272).
+/// These sheets have no master and no shape chain: every cell shows as
+/// stored. The fixed sections list their catalog cells that the sheet
+/// carries (an absent catalog section is left out), real sections
+/// (User, Prop, Layer, Actions, …) follow in Visio's order, and any
+/// other top-level cell lands in Additional Cells.
+pub fn build_sheet_views(doc: &Document, target: SheetTarget) -> Vec<SectionView> {
+    let Some(sheet) = target_sheet(doc, target) else {
+        return Vec::new();
+    };
+    let catalog = match target {
+        SheetTarget::Page(_) => PAGE_SECTIONS,
+        _ => DOCUMENT_SECTIONS,
+    };
+    let mut views: Vec<SectionView> = Vec::new();
+    let mut cataloged: Vec<&str> = Vec::new();
+    for &(title, cells, per_row) in catalog {
+        cataloged.extend_from_slice(cells);
+        let pairs: Vec<(String, MergedCell)> = cells
+            .iter()
+            .filter_map(|n| {
+                sheet
+                    .cell(n)
+                    .map(|c| (n.to_string(), MergedCell::local(c, n)))
+            })
+            .collect();
+        if !pairs.is_empty() {
+            views.push(SectionView::Pairs {
+                title: title.to_string(),
+                pairs,
+                per_row,
+            });
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    for ch in &sheet.children {
+        if let SheetChild::Section(section) = ch {
+            if seen.insert((section.name.as_str(), section.ix)) {
+                views.push(stored_section_view(section));
+            }
+        }
+    }
+    let extra: Vec<(String, MergedCell)> = sheet
+        .children
+        .iter()
+        .filter_map(|ch| match ch {
+            SheetChild::Cell(n, c) if !cataloged.contains(&n.as_str()) => {
+                Some((n.clone(), MergedCell::local(c, n)))
+            }
+            _ => None,
+        })
+        .collect();
+    if !extra.is_empty() {
+        views.push(SectionView::Pairs {
+            title: ADDITIONAL_CELLS_TITLE.into(),
+            pairs: extra,
+            per_row: 3,
+        });
+    }
+    views.sort_by_key(|v| match v {
+        SectionView::Transform { .. } => 0,
+        SectionView::Pairs { title, .. } => pairs_rank(title),
+        SectionView::Rows { rank, .. } | SectionView::Bare { rank, .. } => *rank,
+    });
+    views
+}
+
 /// Build the full section list for one shape's resolved sheet.
 pub fn build_views(doc: &Document, page_id: i64, shape_id: i64) -> Vec<SectionView> {
     let Ok(chain) = shape_chain(doc, page_id, shape_id) else {
@@ -973,7 +1203,7 @@ pub fn build_views(doc: &Document, page_id: i64, shape_id: i64) -> Vec<SectionVi
         .collect();
     if !extra.is_empty() {
         views.push(SectionView::Pairs {
-            title: "Additional Cells".into(),
+            title: ADDITIONAL_CELLS_TITLE.into(),
             pairs: extra,
             per_row: 3,
         });
@@ -993,6 +1223,47 @@ pub fn build_views(doc: &Document, page_id: i64, shape_id: i64) -> Vec<SectionVi
     });
 
     views
+}
+
+/// Page and document rows display stored cells under their own names.
+fn stored_section_view(section: &Section) -> SectionView {
+    let mut headers = Vec::new();
+    for (name, _) in section
+        .rows
+        .iter()
+        .flat_map(|row| &row.cells)
+        .chain(&section.cells)
+    {
+        if !headers.contains(name) {
+            headers.push(name.clone());
+        }
+    }
+    let align = |cells: &[(String, Cell)]| {
+        headers
+            .iter()
+            .map(|name| {
+                cells
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, cell)| MergedCell::local(cell, name))
+                    .unwrap_or_else(|| MergedCell::fallback(String::new()))
+            })
+            .collect()
+    };
+    let mut rows = Vec::new();
+    if !section.cells.is_empty() {
+        rows.push((String::new(), false, align(&section.cells)));
+    }
+    for row in &section.rows {
+        let (label, red) = row_label(&section.name, row);
+        rows.push((label, red, align(&row.cells)));
+    }
+    SectionView::Rows {
+        title: section_display_name(&section.name, section.ix),
+        rank: section_rank(&section.name),
+        headers,
+        rows,
+    }
 }
 
 /// Merge one real section (by name, ix) across the ordered sheets
@@ -1236,9 +1507,22 @@ fn value_label(ui: &mut Ui, w: f32, cell: &MergedCell) {
 /// window past its slot, so it cannot drift (constrain_to shifts an
 /// oversized window left) over a neighboring child's title bar.
 pub fn panel(ui: &mut Ui, doc: &Document, page_id: i64, shape_id: i64, max_w: f32) {
-    let views = build_views(doc, page_id, shape_id);
+    panel_for(ui, doc, page_id, SheetTarget::Shape(shape_id), max_w);
+}
+
+/// The ShapeSheet body for any [`SheetTarget`] (#272).
+pub fn panel_for(ui: &mut Ui, doc: &Document, page_id: i64, target: SheetTarget, max_w: f32) {
+    let views = match target {
+        SheetTarget::Shape(shape_id) => build_views(doc, page_id, shape_id),
+        other => build_sheet_views(doc, other),
+    };
     if views.is_empty() {
-        ui.label(crate::i18n::strs().msg_ss_shape_not_found());
+        let strs = crate::i18n::strs();
+        ui.label(if target_sheet(doc, target).is_some() {
+            strs.msg_ss_empty_sheet()
+        } else {
+            strs.msg_ss_shape_not_found()
+        });
         return;
     }
     // The viewport is capped: the resolved sheet of a master-backed
@@ -1253,7 +1537,7 @@ pub fn panel(ui: &mut Ui, doc: &Document, page_id: i64, shape_id: i64, max_w: f3
     // settle loop (grid.rs recalibrates its columns every frame).
     let view_w = max_w.clamp(300.0, 800.0);
     egui::ScrollArea::vertical()
-        .id_salt(("dc-shapesheet-scroll", shape_id))
+        .id_salt(("dc-shapesheet-scroll", target))
         .max_height(420.0)
         .max_width(view_w)
         .show(ui, |ui| {
@@ -1297,7 +1581,7 @@ pub fn panel(ui: &mut Ui, doc: &Document, page_id: i64, shape_id: i64, max_w: f3
                         pairs,
                         per_row,
                     } => {
-                        section_bar(ui, title);
+                        section_bar(ui, &pairs_heading(title));
                         let slot = avail / *per_row as f32;
                         let (name_w, val_w) = (slot * 0.52, slot * 0.48 - 8.0);
                         egui::Grid::new(("dc-ss-pairs", i))
@@ -1857,5 +2141,155 @@ mod tests {
             .expect("User section still present");
         assert_eq!(users.len(), 1, "only the master's row");
         assert_eq!(users[0].0, "User.msvSDContainerMargin");
+    }
+
+    #[test]
+    fn page_and_document_rows_align_sparse_cells_by_name() {
+        let mut doc = fixture();
+        let page_id = doc.pages[0].id;
+        let section = SheetChild::Section(Section {
+            name: "User".into(),
+            rows: vec![
+                Row {
+                    n: Some("First".into()),
+                    cells: vec![
+                        ("Value".into(), Cell::value("1")),
+                        ("Prompt".into(), Cell::value("first")),
+                    ],
+                    ..Row::default()
+                },
+                Row {
+                    n: Some("Second".into()),
+                    cells: vec![
+                        ("Prompt".into(), Cell::value("second")),
+                        ("Value".into(), Cell::value("2")),
+                        ("Extra".into(), Cell::value("later")),
+                    ],
+                    ..Row::default()
+                },
+                Row {
+                    ix: 2,
+                    cells: vec![("Extra".into(), Cell::value("third"))],
+                    ..Row::default()
+                },
+            ],
+            ..Section::default()
+        });
+        page_sheet_mut(&mut doc).children.push(section.clone());
+        doc.sheet.children.push(section);
+
+        for target in [SheetTarget::Page(page_id), SheetTarget::Document] {
+            let views = build_sheet_views(&doc, target);
+            let (headers, rows) = views
+                .iter()
+                .find_map(|view| match view {
+                    SectionView::Rows { headers, rows, .. } => Some((headers, rows)),
+                    _ => None,
+                })
+                .expect("stored User section");
+            assert_eq!(headers, &["Value", "Prompt", "Extra"]);
+            let rendered: Vec<_> = rows
+                .iter()
+                .map(|(label, red, cells)| {
+                    (
+                        label.as_str(),
+                        *red,
+                        cells.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                rendered,
+                [
+                    ("User.First", true, vec!["1", "first", ""]),
+                    ("User.Second", true, vec!["2", "second", "later"]),
+                    ("3", false, vec!["", "", "third"]),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn empty_sheets_and_missing_targets_show_different_messages() {
+        use egui_kittest::{kittest::Queryable, Harness};
+
+        let doc = fixture();
+        let page_id = doc.pages[0].id;
+        for (target, expected) in [
+            (SheetTarget::Page(page_id), "This ShapeSheet has no cells."),
+            (SheetTarget::Document, "This ShapeSheet has no cells."),
+            (SheetTarget::Page(page_id + 1), "shape not found"),
+            (SheetTarget::Shape(999), "shape not found"),
+        ] {
+            let mut harness = Harness::new_ui(|ui| panel_for(ui, &doc, page_id, target, 400.0));
+            harness.run();
+            assert!(harness.query_by_label(expected).is_some(), "{target:?}");
+        }
+    }
+
+    /// #272: a page's sheet and the document's sheet build their own
+    /// views — stored cells under Visio's headings (an absent heading
+    /// is left out), real sections such as User as rows, uncatalogued
+    /// cells in Additional Cells — and no Shape Transform.
+    #[test]
+    fn page_and_document_sheets_build_their_own_views() {
+        let mut doc = fixture();
+        let page_id = doc.pages[0].id;
+        let ps = page_sheet_mut(&mut doc);
+        ps.set_cell("PageWidth", Cell::value("8.5"));
+        ps.set_cell("LineJumpCode", Cell::value("1"));
+        ps.set_cell("XGridSpacing", Cell::value("0.25"));
+        ps.set_cell("SomethingElse", Cell::value("3"));
+        ps.children.push(SheetChild::Section(Section {
+            name: "User".into(),
+            rows: vec![Row {
+                ix: 0,
+                n: Some("PageOnly".into()),
+                ..Row::default()
+            }],
+            ..Section::default()
+        }));
+        let views = build_sheet_views(&doc, SheetTarget::Page(page_id));
+        let names = |title: &str| -> Vec<String> {
+            pairs_of(&views, title)
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect()
+        };
+        assert!(names("PagesXForm").contains(&"PageWidth".to_string()));
+        assert_eq!(names("PageLayout"), vec!["LineJumpCode"]);
+        assert_eq!(names("RulerGrid"), vec!["XGridSpacing"]);
+        assert_eq!(names("Additional Cells"), vec!["SomethingElse"]);
+        assert!(
+            !views.iter().any(
+                |v| matches!(v, SectionView::Pairs { title, .. } if title == "PrintPageSetup")
+            ),
+            "no print cells stored: no Print Properties"
+        );
+        assert!(!views
+            .iter()
+            .any(|v| matches!(v, SectionView::Transform { .. })));
+        let users = views
+            .iter()
+            .find_map(|v| match v {
+                SectionView::Rows { title, rows, .. } if title == "User-defined Cells" => {
+                    Some(rows.clone())
+                }
+                _ => None,
+            })
+            .expect("the page's User section");
+        assert_eq!(users[0].0, "User.PageOnly");
+
+        doc.sheet.set_cell("DocLangID", Cell::value("1033"));
+        let views = build_sheet_views(&doc, SheetTarget::Document);
+        assert_eq!(
+            pairs_of(&views, "DocumentProperties")
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect::<Vec<_>>(),
+            vec!["DocLangID"]
+        );
+        // A shape target is build_views' job.
+        assert!(build_sheet_views(&doc, SheetTarget::Shape(100)).is_empty());
     }
 }
