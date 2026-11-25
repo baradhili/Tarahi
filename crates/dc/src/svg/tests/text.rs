@@ -716,6 +716,32 @@ fn themed_run_color_takes_no_style_black() {
     assert!(!svg.contains(r##"fill="#008000">10.0.0.1"##), "{svg}");
 }
 
+/// Lines set wholly in a smaller run sit closer together: Visio 2021
+/// spaces a line by its largest run, also below the block size (the
+/// network LLD: 6 pt address lines in an 8 pt box).
+#[test]
+fn smaller_run_lines_space_at_their_own_size() {
+    let lines = |z: &str| {
+        emit_runs(
+            "<cp IX='0'/>head\n<cp IX='1'/>one\ntwo\nthree",
+            &[(0, &[("Size", "0.1111")]), (1, &[("Size", z)])],
+            &[],
+            &[],
+        )
+    };
+    let span = |svg: &str| {
+        let ys: Vec<f64> = tspan_xy(svg).iter().map(|p| p.1).collect();
+        ys[ys.len() - 1] - ys[1]
+    };
+    let small = span(&lines("0.0833"));
+    let same = span(&lines("0.1111"));
+    // Two 6 pt slots against two 8 pt slots (1.2 em each).
+    assert!(
+        (small - same * 0.0833 / 0.1111).abs() < 0.01,
+        "small {small} same {same}"
+    );
+}
+
 /// A document-controlled `IX` does not size an allocation (Greptile
 /// on PR #350): only referenced rows get a style.
 #[test]
