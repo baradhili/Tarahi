@@ -697,6 +697,25 @@ fn mixed_size_runs_place_space_and_script() {
     assert!(bullet.contains(r##"fill="#ff0000""##), "{bullet}");
 }
 
+/// A run whose Color is `THEMEVAL()` in a theme-less drawing takes the
+/// No Style black, not the first row's color (the network LLD: address
+/// lines under a green heading, black in Visio 2021). An `Inh` run still
+/// paints as the block.
+#[test]
+fn themed_run_color_takes_no_style_black() {
+    let svg = emit_runs(
+        "<cp IX='0'/>green heading\n<cp IX='1'/>10.0.0.1/32",
+        &[(0, &[("Color", "#008000")]), (1, &[("Color", "Themed")])],
+        &[],
+        &[],
+    );
+    assert!(
+        svg.contains(r##"fill="#000000">10.0.0.1/32</tspan>"##),
+        "{svg}"
+    );
+    assert!(!svg.contains(r##"fill="#008000">10.0.0.1"##), "{svg}");
+}
+
 /// A document-controlled `IX` does not size an allocation (Greptile
 /// on PR #350): only referenced rows get a style.
 #[test]
