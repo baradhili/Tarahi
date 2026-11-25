@@ -1358,14 +1358,17 @@ pub(crate) fn emit_text(
         }
         segs
     };
-    // A run line's height factor: its largest run over the block size,
-    // never below the block's own (Greptile on PR #350: a 30 pt run in
-    // a 10 pt block overlapped its neighbours at 12 pt spacing).
+    // A run line's height factor: its largest run over the block size
+    // (Greptile on PR #350: a 30 pt run in a 10 pt block overlapped its
+    // neighbours at 12 pt spacing). A line set wholly in smaller runs is
+    // that much shorter, as in Visio 2021 (the network LLD: 6 pt address
+    // lines in an 8 pt block sit 6 pt apart; at 8 pt they overflowed the
+    // box). An empty line keeps the block's height.
     let run_scale = |line_no: usize| -> f64 {
         match (&runs, line_ranges.get(line_no).copied().flatten()) {
-            (Some(r), Some((lo, hi))) if !lines[line_no].rtl && size > 0.0 => (lo..hi)
+            (Some(r), Some((lo, hi))) if !lines[line_no].rtl && size > 0.0 && hi > lo => (lo..hi)
                 .map(|i| r.styles[r.style_at(i)].size.map_or(1.0, |z| z / size))
-                .fold(1.0, f64::max),
+                .fold(0.0, f64::max),
             _ => 1.0,
         }
     };
