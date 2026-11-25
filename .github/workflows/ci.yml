@@ -43,3 +43,14 @@ jobs:
             echo "::warning::test attempt $i failed; retrying"
           done
           exit 1
+
+  file-sizes:
+    # #364: the file-size guard — a warning-only measuring stick for the
+    # decomposition effort: files over the 1,500-line cap are reported
+    # (as PR annotations) but stay green until the backlog drains; the
+    # flip to a hard gate is FILE_SIZE_ENFORCE=1 on the script run here.
+    if: ${{ !startsWith(github.head_ref, 'renovate/') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./scripts/file_size_guard.sh
