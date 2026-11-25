@@ -94,7 +94,7 @@ impl Affine {
 /// `chain` (root-first, from `render_shape`/`render_shape_local`): a
 /// top-level shape maps its local frame into page SVG space
 /// (y-down, origin top-left); a nested shape maps into its parent's
-/// local SVG frame with no flip scale of its own.
+/// local SVG frame, each level with its own flip scale.
 fn level_affine(doc: &Document, chain: &[&Shape], idx: usize, page_h: f64) -> Affine {
     let s = chain[idx];
     let env = shape_env(doc, s, &chain[..=idx]);
@@ -112,24 +112,20 @@ fn level_affine(doc: &Document, chain: &[&Shape], idx: usize, page_h: f64) -> Af
     let deg = -get("Angle").unwrap_or(0.0).to_degrees();
     let t = Affine::translate(px, if idx == 0 { page_h - py } else { -py })
         .then(&Affine::rotate_deg(deg));
-    // Flip scale exists only at the page root (group-local rendering
-    // applies no flip of its own).
-    let t = if idx == 0 {
-        let fx = if get("FlipX").unwrap_or(0.0) != 0.0 {
-            -1.0
-        } else {
-            1.0
-        };
-        let fy = if get("FlipY").unwrap_or(0.0) != 0.0 {
-            -1.0
-        } else {
-            1.0
-        };
-        t.then(&Affine::scale(fx, fy))
+    // Every level mirrors about its own LocPin: the page root and group
+    // members alike (render_shape_local applies the same flip scale).
+    let fx = if get("FlipX").unwrap_or(0.0) != 0.0 {
+        -1.0
     } else {
-        t
+        1.0
     };
-    t.then(&Affine::translate(-lx, ly))
+    let fy = if get("FlipY").unwrap_or(0.0) != 0.0 {
+        -1.0
+    } else {
+        1.0
+    };
+    t.then(&Affine::scale(fx, fy))
+        .then(&Affine::translate(-lx, ly))
 }
 
 /// The composed SVG-space affine mapping the LAST chain entry's

@@ -161,6 +161,13 @@ fn node_ink_box(
             get("LocPinY", &env).unwrap_or(height / 2.0),
         ))
     } else {
+        let flip = |n: &str| {
+            if get(n, &env).unwrap_or(0.0) != 0.0 {
+                -1.0
+            } else {
+                1.0
+            }
+        };
         Affine::translate(
             get("PinX", &env).unwrap_or(0.0),
             -get("PinY", &env).unwrap_or(0.0),
@@ -168,6 +175,7 @@ fn node_ink_box(
         .then(&Affine::rotate_deg(
             -get("Angle", &env).unwrap_or(0.0).to_degrees(),
         ))
+        .then(&Affine::scale(flip("FlipX"), flip("FlipY")))
         .then(&Affine::translate(
             -get("LocPinX", &env).unwrap_or(width / 2.0),
             get("LocPinY", &env).unwrap_or(height / 2.0),
