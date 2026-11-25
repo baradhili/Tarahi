@@ -918,7 +918,16 @@ pub(crate) fn merged_own_geometry(
             // Width times too far), while an inherited formula still
             // evaluates live in the instance env (CodeRabbit on
             // PR #381).
-            let is_rel = |t: Option<&str>| t.is_some_and(|t| t.starts_with("Rel"));
+            //
+            // Which cells are fractions follows the painter: every Rel*
+            // coordinate goes through `rel_adjust` except a
+            // RelEllipticalArcTo's A/B control point, which it reads as
+            // is, so that one keeps the dimensional scaling (CodeRabbit
+            // on PR #381, third round).
+            let rel_fraction = |t: Option<&str>, name: &str| {
+                t.is_some_and(|t| t.starts_with("Rel"))
+                    && !(t == Some("RelEllipticalArcTo") && matches!(name, "A" | "B"))
+            };
             // Pair each inline row with the master row of the SAME
             // IX. Inline copies drop rows whose cells are fully
             // inherited-identical, keeping the survivors' original
@@ -965,7 +974,7 @@ pub(crate) fn merged_own_geometry(
                                             .and_then(|e| e.as_f64())
                                             .filter(|e| e.is_finite() && e.abs() <= bound)
                                             .unwrap_or(v)
-                                    } else if is_rel(src_row.t.as_deref()) {
+                                    } else if rel_fraction(src_row.t.as_deref(), cname) {
                                         v
                                     } else {
                                         scaled(cname, v)
@@ -1068,7 +1077,7 @@ pub(crate) fn merged_own_geometry(
                     let placed = |v: f64| {
                         if proportional
                             && !not_coord(src_row.t.as_deref(), cname)
-                            && !is_rel(src_row.t.as_deref())
+                            && !rel_fraction(src_row.t.as_deref(), cname)
                         {
                             scaled(cname, v)
                         } else {

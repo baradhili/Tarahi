@@ -2647,3 +2647,91 @@ fn merged_geometry_evaluates_inherited_rel_formulas() {
         num("Y")
     );
 }
+
+/// Inherited Rel* cells follow the painter (CodeRabbit on PR #381): a
+/// RelCubBezTo control point is a fraction (`rel_adjust` scales it at
+/// paint time) and passes through, while a RelEllipticalArcTo's A/B
+/// control point is read as is and keeps the master→instance scaling.
+#[test]
+fn merged_geometry_scales_rel_arc_controls_but_not_rel_bezier_controls() {
+    let mut master = shape_at(1, (0.5, 0.5), 1.0, 1.0, 0.0);
+    push_geo(
+        &mut master,
+        vec![
+            geo_row(1, "RelMoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(
+                2,
+                "RelEllipticalArcTo",
+                &[
+                    ("X", 1.0),
+                    ("Y", 0.0),
+                    ("A", 0.5),
+                    ("B", 0.5),
+                    ("C", 0.0),
+                    ("D", 1.0),
+                ],
+            ),
+            geo_row(
+                3,
+                "RelCubBezTo",
+                &[
+                    ("X", 0.0),
+                    ("Y", 0.0),
+                    ("A", 0.5),
+                    ("B", 0.5),
+                    ("C", 0.25),
+                    ("D", 0.25),
+                ],
+            ),
+        ],
+    );
+    let mut inst = shape_at(1, (4.0, 5.0), 4.0, 2.0, 0.0);
+    inst.master = Some(7);
+    // The inline copy keeps X/Y only; A–D inherit.
+    push_geo(
+        &mut inst,
+        vec![
+            geo_row(1, "RelMoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "RelEllipticalArcTo", &[("X", 1.0), ("Y", 0.0)]),
+            geo_row(3, "RelCubBezTo", &[("X", 0.0), ("Y", 0.0)]),
+        ],
+    );
+    let (mut doc, _page) = page_fixture(vec![inst.clone()]);
+    doc.masters.push(vsdx::model::Master {
+        id: 7,
+        shapes: vec![master],
+        ..vsdx::model::Master::default()
+    });
+    let chain = [&inst];
+    let env = shape_env(&doc, &inst, &chain);
+    let merged = crate::svg::shape_layer::merged_own_geometry(&doc, &inst, &chain, 4.0, 2.0, &env);
+    let num = |ix: i64, n: &str| {
+        merged[0]
+            .rows
+            .iter()
+            .find(|r| r.ix == ix)
+            .and_then(|r| r.cell(n))
+            .and_then(|c| c.numeric())
+            .unwrap_or_else(|| panic!("row {ix} {n}"))
+    };
+    assert!(
+        (num(2, "A") - 2.0).abs() < 1e-9,
+        "arc control scales: {}",
+        num(2, "A")
+    );
+    assert!(
+        (num(2, "B") - 1.0).abs() < 1e-9,
+        "arc control scales: {}",
+        num(2, "B")
+    );
+    assert!(
+        (num(3, "A") - 0.5).abs() < 1e-9,
+        "bezier control stays: {}",
+        num(3, "A")
+    );
+    assert!(
+        (num(3, "C") - 0.25).abs() < 1e-9,
+        "bezier control stays: {}",
+        num(3, "C")
+    );
+}
