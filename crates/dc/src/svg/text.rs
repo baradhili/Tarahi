@@ -1074,7 +1074,7 @@ pub(crate) fn emit_text(
     let substituted = crate::fields::substituted_text(doc, s, chain, fields);
     let Some(text) = substituted
         .as_deref()
-        .or(s.sheet.text.as_deref())
+        .or(crate::fields::text_sheet(doc, s, chain).text.as_deref())
         .map(|t| t.trim_end_matches(TRAILING_TRIM))
         .filter(|t| !t.is_empty())
     else {
@@ -1879,7 +1879,8 @@ impl TextRuns {
 /// `None` when no run differs (the block renders as before), when the
 /// raw text does not reproduce the plain text, or it carries fields.
 fn text_runs(doc: &Document, s: &Shape, chain: &[&Shape], tb: &TextBlock) -> Option<TextRuns> {
-    let raw = s.sheet.text_raw.as_deref()?;
+    let tsheet = crate::fields::text_sheet(doc, s, chain);
+    let raw = tsheet.text_raw.as_deref()?;
     if !raw.contains("<cp") || raw.contains("<fld") {
         return None;
     }
@@ -1925,7 +1926,7 @@ fn text_runs(doc: &Document, s: &Shape, chain: &[&Shape], tb: &TextBlock) -> Opt
         idx.extend(std::iter::repeat_n(cur, n));
         rest = &rest[len..];
     }
-    let expected = s.sheet.text.as_deref().unwrap_or("");
+    let expected = tsheet.text.as_deref().unwrap_or("");
     if plain.replace("\r\n", "\n") != expected.replace("\r\n", "\n") {
         return None;
     }

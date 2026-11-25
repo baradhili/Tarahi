@@ -2533,3 +2533,253 @@ fn trim_path_cuts_open_contours_only_and_exactly() {
 
 // ------------------------------------------------------------------
 // Wave-4 text stack (GitHub #232 #230 #229 #231 #234 #235).
+
+/// The inline/master Geometry merge pairs SECTIONS by IX and keeps
+/// inherited Rel* coordinates as fractions (CodeRabbit on PR #381): an
+/// inline copy that keeps only Geometry IX=1 takes IX=1's section
+/// cells (not IX=0's NoShow), and its RelLineTo's inherited X stays
+/// 0.75 of the width for the painter to scale.
+#[test]
+fn merged_geometry_pairs_sections_by_ix_and_keeps_rel_fractions() {
+    let section = |ix: i64, rows: Vec<Row>, cells: Vec<(String, Cell)>| {
+        SheetChild::Section(Section {
+            name: "Geometry".into(),
+            ix,
+            rows,
+            cells,
+            ..Section::default()
+        })
+    };
+    let mut master = shape_at(1, (0.5, 0.5), 1.0, 1.0, 0.0);
+    master.sheet.children.push(section(
+        0,
+        vec![geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)])],
+        vec![("NoShow".into(), Cell::value("1"))],
+    ));
+    master.sheet.children.push(section(
+        1,
+        vec![
+            geo_row(1, "RelMoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "RelLineTo", &[("X", 0.75), ("Y", 0.5)]),
+        ],
+        vec![],
+    ));
+    let mut inst = shape_at(1, (4.0, 5.0), 4.0, 1.0, 0.0);
+    inst.master = Some(7);
+    inst.sheet.children.push(section(
+        1,
+        vec![
+            geo_row(1, "RelMoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "RelLineTo", &[("Y", 0.25)]),
+        ],
+        vec![],
+    ));
+    let (mut doc, _page) = page_fixture(vec![inst.clone()]);
+    doc.masters.push(vsdx::model::Master {
+        id: 7,
+        shapes: vec![master],
+        ..vsdx::model::Master::default()
+    });
+    let chain = [&inst];
+    let env = shape_env(&doc, &inst, &chain);
+    let merged = crate::svg::shape_layer::merged_own_geometry(&doc, &inst, &chain, 4.0, 1.0, &env);
+    assert_eq!(merged.len(), 1);
+    assert!(
+        merged[0].cell("NoShow").is_none(),
+        "IX=1 has no NoShow; IX=0's must not leak in"
+    );
+    let x = merged[0].rows[1]
+        .cell("X")
+        .and_then(|c| c.numeric())
+        .expect("the inherited X");
+    assert!((x - 0.75).abs() < 1e-9, "a fraction, unscaled: {x}");
+}
+
+#[test]
+fn merged_geometry_scales_relative_arc_controls() {
+    let mut master = shape_at(1, (0.5, 0.5), 1.0, 1.0, 0.0);
+    push_geo(
+        &mut master,
+        vec![geo_row(
+            1,
+            "RelEllipticalArcTo",
+            &[
+                ("X", 0.75),
+                ("Y", 0.5),
+                ("A", 0.25),
+                ("B", 0.25),
+                ("C", 0.5),
+                ("D", 2.0),
+            ],
+        )],
+    );
+    let mut inst = shape_at(1, (4.0, 5.0), 4.0, 2.0, 0.0);
+    inst.master = Some(7);
+    push_geo(&mut inst, vec![geo_row(1, "RelEllipticalArcTo", &[])]);
+
+    let (mut doc, _page) = page_fixture(vec![inst.clone()]);
+    doc.masters.push(vsdx::model::Master {
+        id: 7,
+        shapes: vec![master],
+        ..vsdx::model::Master::default()
+    });
+    let chain = [&inst];
+    let env = shape_env(&doc, &inst, &chain);
+    let merged = crate::svg::shape_layer::merged_own_geometry(&doc, &inst, &chain, 4.0, 2.0, &env);
+    let row = &merged[0].rows[0];
+    for (name, expected) in [
+        ("X", 0.75),
+        ("Y", 0.5),
+        ("A", 1.0),
+        ("B", 0.5),
+        ("C", 0.5),
+        ("D", 2.0),
+    ] {
+        assert_eq!(
+            row.cell(name).and_then(|c| c.numeric()),
+            Some(expected),
+            "{name}"
+        );
+    }
+}
+
+/// An inherited Rel* FORMULA still evaluates live in the instance env
+/// when the inline copy dropped the whole row; only a literal fraction
+/// passes through unscaled (CodeRabbit on PR #381).
+#[test]
+fn merged_geometry_evaluates_inherited_rel_formulas() {
+    let mut master = shape_at(1, (0.5, 0.5), 1.0, 1.0, 0.0);
+    let mut line = geo_row(3, "RelLineTo", &[("X", 0.25), ("Y", 0.5)]);
+    line.cells[0].1.f = Some("Width/4".into());
+    push_geo(
+        &mut master,
+        vec![
+            geo_row(1, "RelMoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "RelLineTo", &[("X", 0.5), ("Y", 0.0)]),
+            line,
+        ],
+    );
+    let mut inst = shape_at(1, (4.0, 5.0), 4.0, 1.0, 0.0);
+    inst.master = Some(7);
+    // Row 3 dropped entirely; row 2 kept.
+    push_geo(
+        &mut inst,
+        vec![
+            geo_row(1, "RelMoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "RelLineTo", &[("X", 0.5), ("Y", 0.0)]),
+        ],
+    );
+    let (mut doc, _page) = page_fixture(vec![inst.clone()]);
+    doc.masters.push(vsdx::model::Master {
+        id: 7,
+        shapes: vec![master],
+        ..vsdx::model::Master::default()
+    });
+    let chain = [&inst];
+    let env = shape_env(&doc, &inst, &chain);
+    let merged = crate::svg::shape_layer::merged_own_geometry(&doc, &inst, &chain, 4.0, 1.0, &env);
+    let row = merged[0]
+        .rows
+        .iter()
+        .find(|r| r.ix == 3)
+        .expect("the restored row");
+    let num = |n: &str| row.cell(n).and_then(|c| c.numeric()).unwrap();
+    assert!(
+        (num("X") - 1.0).abs() < 1e-9,
+        "Width/4 at width 4: {}",
+        num("X")
+    );
+    assert!(
+        (num("Y") - 0.5).abs() < 1e-9,
+        "the literal fraction: {}",
+        num("Y")
+    );
+}
+
+/// Inherited Rel* cells follow the painter (CodeRabbit on PR #381): a
+/// RelCubBezTo control point is a fraction (`rel_adjust` scales it at
+/// paint time) and passes through, while a RelEllipticalArcTo's A/B
+/// control point is read as is and keeps the master→instance scaling.
+#[test]
+fn merged_geometry_scales_rel_arc_controls_but_not_rel_bezier_controls() {
+    let mut master = shape_at(1, (0.5, 0.5), 1.0, 1.0, 0.0);
+    push_geo(
+        &mut master,
+        vec![
+            geo_row(1, "RelMoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(
+                2,
+                "RelEllipticalArcTo",
+                &[
+                    ("X", 1.0),
+                    ("Y", 0.0),
+                    ("A", 0.5),
+                    ("B", 0.5),
+                    ("C", 0.0),
+                    ("D", 1.0),
+                ],
+            ),
+            geo_row(
+                3,
+                "RelCubBezTo",
+                &[
+                    ("X", 0.0),
+                    ("Y", 0.0),
+                    ("A", 0.5),
+                    ("B", 0.5),
+                    ("C", 0.25),
+                    ("D", 0.25),
+                ],
+            ),
+        ],
+    );
+    let mut inst = shape_at(1, (4.0, 5.0), 4.0, 2.0, 0.0);
+    inst.master = Some(7);
+    // The inline copy keeps X/Y only; A–D inherit.
+    push_geo(
+        &mut inst,
+        vec![
+            geo_row(1, "RelMoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "RelEllipticalArcTo", &[("X", 1.0), ("Y", 0.0)]),
+            geo_row(3, "RelCubBezTo", &[("X", 0.0), ("Y", 0.0)]),
+        ],
+    );
+    let (mut doc, _page) = page_fixture(vec![inst.clone()]);
+    doc.masters.push(vsdx::model::Master {
+        id: 7,
+        shapes: vec![master],
+        ..vsdx::model::Master::default()
+    });
+    let chain = [&inst];
+    let env = shape_env(&doc, &inst, &chain);
+    let merged = crate::svg::shape_layer::merged_own_geometry(&doc, &inst, &chain, 4.0, 2.0, &env);
+    let num = |ix: i64, n: &str| {
+        merged[0]
+            .rows
+            .iter()
+            .find(|r| r.ix == ix)
+            .and_then(|r| r.cell(n))
+            .and_then(|c| c.numeric())
+            .unwrap_or_else(|| panic!("row {ix} {n}"))
+    };
+    assert!(
+        (num(2, "A") - 2.0).abs() < 1e-9,
+        "arc control scales: {}",
+        num(2, "A")
+    );
+    assert!(
+        (num(2, "B") - 1.0).abs() < 1e-9,
+        "arc control scales: {}",
+        num(2, "B")
+    );
+    assert!(
+        (num(3, "A") - 0.5).abs() < 1e-9,
+        "bezier control stays: {}",
+        num(3, "A")
+    );
+    assert!(
+        (num(3, "C") - 0.25).abs() < 1e-9,
+        "bezier control stays: {}",
+        num(3, "C")
+    );
+}

@@ -280,6 +280,33 @@ fn paper_units(page: &Page) -> UnitSystem {
     UnitSystem::Us
 }
 
+/// The sheet whose text a shape shows: its own when it carries a
+/// `<Text>` element (even an empty one — the user cleared it), else its
+/// master source's. Visio shows a master's text on every instance that
+/// never edited it; the network-style corpus masters keep their whole
+/// label (often a field over the master's User rows) there, and their
+/// instances carry no `<Text>` at all (#378).
+pub(crate) fn text_sheet<'a>(doc: &'a Document, s: &'a Shape, chain: &[&'a Shape]) -> &'a Sheet {
+    if s.sheet.text.is_some() || s.sheet.text_raw.is_some() {
+        return &s.sheet;
+    }
+    // An instance of a multi-root master draws every root, each with
+    // its own text, through the master mirroring: falling back here
+    // would draw the first root's label a second time (CodeRabbit on
+    // PR #381; the predicate is shape_layer's `multi_root_master`).
+    let multi_root = s.sub_shapes.is_empty()
+        && s.master
+            .and_then(|m| doc.master(m))
+            .is_some_and(|m| m.shapes.len() > 1);
+    if multi_root {
+        return &s.sheet;
+    }
+    doc.instance_source(s, chain)
+        .map(|m| &m.sheet)
+        .filter(|m| m.text.is_some() || m.text_raw.is_some())
+        .unwrap_or(&s.sheet)
+}
+
 /// The SUBSTITUTED plain text of a shape — `None` when the raw text
 /// carries no `<fld>` marker (the fast path that keeps the 499/679
 /// marker-free packages byte-identical through this engine).
@@ -289,13 +316,17 @@ pub fn substituted_text(
     chain: &[&Shape],
     fields: Option<&FieldsCtx<'_>>,
 ) -> Option<String> {
-    let raw = s.sheet.text_raw.as_deref()?;
+    let raw = text_sheet(doc, s, chain).text_raw.as_deref()?;
     if !raw.contains("<fld") {
         return None;
     }
     let pieces = text::text_pieces(raw);
-    let (env, strs, fctx) = field_envs(doc, s, chain, fields);
+    let (env, strs, master_strs, fctx) = field_envs(doc, s, chain, fields);
     let fctx_ref = fctx.as_ref();
+    let scopes = FieldScopes {
+        page: &strs,
+        master: master_strs.as_ref(),
+    };
 
     let mut out = String::new();
     let mut any = false;
@@ -311,7 +342,7 @@ pub fn substituted_text(
                     *ix,
                     content.as_deref(),
                     &env,
-                    &strs,
+                    scopes,
                     fctx_ref,
                 ));
             }
@@ -333,7 +364,12 @@ fn field_envs(
     s: &Shape,
     chain: &[&Shape],
     fields: Option<&FieldsCtx<'_>>,
-) -> (formula::Env, formula::StrEnv, Option<FieldCtx>) {
+) -> (
+    formula::Env,
+    std::sync::Arc<formula::StrEnv>,
+    Option<formula::StrEnv>,
+    Option<FieldCtx>,
+) {
     let env = crate::svg::shape_env(doc, s, chain);
     // Cross-sheet refs (`Sheet.5!User.ValueText`) resolve through the
     // pass-shared qualified layer with this shape's own bare rows
@@ -355,7 +391,31 @@ fn field_envs(
         .master
         .and_then(|mid| doc.master(mid).and_then(|m| m.name_u.clone()));
     let fctx = fields.map(|f| f.formula_ctx(master_name));
-    (env, strs, fctx)
+    // Formulas the master supplies name the MASTER's shape IDs: they
+    // read through a fork that adds the master-local `Sheet.N!` layer
+    // (#378). The instance's own formulas keep the page scope.
+    let strs = std::sync::Arc::new(strs);
+    let master_strs = master_local_env(doc, s, chain);
+    (env, strs, master_strs, fctx)
+}
+
+/// The two string scopes a field formula can read (#378): the page's,
+/// for a formula the instance authored, and the master-local one, for a
+/// formula it inherits from its master (`None` without a master Field
+/// section).
+#[derive(Clone, Copy)]
+struct FieldScopes<'a> {
+    page: &'a formula::StrEnv,
+    master: Option<&'a formula::StrEnv>,
+}
+
+impl<'a> FieldScopes<'a> {
+    fn pick(self, from_master: bool) -> &'a formula::StrEnv {
+        match (from_master, self.master) {
+            (true, Some(m)) => m,
+            _ => self.page,
+        }
+    }
 }
 
 /// Preview one field's display string (the Insert Field dialog): the
@@ -371,7 +431,7 @@ pub fn preview_field(
     value_f: &str,
     format_f: Option<&str>,
 ) -> String {
-    let (env, strs, fctx) = field_envs(doc, s, chain, fields);
+    let (env, strs, _, fctx) = field_envs(doc, s, chain, fields);
     let fctx_ref = fctx.as_ref();
     let Some(v) = formula::eval_field(value_f, &env, &strs, fctx_ref)
         .ok()
@@ -416,9 +476,13 @@ fn render_field(
     ix: i64,
     cached: Option<&str>,
     env: &formula::Env,
-    strs: &formula::StrEnv,
+    scopes: FieldScopes<'_>,
     fctx: Option<&FieldCtx>,
 ) -> String {
+    let own_row = s
+        .sheet
+        .section("Field", 0)
+        .and_then(|sec| sec.row_by_ix(ix));
     let row = field_row(doc, s, chain, ix);
     let Some(row) = row else {
         return cached.unwrap_or("").to_string();
@@ -440,20 +504,29 @@ fn render_field(
             .section("Field", 0)
             .and_then(|sec| sec.row_by_ix(ix))
     })();
-    let cell_of = |name: &str| -> Option<&vsdx::model::Cell> {
+    // Each cell also reports whether its formula is the MASTER's: a
+    // master formula reads the master-local scope, an authored one the
+    // page's — per cell, since Value and Format inherit independently
+    // (CodeRabbit on PR #381).
+    let row_is_master = own_row.is_none();
+    let cell_of = |name: &str| -> Option<(&vsdx::model::Cell, bool)> {
         match row.cell(name) {
             // Authored locally — it wins.
-            Some(c) if c.f.as_deref() != Some("Inh") => Some(c),
+            Some(c) if c.f.as_deref() != Some("Inh") => Some((c, row_is_master)),
             // `Inh` or missing: the master's live cell outranks the
             // stale local cache, with the cache as fallback when the
             // master's row omits the cell.
-            inh => inherited_row.and_then(|r| r.cell(name)).or(inh),
+            inh => inherited_row
+                .and_then(|r| r.cell(name))
+                .map(|c| (c, true))
+                .or(inh.map(|c| (c, row_is_master))),
         }
     };
     let value_cell = cell_of("Value");
     // Evaluate the Value formula; fall back to the cached V.
     let (value, unit) = match value_cell {
-        Some(c) => {
+        Some((c, from_master)) => {
+            let strs = scopes.pick(from_master);
             let v =
                 c.f.as_deref()
                     .filter(|f| !f.is_empty() && *f != "No Formula" && *f != "Inh")
@@ -472,7 +545,8 @@ fn render_field(
     };
     // The format picture: the Format cell's F (FIELDPICTURE(n) — or
     // a formula producing a picture) evaluated live, else its V.
-    let picture = cell_of("Format").and_then(|c| {
+    let picture = cell_of("Format").and_then(|(c, from_master)| {
+        let strs = scopes.pick(from_master);
         c.f.as_deref()
             .filter(|f| !f.is_empty() && *f != "No Formula" && *f != "Inh")
             .and_then(|f| formula::eval_field(f, env, strs, fctx).ok())
@@ -547,6 +621,81 @@ fn seed_sheet_strings(doc: &Document, s: &Shape, chain: &[&Shape], strs: &mut fo
         seed_rows(&src.sheet, "Prop", "Prop", strs);
     }
     seed_shape_strings(s, strs);
+}
+
+/// Master-local `Sheet.N!` refs (#378). A field formula that comes
+/// from the master names the MASTER's shape IDs: the corpus box masters
+/// label their header with `Sheet.5!User.ObjectTypeName`, 5 being the
+/// master root. Visio reads that through the instance's counterpart of
+/// master shape 5; resolved against the page, it hit page shape 5
+/// (another box) and every box showed that box's name. The returned
+/// scope seeds each master shape's rows under its
+/// master-local `Sheet.N!` id: the master's rows first, then the rows
+/// of its instance counterpart over them. Page-level `Sheet.N!` refs in
+/// the instance's own formulas never see this layer.
+///
+/// The owner is the shape that declares `Master` (this shape, or the
+/// nearest enclosing instance, as in [`Document::instance_source`]), and
+/// the counterparts are the shapes of the owner's tree whose
+/// `instance_source` is that master shape: the owner for the root it
+/// targets, `MasterShape` sub-shapes, and bare inline copies matched by
+/// ID or `NameU` (CodeRabbit on PR #381).
+fn master_local_env(doc: &Document, s: &Shape, chain: &[&Shape]) -> Option<formula::StrEnv> {
+    let src = doc.instance_source(s, chain)?;
+    src.sheet.section("Field", 0)?;
+    // The owner and its ancestors.
+    let (owner, owner_anc): (&Shape, &[&Shape]) = if s.master.is_some() {
+        (s, chain)
+    } else {
+        let k = chain.iter().rposition(|a| a.master.is_some())?;
+        (chain[k], &chain[..k])
+    };
+    let master = doc.master(owner.master?)?;
+    // Master shape → its instance counterpart, by pointer identity.
+    fn pair<'a>(
+        doc: &'a Document,
+        x: &'a Shape,
+        anc: &mut Vec<&'a Shape>,
+        out: &mut Vec<(*const Shape, &'a Shape)>,
+    ) {
+        if let Some(src) = doc.instance_source(x, anc) {
+            out.push((src as *const Shape, x));
+        }
+        anc.push(x);
+        for c in &x.sub_shapes {
+            // A nested instance of another master is its own owner.
+            if c.master.is_none() {
+                pair(doc, c, anc, out);
+            }
+        }
+        anc.pop();
+    }
+    let mut pairs = Vec::new();
+    let mut anc: Vec<&Shape> = owner_anc.to_vec();
+    pair(doc, owner, &mut anc, &mut pairs);
+    // A scope of its own, not a fork of the page's: a master formula
+    // never reaches page shapes, so a `Sheet.N!` row the master lacks
+    // stays unresolved (the field keeps its cached display) instead of
+    // falling through to page shape N (CodeRabbit on PR #381). The
+    // bare `User.`/`Prop.` rows layer as in the page scope.
+    let mut env = formula::StrEnv::new();
+    seed_rows(&src.sheet, "User", "User", &mut env);
+    seed_rows(&src.sheet, "Prop", "Prop", &mut env);
+    seed_rows(&s.sheet, "User", "User", &mut env);
+    seed_rows(&s.sheet, "Prop", "Prop", &mut env);
+    fn walk(ms: &Shape, pairs: &[(*const Shape, &Shape)], env: &mut formula::StrEnv) {
+        seed_sheet_rows_under(&ms.sheet, ms.id, env);
+        if let Some((_, inst)) = pairs.iter().find(|(p, _)| std::ptr::eq(*p, ms)) {
+            seed_sheet_rows_under(&inst.sheet, ms.id, env);
+        }
+        for c in &ms.sub_shapes {
+            walk(c, pairs, env);
+        }
+    }
+    for ms in &master.shapes {
+        walk(ms, &pairs, &mut env);
+    }
+    Some(env)
 }
 
 /// A shape's User/Prop rows: bare names plus `Sheet.ID!` qualified.
@@ -1121,6 +1270,199 @@ mod tests {
             substituted_text(&doc, &s, &chain, Some(&fctx)).as_deref(),
             Some("5"),
             "the master's live formula outranks the stale Inh cache"
+        );
+    }
+
+    /// A sheet with one User row `Label` and, optionally, Field rows
+    /// (IX, Value formula) plus the field text over them.
+    fn labelled(label: Option<&str>, fields: &[(i64, &str)]) -> vsdx::model::Sheet {
+        let mut sheet = vsdx::model::Sheet::default();
+        if let Some(v) = label {
+            sheet
+                .children
+                .push(vsdx::model::SheetChild::Section(vsdx::model::Section {
+                    name: "User".into(),
+                    rows: vec![vsdx::model::Row {
+                        n: Some("Label".into()),
+                        cells: vec![("Value".into(), vsdx::model::Cell::value(v))],
+                        ..vsdx::model::Row::default()
+                    }],
+                    ..vsdx::model::Section::default()
+                }));
+        }
+        if !fields.is_empty() {
+            sheet
+                .children
+                .push(vsdx::model::SheetChild::Section(vsdx::model::Section {
+                    name: "Field".into(),
+                    rows: fields
+                        .iter()
+                        .map(|(ix, f)| vsdx::model::Row {
+                            ix: *ix,
+                            cells: vec![(
+                                "Value".into(),
+                                vsdx::model::Cell {
+                                    f: Some(f.to_string()),
+                                    ..vsdx::model::Cell::default()
+                                },
+                            )],
+                            ..vsdx::model::Row::default()
+                        })
+                        .collect(),
+                    ..vsdx::model::Section::default()
+                }));
+            let raw: Vec<String> = fields
+                .iter()
+                .map(|(ix, _)| format!("<fld IX='{ix}'>?</fld>"))
+                .collect();
+            sheet.text_raw = Some(raw.join("|"));
+        }
+        sheet
+    }
+
+    /// Master-local `Sheet.N!` scope, per CodeRabbit on PR #381: the
+    /// scope follows each formula's source (an authored row reads the
+    /// page, an inherited one the master); an instance overlays only the
+    /// master root it targets; and the owner is the shape that declares
+    /// `Master`, with bare inline copies (`Header.42`) as counterparts.
+    #[test]
+    fn master_local_refs_follow_the_formula_source_and_the_owner() {
+        let mut doc = Document::default();
+        // Master 7: roots 5 and 6, both labelled; root 6 carries two
+        // fields over master-local refs.
+        doc.masters.push(vsdx::model::Master {
+            id: 7,
+            shapes: vec![
+                Shape {
+                    id: 5,
+                    sheet: labelled(Some("master-five"), &[]),
+                    ..Shape::default()
+                },
+                Shape {
+                    id: 6,
+                    sheet: labelled(
+                        Some("master-six"),
+                        &[(0, "Sheet.6!User.Label"), (1, "Sheet.5!User.Label")],
+                    ),
+                    ..Shape::default()
+                },
+            ],
+            ..vsdx::model::Master::default()
+        });
+        // Master 9: a root whose field reads its sub-shape 2 (Header).
+        doc.masters.push(vsdx::model::Master {
+            id: 9,
+            shapes: vec![Shape {
+                id: 1,
+                sheet: labelled(None, &[(0, "Sheet.2!User.Label")]),
+                sub_shapes: vec![Shape {
+                    id: 2,
+                    name_u: Some("Header".into()),
+                    sheet: labelled(Some("master-header"), &[]),
+                    ..Shape::default()
+                }],
+                ..Shape::default()
+            }],
+            ..vsdx::model::Master::default()
+        });
+        let mut page = Page::default();
+        // Page shapes 5 and 2: what a page-scoped read would hit.
+        page.shapes.push(Shape {
+            id: 5,
+            sheet: labelled(Some("page-five"), &[]),
+            ..Shape::default()
+        });
+        page.shapes.push(Shape {
+            id: 2,
+            sheet: labelled(Some("page-two"), &[]),
+            ..Shape::default()
+        });
+        let fctx = FieldsCtx::for_page(&doc, &page);
+
+        // An instance of root 6 with its own label and no Field rows:
+        // both fields are the master's. Sheet.6 reads the instance's
+        // override; Sheet.5 is root 5, which this instance does not
+        // target, so it keeps the master's row.
+        // (The instance carries the field text itself: a multi-root
+        // master's text is drawn by the mirroring, not inherited.)
+        let mut inst = Shape {
+            id: 10,
+            master: Some(7),
+            master_shape: Some(6),
+            sheet: labelled(Some("inst-six"), &[]),
+            ..Shape::default()
+        };
+        inst.sheet.text_raw = Some("<fld IX='0'>?</fld>|<fld IX='1'>?</fld>".into());
+        assert_eq!(
+            substituted_text(&doc, &inst, &[&inst], Some(&fctx)).as_deref(),
+            Some("inst-six|master-five")
+        );
+
+        // The same instance authoring row 0 itself (a page ref) and
+        // inheriting row 1: row 0 reads the page, row 1 the master.
+        let mut mixed = inst.clone();
+        mixed.sheet = labelled(Some("inst-six"), &[(0, "Sheet.5!User.Label")]);
+        mixed.sheet.text_raw = Some("<fld IX='0'>?</fld>|<fld IX='1'>?</fld>".into());
+        assert_eq!(
+            substituted_text(&doc, &mixed, &[&mixed], Some(&fctx)).as_deref(),
+            Some("page-five|master-five")
+        );
+
+        // An instance of master 9 inside a plain group, with a bare
+        // inline copy of Header: the field reads the copy's label.
+        let inst9 = Shape {
+            id: 21,
+            master: Some(9),
+            sub_shapes: vec![Shape {
+                id: 42,
+                name_u: Some("Header.42".into()),
+                sheet: labelled(Some("inline-header"), &[]),
+                ..Shape::default()
+            }],
+            ..Shape::default()
+        };
+        let group = Shape {
+            id: 20,
+            sub_shapes: vec![inst9.clone()],
+            ..Shape::default()
+        };
+        assert_eq!(
+            substituted_text(&doc, &inst9, &[&group, &inst9], Some(&fctx)).as_deref(),
+            Some("inline-header")
+        );
+    }
+
+    /// A master formula never reaches page shapes: a `Sheet.5!` row the
+    /// master lacks stays unresolved (the marker's cached display), even
+    /// with a page shape 5 carrying that row (CodeRabbit on PR #381).
+    #[test]
+    fn master_formula_does_not_fall_through_to_the_page() {
+        let mut doc = Document::default();
+        doc.masters.push(vsdx::model::Master {
+            id: 8,
+            shapes: vec![Shape {
+                id: 5,
+                sheet: labelled(None, &[(0, "Sheet.5!User.Label")]),
+                ..Shape::default()
+            }],
+            ..vsdx::model::Master::default()
+        });
+        let mut page = Page::default();
+        page.shapes.push(Shape {
+            id: 5,
+            sheet: labelled(Some("page-five"), &[]),
+            ..Shape::default()
+        });
+        let fctx = FieldsCtx::for_page(&doc, &page);
+        let mut inst = Shape {
+            id: 11,
+            master: Some(8),
+            ..Shape::default()
+        };
+        inst.sheet.text_raw = Some("<fld IX='0'>cached</fld>".into());
+        assert_eq!(
+            substituted_text(&doc, &inst, &[&inst], Some(&fctx)).as_deref(),
+            Some("cached")
         );
     }
 }
