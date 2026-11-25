@@ -25,7 +25,7 @@ Rules:
   (e.g. multi_page_text.vsdx, not issue263.vsdx).
 - A row in the manifest below is required.
 
-## imported/  
+## imported/
 
 Files here are .vsdx/.vssx/.vstx packages supplied by issue reporters
 to reproduce real-world bugs. They are committed.
@@ -40,10 +40,10 @@ Rules:
 
 ## Manifest
 
-| File              | Source         | License / IP status           | Consuming test(s)                       |
-|-------------------|----------------|-------------------------------|-----------------------------------------|
-| kreuzung.vsdx     | issue #303   | reporter-supplied, untracked  | crates/dc-ui/tests/kreuzung.rs          |
-| utilisation.vsdx  | owner-authored | reporter-supplied, untracked  | crates/dc-ui/tests/arc_line_drag.rs     |
+| File             | Source         | License / IP status                          | Consuming test(s)                   |
+| ---------------- | -------------- | -------------------------------------------- | ----------------------------------- |
+| kreuzung.vsdx    | issue #303     | generated once by throw-away code/tracked    | crates/dc-ui/tests/kreuzung.rs      |
+| utilisation.vsdx | owner-authored | reporter-supplied, untracked - to be rebuilt | crates/dc-ui/tests/arc_line_drag.rs |
 
 (Synthetic/ rows: none yet. The committed builder in dc-core that
 produces the blank_doc/shape_doc/etc. fixtures used by
@@ -78,4 +78,3 @@ crates/dc-ui/tests/common/ (and a sibling in crates/dc/tests/).
 Never write `../../../` escapes — they break the moment a test file
 moves (the module splits will move several), and they hide which
 tier (synthetic vs imported) the file came from.
-

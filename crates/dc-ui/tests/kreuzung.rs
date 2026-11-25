@@ -1,6 +1,6 @@
 //! #303's own repro, end to end, against the reporter-supplied
-//! fixture `Sample/test files/kreuzung.vsdx` (untracked by design —
-//! the test skips when it is absent, like the other corpus fixtures).
+//! fixture `corpus/synthetic/kreuzung.vsdx` (the test skips when it
+//! is absent).
 //!
 //! The page: boxes A(1) B(2) C(3) D(4); A→B is connector 6 (carrying
 //! Visio's own stored jump `ArcTo` at the old crossing x=3.5), C→D is
@@ -15,7 +15,7 @@
 use dc_core::Command;
 use vsdx::model::find_shape_by_id;
 
-const FIXTURE: &str = "../../../Sample/test files/kreuzung.vsdx";
+const FIXTURE: &str = "../../corpus/synthetic/kreuzung.vsdx";
 
 fn open_fixture() -> Option<dc_core::Editor> {
     if !std::path::Path::new(FIXTURE).exists() {
