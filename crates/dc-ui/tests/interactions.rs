@@ -10419,3 +10419,39 @@ fn options_modal_blocks_backstage_navigation() {
         "Back closes the backstage once Options is closed"
     );
 }
+
+/// #272: Visio's Show ShapeSheet has three targets. A right-click on
+/// the empty page offers Show ShapeSheet for the page's sheet; the
+/// Developer tab opens the document's sheet and toggles the page's.
+#[test]
+fn page_and_document_shapesheets_open_from_the_page_and_the_ribbon() {
+    use dc_ui::shapesheet::SheetTarget;
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness_with_blank();
+    h.run();
+    h.run();
+    let page = h.state().debug_page_ids()[0];
+    let c = h.state().debug_canvas_rect().center();
+    click_at(&mut h, c, egui::PointerButton::Secondary);
+    h.get_by_label_contains("Show ShapeSheet").click();
+    h.run();
+    assert_eq!(
+        h.state().debug_sheet_targets(),
+        vec![SheetTarget::Page(page)]
+    );
+    assert!(
+        h.query_all_by_label_contains("ShapeSheet —").count() >= 1,
+        "the page's sheet window is up"
+    );
+    h.get_by_label("Developer").click();
+    h.run();
+    h.get_by_label("Document ShapeSheet").click();
+    h.run();
+    assert_eq!(
+        h.state().debug_sheet_targets(),
+        vec![SheetTarget::Page(page), SheetTarget::Document]
+    );
+    h.get_by_label("Page ShapeSheet").click();
+    h.run();
+    assert_eq!(h.state().debug_sheet_targets(), vec![SheetTarget::Document]);
+}

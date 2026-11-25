@@ -436,7 +436,7 @@ impl App {
             // One window per open sheet (#192 spec), in open order;
             // the tiles follow the drawing (first) then the sheets.
             let mut close_ix: Option<usize> = None;
-            for (i, &sid) in self.shapesheets.clone().iter().enumerate() {
+            for (i, &target) in self.shapesheets.clone().iter().enumerate() {
                 let mut open = true;
                 let sheet_tile = if n_children == 1 {
                     // Sheets-only child (no drawing open): full-bleed,
@@ -448,15 +448,26 @@ impl App {
                         .copied()
                         .unwrap_or(self.mdi_client)
                 };
-                let name = self
-                    .ed()
-                    .and_then(|ed| ed.doc.pages.get(self.page_idx))
-                    .and_then(|p| vsdx::model::find_shape_by_id(&p.shapes, sid))
-                    .and_then(|sh| sh.name_u.clone())
-                    .unwrap_or_else(|| crate::i18n::strs().msg_shape_sid(sid));
+                let name = match target {
+                    crate::shapesheet::SheetTarget::Shape(sid) => self
+                        .ed()
+                        .and_then(|ed| ed.doc.pages.get(self.page_idx))
+                        .and_then(|p| vsdx::model::find_shape_by_id(&p.shapes, sid))
+                        .and_then(|sh| sh.name_u.clone())
+                        .unwrap_or_else(|| crate::i18n::strs().msg_shape_sid(sid)),
+                    // #272: a page sheet carries its page's name.
+                    crate::shapesheet::SheetTarget::Page(page_id) => self
+                        .ed()
+                        .and_then(|ed| ed.doc.pages.iter().find(|p| p.id == page_id))
+                        .map(|p| p.name.clone())
+                        .unwrap_or_default(),
+                    crate::shapesheet::SheetTarget::Document => {
+                        crate::i18n::strs().msg_document_sheet_name()
+                    }
+                };
                 let title = crate::i18n::strs().msg_shapesheet_name(name);
                 let mut win = egui::Window::new(title)
-                    .id(egui::Id::unique(("dc-shapesheet", sid)))
+                    .id(egui::Id::unique(("dc-shapesheet", target)))
                     .open(&mut open)
                     .title_bar(n_children >= 2 || !drawing_open)
                     .resizable(true)
@@ -474,7 +485,7 @@ impl App {
                     // #189: the body caps its content to the tile so
                     // the window never outgrows its slot and drifts
                     // over a neighboring child's title bar.
-                    self.shapesheet_panel(ui, sid, sheet_tile.width() - 14.0);
+                    self.shapesheet_panel(ui, target, sheet_tile.width() - 14.0);
                 });
                 if !open {
                     close_ix = Some(i);

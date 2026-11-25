@@ -197,6 +197,7 @@ impl App {
             debug_close_vetoes: 0,
             debug_close_issued: 0,
             ctx_menu: None,
+            page_menu: None,
             quick_menu: None,
             window_title: String::new(),
             ctx_menu_rect: None,

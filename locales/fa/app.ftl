@@ -244,6 +244,8 @@ document-closed = سند بسته شد
 document-inspection-arrives-with = بازرسی سند با نقطهٔ عطف بعدی عرضه می‌شود
 document-masters = استادهای سند
 document-protection-arrives-with = حفاظت سند با نقطهٔ عطف بعدی عرضه می‌شود
+document-shapesheet = ShapeSheet سند
+document-sheet-name = سند
 document-stencil = شابلون سند
 document-stencil-planned = شابلون سند — برنامه‌ریزی شده
 don-t-save = ذخیره نکن
@@ -323,6 +325,9 @@ field-title = عنوان
 field-width = عرض
 insert-a-text-field = درج یک فیلد متنی
 insert-field = درج فیلد
+inspect-the-current-page-cells = بازرسی سلول‌های صفحهٔ کنونی (PageSheet)
+inspect-the-document-cells = بازرسی سلول‌های سند (DocumentSheet)
+page-shapesheet = ShapeSheet صفحه
 select-a-shape-to-insert-a-field = برای درج فیلد شکلی انتخاب کنید.
 
 even-horizontal-spacing-3-shapes = فاصله‌گذاری افقی یکنواخت (۳ شکل یا بیشتر)
@@ -885,6 +890,7 @@ split-view-planned = نمای تقسیم‌شده — برنامه‌ریزی ش
 ss-section-1d-endpoints = نقطه‌پایان‌های یک‌بعدی
 ss-section-connection-points = نقاط اتصال
 ss-section-control-points = نقاط کنترل
+ss-section-document-properties = ویژگی‌های سند
 ss-section-fill-gradient-stops = پله‌های گرادیان پرکردن
 # $ix - شاخص بخش هندسه
 ss-section-geometry-n = هندسهٔ { $ix }

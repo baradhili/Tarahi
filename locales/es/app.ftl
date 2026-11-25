@@ -264,6 +264,8 @@ document-closed = documento cerrado
 document-inspection-arrives-with = La inspección de documentos llega con un hito posterior
 document-masters = Patrones del documento
 document-protection-arrives-with = La protección de documentos llega con un hito posterior
+document-shapesheet = ShapeSheet del documento
+document-sheet-name = Documento
 document-stencil = Galería del documento
 document-stencil-planned = Galería del documento — planeado
 don-t-save = No guardar
@@ -346,6 +348,9 @@ field-title = Título
 field-width = Ancho
 insert-a-text-field = Insertar un campo de texto
 insert-field = Insertar campo
+inspect-the-current-page-cells = Inspeccionar las celdas de la página actual (PageSheet)
+inspect-the-document-cells = Inspeccionar las celdas del documento (DocumentSheet)
+page-shapesheet = ShapeSheet de página
 select-a-shape-to-insert-a-field = Seleccione una forma para insertar un campo.
 
 even-horizontal-spacing-3-shapes = Espaciado horizontal uniforme (3+ formas)
@@ -950,6 +955,7 @@ split-view-planned = Vista dividida — planeado
 ss-section-1d-endpoints = Extremos 1-D
 ss-section-connection-points = Puntos de conexión
 ss-section-control-points = Puntos de control
+ss-section-document-properties = Propiedades del documento
 ss-section-fill-gradient-stops = Paradas de degradado de relleno
 # $ix - índice de la sección de geometría
 ss-section-geometry-n = Geometría { $ix }

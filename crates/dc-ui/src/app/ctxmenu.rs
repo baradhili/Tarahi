@@ -771,7 +771,9 @@ impl App {
             // #190/#192: a per-shape toggle for the CLICKED shape —
             // the one-way open left no reachable close; the spec made
             // sheets per-shape.
-            Act::ShapeSheet => self.toggle_shapesheet(shape_id),
+            Act::ShapeSheet => {
+                self.toggle_shapesheet(crate::shapesheet::SheetTarget::Shape(shape_id))
+            }
             Act::RouteStraight => self.apply_connector_route_style(
                 page_id,
                 shape_id,

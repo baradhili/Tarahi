@@ -226,9 +226,10 @@ pub struct App {
     last_drag_ghost_rect: Option<egui::Rect>,
     mouse_page: Option<(f64, f64)>,
     status: String,
-    /// #192 spec: the open ShapeSheet windows, one PER SHAPE (each
-    /// its own child window; a shape appears at most once).
-    shapesheets: Vec<i64>,
+    /// #192 spec: the open ShapeSheet windows, one per target (each
+    /// its own child window; a target appears at most once). #272: a
+    /// target is a shape, a page's PageSheet or the DocumentSheet.
+    shapesheets: Vec<crate::shapesheet::SheetTarget>,
     /// #192 spec: the INACTIVE open documents — File > Open ADDS a
     /// document now; the Window switcher activates one.
     docs: Vec<DocSession>,
@@ -405,6 +406,10 @@ pub struct App {
     /// Open shape context menu: (shape id, screen anchor, page-inches
     /// anchor y-up) — set by right-click, cleared on action/outside click.
     ctx_menu: Option<(i64, Pos2, (f64, f64))>,
+    /// #272: the empty-page context menu (Visio: right-click the page
+    /// with nothing under the cursor ▸ Show ShapeSheet opens the
+    /// PageSheet) — its screen anchor.
+    page_menu: Option<Pos2>,
     /// The Quick Shapes membership menu (#143): the right-clicked
     /// master cell (source key) and the popup anchor.
     quick_menu: Option<((StencilId, i64), egui::Pos2)>,
@@ -537,7 +542,7 @@ struct DocSession {
     ed: Editor,
     path: PathBuf,
     dirty: bool,
-    shapesheets: Vec<i64>,
+    shapesheets: Vec<crate::shapesheet::SheetTarget>,
     /// #192 4b: the document's view (zoom/pan/unit/toggles), page
     /// selection, shape selection, and group-edit stack — switching
     /// loses nothing.

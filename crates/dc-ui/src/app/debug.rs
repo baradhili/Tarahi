@@ -373,8 +373,19 @@ impl App {
         !self.shapesheets.is_empty()
     }
 
-    /// #192 tests: the open sheets' shape ids, in open order.
+    /// #192 tests: the open shape sheets' ids, in open order.
     pub fn debug_shapesheets(&self) -> Vec<i64> {
+        self.shapesheets
+            .iter()
+            .filter_map(|t| match t {
+                crate::shapesheet::SheetTarget::Shape(id) => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// #272 tests: every open ShapeSheet window's target, in open order.
+    pub fn debug_sheet_targets(&self) -> Vec<crate::shapesheet::SheetTarget> {
         self.shapesheets.clone()
     }
 

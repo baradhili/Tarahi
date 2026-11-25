@@ -45,6 +45,10 @@ pub(crate) struct TabCtx {
     pub snap_dlg_open: bool,
     /// A shapesheet window is open for the selection.
     pub shapesheet_open: bool,
+    /// #272: the current page's PageSheet window is open.
+    pub page_sheet_open: bool,
+    /// #272: the DocumentSheet window is open.
+    pub doc_sheet_open: bool,
     /// The selection includes at least one group (Ungroup arms).
     pub sel_group: bool,
     /// The selection is a container (Container Tools arms Disband).
@@ -208,6 +212,10 @@ pub enum Action {
     InsertPicture,
     PageBackgrounds,
     ShowShapeSheet,
+    /// #272: the current page's PageSheet.
+    ShowPageSheet,
+    /// #272: the DocumentSheet.
+    ShowDocumentSheet,
     Macros,
     FillMenu,
     LineMenu,

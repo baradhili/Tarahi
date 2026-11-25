@@ -266,6 +266,8 @@ document-closed = document closed
 document-inspection-arrives-with = Document inspection arrives with a later milestone
 document-masters = Document Masters
 document-protection-arrives-with = Document protection arrives with a later milestone
+document-shapesheet = Document ShapeSheet
+document-sheet-name = Document
 document-stencil = Document Stencil
 document-stencil-planned = Document stencil — planned
 don-t-save = Don't Save
@@ -348,6 +350,9 @@ field-title = Title
 field-width = Width
 insert-a-text-field = Insert a text field
 insert-field = Insert Field
+inspect-the-current-page-cells = Inspect the current page's cells (PageSheet)
+inspect-the-document-cells = Inspect the document's cells (DocumentSheet)
+page-shapesheet = Page ShapeSheet
 select-a-shape-to-insert-a-field = Select a shape to insert a field.
 
 even-horizontal-spacing-3-shapes = Even horizontal spacing (3+ shapes)
@@ -955,6 +960,7 @@ split-view-planned = Split view — planned
 ss-section-1d-endpoints = 1-D Endpoints
 ss-section-connection-points = Connection Points
 ss-section-control-points = Control Points
+ss-section-document-properties = Document Properties
 ss-section-fill-gradient-stops = Fill Gradient Stops
 # $ix (Number) - geometry section index
 ss-section-geometry-n = Geometry { $ix }

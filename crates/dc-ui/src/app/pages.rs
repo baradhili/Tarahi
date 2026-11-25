@@ -537,6 +537,60 @@ impl App {
     /// reference (owner screenshots 2026-10-24): Insert, Delete, Rename,
     /// Duplicate, then Page Setup (later milestone) and Reorder Pages….
     /// All live items run through the undoable command layer.
+    /// #272: the empty-page context menu. Visio documents the route
+    /// to a page's sheet as "make sure nothing is selected, right-click
+    /// the page, and click Show ShapeSheet".
+    pub(super) fn page_context_menu(&mut self, ctx: &egui::Context) {
+        let Some(anchor) = self.page_menu else {
+            return;
+        };
+        let mut show = false;
+        let menu = egui::Popup::new(
+            egui::Id::unique("dc-page-ctx-menu"),
+            ctx.clone(),
+            anchor,
+            egui::LayerId::background(),
+        )
+        .kind(egui::PopupKind::Menu)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .width(232.0);
+        let popup = menu.show(|ui| {
+            ui.set_min_width(232.0);
+            let tokens = theme::menu_tokens(ui.visuals());
+            ui.visuals_mut().widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+            ui.visuals_mut().widgets.hovered.bg_fill = tokens.hover_fill;
+            if ctx_item(
+                ui,
+                Some(crate::ribbon::Icon::ShapeSheet),
+                &crate::i18n::strs().msg_show_shapesheet(),
+                "",
+                true,
+            ) {
+                show = true;
+            }
+        });
+        let outside_primary = ctx.input(|i| i.pointer.primary_clicked());
+        if let Some(ir) = &popup {
+            if outside_primary
+                && !ir
+                    .response
+                    .rect
+                    .contains(ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default())
+            {
+                self.page_menu = None;
+            }
+        }
+        if show {
+            self.page_menu = None;
+            if let Some(page_id) = self.page_id() {
+                let target = crate::shapesheet::SheetTarget::Page(page_id);
+                if !self.shapesheets.contains(&target) {
+                    self.shapesheets.push(target);
+                }
+            }
+        }
+    }
+
     pub(super) fn tab_context_menu(&mut self, ctx: &egui::Context) {
         let Some((idx, anchor)) = self.tab_menu else {
             return;

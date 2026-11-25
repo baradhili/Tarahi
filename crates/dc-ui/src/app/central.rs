@@ -999,8 +999,13 @@ impl App {
                         .input(|i| i.pointer.interact_pos())
                         .unwrap_or_default();
                     self.ctx_menu = Some((shape_id, anchor, pos));
+                    self.page_menu = None;
                 }
-                None => self.ctx_menu = None,
+                None => {
+                    self.ctx_menu = None;
+                    // #272: the empty page carries its own menu.
+                    self.page_menu = ui.ctx().input(|i| i.pointer.interact_pos());
+                }
             }
         }
         // In-place WYSIWYG text editor overlay (GitHub #22): laid over
@@ -1046,6 +1051,7 @@ impl App {
             }
         }
         self.shape_context_menu(ui.ctx());
+        self.page_context_menu(ui.ctx());
         self.quick_shapes_menu(ui.ctx());
         self.tab_context_menu(ui.ctx());
     }
