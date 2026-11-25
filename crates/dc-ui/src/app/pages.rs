@@ -544,6 +544,10 @@ impl App {
         let Some(anchor) = self.page_menu else {
             return;
         };
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.page_menu = None;
+            return;
+        }
         let mut show = false;
         let menu = egui::Popup::new(
             egui::Id::unique("dc-page-ctx-menu"),

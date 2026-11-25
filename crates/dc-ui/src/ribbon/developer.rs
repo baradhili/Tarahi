@@ -31,6 +31,7 @@ fn code_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<super::
                 s.msg_page_shapesheet(),
                 Action::ShowPageSheet,
             )
+            .enabled(ctx.has_doc)
             .selected(ctx.page_sheet_open)
             .tip(s.msg_inspect_the_current_page_cells()),
             RibbonButton::new(
@@ -38,6 +39,7 @@ fn code_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<super::
                 s.msg_document_shapesheet(),
                 Action::ShowDocumentSheet,
             )
+            .enabled(ctx.has_doc)
             .selected(ctx.doc_sheet_open)
             .tip(s.msg_inspect_the_document_cells()),
         ]),

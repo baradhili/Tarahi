@@ -10433,6 +10433,12 @@ fn page_and_document_shapesheets_open_from_the_page_and_the_ribbon() {
     let page = h.state().debug_page_ids()[0];
     let c = h.state().debug_canvas_rect().center();
     click_at(&mut h, c, egui::PointerButton::Secondary);
+    assert!(h.query_by_label_contains("Show ShapeSheet").is_some());
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.run();
+    assert!(h.query_by_label_contains("Show ShapeSheet").is_none());
+    click_at(&mut h, c, egui::PointerButton::Secondary);
     h.get_by_label_contains("Show ShapeSheet").click();
     h.run();
     assert_eq!(

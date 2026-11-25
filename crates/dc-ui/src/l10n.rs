@@ -5658,7 +5658,21 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "ss-empty-sheet",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "ss-section-1d-endpoints",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "ss-section-additional-cells",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -6911,13 +6925,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..48684,
-            Self::En => 48684..95694,
-            Self::Es => 95694..147445,
-            Self::Fa => 147445..209059,
-            Self::Ja => 209059..261171,
-            Self::Ko => 261171..309152,
-            Self::ZhHans => 309152..351192,
+            Self::De => 0..48787,
+            Self::En => 48787..95891,
+            Self::Es => 95891..147744,
+            Self::Fa => 147744..209482,
+            Self::Ja => 209482..261706,
+            Self::Ko => 261706..309787,
+            Self::ZhHans => 309787..351924,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -10070,8 +10084,14 @@ impl L10nLanguage {
     pub fn msg_split_view_planned(&self) -> String {
         self.0.msg("split-view-planned", None).unwrap()
     }
+    pub fn msg_ss_empty_sheet(&self) -> String {
+        self.0.msg("ss-empty-sheet", None).unwrap()
+    }
     pub fn msg_ss_section_1d_endpoints(&self) -> String {
         self.0.msg("ss-section-1d-endpoints", None).unwrap()
+    }
+    pub fn msg_ss_section_additional_cells(&self) -> String {
+        self.0.msg("ss-section-additional-cells", None).unwrap()
     }
     pub fn msg_ss_section_connection_points(&self) -> String {
         self.0.msg("ss-section-connection-points", None).unwrap()
