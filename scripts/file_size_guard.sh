@@ -12,6 +12,11 @@
 # Excluded from the count: third_party/ (the vendored craft-ui fork,
 # not ours to refactor) and generated files (first line declares it —
 # e.g. dc-ui/src/l10n.rs is codegen output, not hand-refactorable).
+#
+# FILE_SIZE_REPORT=<path> additionally writes the report as the sticky
+# PR-comment body (markdown table + the marker the ci.yml PR-comment
+# step matches on, #366) — the comment format lives here so there is
+# one place that owns it.
 set -u
 
 CAP="${FILE_SIZE_CAP:-1500}"
@@ -31,12 +36,41 @@ while IFS= read -r f; do
     fi
 done < <(git ls-files '*.rs')
 
+count=$(wc -l < "$found")
+
+# Sticky PR-comment body (#366): the ci.yml github-script step updates
+# the bot's previous comment (matched by the marker) with this file.
+# Written on BOTH paths — an all-clear run must still update the
+# sticky comment so it drains to "no file exceeds the cap".
+if [ -n "${FILE_SIZE_REPORT:-}" ]; then
+    {
+        echo '<!-- file-size-guard:sticky -->'
+        echo
+        echo '### File-size guard (#364)'
+        echo
+        if [ -s "$found" ]; then
+            echo "**${count} file(s)** over the ${CAP}-line cap — warning-only:"
+            echo
+            echo '| Lines | File | Over |'
+            echo '|---:|---|---:|'
+            sort -rn "$found" | while IFS= read -r row; do
+                lines=${row%% *}
+                path=${row#* }
+                printf '| %d | `%s` | +%d |\n' "$lines" "$path" "$((lines - CAP))"
+            done
+            echo
+            echo '<sub>Warning-only until the decomposition backlog drains; `FILE_SIZE_ENFORCE=1` makes it a hard gate. Reproduce locally: `./scripts/file_size_guard.sh`.</sub>'
+        else
+            echo "No tracked \`.rs\` file exceeds the ${CAP}-line cap."
+        fi
+    } > "$FILE_SIZE_REPORT"
+fi
+
 if [ ! -s "$found" ]; then
     echo "file-size guard: no tracked .rs file exceeds ${CAP} lines."
     exit 0
 fi
 
-count=$(wc -l < "$found")
 echo "file-size guard: ${count} file(s) over the ${CAP}-line cap (largest first):"
 echo
 while IFS= read -r row; do
