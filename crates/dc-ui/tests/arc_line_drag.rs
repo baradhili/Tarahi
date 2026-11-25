@@ -1,30 +1,40 @@
-//! #226: the corpus Line-arc connector's endpoint drag, end to end,
-//! against the owner-authored fixture `Sample/test files/utilisation.vsdx`
-//! (untracked by design — the test skips when it is absent, like the
-//! arrows-gallery fixture pins).
+//! #226: a glued arc connector's endpoint drag, end to end, against the
+//! committed corpus fixture `corpus/imported/nested-shapes-and-weird-connectors.vsdx`
+//! (#357: it replaces the unpublishable `Sample/test files/utilisation.vsdx`,
+//! so the tests run on every checkout instead of skipping).
 //!
-//! The `Line-arc connector` master (master 5) carries NO ObjType — its
+//! The `Curve connect 2` master (master 9) carries NO ObjType — its
 //! connector signature is `GlueType` + `BegTrigger`/`EndTrigger` — so
-//! every gate here exercises the widened `is_connector_in`. Shape 1021
-//! is the Bones → Available Graft File arc (both ends static-glued).
+//! every gate here exercises the widened `is_connector_in`. Shape 26
+//! is a MoveTo + ArcTo curve, both ends static-glued (begin to shape 1,
+//! end to shape 19).
 
 use dc_core::{Command, Scope};
 use vsdx::model::find_shape_by_id;
 
-const FIXTURE: &str = "../../../Sample/test files/utilisation.vsdx";
+const FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../corpus/imported/nested-shapes-and-weird-connectors.vsdx"
+);
+/// The glued arc connector under test and the shape its begin glues to.
+const ARC: i64 = 26;
+const TARGET: i64 = 1;
 
 fn open_fixture() -> Option<dc_core::Editor> {
-    if !std::path::Path::new(FIXTURE).exists() {
-        eprintln!("skipping: fixture not available");
-        return None;
-    }
-    // A PRESENT fixture that fails to parse is a regression (a corrupt
-    // file or a parser break) — fail loudly, never silently pass the
-    // three tests that gate on this (#218 review).
+    // The fixture is committed: a missing or unparsable file is a
+    // regression, never a silent pass (#218 review).
     match vsdx::parse::parse(std::path::Path::new(FIXTURE)) {
         Ok(doc) => Some(dc_core::Editor::new(doc)),
-        Err(e) => panic!("the fixture exists but does not parse: {e}"),
+        Err(e) => panic!("the corpus fixture does not parse: {e}"),
     }
+}
+
+/// An off-shape drop point below and right of the arc's end.
+fn drop_point(ed: &dc_core::Editor) -> (f64, f64) {
+    (
+        resolved(ed, ARC, "EndX") + 0.4,
+        resolved(ed, ARC, "EndY") - 1.1,
+    )
 }
 
 fn conn(ed: &dc_core::Editor, id: i64) -> &vsdx::model::Shape {
@@ -68,8 +78,7 @@ fn arc_page_end(ed: &dc_core::Editor, id: i64) -> (f64, f64) {
         })
         .unwrap_or((1.0, 1.0));
     let frame = dc::geom::hit_frame(&ed.doc, &chain, sh, msize);
-    // Not a connector: the Line-arc's EllipticalArcTo is real ink and
-    // must never strip (#294's strip gate is connector + ArcTo rows).
+    // No jump strip: the curve's ArcTo is real ink, not a stored hop.
     let segs = dc::geom::geometry_hit_segments(sh, None, &frame, None);
     segs.last().unwrap().1
 }
@@ -82,18 +91,22 @@ fn arc_page_end(ed: &dc_core::Editor, id: i64) -> (f64, f64) {
 fn release_commit_lands_the_arc_end_on_the_drop_point() {
     let Some(mut ed) = open_fixture() else { return };
     let page_id = ed.doc.pages[0].id;
-    let pre_begin_f = conn(&ed, 1021).sheet.cell("BeginX").unwrap().f.clone();
+    let pre_begin_f = conn(&ed, ARC).sheet.cell("BeginX").unwrap().f.clone();
+    let pre_bulge = geom_row(&ed, ARC, 2).cell("A").unwrap().numeric().unwrap();
     assert!(
         pre_begin_f.as_deref().is_some_and(|f| f.contains("PAR(PNT")),
         "the fixture begin is static-glued"
     );
 
     // The drop: off-shape, below the old end.
-    let drop = (7.6, 8.9);
-    let scope = Scope::Shape { page: page_id, shape: 1021 };
+    let drop = drop_point(&ed);
+    let scope = Scope::Shape {
+        page: page_id,
+        shape: ARC,
+    };
     for (n, v) in [
-        ("BeginX", format!("{:.6}", resolved(&ed, 1021, "BeginX"))),
-        ("BeginY", format!("{:.6}", resolved(&ed, 1021, "BeginY"))),
+        ("BeginX", format!("{:.6}", resolved(&ed, ARC, "BeginX"))),
+        ("BeginY", format!("{:.6}", resolved(&ed, ARC, "BeginY"))),
         ("EndX", format!("{:.6}", drop.0)),
         ("EndY", format!("{:.6}", drop.1)),
     ] {
@@ -118,17 +131,20 @@ fn release_commit_lands_the_arc_end_on_the_drop_point() {
         let idx = list
             .list
             .iter()
-            .position(|c| c.from_sheet == 1021 && c.from_cell == "EndX")
+            .position(|c| c.from_sheet == ARC && c.from_cell == "EndX")
             .expect("end glue record");
         dc_core::RemoveConnect::new(dc_core::ConnectsOwner::Page(page_id), idx)
             .apply(&mut ed.doc)
             .unwrap();
     }
-    ed.apply(dc_ui::cmd::RerouteConnectors::new_including(page_id, vec![1021]))
-        .unwrap();
+    ed.apply(dc_ui::cmd::RerouteConnectors::new_including(
+        page_id,
+        vec![ARC],
+    ))
+    .unwrap();
 
     // The arc's end IS the drop point.
-    let end = arc_page_end(&ed, 1021);
+    let end = arc_page_end(&ed, ARC);
     assert!(
         (end.0 - drop.0).abs() < 1e-6 && (end.1 - drop.1).abs() < 1e-6,
         "the arc end lands on the drop point: ({:.4}, {:.4}) vs ({}, {})",
@@ -139,40 +155,45 @@ fn release_commit_lands_the_arc_end_on_the_drop_point() {
     );
     // The chord frame re-derived: width = the new chord, angle = the
     // chord direction — behind their kept markers.
-    let chord = (drop.0 - resolved(&ed, 1021, "BeginX")).hypot(drop.1 - resolved(&ed, 1021, "BeginY"));
-    let width = conn(&ed, 1021).sheet.cell("Width").unwrap();
+    let chord =
+        (drop.0 - resolved(&ed, ARC, "BeginX")).hypot(drop.1 - resolved(&ed, ARC, "BeginY"));
+    let width = conn(&ed, ARC).sheet.cell("Width").unwrap();
     assert!((width.numeric().unwrap() - chord).abs() < 1e-6, "Width {}", width.v.clone().unwrap());
-    let angle = conn(&ed, 1021).sheet.cell("Angle").unwrap();
+    let angle = conn(&ed, ARC).sheet.cell("Angle").unwrap();
     assert_eq!(angle.f.as_deref(), Some("Inh"), "the Inh marker survives");
     // The anchored end's glue formula survived the drag.
     assert_eq!(
-        conn(&ed, 1021).sheet.cell("BeginX").unwrap().f,
+        conn(&ed, ARC).sheet.cell("BeginX").unwrap().f,
         pre_begin_f,
         "the anchored end keeps its glue formula"
     );
-    // The sagitta controls stay frame-local.
-    let row2 = geom_row(&ed, 1021, 2);
-    assert!((row2.cell("A").unwrap().numeric().unwrap() - 1.134719188).abs() < 1e-6);
+    // The bulge control stays frame-local: the reroute keeps it.
+    let row2 = geom_row(&ed, ARC, 2);
+    assert!((row2.cell("A").unwrap().numeric().unwrap() - pre_bulge).abs() < 1e-6);
 }
 
-/// The #226 W4 witness on the corpus file: moving the BONES data store
-/// drags its glued Line-arc connectors with it (the widened gate lets
-/// the reroute see them at all).
+/// The #226 W4 witness on the corpus file: moving the arc's begin
+/// target drags the glued arc with it (the widened gate lets the
+/// reroute see it at all).
 #[test]
 fn moving_the_target_drags_the_glued_arc() {
     let Some(mut ed) = open_fixture() else { return };
     let page_id = ed.doc.pages[0].id;
-    let pre_begin = (resolved(&ed, 1021, "BeginX"), resolved(&ed, 1021, "BeginY"));
+    let pre_begin = (resolved(&ed, ARC, "BeginX"), resolved(&ed, ARC, "BeginY"));
 
-    // Move Bones (934) by (+1, -0.5) — a plain pin translation via the
+    // Move the begin target by (+1, -0.5) — a plain pin translation via the
     // move command (the app's group-move path carries the same pin).
-    let pin = (resolved(&ed, 934, "PinX"), resolved(&ed, 934, "PinY"));
-    ed.apply(dc_ui::cmd::MoveShape::new(page_id, 934, (pin.0 + 1.0, pin.1 - 0.5)))
-        .unwrap();
-    ed.apply(dc_ui::cmd::RerouteConnectors::new(page_id, vec![934]))
+    let pin = (resolved(&ed, TARGET, "PinX"), resolved(&ed, TARGET, "PinY"));
+    ed.apply(dc_ui::cmd::MoveShape::new(
+        page_id,
+        TARGET,
+        (pin.0 + 1.0, pin.1 - 0.5),
+    ))
+    .unwrap();
+    ed.apply(dc_ui::cmd::RerouteConnectors::new(page_id, vec![TARGET]))
         .unwrap();
 
-    let post_begin = (resolved(&ed, 1021, "BeginX"), resolved(&ed, 1021, "BeginY"));
+    let post_begin = (resolved(&ed, ARC, "BeginX"), resolved(&ed, ARC, "BeginY"));
     assert!(
         (post_begin.0 - pre_begin.0 - 1.0).abs() < 1e-6
             && (post_begin.1 - pre_begin.1 + 0.5).abs() < 1e-6,
@@ -184,7 +205,7 @@ fn moving_the_target_drags_the_glued_arc() {
     );
     // The glue formula survives the reroute.
     assert!(
-        conn(&ed, 1021)
+        conn(&ed, ARC)
             .sheet
             .cell("BeginX")
             .unwrap()
@@ -203,13 +224,16 @@ fn moving_the_target_drags_the_glued_arc() {
 fn preview_planner_matches_the_commit_reroute() {
     let Some(ed) = open_fixture() else { return };
     let page_id = ed.doc.pages[0].id;
-    let begin = (resolved(&ed, 1021, "BeginX"), resolved(&ed, 1021, "BeginY"));
-    let drop = (7.6, 8.9);
+    let begin = (resolved(&ed, ARC, "BeginX"), resolved(&ed, ARC, "BeginY"));
+    let drop = drop_point(&ed);
 
     // The commit path: literal endpoint writes (release) + reroute.
     let commit_ed = {
         let mut e = dc_core::Editor::new(ed.doc.clone());
-        let scope = Scope::Shape { page: page_id, shape: 1021 };
+        let scope = Scope::Shape {
+            page: page_id,
+            shape: ARC,
+        };
         for (n, v) in [("EndX", drop.0), ("EndY", drop.1)] {
             dc_core::SetGluedCell::new(
                 scope.clone(),
@@ -225,15 +249,18 @@ fn preview_planner_matches_the_commit_reroute() {
             if let Some(idx) = list
                 .list
                 .iter()
-                .position(|c| c.from_sheet == 1021 && c.from_cell == "EndX")
+                .position(|c| c.from_sheet == ARC && c.from_cell == "EndX")
             {
                 dc_core::RemoveConnect::new(dc_core::ConnectsOwner::Page(page_id), idx)
                     .apply(&mut e.doc)
                     .unwrap();
             }
         }
-        e.apply(dc_ui::cmd::RerouteConnectors::new_including(page_id, vec![1021]))
-            .unwrap();
+        e.apply(dc_ui::cmd::RerouteConnectors::new_including(
+            page_id,
+            vec![ARC],
+        ))
+        .unwrap();
         e
     };
 
@@ -241,12 +268,12 @@ fn preview_planner_matches_the_commit_reroute() {
     // copy — the same endpoint writes the gesture carries, then the
     // plan's frame/row cache writes. No commands, no reroute.
     let mut preview_ed = dc_core::Editor::new(ed.doc.clone());
-    let pre_end = (resolved(&ed, 1021, "EndX"), resolved(&ed, 1021, "EndY"));
-    let pre_beg = (resolved(&ed, 1021, "BeginX"), resolved(&ed, 1021, "BeginY"));
+    let pre_end = (resolved(&ed, ARC, "EndX"), resolved(&ed, ARC, "EndY"));
+    let pre_beg = (resolved(&ed, ARC, "BeginX"), resolved(&ed, ARC, "BeginY"));
     let plan = {
         let page = ed.doc.pages.iter().find(|p| p.id == page_id).unwrap();
-        let sh = find_shape_by_id(&page.shapes, 1021).unwrap();
-        let chain = dc_core::scope::shape_chain(&ed.doc, page_id, 1021).unwrap();
+        let sh = find_shape_by_id(&page.shapes, ARC).unwrap();
+        let chain = dc_core::scope::shape_chain(&ed.doc, page_id, ARC).unwrap();
         dc_ui::cmd::plan_connector_frame(
             &ed.doc,
             sh,
@@ -260,7 +287,7 @@ fn preview_planner_matches_the_commit_reroute() {
     {
         use dc_core::commands::{set_row_cell, RowSel};
         let page = preview_ed.doc.pages.iter_mut().find(|p| p.id == page_id).unwrap();
-        let sh = vsdx::model::find_shape_by_id_mut(&mut page.shapes, 1021).unwrap();
+        let sh = vsdx::model::find_shape_by_id_mut(&mut page.shapes, ARC).unwrap();
         for (n, v) in [("EndX", drop.0), ("EndY", drop.1)] {
             sh.sheet.set_cell(n, vsdx::Cell::value(format!("{v:.6}")));
         }
@@ -294,12 +321,18 @@ fn preview_planner_matches_the_commit_reroute() {
 
     // Frame + row caches agree.
     for n in ["Width", "PinX", "PinY", "LocPinX", "Angle"] {
-        let a = conn(&commit_ed, 1021).sheet.cell(n).and_then(|c| c.numeric());
-        let b = conn(&preview_ed, 1021).sheet.cell(n).and_then(|c| c.numeric());
+        let a = conn(&commit_ed, ARC)
+            .sheet
+            .cell(n)
+            .and_then(|c| c.numeric());
+        let b = conn(&preview_ed, ARC)
+            .sheet
+            .cell(n)
+            .and_then(|c| c.numeric());
         assert_eq!(a, b, "{n} agrees between the preview plan and the commit");
     }
-    let commit_row = geom_row(&commit_ed, 1021, 2);
-    let preview_row = geom_row(&preview_ed, 1021, 2);
+    let commit_row = geom_row(&commit_ed, ARC, 2);
+    let preview_row = geom_row(&preview_ed, ARC, 2);
     for n in ["X", "A", "B"] {
         assert_eq!(
             commit_row.cell(n).and_then(|c| c.numeric()),
