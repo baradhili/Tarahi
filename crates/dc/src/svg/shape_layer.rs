@@ -1066,10 +1066,14 @@ pub(crate) fn merged_own_geometry(
                     // keep those unscaled while the body stretches.
                     let proportional = scell.f.as_deref().map(refs_own_size).unwrap_or(true);
                     let placed = |v: f64| {
-                        if proportional
-                            && !not_coord(src_row.t.as_deref(), cname)
-                            && !is_rel(src_row.t.as_deref())
-                        {
+                        let row_type = src_row.t.as_deref();
+                        // The painter expands only the endpoint of a relative elliptical arc.
+                        let relative_fraction = if row_type == Some("RelEllipticalArcTo") {
+                            matches!(cname.as_str(), "X" | "Y")
+                        } else {
+                            is_rel(row_type)
+                        };
+                        if proportional && !not_coord(row_type, cname) && !relative_fraction {
                             scaled(cname, v)
                         } else {
                             v
