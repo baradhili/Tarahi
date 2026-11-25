@@ -230,9 +230,18 @@ fn node_ink_box(
     // writebacks, so a Geometry2 referencing `Geometry1.X2` fell
     // back to the authored pose (#249's cross-row case, across
     // sections). A shape walks either its OWN sections (instance
-    // env) or its master's (the prepared menv) — never both.
+    // env) or its master's (the prepared menv) — never both. Its own
+    // sections walk MERGED over the master's rows, exactly as the
+    // renderer paints them (#378, #302): the raw inline rows of a
+    // partial override (Y cells only, X absent) bounded a looped
+    // connector to a sliver and the canvas layer clipped the loop.
+    let merged_own = if own.is_empty() {
+        Vec::new()
+    } else {
+        super::shape_layer::merged_own_geometry(doc, s, chain, width, height, &env)
+    };
     let mut walk: Vec<(&vsdx::Section, (f64, f64))> =
-        own.iter().map(|g| (*g, (1.0, 1.0))).collect();
+        merged_own.iter().map(|g| (g, (1.0, 1.0))).collect();
     // Starts as the instance env; the master branch below REPLACES it.
     // The text block after the walk still reads the INSTANCE env's
     // Txt* cells (they are the shape's own), so a copy survives the move.
@@ -532,13 +541,14 @@ fn node_ink_box(
     // marker substitutes a nonempty value the plain `text` cell does
     // not carry — omitting the frame clipped the substituted label
     // (CodeRabbit PR review).
-    let has_text = s
-        .sheet
+    // An instance without a `<Text>` shows its master's (#378).
+    let tsheet = crate::fields::text_sheet(doc, s, chain);
+    let has_text = tsheet
         .text
         .as_deref()
         .map(str::trim)
         .is_some_and(|t| !t.is_empty())
-        || s.sheet
+        || tsheet
             .text_raw
             .as_deref()
             .is_some_and(|r| r.contains("<fld"));
@@ -572,7 +582,7 @@ fn node_ink_box(
         // PR #325).
         let (ty0, ty1) = {
             let text = crate::fields::substituted_text(doc, s, chain, None)
-                .or_else(|| s.sheet.text.clone())
+                .or_else(|| tsheet.text.clone())
                 .unwrap_or_default();
             let m = crate::textfunc::SheetTextMeasure::new(doc, s, chain, text.clone());
             let h = {

@@ -821,6 +821,302 @@ pub(crate) fn base64(data: &[u8]) -> String {
     out
 }
 
+/// A shape's OWN Geometry sections merged over its master source's, in
+/// instance units: what [`render_all_geometry`] paints for a shape that
+/// carries inline geometry. Inline copies often keep only some cells
+/// (Y with `F='Inh'`) or drop whole rows; the missing cells and rows
+/// come from the master source's matching row (by IX, else occurrence),
+/// scaled into the instance frame. The ink-bounds walk reads the same
+/// merge (#378, #302): reading the raw inline rows gave a looped
+/// connector a sliver of bounds, and the canvas layer clipped the loop.
+pub(crate) fn merged_own_geometry(
+    doc: &Document,
+    s: &Shape,
+    chain: &[&Shape],
+    width: f64,
+    height: f64,
+    env: &vsdx::formula::Env,
+) -> Vec<vsdx::Section> {
+    let own: Vec<&vsdx::Section> = s.sheet.sections_named("Geometry");
+    // Row-cell inheritance: inline copies often keep only the Y cells
+    // (F='Inh') and inherit X/A/B/C/D from the master source's
+    // corresponding row. Inherited values are master-local and are
+    // scaled into instance units here.
+    let src = doc.instance_source(s, chain);
+    let mut merged: Vec<vsdx::Section> = Vec::with_capacity(own.len());
+    for (si, geo) in own.iter().enumerate() {
+        let mut m = (*geo).clone();
+        if let Some(src) = src {
+            let src_secs = src.sheet.sections_named("Geometry");
+            let src_geo = src_secs.get(si);
+            // Section-level cells (Geometry NoFill/NoLine/NoShow)
+            // inherit from the master section just like rows do:
+            // inline copies keep only row caches, and a lost NoShow
+            // draws sections Visio hides — e.g. every heading-band
+            // geometry of the "Plain" container style (#12).
+            if let Some(sg) = src_geo {
+                for (name, cell) in &sg.cells {
+                    if !m.cells.iter().any(|(n, _)| n == name) {
+                        m.cells.push((name.clone(), cell.clone()));
+                    }
+                }
+            }
+            let mw = src
+                .sheet
+                .cell("Width")
+                .and_then(|c| c.numeric())
+                .filter(|v| v.abs() > 1e-9);
+            let mh = src
+                .sheet
+                .cell("Height")
+                .and_then(|c| c.numeric())
+                .filter(|v| v.abs() > 1e-9);
+            let (sx, sy) = (
+                mw.map_or(1.0, |mw| width / mw),
+                mh.map_or(1.0, |mh| height / mh),
+            );
+            let scaled = |name: &str, v: f64| match name {
+                "X" | "A" | "C" => v * sx,
+                "Y" | "B" | "D" => v * sy,
+                _ => v,
+            };
+            // EllipticalArcTo's C is the major-axis ANGLE and D the
+            // axis RATIO — neither is a coordinate, so an inherited
+            // (omitted = unchanged) value never scales with the
+            // instance size (a stretched U-Turn arrow turned D=1
+            // into a 9:1 ratio and its quarter circles into blobs).
+            let not_coord = |t: Option<&str>, name: &str| {
+                matches!(t, Some("EllipticalArcTo") | Some("RelEllipticalArcTo"))
+                    && matches!(name, "C" | "D")
+            };
+            // Pair each inline row with the master row of the SAME
+            // IX. Inline copies drop rows whose cells are fully
+            // inherited-identical, keeping the survivors' original
+            // IX values — so occurrence pairing can match the wrong
+            // row (diagonal wedges, giant arcs). Occurrence within a
+            // row type is the fallback when IX is absent/ambiguous.
+            let mut src_occ: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            // Rows the inline copy dropped entirely (all cells
+            // inherited-identical) are re-inserted from the master,
+            // scaled, at their IX position — otherwise the path
+            // shortcuts across the gap (diagonal wedges).
+            if let (Some(sg), true) = (src_geo, m.rows.iter().any(|r| r.ix > 0)) {
+                let have: Vec<i64> = m.rows.iter().map(|r| r.ix).collect();
+                let mut inserted: Vec<(usize, Row)> = Vec::new();
+                for src_row in &sg.rows {
+                    if src_row.ix > 0
+                        && !have.contains(&src_row.ix)
+                        && src_row.t.is_some()
+                        && !src_row.is_deleted()
+                    {
+                        let mut nr = src_row.clone();
+                        // scale per cell name
+                        // The same rule as the omitted-CELL fallback
+                        // below (Greptile on PR #343): a size formula
+                        // evaluates in the instance env; one the env
+                        // cannot evaluate keeps the master's cache as
+                        // is, since an omitted row is unchanged.
+                        let bound = 3.0 * width.max(height).max(0.02);
+                        for (cname, cell) in nr.cells.iter_mut() {
+                            let proportional = cell.f.as_deref().map(refs_own_size).unwrap_or(true);
+                            let has_formula = cell
+                                .f
+                                .as_deref()
+                                .is_some_and(|f| f != "Inh" && f != "No Formula");
+                            if let Some(v) = cell.numeric() {
+                                let placed =
+                                    if !proportional || not_coord(src_row.t.as_deref(), cname) {
+                                        v
+                                    } else if has_formula {
+                                        cell.f
+                                            .as_deref()
+                                            .and_then(|f| vsdx::formula::eval(f, env).ok())
+                                            .and_then(|e| e.as_f64())
+                                            .filter(|e| e.is_finite() && e.abs() <= bound)
+                                            .unwrap_or(v)
+                                    } else {
+                                        scaled(cname, v)
+                                    };
+                                cell.v = Some(format!("{placed}"));
+                            }
+                            cell.f = None;
+                        }
+                        // position: after the last own row with smaller IX
+                        let pos = m
+                            .rows
+                            .iter()
+                            .rposition(|r| r.ix > 0 && r.ix < src_row.ix)
+                            .map(|i| i + 1)
+                            .unwrap_or(0);
+                        inserted.push((pos, nr));
+                    }
+                }
+                for (pos, nr) in inserted.into_iter().rev() {
+                    let pos = pos.min(m.rows.len());
+                    m.rows.insert(pos, nr);
+                }
+            }
+            for row in m.rows.iter_mut() {
+                let Some(t) = row.t.clone() else { continue };
+                let by_ix =
+                    src_geo.and_then(|sg| sg.rows.iter().find(|r| r.ix == row.ix && r.ix > 0));
+                let occ = {
+                    let c = src_occ.entry(t.clone()).or_insert(0);
+                    *c += 1;
+                    *c
+                };
+                let by_occ = src_geo.and_then(|sg| {
+                    sg.rows
+                        .iter()
+                        .filter(|r| r.t.as_deref() == Some(t.as_str()))
+                        .nth(occ - 1)
+                });
+                let src_row = by_ix.or(by_occ);
+                let Some(src_row) = src_row else { continue };
+                let bound = 3.0 * width.max(height).max(0.02);
+                let mut extra: Vec<(String, Cell)> = Vec::new();
+                for (cname, scell) in &src_row.cells {
+                    // A PolylineTo's A cell is formula TEXT, not a
+                    // number: the numeric merge below would drop it
+                    // and the row would draw a chord. An instance row
+                    // without its own POLYLINE text takes the
+                    // master's; absolute axes (type 1) are master
+                    // units and scale like X/Y, fractional ones stay
+                    // (CodeRabbit on PR #329). Only a PolylineTo
+                    // instance row takes it: an instance that turned
+                    // the row into an ArcTo keeps its own numeric A
+                    // (Greptile on PR #329).
+                    if cname == "A" && src_row.t.as_deref() == Some("PolylineTo") {
+                        if row.t.as_deref() != Some("PolylineTo") {
+                            continue;
+                        }
+                        let own_text = row.cells.iter().any(|(n, c)| {
+                            n == "A"
+                                && c.v
+                                    .as_deref()
+                                    .or(c.f.as_deref())
+                                    .is_some_and(|t| t.trim_start().starts_with("POLYLINE"))
+                        });
+                        let master_text = scell
+                            .v
+                            .as_deref()
+                            .or(scell.f.as_deref())
+                            .unwrap_or_default();
+                        if !own_text {
+                            if let Some((xt, yt, verts)) = crate::curve::parse_polyline(master_text)
+                            {
+                                let mut text = format!("POLYLINE({xt}, {yt}");
+                                for (vx, vy) in verts {
+                                    let vx = if xt == 0.0 { vx } else { scaled("X", vx) };
+                                    let vy = if yt == 0.0 { vy } else { scaled("Y", vy) };
+                                    let _ = write!(text, ", {vx},{vy}");
+                                }
+                                text.push(')');
+                                let cell = Cell {
+                                    v: Some(text),
+                                    ..Cell::default()
+                                };
+                                match row.cells.iter_mut().find(|(n, _)| n == "A") {
+                                    Some((_, c)) => *c = cell,
+                                    None => extra.push(("A".to_string(), cell)),
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    if !matches!(cname.as_str(), "X" | "Y" | "A" | "B" | "C" | "D") {
+                        continue;
+                    }
+                    // Master cells proportional to Width/Height scale
+                    // into instance units; User.*-driven cells (corner
+                    // radii and the like) stay absolute — instances
+                    // keep those unscaled while the body stretches.
+                    let proportional = scell.f.as_deref().map(refs_own_size).unwrap_or(true);
+                    let placed = |v: f64| {
+                        if proportional && !not_coord(src_row.t.as_deref(), cname) {
+                            scaled(cname, v)
+                        } else {
+                            v
+                        }
+                    };
+                    // Formula-authoritative for PROPORTIONAL master
+                    // cells (the same rule the row walk uses):
+                    // corpus connector masters carry stale zero
+                    // caches (`Y V=0 F=Height/2` — utilisation
+                    // master3) that would collapse the inherited
+                    // arcs to flat lines (#202). The formula
+                    // evaluates against the INSTANCE dims — for a
+                    // proportional formula that IS the
+                    // master→instance scaling. Non-proportional
+                    // formulas (`Controls.Row_1`, `User.*`) have no
+                    // instance meaning; their cached value (if any)
+                    // stands, unfilled otherwise.
+                    // Formula-authoritative cells evaluate against
+                    // the INSTANCE env — the value is already in
+                    // instance units and must NOT be placed-scaled
+                    // again (#203 review). Cached master-unit
+                    // numerics are master-unit and keep placed().
+                    // A value-only master cell (no formula — the
+                    // common plain-geometry case) or a formula the
+                    // instance env can't evaluate falls back to the
+                    // scaled cache; skipping would let row_num
+                    // default the axis to 0 and collapse the
+                    // inherited geometry (#185 review).
+                    // A master FORMULA the instance env cannot
+                    // evaluate (`Height-User.BarWidth` with the
+                    // master's User row out of reach) keeps the
+                    // master's cached value AS IS: Visio writes every
+                    // instance cell whose value changed (F='Inh' plus
+                    // the new V), so an omitted cell is unchanged —
+                    // scaling it bent the U-Turn arrow's return leg
+                    // into a blob (Visio 2021 witness, the network
+                    // LLD's U-Turn arrows stretched to 9.7 × 1 in).
+                    let has_formula = scell
+                        .f
+                        .as_deref()
+                        .is_some_and(|f| f != "Inh" && f != "No Formula");
+                    let sv = if proportional {
+                        scell
+                            .f
+                            .as_deref()
+                            .and_then(|f| vsdx::formula::eval(f, env).ok())
+                            .and_then(|v| v.as_f64())
+                            .filter(|v| v.is_finite() && v.abs() <= bound)
+                            .or_else(|| {
+                                let v = scell.numeric()?;
+                                let v = if has_formula { v } else { placed(v) };
+                                Some(v).filter(|v| v.abs() <= bound)
+                            })
+                    } else {
+                        scell.numeric().map(placed).filter(|v| v.abs() <= bound)
+                    };
+                    let Some(sv) = sv else {
+                        continue;
+                    };
+                    let patched = Cell::value(format!("{sv}"));
+                    match row.cells.iter_mut().find(|(n, _)| n == cname) {
+                        Some((_, cell)) => {
+                            // A local numeric V wins even under F='Inh':
+                            // Visio refreshes cached values at save, so
+                            // e.g. a legend member's flattened arc B=0 is
+                            // the live evaluation, not a stale snapshot.
+                            if cell.v.is_none() || (cell.is_inherited() && cell.numeric().is_none())
+                            {
+                                *cell = patched;
+                            }
+                        }
+                        None => extra.push((cname.clone(), patched)),
+                    }
+                }
+                row.cells.extend(extra);
+            }
+        }
+        merged.push(m);
+    }
+    merged
+}
+
 /// Per-section master inheritance (Visio semantics): geometry comes from
 /// the instance's own Geometry sections when present (authored in
 /// instance units), else from the master source shape's Geometry (master-
@@ -854,286 +1150,7 @@ pub(crate) fn render_all_geometry(
     // arcs never strip even with a resolved radius.
     let own: Vec<&vsdx::Section> = s.sheet.sections_named("Geometry");
     if !own.is_empty() {
-        // Row-cell inheritance: inline copies often keep only the Y cells
-        // (F='Inh') and inherit X/A/B/C/D from the master source's
-        // corresponding row. Inherited values are master-local and are
-        // scaled into instance units here.
-        let src = doc.instance_source(s, chain);
-        let mut merged: Vec<vsdx::Section> = Vec::with_capacity(own.len());
-        for (si, geo) in own.iter().enumerate() {
-            let mut m = (*geo).clone();
-            if let Some(src) = src {
-                let src_secs = src.sheet.sections_named("Geometry");
-                let src_geo = src_secs.get(si);
-                // Section-level cells (Geometry NoFill/NoLine/NoShow)
-                // inherit from the master section just like rows do:
-                // inline copies keep only row caches, and a lost NoShow
-                // draws sections Visio hides — e.g. every heading-band
-                // geometry of the "Plain" container style (#12).
-                if let Some(sg) = src_geo {
-                    for (name, cell) in &sg.cells {
-                        if !m.cells.iter().any(|(n, _)| n == name) {
-                            m.cells.push((name.clone(), cell.clone()));
-                        }
-                    }
-                }
-                let mw = src
-                    .sheet
-                    .cell("Width")
-                    .and_then(|c| c.numeric())
-                    .filter(|v| v.abs() > 1e-9);
-                let mh = src
-                    .sheet
-                    .cell("Height")
-                    .and_then(|c| c.numeric())
-                    .filter(|v| v.abs() > 1e-9);
-                let (sx, sy) = (
-                    mw.map_or(1.0, |mw| width / mw),
-                    mh.map_or(1.0, |mh| height / mh),
-                );
-                let scaled = |name: &str, v: f64| match name {
-                    "X" | "A" | "C" => v * sx,
-                    "Y" | "B" | "D" => v * sy,
-                    _ => v,
-                };
-                // EllipticalArcTo's C is the major-axis ANGLE and D the
-                // axis RATIO — neither is a coordinate, so an inherited
-                // (omitted = unchanged) value never scales with the
-                // instance size (a stretched U-Turn arrow turned D=1
-                // into a 9:1 ratio and its quarter circles into blobs).
-                let not_coord = |t: Option<&str>, name: &str| {
-                    matches!(t, Some("EllipticalArcTo") | Some("RelEllipticalArcTo"))
-                        && matches!(name, "C" | "D")
-                };
-                // Pair each inline row with the master row of the SAME
-                // IX. Inline copies drop rows whose cells are fully
-                // inherited-identical, keeping the survivors' original
-                // IX values — so occurrence pairing can match the wrong
-                // row (diagonal wedges, giant arcs). Occurrence within a
-                // row type is the fallback when IX is absent/ambiguous.
-                let mut src_occ: std::collections::HashMap<String, usize> =
-                    std::collections::HashMap::new();
-                // Rows the inline copy dropped entirely (all cells
-                // inherited-identical) are re-inserted from the master,
-                // scaled, at their IX position — otherwise the path
-                // shortcuts across the gap (diagonal wedges).
-                if let (Some(sg), true) = (src_geo, m.rows.iter().any(|r| r.ix > 0)) {
-                    let have: Vec<i64> = m.rows.iter().map(|r| r.ix).collect();
-                    let mut inserted: Vec<(usize, Row)> = Vec::new();
-                    for src_row in &sg.rows {
-                        if src_row.ix > 0
-                            && !have.contains(&src_row.ix)
-                            && src_row.t.is_some()
-                            && !src_row.is_deleted()
-                        {
-                            let mut nr = src_row.clone();
-                            // scale per cell name
-                            // The same rule as the omitted-CELL fallback
-                            // below (Greptile on PR #343): a size formula
-                            // evaluates in the instance env; one the env
-                            // cannot evaluate keeps the master's cache as
-                            // is, since an omitted row is unchanged.
-                            let bound = 3.0 * width.max(height).max(0.02);
-                            for (cname, cell) in nr.cells.iter_mut() {
-                                let proportional =
-                                    cell.f.as_deref().map(refs_own_size).unwrap_or(true);
-                                let has_formula = cell
-                                    .f
-                                    .as_deref()
-                                    .is_some_and(|f| f != "Inh" && f != "No Formula");
-                                if let Some(v) = cell.numeric() {
-                                    let placed = if !proportional
-                                        || not_coord(src_row.t.as_deref(), cname)
-                                    {
-                                        v
-                                    } else if has_formula {
-                                        cell.f
-                                            .as_deref()
-                                            .and_then(|f| vsdx::formula::eval(f, &env).ok())
-                                            .and_then(|e| e.as_f64())
-                                            .filter(|e| e.is_finite() && e.abs() <= bound)
-                                            .unwrap_or(v)
-                                    } else {
-                                        scaled(cname, v)
-                                    };
-                                    cell.v = Some(format!("{placed}"));
-                                }
-                                cell.f = None;
-                            }
-                            // position: after the last own row with smaller IX
-                            let pos = m
-                                .rows
-                                .iter()
-                                .rposition(|r| r.ix > 0 && r.ix < src_row.ix)
-                                .map(|i| i + 1)
-                                .unwrap_or(0);
-                            inserted.push((pos, nr));
-                        }
-                    }
-                    for (pos, nr) in inserted.into_iter().rev() {
-                        let pos = pos.min(m.rows.len());
-                        m.rows.insert(pos, nr);
-                    }
-                }
-                for row in m.rows.iter_mut() {
-                    let Some(t) = row.t.clone() else { continue };
-                    let by_ix =
-                        src_geo.and_then(|sg| sg.rows.iter().find(|r| r.ix == row.ix && r.ix > 0));
-                    let occ = {
-                        let c = src_occ.entry(t.clone()).or_insert(0);
-                        *c += 1;
-                        *c
-                    };
-                    let by_occ = src_geo.and_then(|sg| {
-                        sg.rows
-                            .iter()
-                            .filter(|r| r.t.as_deref() == Some(t.as_str()))
-                            .nth(occ - 1)
-                    });
-                    let src_row = by_ix.or(by_occ);
-                    let Some(src_row) = src_row else { continue };
-                    let bound = 3.0 * width.max(height).max(0.02);
-                    let mut extra: Vec<(String, Cell)> = Vec::new();
-                    for (cname, scell) in &src_row.cells {
-                        // A PolylineTo's A cell is formula TEXT, not a
-                        // number: the numeric merge below would drop it
-                        // and the row would draw a chord. An instance row
-                        // without its own POLYLINE text takes the
-                        // master's; absolute axes (type 1) are master
-                        // units and scale like X/Y, fractional ones stay
-                        // (CodeRabbit on PR #329). Only a PolylineTo
-                        // instance row takes it: an instance that turned
-                        // the row into an ArcTo keeps its own numeric A
-                        // (Greptile on PR #329).
-                        if cname == "A" && src_row.t.as_deref() == Some("PolylineTo") {
-                            if row.t.as_deref() != Some("PolylineTo") {
-                                continue;
-                            }
-                            let own_text = row.cells.iter().any(|(n, c)| {
-                                n == "A"
-                                    && c.v
-                                        .as_deref()
-                                        .or(c.f.as_deref())
-                                        .is_some_and(|t| t.trim_start().starts_with("POLYLINE"))
-                            });
-                            let master_text = scell
-                                .v
-                                .as_deref()
-                                .or(scell.f.as_deref())
-                                .unwrap_or_default();
-                            if !own_text {
-                                if let Some((xt, yt, verts)) =
-                                    crate::curve::parse_polyline(master_text)
-                                {
-                                    let mut text = format!("POLYLINE({xt}, {yt}");
-                                    for (vx, vy) in verts {
-                                        let vx = if xt == 0.0 { vx } else { scaled("X", vx) };
-                                        let vy = if yt == 0.0 { vy } else { scaled("Y", vy) };
-                                        let _ = write!(text, ", {vx},{vy}");
-                                    }
-                                    text.push(')');
-                                    let cell = Cell {
-                                        v: Some(text),
-                                        ..Cell::default()
-                                    };
-                                    match row.cells.iter_mut().find(|(n, _)| n == "A") {
-                                        Some((_, c)) => *c = cell,
-                                        None => extra.push(("A".to_string(), cell)),
-                                    }
-                                }
-                            }
-                            continue;
-                        }
-                        if !matches!(cname.as_str(), "X" | "Y" | "A" | "B" | "C" | "D") {
-                            continue;
-                        }
-                        // Master cells proportional to Width/Height scale
-                        // into instance units; User.*-driven cells (corner
-                        // radii and the like) stay absolute — instances
-                        // keep those unscaled while the body stretches.
-                        let proportional = scell.f.as_deref().map(refs_own_size).unwrap_or(true);
-                        let placed = |v: f64| {
-                            if proportional && !not_coord(src_row.t.as_deref(), cname) {
-                                scaled(cname, v)
-                            } else {
-                                v
-                            }
-                        };
-                        // Formula-authoritative for PROPORTIONAL master
-                        // cells (the same rule the row walk uses):
-                        // corpus connector masters carry stale zero
-                        // caches (`Y V=0 F=Height/2` — utilisation
-                        // master3) that would collapse the inherited
-                        // arcs to flat lines (#202). The formula
-                        // evaluates against the INSTANCE dims — for a
-                        // proportional formula that IS the
-                        // master→instance scaling. Non-proportional
-                        // formulas (`Controls.Row_1`, `User.*`) have no
-                        // instance meaning; their cached value (if any)
-                        // stands, unfilled otherwise.
-                        // Formula-authoritative cells evaluate against
-                        // the INSTANCE env — the value is already in
-                        // instance units and must NOT be placed-scaled
-                        // again (#203 review). Cached master-unit
-                        // numerics are master-unit and keep placed().
-                        // A value-only master cell (no formula — the
-                        // common plain-geometry case) or a formula the
-                        // instance env can't evaluate falls back to the
-                        // scaled cache; skipping would let row_num
-                        // default the axis to 0 and collapse the
-                        // inherited geometry (#185 review).
-                        // A master FORMULA the instance env cannot
-                        // evaluate (`Height-User.BarWidth` with the
-                        // master's User row out of reach) keeps the
-                        // master's cached value AS IS: Visio writes every
-                        // instance cell whose value changed (F='Inh' plus
-                        // the new V), so an omitted cell is unchanged —
-                        // scaling it bent the U-Turn arrow's return leg
-                        // into a blob (Visio 2021 witness, the network
-                        // LLD's U-Turn arrows stretched to 9.7 × 1 in).
-                        let has_formula = scell
-                            .f
-                            .as_deref()
-                            .is_some_and(|f| f != "Inh" && f != "No Formula");
-                        let sv = if proportional {
-                            scell
-                                .f
-                                .as_deref()
-                                .and_then(|f| vsdx::formula::eval(f, &env).ok())
-                                .and_then(|v| v.as_f64())
-                                .filter(|v| v.is_finite() && v.abs() <= bound)
-                                .or_else(|| {
-                                    let v = scell.numeric()?;
-                                    let v = if has_formula { v } else { placed(v) };
-                                    Some(v).filter(|v| v.abs() <= bound)
-                                })
-                        } else {
-                            scell.numeric().map(placed).filter(|v| v.abs() <= bound)
-                        };
-                        let Some(sv) = sv else {
-                            continue;
-                        };
-                        let patched = Cell::value(format!("{sv}"));
-                        match row.cells.iter_mut().find(|(n, _)| n == cname) {
-                            Some((_, cell)) => {
-                                // A local numeric V wins even under F='Inh':
-                                // Visio refreshes cached values at save, so
-                                // e.g. a legend member's flattened arc B=0 is
-                                // the live evaluation, not a stale snapshot.
-                                if cell.v.is_none()
-                                    || (cell.is_inherited() && cell.numeric().is_none())
-                                {
-                                    *cell = patched;
-                                }
-                            }
-                            None => extra.push((cname.clone(), patched)),
-                        }
-                    }
-                    row.cells.extend(extra);
-                }
-            }
-            merged.push(m);
-        }
+        let merged = merged_own_geometry(doc, s, chain, width, height, &env);
         for (i, geo) in merged.iter().enumerate() {
             // Instance frame: formulas and cached values are both in
             // instance units.

@@ -280,6 +280,22 @@ fn paper_units(page: &Page) -> UnitSystem {
     UnitSystem::Us
 }
 
+/// The sheet whose text a shape shows: its own when it carries a
+/// `<Text>` element (even an empty one — the user cleared it), else its
+/// master source's. Visio shows a master's text on every instance that
+/// never edited it; the network-style corpus masters keep their whole
+/// label (often a field over the master's User rows) there, and their
+/// instances carry no `<Text>` at all (#378).
+pub(crate) fn text_sheet<'a>(doc: &'a Document, s: &'a Shape, chain: &[&'a Shape]) -> &'a Sheet {
+    if s.sheet.text.is_some() || s.sheet.text_raw.is_some() {
+        return &s.sheet;
+    }
+    doc.instance_source(s, chain)
+        .map(|m| &m.sheet)
+        .filter(|m| m.text.is_some() || m.text_raw.is_some())
+        .unwrap_or(&s.sheet)
+}
+
 /// The SUBSTITUTED plain text of a shape — `None` when the raw text
 /// carries no `<fld>` marker (the fast path that keeps the 499/679
 /// marker-free packages byte-identical through this engine).
@@ -289,7 +305,7 @@ pub fn substituted_text(
     chain: &[&Shape],
     fields: Option<&FieldsCtx<'_>>,
 ) -> Option<String> {
-    let raw = s.sheet.text_raw.as_deref()?;
+    let raw = text_sheet(doc, s, chain).text_raw.as_deref()?;
     if !raw.contains("<fld") {
         return None;
     }
@@ -547,6 +563,73 @@ fn seed_sheet_strings(doc: &Document, s: &Shape, chain: &[&Shape], strs: &mut fo
         seed_rows(&src.sheet, "Prop", "Prop", strs);
     }
     seed_shape_strings(s, strs);
+    seed_master_local_sheets(doc, s, chain, strs);
+}
+
+/// Master-local `Sheet.N!` refs (#378). A field whose formulas come
+/// from the master (the instance carries no Field rows of its own, or
+/// only `Inh` ones) names the MASTER's shape IDs: the corpus box masters
+/// label their header with `Sheet.5!User.ObjectTypeName`, 5 being the
+/// master root. Visio reads that through the instance's counterpart
+/// of master shape 5; resolved against the page, it hit page shape 5
+/// (another box) and every box showed that box's name. Each master
+/// shape's rows seed under its master-local `Sheet.N!` id from its
+/// instance counterpart (the instance root, or the sub-shape whose
+/// `MasterShape` is N): the master's rows first, the counterpart's own
+/// rows over them. The seeding lives in this shape's own layer, so
+/// page-level `Sheet.N!` refs elsewhere are untouched.
+fn seed_master_local_sheets(
+    doc: &Document,
+    s: &Shape,
+    chain: &[&Shape],
+    strs: &mut formula::StrEnv,
+) {
+    let own_value = s.sheet.section("Field", 0).is_some_and(|sec| {
+        sec.rows.iter().any(|r| {
+            r.cell("Value")
+                .is_some_and(|c| c.f.as_deref().is_some_and(|f| f != "Inh"))
+        })
+    });
+    if own_value {
+        return;
+    }
+    let Some(src) = doc.instance_source(s, chain) else {
+        return;
+    };
+    if src.sheet.section("Field", 0).is_none() {
+        return;
+    }
+    // The top-level instance this shape belongs to.
+    let root = chain.first().copied().unwrap_or(s);
+    let Some(master) = root.master.and_then(|m| doc.master(m)) else {
+        return;
+    };
+    fn counterpart(inst: &Shape, master_id: i64) -> Option<&Shape> {
+        if inst.master_shape == Some(master_id) {
+            return Some(inst);
+        }
+        inst.sub_shapes
+            .iter()
+            .find_map(|c| counterpart(c, master_id))
+    }
+    fn walk<'a>(ms: &'a Shape, root_ids: &[i64], root: &'a Shape, strs: &mut formula::StrEnv) {
+        let inst = if root_ids.contains(&ms.id) {
+            Some(root)
+        } else {
+            counterpart(root, ms.id)
+        };
+        seed_sheet_rows_under(&ms.sheet, ms.id, strs);
+        if let Some(inst) = inst {
+            seed_sheet_rows_under(&inst.sheet, ms.id, strs);
+        }
+        for c in &ms.sub_shapes {
+            walk(c, root_ids, root, strs);
+        }
+    }
+    let root_ids: Vec<i64> = master.shapes.iter().map(|m| m.id).collect();
+    for ms in &master.shapes {
+        walk(ms, &root_ids, root, strs);
+    }
 }
 
 /// A shape's User/Prop rows: bare names plus `Sheet.ID!` qualified.
