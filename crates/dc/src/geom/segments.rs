@@ -2,7 +2,7 @@
 //! evaluation and its render-parity row budget.
 
 use super::hitframe::HitFrame;
-use super::jumps::is_stored_jump_arc;
+use super::jumps::{is_stored_jump_arc, is_stored_jump_polyline};
 use super::rows::row_cell_value;
 use vsdx::model::{Row, Section, Shape};
 
@@ -248,7 +248,7 @@ pub fn geometry_hit_segments_straight(
     // The master fallback rode the FIRST pass: every control read the
     // second pass makes is the captured per-row value (the round-3
     // review — a post-pass env read would sample later rows' feeds).
-    for (k, (row, _master, _gname, t, end_local, end, ca, cb, cc, cd)) in
+    for (k, (row, master, _gname, t, end_local, end, ca, cb, cc, cd)) in
         evald.iter().take(MAX_WALK_ROWS).enumerate()
     {
         let t = t.as_str();
@@ -520,10 +520,84 @@ pub fn geometry_hit_segments_straight(
                 }
             }
             "PolylineTo" => {
-                // A `POLYLINE()` row is authored multi-vertex
-                // geometry, not a routed straight run (#324 step 1) —
-                // even when its vertices happen to be straight.
-                straight = false;
+                // The EFFECTIVE A: an instance row may omit it and
+                // inherit the master's stored-hop controls — the same
+                // chain fallback the reconcile reads. ONE read feeds
+                // both the classifier and the vertex emission, so a
+                // recognized hop straightens and an authored polyline
+                // still draws its controls (CodeRabbit round on #324
+                // phase 5).
+                let a_text = row
+                    .cell("A")
+                    .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                    .or_else(|| {
+                        (*master)
+                            .and_then(|m| m.cell("A"))
+                            .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                    })
+                    .unwrap_or_default();
+                // A RECOGNIZED stored styled hop (#324 phase 4 —
+                // percentage controls over a 2r slot, collinear runs
+                // both sides) straightens like an arc row: the route
+                // stays one straight run and the connector stays
+                // eligible for the crossing set. Everything else is
+                // authored multi-vertex geometry, not a routed
+                // straight run (#324 step 1) — even when its vertices
+                // happen to be straight.
+                let mut stored = false;
+                if strip_stored_jumps.is_some() {
+                    // The classification runs in the frame the RENDER
+                    // emits (instance dims, the ratio-scaled chord) —
+                    // a resized master-only instance classifies
+                    // against the same controls the ink draws
+                    // (CodeRabbit round on #324 phase 5). The
+                    // own-section path is scale-free: identical to the
+                    // row-local frame.
+                    if let (Some(_c0), Some(c0s)) = (cur_local, cur) {
+                        let d_class = (end.0 - c0s.0, end.1 - c0s.1);
+                        let mut prev_dir = None;
+                        let mut pi = k as isize - 1;
+                        while pi >= 1 {
+                            let (_, _, _, pt, pe, _, _, _, _, _) = &evald[pi as usize];
+                            if kind_of(pt.as_str()) != 1 {
+                                break;
+                            }
+                            let (_, _, _, _, pp, _, _, _, _, _) = &evald[pi as usize - 1];
+                            let pd = (pe.0 - pp.0, pe.1 - pp.1);
+                            if pd.0.hypot(pd.1) > 1e-9 {
+                                prev_dir = Some(pd);
+                                break;
+                            }
+                            pi -= 1;
+                        }
+                        let mut next_dir = None;
+                        let mut ni = k + 1;
+                        while ni < evald.len() {
+                            let (_, _, _, nt, ne, _, _, _, _, _) = &evald[ni];
+                            if kind_of(nt.as_str()) != 1 {
+                                break;
+                            }
+                            let p = if ni == k + 1 {
+                                end_local
+                            } else {
+                                evald[ni - 1].4
+                            };
+                            let nd = (ne.0 - p.0, ne.1 - p.1);
+                            if nd.0.hypot(nd.1) > 1e-9 {
+                                next_dir = Some(nd);
+                                break;
+                            }
+                            ni += 1;
+                        }
+                        let (rx, ry) = strip_stored_jumps.unwrap_or((0.0, 0.0));
+                        stored = is_stored_jump_polyline(
+                            &a_text, c0s, d_class, prev_dir, next_dir, frame.size, rx, ry,
+                        );
+                    }
+                }
+                if !stored {
+                    straight = false;
+                }
                 if let Some(acc) = spline_acc.take() {
                     if let Some(data) = acc.flush() {
                         for p in crate::curve::SplineData::flatten(&data, 16)
@@ -539,16 +613,16 @@ pub fn geometry_hit_segments_straight(
                 // axis (type 0) lands in the frame's own dims, an
                 // absolute axis takes only the scale. Crossings then
                 // see the bends the renderer draws, not the chord
-                // (Greptile on PR #329).
-                let a_text = row
-                    .cell("A")
-                    .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
-                    .unwrap_or_default();
-                if let Some((xt, yt, verts)) = crate::curve::parse_polyline(&a_text) {
-                    let fx = if xt == 0.0 { frame.size.0 } else { scale.0 };
-                    let fy = if yt == 0.0 { frame.size.1 } else { scale.1 };
-                    for (vx, vy) in verts {
-                        pts.push(to_page((vx * fx, vy * fy)));
+                // (Greptile on PR #329). The SAME effective A the
+                // classifier read — an inherited hop's controls
+                // straighten in the hit walk exactly as they draw.
+                if !stored {
+                    if let Some((xt, yt, verts)) = crate::curve::parse_polyline(&a_text) {
+                        let fx = if xt == 0.0 { frame.size.0 } else { scale.0 };
+                        let fy = if yt == 0.0 { frame.size.1 } else { scale.1 };
+                        for (vx, vy) in verts {
+                            pts.push(to_page((vx * fx, vy * fy)));
+                        }
                     }
                 }
                 pts.push(to_page(end));
@@ -579,10 +653,12 @@ pub fn geometry_hit_segments_straight(
                 cur_local = Some(end_local);
             }
             _ => {
-                // The renderer draws a closed curve for Ellipse rows.
-                if t == "Ellipse" {
-                    straight = false;
-                }
+                // Any row type the walk doesn't recognize as a
+                // positioned or straight run — `Ellipse` and unknown
+                // others — is curve geometry or draws nothing; either
+                // way the connector is not an all-straight route
+                // (#324 phase 2, CodeRabbit round on phase 3).
+                straight = false;
                 if let Some(acc) = spline_acc.take() {
                     if let Some(data) = acc.flush() {
                         for p in crate::curve::SplineData::flatten(&data, 16)

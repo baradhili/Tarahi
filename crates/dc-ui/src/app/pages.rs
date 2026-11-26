@@ -178,7 +178,10 @@ impl App {
     /// #113 (URS-1158): the background chain's underlay quads —
     /// deepest background first, each rasterized on demand at the
     /// current zoom (cache keyed page/version/ppi-bucket).
-    pub(super) fn build_bg_underlays(&mut self, ctx: &egui::Context) -> Vec<crate::layers::ShapeQuad> {
+    pub(super) fn build_bg_underlays(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> Vec<crate::layers::ShapeQuad> {
         let Some(page_id) = self.page_id() else {
             return Vec::new();
         };
@@ -449,69 +452,206 @@ impl App {
                     if l_clicked {
                         apply = Some((geom.h_in.max(geom.w_in), geom.h_in.min(geom.w_in)));
                     }
-                    // Layout and Routing (#251): the line-jump display
-                    // switch and jump size — Visio's Page Setup group,
-                    // persisted on the PageSheet.
-                    ui.separator();
-                    ui.strong(crate::i18n::strs().msg_line_jumps());
-                    let mut show_toggle = self
-                        .ed
-                        .as_ref()
-                        .map(|ed| {
-                            ed.doc.pages[self.page_idx.min(ed.doc.pages.len() - 1)]
-                                .line_jumps_shown()
-                        })
-                        .unwrap_or(true);
-                    if ui
-                        .checkbox(&mut show_toggle, crate::i18n::strs().msg_show_line_jumps())
-                        .changed()
-                    {
-                        self.apply_line_jumps_shown(show_toggle);
-                    }
-                    let doc_factor = self
+                    // Layout and Routing (#251, grown by #324 phase 5
+                    // toward Visio's Page Setup ▸ Layout and Routing
+                    // tab): the Line jumps group — which lines jump,
+                    // the jump style, and the horizontal/vertical size
+                    // sliders — all persisted on the PageSheet through
+                    // one undo step each, with the stored-hop reconcile
+                    // riding the same macro (normalize-on-edit, #301).
+                    // The Routing group paints Visio's controls
+                    // DISABLED — routing proper is #225's deferred
+                    // bulk ("follow direction of paint, but disabled").
+                    let (doc_code, doc_style, doc_factor_x, doc_factor_y) = self
                         .ed
                         .as_ref()
                         .map(|ed| {
                             let page = &ed.doc.pages[self.page_idx.min(ed.doc.pages.len() - 1)];
-                            // #294: the RESOLVED factor — the page
-                            // usually carries no inline cell and rides
-                            // the style chain.
-                            ed.doc.page_line_jump_factor(page)
+                            // The RESOLVED cells — pages usually carry
+                            // no inline jump cells and ride the style
+                            // chain (#294).
+                            let code = ed
+                                .doc
+                                .resolve_page_layout_cell(page, "LineJumpCode")
+                                .and_then(|c| c.numeric())
+                                .map_or(1, |v| v.round() as i64);
+                            let style_code = match crate::connectors::page_jump_style(&ed.doc, page)
+                            {
+                                crate::connectors::JumpStyle::Arc => 1,
+                                crate::connectors::JumpStyle::Gap => 2,
+                                crate::connectors::JumpStyle::Square => 3,
+                                crate::connectors::JumpStyle::Sides(n) => n as i64 + 2,
+                            };
+                            (
+                                code,
+                                style_code,
+                                ed.doc.page_line_jump_factor(page),
+                                ed.doc.page_line_jump_factor_y(page),
+                            )
                         })
-                        .unwrap_or(2.0 / 3.0) as f32;
-                    let mut jump_factor = self.line_jump_draft.unwrap_or(doc_factor);
-                    // #257: mirrored emission under RTL (horizontal).
-                    let jump_label = crate::i18n::strs().msg_jump_size();
+                        .unwrap_or((1, 1, 2.0 / 3.0, 2.0 / 3.0));
+                    ui.separator();
+                    ui.strong(crate::i18n::strs().msg_line_jumps());
+                    let s = crate::i18n::strs();
+                    // "Add line jumps to:" — Visio's five-entry list
+                    // (the screenshots), LineJumpCode 0–4. An
+                    // unwitnessed other value shows its number.
+                    let code_key = doc_code.to_string();
+                    let code_choices: [(&'static str, String); 5] = [
+                        ("0", s.msg_lj_code_none()),
+                        ("1", s.msg_lj_code_horizontal()),
+                        ("2", s.msg_lj_code_vertical()),
+                        ("3", s.msg_lj_code_last_routed()),
+                        ("4", s.msg_lj_code_last_displayed()),
+                    ];
+                    let code_label = s.msg_add_line_jumps_to();
                     ui.horizontal(|ui| {
-                        let mut factor_row = |ui: &mut egui::Ui| {
-                            let r = ui.add(
-                                egui::DragValue::new(&mut jump_factor)
+                        if !crate::i18n::rtl() {
+                            ui.label(&code_label);
+                        }
+                        if let Some(k) =
+                            Self::fmt_dropdown(ui, &code_key, &|k| k.to_string(), &code_choices)
+                        {
+                            if let Ok(code) = k.parse::<i64>() {
+                                self.apply_line_jump_code(code);
+                            }
+                        }
+                        if crate::i18n::rtl() {
+                            ui.label(&code_label);
+                        }
+                    });
+                    // "Line jump style:" — Arc/Gap/Square/2–7 Sides,
+                    // LineJumpStyle 1–9 (0 and 1 both draw Arc).
+                    let style_choices: [(&'static str, String); 9] = [
+                        ("1", s.msg_lj_style_arc()),
+                        ("2", s.msg_lj_style_gap()),
+                        ("3", s.msg_lj_style_square()),
+                        ("4", s.msg_lj_style_2_sides()),
+                        ("5", s.msg_lj_style_3_sides()),
+                        ("6", s.msg_lj_style_4_sides()),
+                        ("7", s.msg_lj_style_5_sides()),
+                        ("8", s.msg_lj_style_6_sides()),
+                        ("9", s.msg_lj_style_7_sides()),
+                    ];
+                    let style_label = s.msg_line_jump_style();
+                    ui.horizontal(|ui| {
+                        if !crate::i18n::rtl() {
+                            ui.label(&style_label);
+                        }
+                        if let Some(k) = Self::fmt_dropdown(
+                            ui,
+                            &doc_style.to_string(),
+                            &|k| k.to_string(),
+                            &style_choices,
+                        ) {
+                            if let Ok(code) = k.parse::<i64>() {
+                                let name = style_choices
+                                    .iter()
+                                    .find(|(kk, _)| *kk == k)
+                                    .map(|(_, d)| d.clone())
+                                    .unwrap_or_default();
+                                self.apply_line_jump_style(code, name);
+                            }
+                        }
+                        if crate::i18n::rtl() {
+                            ui.label(&style_label);
+                        }
+                    });
+                    // The horizontal/vertical size sliders — the
+                    // LineJumpFactorX/Y multipliers (the screenshots'
+                    // twin 0.6667 sliders).
+                    let mut jump_factor_x = self.line_jump_draft.unwrap_or(doc_factor_x as f32);
+                    let mut jump_factor_y = self.line_jump_draft_y.unwrap_or(doc_factor_y as f32);
+                    let x_label = s.msg_horizontal_size();
+                    let y_label = s.msg_vertical_size();
+                    // One row per factor (a local macro keeps the two
+                    // identical rows in step without fighting the
+                    // double-`self` borrow a shared closure would take).
+                    macro_rules! factor_row {
+                        ($ui:expr, $label:expr, $value:expr, $doc:expr, $draft:ident, $apply:ident) => {{
+                            $ui.label(&$label);
+                            let r = $ui.add(
+                                egui::DragValue::new(&mut $value)
                                     .range(0.5..=3.0)
                                     .speed(0.05)
                                     .suffix("×"),
                             );
-                            // Draft while dragging; commit ONCE at drag end
-                            // (or immediately for typed input) — the value
-                            // reloads from the document each frame, so the
-                            // draft is what carries the drag (#218 review).
+                            // Draft while dragging; commit ONCE at drag
+                            // end (or immediately for typed input) — the
+                            // value reloads from the document each
+                            // frame, so the draft carries the drag
+                            // (#218 review).
                             if r.dragged() {
-                                self.line_jump_draft = Some(jump_factor);
+                                self.$draft = Some($value);
                             }
                             if r.drag_stopped() || (r.changed() && !r.dragged()) {
-                                self.line_jump_draft = None;
-                                if (jump_factor - doc_factor).abs() > 1e-6 {
-                                    self.apply_line_jump_factor(jump_factor as f64);
+                                self.$draft = None;
+                                if ($value - $doc as f32).abs() > 1e-6 {
+                                    self.$apply($value as f64);
                                 }
                             }
-                        };
-                        if !crate::i18n::rtl() {
-                            ui.label(jump_label);
-                            factor_row(ui);
-                        } else {
-                            factor_row(ui);
-                            ui.label(jump_label);
-                        }
+                        }};
+                    }
+                    ui.vertical(|ui| {
+                        factor_row!(
+                            ui,
+                            x_label,
+                            jump_factor_x,
+                            doc_factor_x,
+                            line_jump_draft,
+                            apply_line_jump_factor
+                        );
+                        factor_row!(
+                            ui,
+                            y_label,
+                            jump_factor_y,
+                            doc_factor_y,
+                            line_jump_draft_y,
+                            apply_line_jump_factor_y
+                        );
                     });
+                    // The Routing group: Visio's five controls, present
+                    // but disabled (this issue's body — routing proper
+                    // is #225's deferred bulk).
+                    ui.separator();
+                    ui.strong(crate::i18n::strs().msg_routing_group());
+                    let disabled_note = crate::i18n::strs().msg_routing_deferred();
+                    for (label, value) in [
+                        (
+                            crate::i18n::strs().msg_routing_style(),
+                            crate::i18n::strs().msg_routing_right_angle(),
+                        ),
+                        (
+                            crate::i18n::strs().msg_routing_direction(),
+                            String::new(),
+                        ),
+                        (
+                            crate::i18n::strs().msg_routing_separate(),
+                            crate::i18n::strs().msg_routing_unrelated_lines(),
+                        ),
+                        (
+                            crate::i18n::strs().msg_routing_overlap(),
+                            crate::i18n::strs().msg_routing_using_style(),
+                        ),
+                        (
+                            crate::i18n::strs().msg_routing_appearance(),
+                            crate::i18n::strs().msg_routing_straight(),
+                        ),
+                    ] {
+                        ui.horizontal(|ui| {
+                            if !crate::i18n::rtl() {
+                                ui.label(&label);
+                            }
+                            ui.add_enabled(false, egui::Button::new(format!("{value}  ›")))
+                                .on_disabled_hover_text(&disabled_note);
+                            if crate::i18n::rtl() {
+                                ui.label(&label);
+                            }
+                        });
+                    }
+                    ui.label(
+                        egui::RichText::new(crate::i18n::strs().msg_routing_deferred()).small(),
+                    );
                 };
                 if crate::i18n::rtl() {
                     ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {

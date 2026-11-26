@@ -625,112 +625,10 @@ impl App {
     /// page rect with its connection-point rows (IX → page position —
     /// own rows first, the master's for instances, like #109's
     /// snap-target collection).
-    /// #108 line jumps: every top-level connector's page polyline
-    /// (unrotated, instance- or master-geometry through the hit
-    /// frame) with its stroke, in z order — the input to
-    /// [`crate::connectors::line_jumps`].
-    pub(super) fn jump_lines(&self) -> Vec<crate::connectors::JumpLine> {
-        let mut out = Vec::new();
-        let Some(ed) = self.ed() else {
-            return out;
-        };
-        let Some(page_id) = self.page_id() else {
-            return out;
-        };
-        let Some(page) = ed.doc.pages.iter().find(|p| p.id == page_id) else {
-            return out;
-        };
-        for (z, sh) in page.shapes.iter().enumerate() {
-            let Ok(chain) = shape_chain(&ed.doc, page_id, sh.id) else {
-                continue;
-            };
-            if !crate::connectors::is_connector_in(&ed.doc, &chain, sh) {
-                continue;
-            }
-            // #187 slice 2: rotated connectors hop too — the polyline
-            // source (HitFrame + geometry_hit_segments) maps the
-            // rotated frame, and the overlay's arc normal is chosen
-            // per jump in page space, so no Angle gate remains.
-            let (root, msize) = sh
-                .master
-                .and_then(|mid| ed.doc.master(mid))
-                .and_then(|m| m.shapes.first())
-                .map(|r| {
-                    let g = |n: &str| {
-                        ed.doc
-                            .resolve_cell(r, &[r], n)
-                            .and_then(|c| c.numeric())
-                            .unwrap_or(1.0)
-                    };
-                    (Some(r), (g("Width"), g("Height")))
-                })
-                .unwrap_or((None, (1.0, 1.0)));
-            let frame = crate::connectors::hit_frame(&ed.doc, &chain, sh, msize);
-            // The loop gate above guarantees a connector, so stored
-            // jump arcs strip from the polyline (#294) — with the
-            // page's own radius as the evidence.
-            let (segs, straight) = crate::connectors::geometry_hit_segments_straight(
-                sh,
-                root,
-                &frame,
-                // jump_radius_in resolves through the Page, not its id.
-                Some(
-                    ed.doc
-                        .pages
-                        .iter()
-                        .find(|p| p.id == page_id)
-                        .map(|p| crate::connectors::jump_radii_in(&ed.doc, p))
-                        .unwrap_or((0.0, 0.0)),
-                ),
-            );
-            // Straight-run eligibility (#324 step 1), the same gate
-            // `page_jumps` applies: a curved connector never hops and
-            // is never hopped over (live-measured, mk-git 2026-11-25).
-            // The canvas must agree with the export or a curved
-            // connector's crossing hops on screen while the export
-            // shows none (the #336 parity principle).
-            if !straight {
-                continue;
-            }
-            let mut pts = Vec::with_capacity(segs.len() + 1);
-            if let Some((a, _)) = segs.first() {
-                pts.push(*a);
-            }
-            for (_, b) in &segs {
-                pts.push(*b);
-            }
-            let weight = ed
-                .doc
-                .resolve_cell(sh, &chain, "LineWeight")
-                .and_then(|c| c.numeric())
-                .unwrap_or(0.01);
-            // #235 corollary (CodeRabbit, #278): an explicit-zero
-            // LineWeight paints nothing — the export path
-            // (`page_jumps`) drops such connectors from the crossing
-            // set, and the canvas overlay must agree or a visible
-            // connector hops over an invisible shaft on screen while
-            // the export shows no hop.
-            if weight == 0.0 {
-                continue;
-            }
-            let color = ed
-                .doc
-                .resolve_cell(sh, &chain, "LineColor")
-                .and_then(|c| c.v.clone())
-                .and_then(|v| parse_hex_rgb(&v))
-                .unwrap_or((0x42, 0x42, 0x42));
-            out.push(crate::connectors::JumpLine {
-                id: sh.id,
-                z,
-                weight,
-                color,
-                pts,
-            });
-        }
-        out
-    }
-
-    pub(super) fn glue_candidates(&self, excluding: &[i64]) -> Vec<crate::connectors::GlueCandidate> {
+    pub(super) fn glue_candidates(
+        &self,
+        excluding: &[i64],
+    ) -> Vec<crate::connectors::GlueCandidate> {
         let Some(ed) = self.ed() else {
             return Vec::new();
         };
@@ -909,7 +807,11 @@ impl App {
     /// against the post-move document (an eager build would read
     /// stale, pre-move geometry). `None` when nothing glues to the
     /// moved shapes, so Macros stay clean of no-ops.
-    pub(super) fn reroute_cmd(&self, page_id: i64, moved: &[i64]) -> Option<Box<dyn dc_core::Command>> {
+    pub(super) fn reroute_cmd(
+        &self,
+        page_id: i64,
+        moved: &[i64],
+    ) -> Option<Box<dyn dc_core::Command>> {
         let ed = self.ed()?;
         let page = ed.doc.pages.iter().find(|p| p.id == page_id)?;
         let touches = page
@@ -1146,34 +1048,51 @@ impl App {
     /// #113 (URS-1122): write the page's size (page inches, portrait
     /// orientation of the pair as given) as one undo Macro, then
     /// refit the view to the new page.
-    /// #251: the page's Show-Line-Jumps toggle (Page Setup ▸ Layout
-    /// and Routing) — the PageSheet's `LineJumpCode` (the
-    /// PageLayout-section cell): 1 = horizontal lines jump (Visio's
-    /// authored default), 6 = "no line gets jumps" (the off switch).
-    /// One undoable command.
-    pub(super) fn apply_line_jumps_shown(&mut self, show: bool) {
+    /// #251/#324 phase 5: the "Add line jumps to" dropdown — Visio's
+    /// five-entry list (None / Horizontal Lines / Vertical Lines /
+    /// Last Routed Line / Last Displayed Line), `LineJumpCode`
+    /// 0–4. The reconcile rides the same macro (normalize-on-edit,
+    /// #301) so the stored rows track the switch. One undoable step.
+    pub(super) fn apply_line_jump_code(&mut self, code: i64) {
         let Some(page_id) = self.page_id() else {
             return;
         };
-        // #301: hiding jumps straightens the stored arcs in the same
-        // step — the render already draws them straight, and the file
-        // should agree.
         let cmds: Vec<Box<dyn dc_core::Command>> = vec![
             Box::new(SetCell::new(
                 Scope::PageSheet { page: page_id },
                 "LineJumpCode",
                 // Off writes 0 (visPLOJumpNone, [MS-Learn]) — 6 was
                 // never in the enumeration (#218 review).
-                vsdx::Cell::value(if show { "1" } else { "0" }),
+                vsdx::Cell::value(code.to_string()),
             )),
             Box::new(crate::cmd::ReconcileLineJumps::new(page_id)),
         ];
         self.apply(dc_core::Macro::new("set line jumps shown", cmds));
-        self.status = if show {
-            crate::i18n::strs().msg_line_jumps_shown()
-        } else {
+        self.status = if code == 0 {
             crate::i18n::strs().msg_line_jumps_hidden()
+        } else {
+            crate::i18n::strs().msg_line_jumps_shown()
         };
+    }
+
+    /// #324 phase 5: the "Line jump style" dropdown — `LineJumpStyle`
+    /// 1–9 (Arc/Gap/Square/2–7 Sides). The reconcile rides the same
+    /// macro: a style change swaps the stored hop rows only, never
+    /// the route (I1, pinned in the cmd tests).
+    pub(super) fn apply_line_jump_style(&mut self, code: i64, name: String) {
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
+        let cmds: Vec<Box<dyn dc_core::Command>> = vec![
+            Box::new(SetCell::new(
+                Scope::PageSheet { page: page_id },
+                "LineJumpStyle",
+                vsdx::Cell::value(code.to_string()),
+            )),
+            Box::new(crate::cmd::ReconcileLineJumps::new(page_id)),
+        ];
+        self.apply(dc_core::Macro::new("set line jump style", cmds));
+        self.status = crate::i18n::strs().msg_line_jump_style_set(&name);
     }
 
     /// #251: the page's jump-size multiplier (`LineJumpFactorX`).
@@ -1198,12 +1117,41 @@ impl App {
             vsdx::Cell::value(format!("{factor:.6}")),
         ))];
         if let Some(pre) = pre {
-            cmds.push(Box::new(crate::cmd::ReconcileLineJumps::with_strip(page_id, pre)));
+            cmds.push(Box::new(crate::cmd::ReconcileLineJumps::with_strip(
+                page_id, pre,
+            )));
         }
         self.apply(dc_core::Macro::new("set line jump factor", cmds));
         // The factor steps in fractions (0.5 .. 3.0) — the i64 cast
         // truncated them to ×0/×1 in the status note (PR #269
         // review); FluentNumber carries the decimal through.
+        self.status = crate::i18n::strs().msg_line_jump_factor_set(factor);
+    }
+
+    /// #324 phase 5: the twin of [`Self::apply_line_jump_factor`] for
+    /// `LineJumpFactorY` — Visio's "Vertical size" slider.
+    pub(super) fn apply_line_jump_factor_y(&mut self, factor: f64) {
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
+        let pre = self.ed.as_ref().and_then(|ed| {
+            ed.doc
+                .pages
+                .iter()
+                .find(|p| p.id == page_id)
+                .map(|p| dc::geom::jump_radii_in(&ed.doc, p))
+        });
+        let mut cmds: Vec<Box<dyn dc_core::Command>> = vec![Box::new(SetCell::new(
+            Scope::PageSheet { page: page_id },
+            "LineJumpFactorY",
+            vsdx::Cell::value(format!("{factor:.6}")),
+        ))];
+        if let Some(pre) = pre {
+            cmds.push(Box::new(crate::cmd::ReconcileLineJumps::with_strip(
+                page_id, pre,
+            )));
+        }
+        self.apply(dc_core::Macro::new("set line jump factor", cmds));
         self.status = crate::i18n::strs().msg_line_jump_factor_set(factor);
     }
 }

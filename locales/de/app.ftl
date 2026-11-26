@@ -21,6 +21,8 @@ add-in-hosting-arrives-with-m8 = Add-In-Hosting kommt mit M8
 add-in-manager = Add-In-Manager
 add-in-manager-m8 = Add-In-Manager — M8
 add-ins = Add-Ins
+add-line-jumps-to = Liniensprünge hinzufügen zu:
+
 add-name-prop-row-test = Eigenschaftszeile { $name } hinzufügen (Test)
 add-to-new-container = Zu neuem Container hinzufügen
 add-to-quick-shapes = Zu Schnellformen hinzufügen
@@ -323,8 +325,64 @@ field-preview = Vorschau:
 field-subject = Thema
 field-title = Titel
 field-width = Breite
+horizontal-size = Horizontale Größe:
+
 insert-a-text-field = Ein Textfeld einfügen
 insert-field = Feld einfügen
+line-jump-style = Liniensprungstil:
+
+line-jump-style-set = Liniensprungstil auf { $style } festgelegt
+
+lj-code-horizontal = Horizontale Linien
+
+lj-code-last-displayed = Zuletzt angezeigte Linie
+
+lj-code-last-routed = Zuletzt geroutete Linie
+
+lj-code-none = Keine
+
+lj-code-vertical = Vertikale Linien
+
+lj-style-2-sides = 2 Seiten
+
+lj-style-3-sides = 3 Seiten
+
+lj-style-4-sides = 4 Seiten
+
+lj-style-5-sides = 5 Seiten
+
+lj-style-6-sides = 6 Seiten
+
+lj-style-7-sides = 7 Seiten
+
+lj-style-arc = Bogen
+
+lj-style-gap = Lücke
+
+lj-style-square = Quadrat
+
+routing-appearance = Darstellung:
+
+routing-deferred = Konnektor-Routing ist noch nicht verfügbar.
+
+routing-direction = Richtung:
+
+routing-group = Routing
+
+routing-overlap = Überlappung:
+
+routing-right-angle = Rechter Winkel
+
+routing-separate = Trennen:
+
+routing-straight = Gerade
+
+routing-style = Stil:
+
+routing-unrelated-lines = Nicht verbundene Linien
+
+routing-using-style = Nach Routingstil
+
 inspect-the-current-page-cells = Die Zellen der aktuellen Seite prüfen (PageSheet)
 inspect-the-document-cells = Die Zellen des Dokuments prüfen (DocumentSheet)
 page-shapesheet = Seiten-ShapeSheet
@@ -460,7 +518,6 @@ inspect-drawing = Zeichnung prüfen …
 inspect-the-selected-shape-s-cel = Die Zellen der ausgewählten Form prüfen
 italic = Kursiv
 italic-planned = Kursiv — geplant
-jump-size = Versatzgröße
 justify = Blocksatz
 justify-planned = Blocksatz — geplant
 # $key - Tastenkürzel
@@ -852,7 +909,6 @@ show-hide = Ein-/Ausblenden
 show-hide-comments = Kommentare ein-/ausblenden
 show-hide-comments-planned-view = Kommentare ein-/ausblenden — geplant (der Schalter in „Ansicht" ist heute verdrahtet)
 show-hide-data-graphics-on-the-p = Datengrafiken auf der Seite ein-/ausblenden (M6)
-show-line-jumps = Linienversätze anzeigen
 show-markup = Markup anzeigen
 show-markup-planned = Markup anzeigen — geplant
 show-shapesheet = ShapeSheet anzeigen
@@ -1077,6 +1133,8 @@ vba-arrives-with-m7-vsdm = VBA kommt mit M7 (.vsdm)
 vector-svg = Vektor (SVG)
 # $cell - Beschreibung der formelgetriebenen Zelle
 vertex-drag-refused = Eckpunktzug abgelehnt: { $cell } ist formelgetrieben — die Formel bearbeiten, um ihn zu ändern
+vertical-size = Vertikale Größe:
+
 view = Ansicht
 views = Ansichten
 visio-drawing = Visio-Zeichnung
@@ -1108,3 +1166,4 @@ zoom-menu = Zoom …
 zoom-out = Verkleinern
 zoom-out-tip = Verkleinern
 zoom-to-selection-shift-z = Auf die Auswahl zoomen (Umschalt+Z)
+

@@ -85,11 +85,7 @@ fn cell_of(h: &Harness<'_, App>, page: i64, shape: i64, n: &str) -> f64 {
 /// Place from an OPEN stencil's master cell (click the cell, click the
 /// canvas — the pane paradigm), wheeling the pane when the cell sits
 /// below the fold.
-fn place_from_open(
-    h: &mut Harness<'_, App>,
-    source: StencilId,
-    master: i64,
-) -> (i64, i64) {
+fn place_from_open(h: &mut Harness<'_, App>, source: StencilId, master: i64) -> (i64, i64) {
     let mut wheels = 0;
     let from = loop {
         // The pane repeats a stencil's Quick-Shapes block above its
@@ -208,10 +204,7 @@ fn fresh_doc(master: &vsdx::Master) -> vsdx::Document {
             id: 0,
             name: "P1".into(),
             part: "pages/page1.xml".into(),
-            attrs: vec![
-                ("ID".into(), "0".into()),
-                ("NameU".into(), "P1".into()),
-            ],
+            attrs: vec![("ID".into(), "0".into()), ("NameU".into(), "P1".into())],
             shapes: vec![rect(1, 2.0, 2.0, true), rect(2, 7.5, 5.0, true)],
             ..vsdx::model::Page::default()
         }],
@@ -362,7 +355,12 @@ fn exercise_mode(master: &vsdx::Master, static_only: bool) -> Exercised {
             "EndX",
             12,
             2,
-            (if static_only { "Connections.X2" } else { "PinX" }).to_string(),
+            (if static_only {
+                "Connections.X2"
+            } else {
+                "PinX"
+            })
+            .to_string(),
             if static_only { 102 } else { 3 },
         ),
     }));
@@ -477,7 +475,12 @@ fn every_1d_master_drops_and_renders() {
             }
             let mut ed = Editor::new(fresh_doc(m));
             ed.apply(dc_core::AddMasterInstance::new(0, 1, (5.0, 3.0)))
-                .unwrap_or_else(|e| panic!("{label} {}: drop: {e}", m.name_u.clone().unwrap_or_default()));
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{label} {}: drop: {e}",
+                        m.name_u.clone().unwrap_or_default()
+                    )
+                });
             assert!(
                 ink(&ed, 3).is_some(),
                 "{label} {}: no ink after the drop",
@@ -518,7 +521,11 @@ fn signed_frame_masters_glue_track_and_undo() {
             assert!(
                 out.glue_ok,
                 "{label} {name}: glue refused ({})",
-                if out.lock_refused { "LockHeight Macro abort" } else { "?" }
+                if out.lock_refused {
+                    "LockHeight Macro abort"
+                } else {
+                    "?"
+                }
             );
             assert!(
                 !out.flat_band || KNOWN_FLAT_BAND.iter().any(|(n, _)| *n == name),
@@ -537,9 +544,18 @@ fn signed_frame_masters_glue_track_and_undo() {
 #[test]
 fn static_only_glued_masters_reroute_on_a_move() {
     // Spot masters across the families; Elbow 1 carries no triggers.
-    for name in ["Elbow 1", "Side to side 1", "Line-arc connector", "2-line elbow"] {
+    for name in [
+        "Elbow 1",
+        "Side to side 1",
+        "Line-arc connector",
+        "2-line elbow",
+    ] {
         let (_, doc) = both_stencils().remove(0);
-        let Some(m) = doc.masters.iter().find(|m| m.name_u.as_deref() == Some(name)) else {
+        let Some(m) = doc
+            .masters
+            .iter()
+            .find(|m| m.name_u.as_deref() == Some(name))
+        else {
             panic!("{name} in the US stencil");
         };
         let out = exercise_mode(m, true);
@@ -614,7 +630,6 @@ fn flat_band_masters_track_their_targets() {
     }
 }
 
-
 /// #238 (kittest, the #108 GUI pattern): the SURVIVING family — the
 /// ObjType=2 Dynamic connector master dropped from the real built-in
 /// stencil, both endpoints glued through the endpoint-drag gesture
@@ -664,8 +679,8 @@ fn stencil_master_connector_glues_and_follows_a_move() {
 
     // Open the built-in Connector stencil from the repo asset (the
     // same file the pane's embedded fallback carries).
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("assets/stencils/connec.vssx");
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/stencils/connec.vssx");
     h.state_mut().open_stencil_for_test(&path);
     h.run();
     let entries = h.state().debug_stencil_entries();
@@ -673,7 +688,6 @@ fn stencil_master_connector_glues_and_follows_a_move() {
     let mid = dyn_connector_master_id();
     let (_, conn) = place_from_open(&mut h, StencilId::Open(open_ix), mid);
     h.run();
-
 
     // The placed master instance carries the 1D endpoint handles
     // (ObjType=2 resolved through the chain, BeginX/EndX snapshots).
@@ -696,7 +710,10 @@ fn stencil_master_connector_glues_and_follows_a_move() {
         .expect("A screen rect");
     let a_target = egui::pos2(asr.right(), asr.center().y);
     drag_naturally(&mut h, handle, a_target - handle);
-    let (ex, ey) = (cell_of(&h, page, conn, which.0), cell_of(&h, page, conn, which.1));
+    let (ex, ey) = (
+        cell_of(&h, page, conn, which.0),
+        cell_of(&h, page, conn, which.1),
+    );
     let want_x = ar.0 + ar.2;
     let want_y = ar.1 + ar.3 / 2.0;
     assert!(
@@ -706,8 +723,16 @@ fn stencil_master_connector_glues_and_follows_a_move() {
     );
 
     // Glue the OTHER end onto B's left edge middle.
-    let other = if which.0 == "BeginX" { "EndX" } else { "BeginX" };
-    let other_y = if which.0 == "BeginX" { "EndY" } else { "BeginY" };
+    let other = if which.0 == "BeginX" {
+        "EndX"
+    } else {
+        "BeginX"
+    };
+    let other_y = if which.0 == "BeginX" {
+        "EndY"
+    } else {
+        "BeginY"
+    };
     let handle2 = h
         .state()
         .debug_handle_screen(if other == "BeginX" {
@@ -726,7 +751,10 @@ fn stencil_master_connector_glues_and_follows_a_move() {
     let b_target = egui::pos2(bsr.left() + 2.0, bsr.center().y);
     drag_naturally(&mut h, handle2, b_target - handle2);
     let br = h.state().debug_shape_page_rect(b).expect("B rect");
-    let (ox, oy) = (cell_of(&h, page, conn, other), cell_of(&h, page, conn, other_y));
+    let (ox, oy) = (
+        cell_of(&h, page, conn, other),
+        cell_of(&h, page, conn, other_y),
+    );
     assert!(
         (ox - br.0).abs() < 0.06 && (oy - (br.1 + br.3 / 2.0)).abs() < 0.06,
         "the connector {other} glued to B's left edge: ({ox:.4},{oy:.4})"
@@ -740,8 +768,14 @@ fn stencil_master_connector_glues_and_follows_a_move() {
         .expect("B screen rect")
         .center();
     drag_naturally(&mut h, bc, egui::vec2(120.0, 90.0));
-    let br2 = h.state().debug_shape_page_rect(b).expect("B rect after move");
-    let (mx, my) = (cell_of(&h, page, conn, other), cell_of(&h, page, conn, other_y));
+    let br2 = h
+        .state()
+        .debug_shape_page_rect(b)
+        .expect("B rect after move");
+    let (mx, my) = (
+        cell_of(&h, page, conn, other),
+        cell_of(&h, page, conn, other_y),
+    );
     // The dynamic attach is the facing-border point toward the OTHER
     // endpoint — compute it, don't assume the edge middle.
     let begin = (
@@ -759,7 +793,10 @@ fn stencil_master_connector_glues_and_follows_a_move() {
     // One undo restores B; the endpoint un-follows with it.
     h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
     h.run();
-    let (ux, uy) = (cell_of(&h, page, conn, other), cell_of(&h, page, conn, other_y));
+    let (ux, uy) = (
+        cell_of(&h, page, conn, other),
+        cell_of(&h, page, conn, other_y),
+    );
     assert!(
         (ux - br.0).abs() < 0.1 && (uy - (br.1 + br.3 / 2.0)).abs() < 0.1,
         "undo restores the glued endpoint pose: ({ux:.4},{uy:.4}) vs ({:.4},{:.4})",
@@ -770,7 +807,7 @@ fn stencil_master_connector_glues_and_follows_a_move() {
 
 /// #251: the page's line-jump settings survive a real save/parse
 /// round trip — `LineJumpCode` off writes 0 (visPLOJumpNone, what
-/// App::apply_line_jumps_shown writes; the read side also treats the
+/// App::apply_line_jump_code writes; the read side also treats the
 /// legacy undocumented 6 as off) and `LineJumpFactorX` carries its
 /// multiplier; the default page shows jumps (the shipped corpus
 /// carries no jump cells).
