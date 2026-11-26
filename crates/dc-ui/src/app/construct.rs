@@ -113,6 +113,8 @@ impl App {
             comment_edit: None,
             show_comments: true,
             shape_data_open: None,
+            size_pos_open: false,
+            size_pos_bufs: (None, Default::default()),
             prop_bufs: std::collections::HashMap::new(),
             prop_add: None,
             format_pane_open: false,
