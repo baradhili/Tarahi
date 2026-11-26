@@ -73,33 +73,58 @@ pub(crate) fn append_jump_scaled(
     j: &crate::geom::Jump,
     radius: f64,
 ) {
+    use crate::geom::JumpStyle;
+    // Gap draws nothing — the cut slot is the whole treatment.
+    if let JumpStyle::Gap = j.style {
+        return;
+    }
     let (r, w) = (radius, j.weight);
     let sy = |y: f64| page_h - y;
     let pt = |p: (f64, f64)| format!("{:.5} {:.5}", p.0, sy(p.1));
     let hex = |c: (u8, u8, u8)| format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2);
     let n = jump_normal(j.dir);
-    // The arc overlaps the cut line ends by half a pen so the joint
-    // closes (round join, no notch at the arc's foot).
+    // The hop overlaps the cut line ends by half a pen so the joint
+    // closes (round join, no notch at the foot).
     let lead = |s: f64| {
         (
             j.at.0 + j.dir.0 * s * (r + w * 0.5),
             j.at.1 + j.dir.1 * s * (r + w * 0.5),
         )
     };
-    let mut path = format!("M {} ", pt(lead(-1.0)));
-    for k in 0..=12 {
-        let t = k as f64 / 12.0;
-        let ang = std::f64::consts::PI * t;
-        let local = (
-            -j.dir.0 * r * ang.cos() + n.0 * r * ang.sin(),
-            -j.dir.1 * r * ang.cos() + n.1 * r * ang.sin(),
-        );
-        let p = (j.at.0 + local.0, j.at.1 + local.1);
-        path.push_str("L ");
+    // The bump's vertices between the slot feet, per style: the arc
+    // samples the semicircle, the square's top corners sit a full r
+    // above the FEET, the n-sided hump takes the inscribed polygon's
+    // interior vertices (bump(0)/bump(π) ARE the feet).
+    let bump = |ang: f64| {
+        (
+            j.at.0 - j.dir.0 * r * ang.cos() + n.0 * r * ang.sin(),
+            j.at.1 - j.dir.1 * r * ang.cos() + n.1 * r * ang.sin(),
+        )
+    };
+    let apex = bump(std::f64::consts::FRAC_PI_2);
+    let mids: Vec<(f64, f64)> = match j.style {
+        JumpStyle::Arc => (1..=11)
+            .map(|k| bump(std::f64::consts::PI * k as f64 / 12.0))
+            .collect(),
+        JumpStyle::Square => vec![
+            (apex.0 - j.dir.0 * r, apex.1 - j.dir.1 * r),
+            (apex.0 + j.dir.0 * r, apex.1 + j.dir.1 * r),
+        ],
+        JumpStyle::Sides(ns) => (1..ns)
+            .map(|k| bump(std::f64::consts::PI * k as f64 / ns as f64))
+            .collect(),
+        JumpStyle::Gap => Vec::new(),
+    };
+    let mut path = format!("M {} L {}", pt(lead(-1.0)), pt(bump(0.0)));
+    for p in mids {
+        path.push_str(" L ");
         path.push_str(&pt(p));
-        path.push(' ');
     }
-    path.push_str(&format!("L {}", pt(lead(1.0))));
+    path.push_str(&format!(
+        " L {} L {}",
+        pt(bump(std::f64::consts::PI)),
+        pt(lead(1.0))
+    ));
     let _ = writeln!(
         svg,
         r#"<path data-dc="hop-arc" d="{}" fill="none" stroke="{c}" stroke-width="{w:.4}" stroke-linejoin="round"/>"#,

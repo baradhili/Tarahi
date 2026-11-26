@@ -439,6 +439,8 @@ pub struct GuideFx {
 #[derive(Debug, Clone, Copy)]
 pub struct JumpFx {
     pub at: (f64, f64),
+    /// The hop's resolved style (#324 phase 4 — Gap paints nothing).
+    pub style: dc::geom::JumpStyle,
     /// The color behind the jumper at the hop (the gap's paint).
     pub gap_color: Color32,
     pub dir: (f64, f64),
@@ -1981,14 +1983,30 @@ pub fn show(
         // → screen y-down.
         let np = dc::svg::jump_normal(j.dir);
         let n = Vec2::new(np.0 as f32, -(np.1 as f32));
-        let mut pts = Vec::with_capacity(9);
-        for k in 0..=8 {
-            let t = k as f32 / 8.0;
-            let ang = std::f32::consts::PI * t;
-            // local frame: from g1 around to g2 through at + n*r.
-            let local = -dir * r * ang.cos() + n * r * ang.sin();
-            pts.push(at + local);
-        }
+        // The bump's vertices between the slot feet, per style — the
+        // export painter's dispatch (Gap draws nothing: the cut slot
+        // is the whole treatment, #324 phase 4).
+        let bump = |ang: f32| at - dir * r * ang.cos() + n * r * ang.sin();
+        let lead = |s: f32| at + dir * s * (r + w * 0.5);
+        let mids: Vec<egui::Pos2> = match j.style {
+            dc::geom::JumpStyle::Arc => (1..=11)
+                .map(|k| bump(std::f32::consts::PI * k as f32 / 12.0))
+                .collect(),
+            dc::geom::JumpStyle::Square => {
+                let apex = bump(std::f32::consts::FRAC_PI_2);
+                vec![apex - dir * r, apex + dir * r]
+            }
+            dc::geom::JumpStyle::Sides(ns) => (1..ns)
+                .map(|k| bump(std::f32::consts::PI * k as f32 / ns as f32))
+                .collect(),
+            dc::geom::JumpStyle::Gap => Vec::new(),
+        };
+        let mut pts = Vec::with_capacity(mids.len() + 4);
+        pts.push(lead(-1.0));
+        pts.push(bump(0.0));
+        pts.extend(mids);
+        pts.push(bump(std::f32::consts::PI));
+        pts.push(lead(1.0));
         p.add(egui::Shape::line(pts, Stroke::new(w, j.color)));
     }
 

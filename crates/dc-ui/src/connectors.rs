@@ -139,6 +139,7 @@ pub use dc::geom::{
     arc_row, cubic_row, geometry_hit_segments, geometry_hit_segments_straight, hit_frame,
     is_connector, is_connector_in, is_jump_candidate, is_stored_jump_arc, jump_radii_in,
     line_jumps, row_cell_value, seg_cross, ArcRow, CubicRow, HitFrame, Jump, JumpLine, JumpRules,
+    JumpStyle,
 };
 fn set(cells: &mut Vec<SheetChild>, n: &str, v: f64) {
     cells.push(SheetChild::Cell(n.to_string(), Cell::value(fmt(v))));
@@ -1156,6 +1157,7 @@ mod tests {
             z,
             weight: 0.01,
             color: (0, 0, 0),
+            style: dc::geom::JumpStyle::Arc,
             pts: pts.to_vec(),
         };
         // H crosses V at (1, 1): H hops.

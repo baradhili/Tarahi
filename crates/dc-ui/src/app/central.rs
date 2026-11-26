@@ -453,6 +453,7 @@ impl App {
                         dc::svg::backdrop_color_at(doc, page, j.at, j.jumper, &hidden);
                     canvas::JumpFx {
                         gap_color: Color32::from_rgb(gr, gg, gb),
+                        style: j.style,
                         at: j.at,
                         dir: j.dir,
                         under: j.under,

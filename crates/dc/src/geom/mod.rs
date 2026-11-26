@@ -20,9 +20,10 @@ mod segments;
 pub use connector::{is_connector, is_connector_in};
 pub use hitframe::{hit_frame, HitFrame};
 pub use jumps::{
-    is_jump_candidate, is_stored_jump_arc, jump_radii_in, jump_radius_in, jump_radius_y_in,
-    line_jumps, line_jumps_with, page_jump_rules, page_jumps, page_jumps_stripping, seg_cross,
-    Jump, JumpLine, JumpRules,
+    is_jump_candidate, is_stored_jump_arc, is_stored_jump_gap, is_stored_jump_polyline,
+    jump_radii_in, jump_radius_in, jump_radius_y_in, line_jumps, line_jumps_with, page_jump_rules,
+    page_jump_style, page_jumps, page_jumps_stripping, parse_polyline_controls, seg_cross, Jump,
+    JumpLine, JumpRules, JumpStyle,
 };
 pub use rows::{arc_row, cubic_row, row_cell_value, ArcRow, CubicRow};
 pub use segments::{geometry_hit_segments, geometry_hit_segments_straight, MAX_WALK_ROWS};
@@ -40,6 +41,7 @@ mod tests {
             z,
             weight: 0.01,
             color: (0, 0, 0),
+            style: JumpStyle::Arc,
             pts: pts.to_vec(),
         }
     }
@@ -97,6 +99,7 @@ mod tests {
             z,
             weight: 0.01,
             color: (0, 0, 0),
+            style: JumpStyle::Arc,
             pts: pts.to_vec(),
         };
         // A shallow arc's belly crossed by a line: entry and exit sit
@@ -300,6 +303,7 @@ mod tests {
                 z: 1,
                 weight: 0.01,
                 color: (0, 0, 0),
+                style: JumpStyle::Arc,
                 pts: vec![(0.0, 1.0), (2.0, 1.0)],
             },
             // The crossed line: a U crossing the run TWICE — at x=1
@@ -309,6 +313,7 @@ mod tests {
                 z: 2,
                 weight: 0.01,
                 color: (0, 0, 0),
+                style: JumpStyle::Arc,
                 pts: vec![(1.0, 0.0), (1.0, 2.0), (1.5, 2.0), (1.5, 0.0)],
             },
         ];
@@ -1343,6 +1348,44 @@ mod tests {
             "other line: the vertical hops"
         );
         assert_eq!(on_h(4).len(), 0, "neither");
+    }
+
+    /// `page_jump_style` reads the page's `LineJumpStyle` through the
+    /// style chain, and a connector's nonzero `ConLineJumpStyle`
+    /// overrides it per jumper (#324 phase 4).
+    #[test]
+    fn page_jump_style_resolves_chain_and_connector() {
+        let mut sheet = vsdx::model::Sheet::default();
+        sheet.set_cell("LineJumpStyle", Cell::value("3"));
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            children: vec![vsdx::model::IndexChild::Sheet {
+                tag: "PageSheet".into(),
+                sheet,
+            }],
+            ..vsdx::Page::default()
+        };
+        let mut a = straight_connector(1, (1.0, 1.0), (5.0, 1.0), None);
+        let b = straight_connector(2, (3.0, 0.0), (3.0, 2.0), None);
+        page.shapes.push(a.clone());
+        page.shapes.push(b);
+        let doc = vsdx::Document::default();
+        // The page style (3 = Square) flows to the hop…
+        let js = page_jumps(&doc, &page, &[]);
+        assert_eq!(js.len(), 1);
+        assert_eq!(js[0].style, JumpStyle::Square);
+        // …and the connector's own nonzero code overrides it
+        // (4 = 2 sides).
+        a.sheet.set_cell("ConLineJumpStyle", Cell::value("4"));
+        page.shapes[0] = a.clone();
+        let js = page_jumps(&doc, &page, &[]);
+        assert_eq!(js[0].style, JumpStyle::Sides(2));
+        // Zero means "as the page specifies" — back to Square.
+        a.sheet.set_cell("ConLineJumpStyle", Cell::value("0"));
+        page.shapes[0] = a.clone();
+        let js = page_jumps(&doc, &page, &[]);
+        assert_eq!(js[0].style, JumpStyle::Square);
     }
 
     /// `page_jump_rules` reads what Visio reads — the PageSheet's

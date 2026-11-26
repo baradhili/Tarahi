@@ -1889,8 +1889,12 @@ fn reconciled_rows(
         } else {
             radii.1
         };
-        // The hops on THIS segment, ordered along the run.
-        let mut here: Vec<f64> = hops
+        // The hops on THIS segment, ordered along the run — with the
+        // jumper's resolved style (#324 phase 4). The classifier
+        // reads chords at ANY angle now (the axis-aligned write gate
+        // is retired with it — a diagonal stored arc re-recognizes on
+        // the next walk), so every crossing writes its hop row.
+        let mut here: Vec<(f64, dc::geom::JumpStyle)> = hops
             .iter()
             .filter(|j| {
                 let d = (j.at.0 - a.0, j.at.1 - a.1);
@@ -1898,25 +1902,16 @@ fn reconciled_rows(
                 let perp = (d.0 * dir.1 - d.1 * dir.0).abs();
                 t > 1e-9 && t < len - 1e-9 && perp < 1e-6
             })
-            .map(|j| (j.at.0 - a.0) * dir.0 + (j.at.1 - a.1) * dir.1)
+            .map(|j| ((j.at.0 - a.0) * dir.0 + (j.at.1 - a.1) * dir.1, j.style))
             .collect::<Vec<_>>();
-        here.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
-        // The classifier strips only an axis-ALIGNED local chord
-        // (`is_stored_jump_arc`) — an arc stored on a diagonal run
-        // could never be recognized again, so a diagonal crossing
-        // stays plain in the file (the overlay still draws the hop;
-        // PR #305 review).
-        let axis_aligned = {
-            let alen = ldir.0.hypot(ldir.1);
-            alen > 1e-9 && ldir.0.abs().min(ldir.1.abs()) <= alen * 0.02
-        };
-        let arcs = shown && r > 0.0 && axis_aligned;
+        here.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+        let arcs = shown && r > 0.0;
         // (C) Two hops closer than 2r would emit an arc starting
         // before the previous one ends — a backwards segment. Walk a
         // cursor: a hop that does not clear the last arc's end is
         // left as a plain crossing.
         let mut cursor = 0.0f64;
-        for t in here {
+        for (t, hop_style) in here {
             // (D) The geometry walks cap at 64 rows: an arc pair
             // must leave room for every remaining route point (the
             // segment-end lines) and the caller's master shadows —
@@ -1939,17 +1934,86 @@ fn reconciled_rows(
             push_line(&mut rows, to_local(p0));
             let ix = rows.len() as i64 + 1;
             let end = to_local(p1);
-            rows.push(vsdx::model::Row {
-                t: Some("ArcTo".into()),
-                ix,
-                cells: vec![
-                    ("X".to_string(), Cell::value(format!("{:.6}", end.0))),
-                    ("Y".to_string(), Cell::value(format!("{:.6}", end.1))),
-                    // The corpus form: A = −radius (#294's pinned row).
-                    ("A".to_string(), Cell::value(format!("{:.6}", -r))),
-                ],
-                ..Default::default()
-            });
+            match hop_style {
+                dc::geom::JumpStyle::Arc => {
+                    rows.push(vsdx::model::Row {
+                        t: Some("ArcTo".into()),
+                        ix,
+                        cells: vec![
+                            ("X".to_string(), Cell::value(format!("{:.6}", end.0))),
+                            ("Y".to_string(), Cell::value(format!("{:.6}", end.1))),
+                            // The corpus form: A = −radius (#294's
+                            // pinned row).
+                            ("A".to_string(), Cell::value(format!("{:.6}", -r))),
+                        ],
+                        ..Default::default()
+                    });
+                }
+                dc::geom::JumpStyle::Gap => {
+                    // The witnessed gap: a MoveTo OVER the slot — the
+                    // row set is two strokes.
+                    rows.push(vsdx::model::Row {
+                        t: Some("MoveTo".into()),
+                        ix,
+                        cells: vec![
+                            ("X".to_string(), Cell::value(format!("{:.6}", end.0))),
+                            ("Y".to_string(), Cell::value(format!("{:.6}", end.1))),
+                        ],
+                        ..Default::default()
+                    });
+                }
+                dc::geom::JumpStyle::Square | dc::geom::JumpStyle::Sides(_) => {
+                    // The witnessed POLYLINE form: percentages of the
+                    // shape's Width/Height, the square's top corners
+                    // a full r above the feet, the n-sided hump's
+                    // vertices inscribed in the semicircle.
+                    let (w_in, h_in) = frame.size;
+                    if w_in <= 0.0 || h_in <= 0.0 {
+                        continue; // no sane frame — a plain crossing
+                    }
+                    let at_l = to_local((a.0 + dir.0 * t, a.1 + dir.1 * t));
+                    // The bump's page-space normal, rotated into the
+                    // row-local frame through the rigid to_local.
+                    let n_p = dc::svg::jump_normal(dir);
+                    // The probe a full r out along the normal, so the
+                    // local difference IS the unit local normal.
+                    let n_anchor =
+                        to_local((a.0 + dir.0 * t + n_p.0 * r, a.1 + dir.1 * t + n_p.1 * r));
+                    let nl = ((n_anchor.0 - at_l.0) / r, (n_anchor.1 - at_l.1) / r);
+                    let d = (dir.0, dir.1); // the run's page unit, rigid in local
+                    let verts: Vec<(f64, f64)> = match hop_style {
+                        dc::geom::JumpStyle::Square => vec![
+                            (at_l.0 - d.0 * r + nl.0 * r, at_l.1 - d.1 * r + nl.1 * r),
+                            (at_l.0 + d.0 * r + nl.0 * r, at_l.1 + d.1 * r + nl.1 * r),
+                        ],
+                        dc::geom::JumpStyle::Sides(ns) => (1..ns)
+                            .map(|k| {
+                                let ang = std::f64::consts::PI * k as f64 / ns as f64;
+                                (
+                                    at_l.0 - d.0 * r * ang.cos() + nl.0 * r * ang.sin(),
+                                    at_l.1 - d.1 * r * ang.cos() + nl.1 * r * ang.sin(),
+                                )
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    let mut a_formula = String::from("POLYLINE(0, 0");
+                    for (vx, vy) in verts {
+                        a_formula.push_str(&format!(", {},{}", vx / w_in, vy / h_in));
+                    }
+                    a_formula.push(')');
+                    rows.push(vsdx::model::Row {
+                        t: Some("PolylineTo".into()),
+                        ix,
+                        cells: vec![
+                            ("X".to_string(), Cell::value(format!("{:.6}", end.0))),
+                            ("Y".to_string(), Cell::value(format!("{:.6}", end.1))),
+                            ("A".to_string(), Cell::value(a_formula)),
+                        ],
+                        ..Default::default()
+                    });
+                }
+            }
         }
         push_line(&mut rows, to_local(b));
     }
@@ -2151,6 +2215,7 @@ impl Command for ReconcileLineJumps {
                 }
             };
             let mut arctos = 0usize;
+            let mut poly_extra = 0usize;
             let mut movetos = 0usize;
             let mut owned = true;
             for r in &live {
@@ -2182,6 +2247,42 @@ impl Command for ReconcileLineJumps {
                     Some("ArcTo") => {
                         arctos += 1;
                         if lit(r, "A").is_none() || lit(r, "X").is_none() || lit(r, "Y").is_none() {
+                            owned = false;
+                            break;
+                        }
+                    }
+                    // A stored STYLED hop (#324 phase 4): a
+                    // percentage POLYLINE the classifier recognizes
+                    // counts as route-owned — its A carries the
+                    // POLYLINE formula string, and the strip
+                    // accounting reads its vertex count (the
+                    // two-pass rule: what the crossing set would hop,
+                    // the rewrite may replace).
+                    Some("PolylineTo") => {
+                        let a_text = r
+                            .cell("A")
+                            .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                            .or_else(|| {
+                                master_row(r.ix)
+                                    .and_then(|m| m.cell("A"))
+                                    .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                            });
+                        match a_text {
+                            Some(text) => match dc::geom::parse_polyline_controls(&text) {
+                                Some((_, controls)) => {
+                                    poly_extra += controls.len();
+                                }
+                                None => {
+                                    owned = false;
+                                    break;
+                                }
+                            },
+                            None => {
+                                owned = false;
+                                break;
+                            }
+                        }
+                        if lit(r, "X").is_none() || lit(r, "Y").is_none() {
                             owned = false;
                             break;
                         }
@@ -2223,7 +2324,7 @@ impl Command for ReconcileLineJumps {
             // keeps its geometry verbatim).
             let plain = dc::geom::geometry_hit_segments(s, master_root, &frame, None);
             let stripped = dc::geom::geometry_hit_segments(s, master_root, &frame, Some(strip));
-            if plain.len() != stripped.len() + 3 * arctos {
+            if plain.len() != stripped.len() + 3 * arctos + poly_extra {
                 continue;
             }
             // No-op fast path: nothing strips (no stored arcs) and no
@@ -2283,13 +2384,21 @@ impl Command for ReconcileLineJumps {
                             // type + Del marker are the comparison.
                             _ => t.is_deleted() && r.is_deleted(),
                         }
-                        && match (t.t.as_deref(), r.cell("A").and_then(|c| c.numeric())) {
-                            (Some("ArcTo"), Some(a)) => {
-                                (t.cell("A").and_then(|c| c.numeric()).unwrap_or(f64::NAN) - a)
-                                    .abs()
-                                    < 1e-6
+                        && match t.t.as_deref() {
+                            Some("ArcTo") => match r.cell("A").and_then(|c| c.numeric()) {
+                                Some(a) => {
+                                    (t.cell("A").and_then(|c| c.numeric()).unwrap_or(f64::NAN) - a)
+                                        .abs()
+                                        < 1e-6
+                                }
+                                None => false,
+                            },
+                            // A styled hop's A is the POLYLINE
+                            // formula string — value-wise equality.
+                            Some("PolylineTo") => {
+                                t.cell("A").and_then(|c| c.v.clone())
+                                    == r.cell("A").and_then(|c| c.v.clone())
                             }
-                            (Some("ArcTo"), None) => false,
                             _ => true,
                         }
                 });
@@ -4546,6 +4655,155 @@ mod reconcile_jump_tests {
 
     fn cell(r: &Row, n: &str) -> f64 {
         r.cell(n).and_then(|c| c.numeric()).unwrap_or(f64::NAN)
+    }
+
+    /// The style-witness miniature (`Analysis/line-jump-styles.md`'s
+    /// route/jump-square + jump-two-sides, Visio-2021-measured): a
+    /// 5 in × 0.25 in horizontal whose line runs at local H/2,
+    /// crossed at local x 2.5 by a vertical — default radii (r =
+    /// 1/24). Every ReconcileLineJumps under a page style must land
+    /// the witnessed row forms.
+    fn witness_doc(style: &str) -> (dc_core::Editor, i64) {
+        let mut ed = dc_core::Editor::new_blank();
+        let page_id = ed.doc.pages[0].id;
+        ed.doc.pages[0]
+            .sheet_mut()
+            .unwrap()
+            .set_cell("LineJumpStyle", VCell::value(style));
+        // The horizontal: Width 5, Height 0.25, line at local y H/2 —
+        // the real dynamic-connector band (the corpus masters draw
+        // their line at H/2; a zero-height frame would divide the
+        // POLYLINE fractions by zero).
+        let mut h = crate::connectors::connector_shape(5, (1.5, 5.0), (6.5, 5.0));
+        h.sheet.set_cell("Height", VCell::value("0.25"));
+        h.sheet.set_cell("LocPinY", VCell::value("0.125"));
+        set_geo_rows(
+            &mut h,
+            vec![
+                Row {
+                    t: Some("MoveTo".into()),
+                    ix: 1,
+                    cells: xy(0.0, 0.125),
+                    ..Row::default()
+                },
+                lineto(2, 5.0, 0.125),
+            ],
+        );
+        let v = crate::connectors::connector_shape(6, (4.0, 2.0), (4.0, 8.0));
+        ed.doc.pages[0].shapes.push(h);
+        ed.doc.pages[0].shapes.push(v);
+        (ed, page_id)
+    }
+
+    /// The written row FORM per style matches the Visio-2021
+    /// witnesses: the square's `POLYLINE(0, 0, …)` top corners at the
+    /// slot ends a full r up, the 2-sides triangle's single apex, the
+    /// gap's mid-route MoveTo — fractions of the shape's Width and
+    /// Height (#324 phase 4).
+    #[test]
+    fn reconcile_writes_the_witnessed_style_rows() {
+        // Square (3): POLYLINE(0, 0, 0.491666…,0.666666…,
+        // 0.508333…,0.666666…).
+        let (mut ed, page_id) = witness_doc("3");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(
+            rows.len(),
+            4,
+            "MoveTo, LineTo, PolylineTo, LineTo: {rows:?}"
+        );
+        assert_eq!(rows[1].t.as_deref(), Some("LineTo"));
+        assert!((cell(&rows[1], "X") - (2.5 - R)).abs() < 1e-6);
+        assert_eq!(rows[2].t.as_deref(), Some("PolylineTo"));
+        assert!((cell(&rows[2], "X") - (2.5 + R)).abs() < 1e-6);
+        let a = rows[2].cell("A").unwrap().v.as_deref().unwrap().to_string();
+        let ((ty, tx), pts) = dc::geom::parse_polyline_controls(&a)
+            .unwrap_or_else(|| panic!("the square's A parses: {a}"));
+        assert_eq!((ty, tx), (0.0, 0.0), "percentage-typed: {a}");
+        assert_eq!(pts.len(), 2, "two top corners: {a}");
+        for (x, y) in pts {
+            assert!(
+                ((x - 0.5).abs() - R / 5.0).abs() < 1e-9 && (y - 2.0 / 3.0).abs() < 1e-9,
+                "the witnessed square fractions: {a}"
+            );
+        }
+        // 2 sides (4): POLYLINE(0, 0, 0.5, 0.666666…).
+        let (mut ed, page_id) = witness_doc("4");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        assert_eq!(rows[2].t.as_deref(), Some("PolylineTo"));
+        let a = rows[2].cell("A").unwrap().v.as_deref().unwrap().to_string();
+        let (_, pts) = dc::geom::parse_polyline_controls(&a).unwrap();
+        assert_eq!(pts.len(), 1, "one apex: {a}");
+        assert!(
+            (pts[0].0 - 0.5).abs() < 1e-9 && (pts[0].1 - 2.0 / 3.0).abs() < 1e-9,
+            "the witnessed triangle fractions: {a}"
+        );
+        // Gap (2): MoveTo, LineTo, MoveTo, LineTo.
+        let (mut ed, page_id) = witness_doc("2");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let rows = rows_of(&ed, 5);
+        let kinds: Vec<&str> = rows.iter().map(|r| r.t.as_deref().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            vec!["MoveTo", "LineTo", "MoveTo", "LineTo"],
+            "{rows:?}"
+        );
+        assert!((cell(&rows[1], "X") - (2.5 - R)).abs() < 1e-6);
+        assert!((cell(&rows[2], "X") - (2.5 + R)).abs() < 1e-6);
+    }
+
+    /// Idempotence per style (I1/I2): a second reconcile after the
+    /// first writes NOTHING — the walk reads every written form as
+    /// the straight run, the hops recompute at the same crossings,
+    /// and the write-skip comparison matches the target. And a STYLE
+    /// CHANGE swaps hop rows only: the route rows (the MoveTo start
+    /// and the run endpoints) stay identical.
+    #[test]
+    fn reconcile_style_change_swaps_hop_rows_only_and_is_idempotent() {
+        let (mut ed, page_id) = witness_doc("1");
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let arc_rows = rows_of(&ed, 5);
+        assert_eq!(arc_rows[2].t.as_deref(), Some("ArcTo"));
+        // Arc → square: only the hop row changes its TYPE; the route
+        // rows (start + slot start + slot end positions) are the same
+        // cells.
+        ed.apply(dc_core::SetCell::new(
+            dc_core::Scope::PageSheet { page: page_id },
+            "LineJumpStyle",
+            VCell::value("3"),
+        ))
+        .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let square_rows = rows_of(&ed, 5);
+        assert_eq!(square_rows.len(), arc_rows.len());
+        assert_eq!(square_rows[2].t.as_deref(), Some("PolylineTo"));
+        for i in [0usize, 1, 3] {
+            assert_eq!(square_rows[i].t, arc_rows[i].t, "row {i} keeps its type");
+            for n in ["X", "Y"] {
+                assert!(
+                    (cell(&square_rows[i], n) - cell(&arc_rows[i], n)).abs() < 1e-9,
+                    "row {i} {n} is route, unchanged"
+                );
+            }
+        }
+        // The second pass over the square rows writes nothing.
+        let before = square_rows.clone();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let after = rows_of(&ed, 5);
+        assert_eq!(before.len(), after.len());
+        for (b, a) in before.iter().zip(after.iter()) {
+            assert_eq!(b.t, a.t);
+            for n in ["X", "Y"] {
+                assert!((cell(b, n) - cell(a, n)).abs() < 1e-9);
+            }
+        }
+        // And the crossing set still sees the hop (the walk reads the
+        // PolylineTo as its chord — the stored hop never doubles).
+        let page = &ed.doc.pages[0];
+        let js = dc::geom::page_jumps(&ed.doc, page, &[]);
+        assert_eq!(js.len(), 1, "one hop: {js:?}");
+        assert_eq!(js[0].style, dc::geom::JumpStyle::Square);
     }
 
     /// #303 item 2: the stale stored arc drops and the hop lands at

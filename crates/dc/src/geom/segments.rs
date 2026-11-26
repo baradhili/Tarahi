@@ -2,7 +2,7 @@
 //! evaluation and its render-parity row budget.
 
 use super::hitframe::HitFrame;
-use super::jumps::is_stored_jump_arc;
+use super::jumps::{is_stored_jump_arc, is_stored_jump_polyline};
 use super::rows::row_cell_value;
 use vsdx::model::{Row, Section, Shape};
 
@@ -520,10 +520,65 @@ pub fn geometry_hit_segments_straight(
                 }
             }
             "PolylineTo" => {
-                // A `POLYLINE()` row is authored multi-vertex
-                // geometry, not a routed straight run (#324 step 1) —
-                // even when its vertices happen to be straight.
-                straight = false;
+                // A RECOGNIZED stored styled hop (#324 phase 4 —
+                // percentage controls over a 2r slot, collinear runs
+                // both sides) straightens like an arc row: the route
+                // stays one straight run and the connector stays
+                // eligible for the crossing set. Everything else is
+                // authored multi-vertex geometry, not a routed
+                // straight run (#324 step 1) — even when its vertices
+                // happen to be straight.
+                let mut stored = false;
+                if strip_stored_jumps.is_some() {
+                    if let Some(c0) = cur_local {
+                        let d_class = (end_local.0 - c0.0, end_local.1 - c0.1);
+                        let mut prev_dir = None;
+                        let mut pi = k as isize - 1;
+                        while pi >= 1 {
+                            let (_, _, _, pt, pe, _, _, _, _, _) = &evald[pi as usize];
+                            if kind_of(pt.as_str()) != 1 {
+                                break;
+                            }
+                            let (_, _, _, _, pp, _, _, _, _, _) = &evald[pi as usize - 1];
+                            let pd = (pe.0 - pp.0, pe.1 - pp.1);
+                            if pd.0.hypot(pd.1) > 1e-9 {
+                                prev_dir = Some(pd);
+                                break;
+                            }
+                            pi -= 1;
+                        }
+                        let mut next_dir = None;
+                        let mut ni = k + 1;
+                        while ni < evald.len() {
+                            let (_, _, _, nt, ne, _, _, _, _, _) = &evald[ni];
+                            if kind_of(nt.as_str()) != 1 {
+                                break;
+                            }
+                            let p = if ni == k + 1 {
+                                end_local
+                            } else {
+                                evald[ni - 1].4
+                            };
+                            let nd = (ne.0 - p.0, ne.1 - p.1);
+                            if nd.0.hypot(nd.1) > 1e-9 {
+                                next_dir = Some(nd);
+                                break;
+                            }
+                            ni += 1;
+                        }
+                        let a_text = row
+                            .cell("A")
+                            .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                            .unwrap_or_default();
+                        let (rx, ry) = strip_stored_jumps.unwrap_or((0.0, 0.0));
+                        stored = is_stored_jump_polyline(
+                            &a_text, c0, d_class, prev_dir, next_dir, own, rx, ry,
+                        );
+                    }
+                }
+                if !stored {
+                    straight = false;
+                }
                 if let Some(acc) = spline_acc.take() {
                     if let Some(data) = acc.flush() {
                         for p in crate::curve::SplineData::flatten(&data, 16)
@@ -544,11 +599,13 @@ pub fn geometry_hit_segments_straight(
                     .cell("A")
                     .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
                     .unwrap_or_default();
-                if let Some((xt, yt, verts)) = crate::curve::parse_polyline(&a_text) {
-                    let fx = if xt == 0.0 { frame.size.0 } else { scale.0 };
-                    let fy = if yt == 0.0 { frame.size.1 } else { scale.1 };
-                    for (vx, vy) in verts {
-                        pts.push(to_page((vx * fx, vy * fy)));
+                if !stored {
+                    if let Some((xt, yt, verts)) = crate::curve::parse_polyline(&a_text) {
+                        let fx = if xt == 0.0 { frame.size.0 } else { scale.0 };
+                        let fy = if yt == 0.0 { frame.size.1 } else { scale.1 };
+                        for (vx, vy) in verts {
+                            pts.push(to_page((vx * fx, vy * fy)));
+                        }
                     }
                 }
                 pts.push(to_page(end));
