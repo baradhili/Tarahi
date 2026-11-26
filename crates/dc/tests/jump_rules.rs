@@ -79,3 +79,27 @@ fn c02_connector_codes_pick_visio_stored_jumpers() {
         "the ConFixedCode row hops throughout; ConLineJumpCode 1/4 rows do not"
     );
 }
+
+/// The svg ink gate rides the SAME chain-resolved candidacy as the
+/// crossing set: b01's connectors carry `ObjType` only on their
+/// master, and shape 8's stored hop sits on a DIAGONAL run — a full
+/// page render must straighten every stored arc (no `A` path command
+/// anywhere; the drawn hop arcs are sampled polylines) while the
+/// jump group still draws. A scoped render is no witness here: it
+/// passes a zero strip radius by design. (CodeRabbit round on phase
+/// 2 asked whether the ink gate accepts master-carried candidacy:
+/// `resolve_cell` follows the instance's own master before any
+/// ancestors, so it does — this pins it.)
+#[test]
+fn b01_ink_straightens_master_objtype_stored_hops() {
+    let doc = open(B01);
+    let svg = dc::svg::render_page(&doc, &doc.pages[0]).unwrap();
+    assert!(
+        !svg.contains(" A "),
+        "every stored arc straightens in the ink, on master-carried candidacy"
+    );
+    assert!(
+        svg.contains(r#"data-dc="line-jumps""#),
+        "the page still draws its computed hops"
+    );
+}
