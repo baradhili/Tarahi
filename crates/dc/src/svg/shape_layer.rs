@@ -2,9 +2,9 @@
 //! top-level shape as a standalone layer SVG (#93), plus everything
 //! the walk emits — master mirroring, foreign media, geometry rows,
 //! arrowheads, and the paint/gradient/hatch/dash helpers.
+use super::*;
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use super::*;
 /// One top-level shape's subtree as a standalone layer SVG (#93): the
 /// same absolute page coordinates and the same `render_shape` walk as
 /// [`render_page_with`] — pixel-identical ink — but the viewBox is the
@@ -186,6 +186,61 @@ fn render_shape_layer_inner(
 /// Render a shape in absolute page coordinates: the XForm transform
 /// wraps geometry, master mirroring, sub-shape recursion, and the
 /// text block.
+#[allow(clippy::too_many_arguments)] // the walk carries its whole environment
+/// The page-level transform context `render_shape`'s head derives: the
+/// emitted `<g transform>` string plus the width/height and flip signs
+/// `emit_text` needs. Shared with `render_page_full`, which re-opens
+/// an identical group for a jumping connector's TEXT outside its jump
+/// clips (#324 phase 3: the clip cuts the shaft, never the label).
+pub(crate) struct ShapeXform {
+    pub transform: String,
+    pub width: f64,
+    pub height: f64,
+    pub sx: f64,
+    pub sy: f64,
+}
+
+/// The same reads `render_shape`'s head makes, factored out for
+/// [`crate::svg::page`]'s label-twin group.
+pub(crate) fn shape_xform(doc: &Document, s: &Shape, chain: &[&Shape], page_h: f64) -> ShapeXform {
+    let mut chain: Vec<&Shape> = chain.to_vec();
+    chain.push(s);
+    let env = shape_env(doc, s, &chain);
+    let get = |n: &str| -> Option<f64> {
+        doc.resolve_cell(s, &chain, n)
+            .and_then(|c| cell_num(&c, &env))
+    };
+    let width = get("Width").unwrap_or(1.0);
+    let height = get("Height").unwrap_or(1.0);
+    let (sx, sy) = (
+        if get("FlipX").unwrap_or(0.0) != 0.0 {
+            -1.0
+        } else {
+            1.0
+        },
+        if get("FlipY").unwrap_or(0.0) != 0.0 {
+            -1.0
+        } else {
+            1.0
+        },
+    );
+    let transform = format!(
+        "translate({px:.6},{py:.6}) rotate({deg:.6}) scale({sx},{sy}) translate({lx:.6},{ly:.6})",
+        px = get("PinX").unwrap_or(0.0),
+        py = page_h - get("PinY").unwrap_or(0.0),
+        deg = -get("Angle").unwrap_or(0.0).to_degrees(),
+        lx = -get("LocPinX").unwrap_or(width / 2.0),
+        ly = get("LocPinY").unwrap_or(height / 2.0),
+    );
+    ShapeXform {
+        transform,
+        width,
+        height,
+        sx,
+        sy,
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // the walk carries its whole environment
 pub(crate) fn render_shape<'a>(
     doc: &'a Document,
@@ -497,7 +552,12 @@ fn mirror_master(
 /// `vsdx::model::instance_env` — the editor's cache refresh (dc-ui,
 /// issue #59) computes from the same environment, so a refreshed cache
 /// and a mirrored placement agree.
-pub(crate) fn mirror_env(root: &Shape, instance: &Shape, width: f64, height: f64) -> vsdx::formula::Env {
+pub(crate) fn mirror_env(
+    root: &Shape,
+    instance: &Shape,
+    width: f64,
+    height: f64,
+) -> vsdx::formula::Env {
     vsdx::model::instance_env(root, instance, width, height)
 }
 
@@ -1709,9 +1769,13 @@ fn render_geometry(
                 // classifier itself selects the arc's axis radius, so a
                 // zero on one axis only kills that axis's strips.
                 if (jump_radius.0 > 0.0 || jump_radius.1 > 0.0)
-                    // Connector-ness gates the kind: artwork arcs never
-                    // strip even with a resolved radius (#294 review).
-                    && crate::geom::is_connector_in(doc, chain, s)
+                    // Jump CANDIDACY gates the kind (#324 phase 2): a
+                    // stored arc straightens only on a line the crossing
+                    // set would hop — an authored arc on a plain glued
+                    // 1D line (`ObjType 0`) is artwork, and artwork arcs
+                    // never strip even with a resolved radius (#294
+                    // review).
+                    && crate::geom::is_jump_candidate(doc, chain, s)
                     && crate::geom::is_stored_jump_arc(
                         h,
                         (x - sx, y - sy),
@@ -1869,13 +1933,8 @@ fn render_geometry(
                     width,
                     height,
                 );
-                let (c2, d2) = rel_adjust(
-                    t,
-                    ctrl[2].unwrap_or(x),
-                    ctrl[3].unwrap_or(y),
-                    width,
-                    height,
-                );
+                let (c2, d2) =
+                    rel_adjust(t, ctrl[2].unwrap_or(x), ctrl[3].unwrap_or(y), width, height);
                 let _ = write!(
                     d,
                     "C {}{}{}",
@@ -3184,7 +3243,12 @@ pub(crate) fn solve_ellipse_arc(
 ///
 /// The image ellipse's squared semi-axes are the eigenvalues of
 /// `D·R·diag(r², (k·r)²)·Rᵀ·D` with `D = diag(scale)`.
-pub(crate) fn transform_ellipse(r_major: f64, k: f64, ang: f64, scale: (f64, f64)) -> (f64, f64, f64) {
+pub(crate) fn transform_ellipse(
+    r_major: f64,
+    k: f64,
+    ang: f64,
+    scale: (f64, f64),
+) -> (f64, f64, f64) {
     let (c, si) = (ang.cos(), ang.sin());
     let a = r_major * r_major;
     let b = (k * r_major) * (k * r_major);

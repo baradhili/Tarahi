@@ -33,10 +33,9 @@ pub(crate) use jumps::*;
 pub(crate) use shape_layer::*;
 pub(crate) use text::*;
 
-pub use affine::{
-    page_point_to_parent_local, parent_local_point_to_page, shape_page_rect, Affine,
-};
+pub use affine::{page_point_to_parent_local, parent_local_point_to_page, shape_page_rect, Affine};
 pub use ink::{shape_ink_bounds, shape_ink_bounds_focused, subtree_ink_boxes};
+pub use jumps::{backdrop_color_at, jump_normal};
 pub use master::{render_master, render_masters};
 pub use page::{
     render_page, render_page_export, render_page_no_text, render_page_scoped, render_page_with,
@@ -46,7 +45,7 @@ pub use shape_layer::{
 };
 pub use text::{
     greeked_count, paragraph_base_rtl, text_block, text_block_page_rect, text_first_baseline,
-    toggle_rtl_marks, BulletGlyph, BulletSpec, TEXT_GREEK_PX, TextBlock,
+    toggle_rtl_marks, BulletGlyph, BulletSpec, TextBlock, TEXT_GREEK_PX,
 };
 
 // Shared leaf helpers used across the submodules.
@@ -303,4 +302,3 @@ fn escape_text(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
-

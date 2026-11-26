@@ -432,28 +432,48 @@ impl App {
             }
         };
         let jump_fx: Vec<canvas::JumpFx> = if jump_radius.0 > 0.0 || jump_radius.1 > 0.0 {
-            crate::connectors::line_jumps(&self.jump_lines(), jump_radius)
+            let doc = &self.ed.as_ref().unwrap().doc;
+            let page = &doc.pages[self.page_idx];
+            // THE crossing set (#336): the canvas draws from the same
+            // `page_jumps` computation as the export and the
+            // reconciliation — the page's own jump rules
+            // (`LineJumpCode`, `ConLineJumpCode`), the straight-run
+            // eligibility, the hidden-layer skips — never a
+            // canvas-private re-crossing that could drift.
+            dc::geom::page_jumps(doc, page, &hidden)
                 .into_iter()
-                .map(|j| canvas::JumpFx {
-                    at: j.at,
-                    dir: j.dir,
-                    under: j.under,
-                    weight: j.weight,
-                    under_weight: j.under_weight,
-                    color: Color32::from_rgb(j.color.0, j.color.1, j.color.2),
-                    under_color: Color32::from_rgb(
-                        j.under_color.0,
-                        j.under_color.1,
-                        j.under_color.2,
-                    ),
-                    // The hop sizes with the radius of the jumping
-                    // segment's own axis (the svg overlay's rule —
-                    // PR #299 review).
-                    radius_in: (if j.dir.0.abs() >= j.dir.1.abs() {
-                        jump_radius.0
-                    } else {
-                        jump_radius.1
-                    }) as f32,
+                .map(|j| {
+                    // The gap paints the BACKDROP — the fill of the
+                    // topmost filled shape beneath the connector at
+                    // the hop, else page white: the canvas cannot cut
+                    // cached rasters, so this mimics the export's cut
+                    // in the color that shows through it (#324
+                    // phase 3).
+                    let (gr, gg, gb) =
+                        dc::svg::backdrop_color_at(doc, page, j.at, j.jumper, &hidden);
+                    canvas::JumpFx {
+                        gap_color: Color32::from_rgb(gr, gg, gb),
+                        style: j.style,
+                        at: j.at,
+                        dir: j.dir,
+                        under: j.under,
+                        weight: j.weight,
+                        under_weight: j.under_weight,
+                        color: Color32::from_rgb(j.color.0, j.color.1, j.color.2),
+                        under_color: Color32::from_rgb(
+                            j.under_color.0,
+                            j.under_color.1,
+                            j.under_color.2,
+                        ),
+                        // The hop sizes with the radius of the jumping
+                        // segment's own axis (the svg overlay's rule —
+                        // PR #299 review).
+                        radius_in: (if j.dir.0.abs() >= j.dir.1.abs() {
+                            jump_radius.0
+                        } else {
+                            jump_radius.1
+                        }) as f32,
+                    }
                 })
                 .collect()
         } else {

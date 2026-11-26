@@ -20,6 +20,8 @@ add-in-hosting-arrives-with-m8 = 추가 기능 호스팅은 M8에서 제공됩�
 add-in-manager = 추가 기능 관리자
 add-in-manager-m8 = 추가 기능 관리자 — M8
 add-ins = 추가 기능
+add-line-jumps-to = 선 점프 추가 대상:
+
 add-name-prop-row-test = { $name } 속성 행 추가(테스트)
 add-to-new-container = 새 컨테이너에 추가
 add-to-quick-shapes = 빠른 셰이프에 추가
@@ -307,8 +309,64 @@ field-preview = 미리 보기:
 field-subject = 제목(주제)
 field-title = 제목
 field-width = 너비
+horizontal-size = 가로 크기:
+
 insert-a-text-field = 텍스트 필드를 삽입합니다
 insert-field = 필드 삽입
+line-jump-style = 선 점프 스타일:
+
+line-jump-style-set = 선 점프 스타일이 { $style }(으)로 설정되었습니다
+
+lj-code-horizontal = 가로선
+
+lj-code-last-displayed = 마지막으로 표시된 선
+
+lj-code-last-routed = 마지막으로 라우팅된 선
+
+lj-code-none = 없음
+
+lj-code-vertical = 세로선
+
+lj-style-2-sides = 2 변
+
+lj-style-3-sides = 3 변
+
+lj-style-4-sides = 4 변
+
+lj-style-5-sides = 5 변
+
+lj-style-6-sides = 6 변
+
+lj-style-7-sides = 7 변
+
+lj-style-arc = 호
+
+lj-style-gap = 간격
+
+lj-style-square = 사각형
+
+routing-appearance = 모양:
+
+routing-deferred = 연결선 라우팅은 아직 사용할 수 없습니다.
+
+routing-direction = 방향:
+
+routing-group = 라우팅
+
+routing-overlap = 겹침:
+
+routing-right-angle = 직각
+
+routing-separate = 분리:
+
+routing-straight = 직선
+
+routing-style = 스타일:
+
+routing-unrelated-lines = 관련 없는 선
+
+routing-using-style = 라우팅 스타일 사용
+
 inspect-the-current-page-cells = 현재 페이지의 셀을 검사합니다 (PageSheet)
 inspect-the-document-cells = 문서의 셀을 검사합니다 (DocumentSheet)
 page-shapesheet = 페이지 ShapeSheet
@@ -435,7 +493,6 @@ inspect-drawing = 드로잉 검사…
 inspect-the-selected-shape-s-cel = 선택한 셰이프의 셀을 검사합니다
 italic = 기울임꼴
 italic-planned = 기울임꼴 — 예정
-jump-size = 점프 크기
 justify = 양쪽 맞춤
 justify-planned = 양쪽 맞춤 — 예정
 keytip-unavailable = { $key }을(를) 사용할 수 없습니다
@@ -786,7 +843,6 @@ show-hide = 표시/숨기기
 show-hide-comments = 메모 표시/숨기기
 show-hide-comments-planned-view = 메모 표시/숨기기 — 예정(보기의 토글이 오늘 작동)
 show-hide-data-graphics-on-the-p = 페이지의 데이터 그래픽 표시/숨기기(M6)
-show-line-jumps = 선 점프 표시
 show-markup = 마크업 표시
 show-markup-planned = 마크업 표시 — 예정
 show-shapesheet = ShapeSheet 표시
@@ -996,6 +1052,8 @@ variants = 변형
 vba-arrives-with-m7-vsdm = VBA는 M7(.vsdm)에서 제공됩니다
 vector-svg = 벡터(SVG)
 vertex-drag-refused = 꼭짓점 끌기가 거부되었습니다: { $cell }은(는) 수식으로 관리됩니다 — 바꾸려면 수식을 편집하세요
+vertical-size = 세로 크기:
+
 view = 보기
 views = 보기
 visio-drawing = Visio 드로잉
@@ -1024,3 +1082,4 @@ zoom-menu = 확대/축소…
 zoom-out = 축소
 zoom-out-tip = 축소합니다
 zoom-to-selection-shift-z = 선택 영역에 확대/축소(Shift+Z)
+

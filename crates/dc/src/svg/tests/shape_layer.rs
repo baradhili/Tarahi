@@ -67,8 +67,9 @@ fn mirror_env_resolves_user_formulas_against_instance_height() {
 fn cleared_user_row_shadows_the_master_number() {
     let user_sheet = |v: Option<&str>| {
         let mut sheet = Sheet::default();
-        sheet.children.push(vsdx::model::SheetChild::Section(
-            vsdx::model::Section {
+        sheet
+            .children
+            .push(vsdx::model::SheetChild::Section(vsdx::model::Section {
                 name: "User".into(),
                 rows: vec![vsdx::model::Row {
                     n: Some("Label".into()),
@@ -82,8 +83,7 @@ fn cleared_user_row_shadows_the_master_number() {
                     ..vsdx::model::Row::default()
                 }],
                 ..vsdx::model::Section::default()
-            },
-        ));
+            }));
         sheet
     };
     let mut doc = Document::default();
@@ -141,8 +141,9 @@ fn cleared_user_row_shadows_the_master_number() {
     // agent review).
     let with_row = |f: Option<&str>, v: Option<&str>| {
         let mut sheet = vsdx::model::Sheet::default();
-        sheet.children.push(vsdx::model::SheetChild::Section(
-            vsdx::model::Section {
+        sheet
+            .children
+            .push(vsdx::model::SheetChild::Section(vsdx::model::Section {
                 name: "User".into(),
                 rows: vec![vsdx::model::Row {
                     n: Some("Label".into()),
@@ -157,8 +158,7 @@ fn cleared_user_row_shadows_the_master_number() {
                     ..vsdx::model::Row::default()
                 }],
                 ..vsdx::model::Section::default()
-            },
-        ));
+            }));
         sheet
     };
     let mut doc2 = Document::default();
@@ -191,7 +191,9 @@ fn cleared_user_row_shadows_the_master_number() {
     };
     let chain = [&inh_empty];
     assert_eq!(
-        shape_env(&doc2, &inh_empty, &chain).get("User.Label").copied(),
+        shape_env(&doc2, &inh_empty, &chain)
+            .get("User.Label")
+            .copied(),
         Some(42.0),
         "an Inh row's empty cache inherits, it does not clear"
     );
@@ -368,7 +370,17 @@ fn nurbs_fractional_controls_scale_once_in_master_frame() {
     let chain: Vec<&Shape> = Vec::new();
     let mut out = String::new();
     render_shape(
-        &doc, &inst, 8.5, &chain, "", None, None, None, None, (0.0, 0.0), &mut out,
+        &doc,
+        &inst,
+        8.5,
+        &chain,
+        "",
+        None,
+        None,
+        None,
+        None,
+        (0.0, 0.0),
+        &mut out,
     );
     // The controls land at gx·W: 0.5 → 2.0 and 0.75 → 3.0; the y
     // fraction 0.5 of H=2 → 1.0 (emitted negated). The old
@@ -422,7 +434,19 @@ fn arrow_heads_render_per_value_and_scale() {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
+        render_shape(
+            &doc,
+            &s,
+            11.0,
+            &chain,
+            "",
+            None,
+            None,
+            None,
+            None,
+            (0.0, 0.0),
+            &mut out,
+        );
         out
     };
     // 0 = no head at all.
@@ -567,7 +591,19 @@ fn closed_geometry_draws_no_arrowheads() {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
+        render_shape(
+            &doc,
+            &s,
+            11.0,
+            &chain,
+            "",
+            None,
+            None,
+            None,
+            None,
+            (0.0, 0.0),
+            &mut out,
+        );
         out
     };
     // A closed rectangle walk (returns to its start) with both
@@ -655,7 +691,19 @@ fn zero_width_elliptical_arc_to_draws_the_chord() {
         }));
         let chain = [&s];
         let mut out = String::new();
-        render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
+        render_shape(
+            &doc,
+            &s,
+            11.0,
+            &chain,
+            "",
+            None,
+            None,
+            None,
+            None,
+            (0.0, 0.0),
+            &mut out,
+        );
         out
     };
     let flat = render("0");
@@ -694,7 +742,19 @@ fn explicit_zero_line_weight_paints_nothing() {
     }));
     let chain = [&s];
     let mut out = String::new();
-    render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
+    render_shape(
+        &doc,
+        &s,
+        11.0,
+        &chain,
+        "",
+        None,
+        None,
+        None,
+        None,
+        (0.0, 0.0),
+        &mut out,
+    );
     assert!(
         out.contains(r#"stroke-width="0.00000""#),
         "an explicit zero stays zero: {out}"
@@ -767,7 +827,19 @@ fn sections_fill_one_even_odd_path() {
     }));
     let chain = [&s];
     let mut out = String::new();
-    render_shape(&doc, &s, 11.0, &chain, "", None, None, None, None, (0.0, 0.0), &mut out);
+    render_shape(
+        &doc,
+        &s,
+        11.0,
+        &chain,
+        "",
+        None,
+        None,
+        None,
+        None,
+        (0.0, 0.0),
+        &mut out,
+    );
     // ONE even-odd fill element, first among the paths (under the
     // ink), carrying exactly the three fill-eligible subpaths.
     assert_eq!(
@@ -1150,9 +1222,9 @@ fn export_drops_deleted_geometry_rows() {
     // The crossing hops once — the phantom jump the deleted row
     // fed is gone.
     assert_eq!(
-        svg.matches(r##"stroke="#ffffff""##).count(),
+        svg.matches(r#"data-dc="hop-arc""#).count(),
         1,
-        "one jump at the real crossing"
+        "one hop ARC at the real crossing"
     );
 }
 
@@ -1267,7 +1339,7 @@ fn spline_nurbs_goldens() {
     assert_eq!(
         norm(&svg).trim(),
         norm(&golden).trim(),
-            "the spline/NURBS golden drifted — if the change is intended, \
+        "the spline/NURBS golden drifted — if the change is intended, \
          regenerate with UPDATE_SPLINE_GOLDENS=1 and review the diff"
     );
     // Each curve emits a multi-point polyline well above the
@@ -1465,8 +1537,7 @@ fn culled_serialization_omits_shapes_outside_the_cull_rect() {
         "the far leaf is omitted from the patch serialization: {culled}"
     );
     // The full serialization keeps both.
-    let (_, full) =
-        render_shape_layer_opts(&doc, &page, 1, &[], bounds, None, None, None).unwrap();
+    let (_, full) = render_shape_layer_opts(&doc, &page, 1, &[], bounds, None, None, None).unwrap();
     assert!(full.contains("#ff2200") && full.contains("#22cc00"));
 }
 

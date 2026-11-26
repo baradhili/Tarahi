@@ -19,6 +19,8 @@ add-in-hosting-arrives-with-m8 = アドインのホスティングは M8 で提�
 add-in-manager = アドイン マネージャー
 add-in-manager-m8 = アドイン マネージャー — M8
 add-ins = アドイン
+add-line-jumps-to = 線のジャンプの追加先：
+
 add-name-prop-row-test = { $name } プロパティ行を追加（テスト）
 add-to-new-container = 新しいコンテナーに追加
 add-to-quick-shapes = クイック シェイプに追加
@@ -306,8 +308,64 @@ field-preview = プレビュー:
 field-subject = 件名
 field-title = タイトル
 field-width = 幅
+horizontal-size = 横のサイズ：
+
 insert-a-text-field = 文字フィールドを挿入します
 insert-field = フィールドの挿入
+line-jump-style = 線のジャンプのスタイル：
+
+line-jump-style-set = 線のジャンプのスタイルを { $style } に設定しました
+
+lj-code-horizontal = 水平線
+
+lj-code-last-displayed = 最後に表示された線
+
+lj-code-last-routed = 最後にルート設定された線
+
+lj-code-none = なし
+
+lj-code-vertical = 垂直線
+
+lj-style-2-sides = 2 辺
+
+lj-style-3-sides = 3 辺
+
+lj-style-4-sides = 4 辺
+
+lj-style-5-sides = 5 辺
+
+lj-style-6-sides = 6 辺
+
+lj-style-7-sides = 7 辺
+
+lj-style-arc = 円弧
+
+lj-style-gap = ギャップ
+
+lj-style-square = 四角
+
+routing-appearance = 外観：
+
+routing-deferred = コネクタのルーティングはまだ利用できません。
+
+routing-direction = 方向：
+
+routing-group = ルーティング
+
+routing-overlap = 重なり：
+
+routing-right-angle = 直角
+
+routing-separate = 分離：
+
+routing-straight = 直線
+
+routing-style = スタイル：
+
+routing-unrelated-lines = 無関係な線
+
+routing-using-style = ルーティング スタイルに従う
+
 inspect-the-current-page-cells = 現在のページのセルを確認します (PageSheet)
 inspect-the-document-cells = ドキュメントのセルを確認します (DocumentSheet)
 page-shapesheet = ページの ShapeSheet
@@ -434,7 +492,6 @@ inspect-drawing = 図面の検査…
 inspect-the-selected-shape-s-cel = 選択した図形のセルを確認します
 italic = 斜体
 italic-planned = 斜体 — 予定
-jump-size = ジャンプ サイズ
 justify = 両端揃え
 justify-planned = 両端揃え — 予定
 keytip-unavailable = { $key } は使用できません
@@ -785,7 +842,6 @@ show-hide = 表示/非表示
 show-hide-comments = コメントの表示/非表示
 show-hide-comments-planned-view = コメントの表示/非表示 — 予定（現在は [表示] の切り替えが有効）
 show-hide-data-graphics-on-the-p = ページ上のデータ グラフィックの表示/非表示（M6）
-show-line-jumps = 線のジャンプを表示
 show-markup = マークアップの表示
 show-markup-planned = マークアップの表示 — 予定
 show-shapesheet = ShapeSheet の表示
@@ -995,6 +1051,8 @@ variants = バリエーション
 vba-arrives-with-m7-vsdm = VBA は M7（.vsdm）で提供されます
 vector-svg = ベクター（SVG）
 vertex-drag-refused = 頂点のドラッグを拒否しました: { $cell } は数式で管理されています — 変更するには数式を編集してください
+vertical-size = 縦のサイズ：
+
 view = 表示
 views = ビュー
 visio-drawing = Visio 図面
@@ -1023,3 +1081,4 @@ zoom-menu = ズーム…
 zoom-out = 縮小
 zoom-out-tip = 縮小します
 zoom-to-selection-shift-z = 選択範囲にズーム（Shift+Z）
+

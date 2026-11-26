@@ -18,6 +18,8 @@ add-in-hosting-arrives-with-m8 = 加载项托管将在 M8 提供
 add-in-manager = 加载项管理器
 add-in-manager-m8 = 加载项管理器 — M8
 add-ins = 加载项
+add-line-jumps-to = 将线条跳跃添加到：
+
 add-name-prop-row-test = 添加 { $name } 属性行（测试）
 add-to-new-container = 添加到新容器
 add-to-quick-shapes = 添加到快速形状
@@ -305,8 +307,64 @@ field-preview = 预览：
 field-subject = 主题
 field-title = 标题
 field-width = 宽度
+horizontal-size = 水平大小：
+
 insert-a-text-field = 插入文本域
 insert-field = 插入域
+line-jump-style = 线条跳跃样式：
+
+line-jump-style-set = 线条跳跃样式已设为 { $style }
+
+lj-code-horizontal = 水平线
+
+lj-code-last-displayed = 最后显示的线条
+
+lj-code-last-routed = 最后布线的线条
+
+lj-code-none = 无
+
+lj-code-vertical = 垂直线
+
+lj-style-2-sides = 2 边
+
+lj-style-3-sides = 3 边
+
+lj-style-4-sides = 4 边
+
+lj-style-5-sides = 5 边
+
+lj-style-6-sides = 6 边
+
+lj-style-7-sides = 7 边
+
+lj-style-arc = 圆弧
+
+lj-style-gap = 间隔
+
+lj-style-square = 方形
+
+routing-appearance = 外观：
+
+routing-deferred = 连接线布线尚不可用。
+
+routing-direction = 方向：
+
+routing-group = 布线
+
+routing-overlap = 重叠：
+
+routing-right-angle = 直角
+
+routing-separate = 分开：
+
+routing-straight = 直线
+
+routing-style = 样式：
+
+routing-unrelated-lines = 无关线条
+
+routing-using-style = 按布线样式
+
 inspect-the-current-page-cells = 检查当前页面的单元格 (PageSheet)
 inspect-the-document-cells = 检查文档的单元格 (DocumentSheet)
 page-shapesheet = 页面 ShapeSheet
@@ -434,7 +492,6 @@ inspect-drawing = 检查绘图…
 inspect-the-selected-shape-s-cel = 检查选定形状的单元格
 italic = 倾斜
 italic-planned = 倾斜 — 计划中
-jump-size = 跳跃大小
 justify = 两端对齐
 justify-planned = 两端对齐 — 计划中
 keytip-unavailable = { $key } 不可用
@@ -790,7 +847,6 @@ show-hide = 显示/隐藏
 show-hide-comments = 显示/隐藏批注
 show-hide-comments-planned-view = 显示/隐藏批注 — 计划中（“视图”的开关现已接通）
 show-hide-data-graphics-on-the-p = 显示/隐藏页面上的数据图形（M6）
-show-line-jumps = 显示线条跳跃
 show-markup = 显示修订
 show-markup-planned = 显示修订 — 计划中
 show-shapesheet = 显示 ShapeSheet
@@ -1000,6 +1056,8 @@ variants = 变体
 vba-arrives-with-m7-vsdm = VBA 将随 M7 提供（.vsdm）
 vector-svg = 矢量 (SVG)
 vertex-drag-refused = 顶点拖动被拒绝：{ $cell }由公式驱动——请编辑公式以更改它
+vertical-size = 垂直大小：
+
 view = 视图
 views = 视图
 visio-drawing = Visio 绘图
@@ -1028,3 +1086,4 @@ zoom-menu = 缩放…
 zoom-out = 缩小
 zoom-out-tip = 缩小
 zoom-to-selection-shift-z = 缩放到选定内容 (Shift+Z)
+

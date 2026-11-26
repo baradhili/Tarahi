@@ -24,6 +24,8 @@ add-in-hosting-arrives-with-m8 = Add-In-Hosting kommt mit M8
 add-in-manager = Add-In-Manager
 add-in-manager-m8 = Add-In-Manager — M8
 add-ins = Add-Ins
+add-line-jumps-to = Liniensprünge hinzufügen zu:
+
 add-name-prop-row-test = Eigenschaftszeile { $name } hinzufügen (Test)
 add-to-new-container = Zu neuem Container hinzufügen
 add-to-quick-shapes = Zu Schnellformen hinzufügen
@@ -326,8 +328,64 @@ field-preview = Vorschau:
 field-subject = Thema
 field-title = Titel
 field-width = Breite
+horizontal-size = Horizontale Größe:
+
 insert-a-text-field = Ein Textfeld einfügen
 insert-field = Feld einfügen
+line-jump-style = Liniensprungstil:
+
+line-jump-style-set = Liniensprungstil auf { $style } festgelegt
+
+lj-code-horizontal = Horizontale Linien
+
+lj-code-last-displayed = Zuletzt angezeigte Linie
+
+lj-code-last-routed = Zuletzt geroutete Linie
+
+lj-code-none = Keine
+
+lj-code-vertical = Vertikale Linien
+
+lj-style-2-sides = 2 Seiten
+
+lj-style-3-sides = 3 Seiten
+
+lj-style-4-sides = 4 Seiten
+
+lj-style-5-sides = 5 Seiten
+
+lj-style-6-sides = 6 Seiten
+
+lj-style-7-sides = 7 Seiten
+
+lj-style-arc = Bogen
+
+lj-style-gap = Lücke
+
+lj-style-square = Quadrat
+
+routing-appearance = Darstellung:
+
+routing-deferred = Konnektor-Routing ist noch nicht verfügbar.
+
+routing-direction = Richtung:
+
+routing-group = Routing
+
+routing-overlap = Überlappung:
+
+routing-right-angle = Rechter Winkel
+
+routing-separate = Trennen:
+
+routing-straight = Gerade
+
+routing-style = Stil:
+
+routing-unrelated-lines = Nicht verbundene Linien
+
+routing-using-style = Nach Routingstil
+
 inspect-the-current-page-cells = Die Zellen der aktuellen Seite prüfen (PageSheet)
 inspect-the-document-cells = Die Zellen des Dokuments prüfen (DocumentSheet)
 page-shapesheet = Seiten-ShapeSheet
@@ -463,7 +521,6 @@ inspect-drawing = Zeichnung prüfen …
 inspect-the-selected-shape-s-cel = Die Zellen der ausgewählten Form prüfen
 italic = Kursiv
 italic-planned = Kursiv — geplant
-jump-size = Versatzgröße
 justify = Blocksatz
 justify-planned = Blocksatz — geplant
 # $key - Tastenkürzel
@@ -855,7 +912,6 @@ show-hide = Ein-/Ausblenden
 show-hide-comments = Kommentare ein-/ausblenden
 show-hide-comments-planned-view = Kommentare ein-/ausblenden — geplant (der Schalter in „Ansicht" ist heute verdrahtet)
 show-hide-data-graphics-on-the-p = Datengrafiken auf der Seite ein-/ausblenden (M6)
-show-line-jumps = Linienversätze anzeigen
 show-markup = Markup anzeigen
 show-markup-planned = Markup anzeigen — geplant
 show-shapesheet = ShapeSheet anzeigen
@@ -1097,6 +1153,8 @@ vba-arrives-with-m7-vsdm = VBA kommt mit M7 (.vsdm)
 vector-svg = Vektor (SVG)
 # $cell - Beschreibung der formelgetriebenen Zelle
 vertex-drag-refused = Eckpunktzug abgelehnt: { $cell } ist formelgetrieben — die Formel bearbeiten, um ihn zu ändern
+vertical-size = Vertikale Größe:
+
 view = Ansicht
 views = Ansichten
 visio-drawing = Visio-Zeichnung
@@ -1130,6 +1188,7 @@ zoom-out-tip = Verkleinern
 zoom-to-selection-shift-z = Auf die Auswahl zoomen (Umschalt+Z)
 
 
+
 ## ########## Resource: app ###############
 
 ### Tarahi UI strings — English. The source of truth for rendering.
@@ -1160,7 +1219,8 @@ add-in-hosting-arrives-with-m8 = Add-in hosting arrives with M8
 add-in-manager = Add-in Manager
 add-in-manager-m8 = Add-in manager — M8
 add-ins = Add-ins
-# $name (String) - argument
+add-line-jumps-to = Add line jumps to:
+
 add-name-prop-row-test = add { $name } prop row (test)
 add-to-new-container = Add to New Container
 add-to-quick-shapes = Add to Quick Shapes
@@ -1482,8 +1542,65 @@ field-preview = Preview:
 field-subject = Subject
 field-title = Title
 field-width = Width
+horizontal-size = Horizontal size:
+
 insert-a-text-field = Insert a text field
 insert-field = Insert Field
+line-jump-style = Line jump style:
+
+# $style (String) - the chosen jump style's display name
+line-jump-style-set = line jump style set to { $style }
+
+lj-code-horizontal = Horizontal Lines
+
+lj-code-last-displayed = Last Displayed Line
+
+lj-code-last-routed = Last Routed Line
+
+lj-code-none = None
+
+lj-code-vertical = Vertical Lines
+
+lj-style-2-sides = 2 Sides
+
+lj-style-3-sides = 3 Sides
+
+lj-style-4-sides = 4 Sides
+
+lj-style-5-sides = 5 Sides
+
+lj-style-6-sides = 6 Sides
+
+lj-style-7-sides = 7 Sides
+
+lj-style-arc = Arc
+
+lj-style-gap = Gap
+
+lj-style-square = Square
+
+routing-appearance = Appearance:
+
+routing-deferred = Connector routing is not available yet.
+
+routing-direction = Direction:
+
+routing-group = Routing
+
+routing-overlap = Overlap:
+
+routing-right-angle = Right Angle
+
+routing-separate = Separate:
+
+routing-straight = Straight
+
+routing-style = Style:
+
+routing-unrelated-lines = Unrelated lines
+
+routing-using-style = Using routing style
+
 inspect-the-current-page-cells = Inspect the current page's cells (PageSheet)
 inspect-the-document-cells = Inspect the document's cells (DocumentSheet)
 page-shapesheet = Page ShapeSheet
@@ -1625,7 +1742,6 @@ inspect-drawing = Inspect Drawing…
 inspect-the-selected-shape-s-cel = Inspect the selected shape's cells
 italic = Italic
 italic-planned = Italic — planned
-jump-size = Jump size
 justify = Justify
 justify-planned = Justify — planned
 # $key (String) - keytip key
@@ -2054,7 +2170,6 @@ show-hide = Show/Hide
 show-hide-comments = Show/Hide Comments
 show-hide-comments-planned-view = Show/hide comments — planned (View's toggle is wired today)
 show-hide-data-graphics-on-the-p = Show/hide data graphics on the page (M6)
-show-line-jumps = Show line jumps
 show-markup = Show Markup
 show-markup-planned = Show markup — planned
 show-shapesheet = Show ShapeSheet
@@ -2303,6 +2418,8 @@ vba-arrives-with-m7-vsdm = VBA arrives with M7 (.vsdm)
 vector-svg = Vector (SVG)
 # $cell (String) - the formula-driven cell description
 vertex-drag-refused = vertex drag refused: { $cell } is formula-driven — edit the formula to change it
+vertical-size = Vertical size:
+
 view = View
 views = Views
 visio-drawing = Visio drawing
@@ -2336,6 +2453,7 @@ zoom-out-tip = Zoom out
 zoom-to-selection-shift-z = Zoom to selection (Shift+Z)
 
 
+
 ## ########## Resource: app ###############
 
 ### Tarahi UI strings — Español.
@@ -2365,6 +2483,8 @@ add-in-manager = Administrador de complementos
 add-in-manager-m8 = Administrador de complementos — M8
 add-ins = Complementos
 # $name - argumento
+add-line-jumps-to = Agregar saltos de línea a:
+
 add-name-prop-row-test = agregar la fila prop { $name } (prueba)
 add-to-new-container = Agregar a un nuevo contenedor
 add-to-quick-shapes = Agregar a Quick Shapes
@@ -2686,8 +2806,64 @@ field-preview = Vista previa:
 field-subject = Asunto
 field-title = Título
 field-width = Ancho
+horizontal-size = Tamaño horizontal:
+
 insert-a-text-field = Insertar un campo de texto
 insert-field = Insertar campo
+line-jump-style = Estilo de salto de línea:
+
+line-jump-style-set = estilo de salto de línea establecido en { $style }
+
+lj-code-horizontal = Líneas horizontales
+
+lj-code-last-displayed = Última línea mostrada
+
+lj-code-last-routed = Última línea enrutada
+
+lj-code-none = Ninguno
+
+lj-code-vertical = Líneas verticales
+
+lj-style-2-sides = 2 lados
+
+lj-style-3-sides = 3 lados
+
+lj-style-4-sides = 4 lados
+
+lj-style-5-sides = 5 lados
+
+lj-style-6-sides = 6 lados
+
+lj-style-7-sides = 7 lados
+
+lj-style-arc = Arco
+
+lj-style-gap = Separación
+
+lj-style-square = Cuadrado
+
+routing-appearance = Apariencia:
+
+routing-deferred = El enrutamiento de conectores aún no está disponible.
+
+routing-direction = Dirección:
+
+routing-group = Enrutamiento
+
+routing-overlap = Superposición:
+
+routing-right-angle = Ángulo recto
+
+routing-separate = Separar:
+
+routing-straight = Recta
+
+routing-style = Estilo:
+
+routing-unrelated-lines = Líneas no relacionadas
+
+routing-using-style = Según el estilo de enrutamiento
+
 inspect-the-current-page-cells = Inspeccionar las celdas de la página actual (PageSheet)
 inspect-the-document-cells = Inspeccionar las celdas del documento (DocumentSheet)
 page-shapesheet = ShapeSheet de página
@@ -2829,7 +3005,6 @@ inspect-drawing = Inspeccionar dibujo…
 inspect-the-selected-shape-s-cel = Inspeccionar las celdas de la forma seleccionada
 italic = Cursiva
 italic-planned = Cursiva — planeado
-jump-size = Tamaño del salto
 justify = Justificar
 justify-planned = Justificar — planeado
 # $key - tecla del acceso de teclado
@@ -3257,7 +3432,6 @@ show-hide = Mostrar u ocultar
 show-hide-comments = Mostrar u ocultar comentarios
 show-hide-comments-planned-view = Mostrar u ocultar comentarios — planeado (hoy el interruptor está en Ver)
 show-hide-data-graphics-on-the-p = Mostrar u ocultar los gráficos de datos de la página (M6)
-show-line-jumps = Mostrar saltos de línea
 show-markup = Mostrar marcado
 show-markup-planned = Mostrar marcado — planeado
 show-shapesheet = Mostrar ShapeSheet
@@ -3504,6 +3678,8 @@ vba-arrives-with-m7-vsdm = VBA llega con M7 (.vsdm)
 vector-svg = Vectorial (SVG)
 # $cell - la descripción de la celda controlada por fórmula
 vertex-drag-refused = arrastre de vértice rechazado: { $cell } está controlado por una fórmula — edite la fórmula para cambiarlo
+vertical-size = Tamaño vertical:
+
 view = Ver
 views = Vistas
 visio-drawing = Dibujo de Visio
@@ -3537,6 +3713,7 @@ zoom-out-tip = Alejar
 zoom-to-selection-shift-z = Zoom a la selección (Mayús+Z)
 
 
+
 ## ########## Resource: app ###############
 
 ### طارحی — رشته‌های رابط کاربری، فارسی.
@@ -3562,6 +3739,8 @@ add-in-hosting-arrives-with-m8 = میزبانی افزونه‌ها با M8 عر
 add-in-manager = مدیریت افزونه‌ها
 add-in-manager-m8 = مدیریت افزونه‌ها — M8
 add-ins = افزونه‌ها
+add-line-jumps-to = افزودن پرش‌های خط به:
+
 add-name-prop-row-test = افزودن سطر ویژگی { $name } (آزمون)
 add-to-new-container = افزودن به ظرف جدید
 add-to-quick-shapes = افزودن به شکل‌های سریع
@@ -3864,8 +4043,64 @@ field-preview = پیش‌نمایش:
 field-subject = موضوع
 field-title = عنوان
 field-width = عرض
+horizontal-size = اندازه افقی:
+
 insert-a-text-field = درج یک فیلد متنی
 insert-field = درج فیلد
+line-jump-style = سبک پرش خط:
+
+line-jump-style-set = سبک پرش خط روی { $style } قرار گرفت
+
+lj-code-horizontal = خطوط افقی
+
+lj-code-last-displayed = آخرین خط نمایش‌داده‌شده
+
+lj-code-last-routed = آخرین خط مسیریابی‌شده
+
+lj-code-none = هیچ‌کدام
+
+lj-code-vertical = خطوط عمودی
+
+lj-style-2-sides = ۲ ضلع
+
+lj-style-3-sides = ۳ ضلع
+
+lj-style-4-sides = ۴ ضلع
+
+lj-style-5-sides = ۵ ضلع
+
+lj-style-6-sides = ۶ ضلع
+
+lj-style-7-sides = ۷ ضلع
+
+lj-style-arc = کمان
+
+lj-style-gap = فاصله
+
+lj-style-square = مربع
+
+routing-appearance = نمود:
+
+routing-deferred = مسیریابی اتصال‌دهنده‌ها هنوز در دسترس نیست.
+
+routing-direction = جهت:
+
+routing-group = مسیریابی
+
+routing-overlap = همپوشانی:
+
+routing-right-angle = زاویه قائم
+
+routing-separate = جداسازی:
+
+routing-straight = مستقیم
+
+routing-style = سبک:
+
+routing-unrelated-lines = خطوط نامرتبط
+
+routing-using-style = بر اساس سبک مسیریابی
+
 inspect-the-current-page-cells = بازرسی سلول‌های صفحهٔ کنونی (PageSheet)
 inspect-the-document-cells = بازرسی سلول‌های سند (DocumentSheet)
 page-shapesheet = ShapeSheet صفحه
@@ -4001,7 +4236,6 @@ inspect-drawing = بازرسی نقاشی…
 inspect-the-selected-shape-s-cel = بازرسی سلول‌های شکل گزینش‌شده
 italic = مورب
 italic-planned = مورب — برنامه‌ریزی شده
-jump-size = اندازهٔ پرش
 justify = هم‌تراز از دو سو
 justify-planned = هم‌ترازی از دو سو — برنامه‌ریزی شده
 # $key - کلید میان‌بر
@@ -4393,7 +4627,6 @@ show-hide = نمایش/پنهان‌سازی
 show-hide-comments = نمایش/پنهان‌سازی نظرها
 show-hide-comments-planned-view = نمایش/پنهان‌سازی نظرها — برنامه‌ریزی‌شده (کلید View امروز سیم‌کشی شده است)
 show-hide-data-graphics-on-the-p = نمایش/پنهان‌سازی نمودارهای داده روی صفحه (M6)
-show-line-jumps = نمایش پرش‌های خط
 show-markup = نمایش بازبینی‌ها
 show-markup-planned = نمایش بازبینی‌ها — برنامه‌ریزی شده
 show-shapesheet = نمایش ShapeSheet
@@ -4635,6 +4868,8 @@ vba-arrives-with-m7-vsdm = VBA با M7 می‌آید (.vsdm)
 vector-svg = برداری (SVG)
 # $cell - توصیف سلول فرمول‌محور
 vertex-drag-refused = کشیدن رأس رد شد: { $cell } فرمول‌محور است — برای تغییر، فرمول را ویرایش کنید
+vertical-size = اندازه عمودی:
+
 view = نما
 views = نماها
 visio-drawing = نقاشی Visio
@@ -4668,6 +4903,7 @@ zoom-out-tip = کوچک‌نمایی
 zoom-to-selection-shift-z = بزرگ‌نمایی به گزینش (Shift+Z)
 
 
+
 ## ########## Resource: app ###############
 
 ### Tarahi UI strings — 日本語。
@@ -4691,6 +4927,8 @@ add-in-hosting-arrives-with-m8 = アドインのホスティングは M8 で提�
 add-in-manager = アドイン マネージャー
 add-in-manager-m8 = アドイン マネージャー — M8
 add-ins = アドイン
+add-line-jumps-to = 線のジャンプの追加先：
+
 add-name-prop-row-test = { $name } プロパティ行を追加（テスト）
 add-to-new-container = 新しいコンテナーに追加
 add-to-quick-shapes = クイック シェイプに追加
@@ -4978,8 +5216,64 @@ field-preview = プレビュー:
 field-subject = 件名
 field-title = タイトル
 field-width = 幅
+horizontal-size = 横のサイズ：
+
 insert-a-text-field = 文字フィールドを挿入します
 insert-field = フィールドの挿入
+line-jump-style = 線のジャンプのスタイル：
+
+line-jump-style-set = 線のジャンプのスタイルを { $style } に設定しました
+
+lj-code-horizontal = 水平線
+
+lj-code-last-displayed = 最後に表示された線
+
+lj-code-last-routed = 最後にルート設定された線
+
+lj-code-none = なし
+
+lj-code-vertical = 垂直線
+
+lj-style-2-sides = 2 辺
+
+lj-style-3-sides = 3 辺
+
+lj-style-4-sides = 4 辺
+
+lj-style-5-sides = 5 辺
+
+lj-style-6-sides = 6 辺
+
+lj-style-7-sides = 7 辺
+
+lj-style-arc = 円弧
+
+lj-style-gap = ギャップ
+
+lj-style-square = 四角
+
+routing-appearance = 外観：
+
+routing-deferred = コネクタのルーティングはまだ利用できません。
+
+routing-direction = 方向：
+
+routing-group = ルーティング
+
+routing-overlap = 重なり：
+
+routing-right-angle = 直角
+
+routing-separate = 分離：
+
+routing-straight = 直線
+
+routing-style = スタイル：
+
+routing-unrelated-lines = 無関係な線
+
+routing-using-style = ルーティング スタイルに従う
+
 inspect-the-current-page-cells = 現在のページのセルを確認します (PageSheet)
 inspect-the-document-cells = ドキュメントのセルを確認します (DocumentSheet)
 page-shapesheet = ページの ShapeSheet
@@ -5106,7 +5400,6 @@ inspect-drawing = 図面の検査…
 inspect-the-selected-shape-s-cel = 選択した図形のセルを確認します
 italic = 斜体
 italic-planned = 斜体 — 予定
-jump-size = ジャンプ サイズ
 justify = 両端揃え
 justify-planned = 両端揃え — 予定
 keytip-unavailable = { $key } は使用できません
@@ -5457,7 +5750,6 @@ show-hide = 表示/非表示
 show-hide-comments = コメントの表示/非表示
 show-hide-comments-planned-view = コメントの表示/非表示 — 予定（現在は [表示] の切り替えが有効）
 show-hide-data-graphics-on-the-p = ページ上のデータ グラフィックの表示/非表示（M6）
-show-line-jumps = 線のジャンプを表示
 show-markup = マークアップの表示
 show-markup-planned = マークアップの表示 — 予定
 show-shapesheet = ShapeSheet の表示
@@ -5667,6 +5959,8 @@ variants = バリエーション
 vba-arrives-with-m7-vsdm = VBA は M7（.vsdm）で提供されます
 vector-svg = ベクター（SVG）
 vertex-drag-refused = 頂点のドラッグを拒否しました: { $cell } は数式で管理されています — 変更するには数式を編集してください
+vertical-size = 縦のサイズ：
+
 view = 表示
 views = ビュー
 visio-drawing = Visio 図面
@@ -5697,6 +5991,7 @@ zoom-out-tip = 縮小します
 zoom-to-selection-shift-z = 選択範囲にズーム（Shift+Z）
 
 
+
 ## ########## Resource: app ###############
 
 ### Tarahi UI strings — 한국어.
@@ -5721,6 +6016,8 @@ add-in-hosting-arrives-with-m8 = 추가 기능 호스팅은 M8에서 제공됩�
 add-in-manager = 추가 기능 관리자
 add-in-manager-m8 = 추가 기능 관리자 — M8
 add-ins = 추가 기능
+add-line-jumps-to = 선 점프 추가 대상:
+
 add-name-prop-row-test = { $name } 속성 행 추가(테스트)
 add-to-new-container = 새 컨테이너에 추가
 add-to-quick-shapes = 빠른 셰이프에 추가
@@ -6008,8 +6305,64 @@ field-preview = 미리 보기:
 field-subject = 제목(주제)
 field-title = 제목
 field-width = 너비
+horizontal-size = 가로 크기:
+
 insert-a-text-field = 텍스트 필드를 삽입합니다
 insert-field = 필드 삽입
+line-jump-style = 선 점프 스타일:
+
+line-jump-style-set = 선 점프 스타일이 { $style }(으)로 설정되었습니다
+
+lj-code-horizontal = 가로선
+
+lj-code-last-displayed = 마지막으로 표시된 선
+
+lj-code-last-routed = 마지막으로 라우팅된 선
+
+lj-code-none = 없음
+
+lj-code-vertical = 세로선
+
+lj-style-2-sides = 2 변
+
+lj-style-3-sides = 3 변
+
+lj-style-4-sides = 4 변
+
+lj-style-5-sides = 5 변
+
+lj-style-6-sides = 6 변
+
+lj-style-7-sides = 7 변
+
+lj-style-arc = 호
+
+lj-style-gap = 간격
+
+lj-style-square = 사각형
+
+routing-appearance = 모양:
+
+routing-deferred = 연결선 라우팅은 아직 사용할 수 없습니다.
+
+routing-direction = 방향:
+
+routing-group = 라우팅
+
+routing-overlap = 겹침:
+
+routing-right-angle = 직각
+
+routing-separate = 분리:
+
+routing-straight = 직선
+
+routing-style = 스타일:
+
+routing-unrelated-lines = 관련 없는 선
+
+routing-using-style = 라우팅 스타일 사용
+
 inspect-the-current-page-cells = 현재 페이지의 셀을 검사합니다 (PageSheet)
 inspect-the-document-cells = 문서의 셀을 검사합니다 (DocumentSheet)
 page-shapesheet = 페이지 ShapeSheet
@@ -6136,7 +6489,6 @@ inspect-drawing = 드로잉 검사…
 inspect-the-selected-shape-s-cel = 선택한 셰이프의 셀을 검사합니다
 italic = 기울임꼴
 italic-planned = 기울임꼴 — 예정
-jump-size = 점프 크기
 justify = 양쪽 맞춤
 justify-planned = 양쪽 맞춤 — 예정
 keytip-unavailable = { $key }을(를) 사용할 수 없습니다
@@ -6487,7 +6839,6 @@ show-hide = 표시/숨기기
 show-hide-comments = 메모 표시/숨기기
 show-hide-comments-planned-view = 메모 표시/숨기기 — 예정(보기의 토글이 오늘 작동)
 show-hide-data-graphics-on-the-p = 페이지의 데이터 그래픽 표시/숨기기(M6)
-show-line-jumps = 선 점프 표시
 show-markup = 마크업 표시
 show-markup-planned = 마크업 표시 — 예정
 show-shapesheet = ShapeSheet 표시
@@ -6697,6 +7048,8 @@ variants = 변형
 vba-arrives-with-m7-vsdm = VBA는 M7(.vsdm)에서 제공됩니다
 vector-svg = 벡터(SVG)
 vertex-drag-refused = 꼭짓점 끌기가 거부되었습니다: { $cell }은(는) 수식으로 관리됩니다 — 바꾸려면 수식을 편집하세요
+vertical-size = 세로 크기:
+
 view = 보기
 views = 보기
 visio-drawing = Visio 드로잉
@@ -6727,6 +7080,7 @@ zoom-out-tip = 축소합니다
 zoom-to-selection-shift-z = 선택 영역에 확대/축소(Shift+Z)
 
 
+
 ## ########## Resource: app ###############
 
 ### Tarahi UI strings — 简体中文。
@@ -6749,6 +7103,8 @@ add-in-hosting-arrives-with-m8 = 加载项托管将在 M8 提供
 add-in-manager = 加载项管理器
 add-in-manager-m8 = 加载项管理器 — M8
 add-ins = 加载项
+add-line-jumps-to = 将线条跳跃添加到：
+
 add-name-prop-row-test = 添加 { $name } 属性行（测试）
 add-to-new-container = 添加到新容器
 add-to-quick-shapes = 添加到快速形状
@@ -7036,8 +7392,64 @@ field-preview = 预览：
 field-subject = 主题
 field-title = 标题
 field-width = 宽度
+horizontal-size = 水平大小：
+
 insert-a-text-field = 插入文本域
 insert-field = 插入域
+line-jump-style = 线条跳跃样式：
+
+line-jump-style-set = 线条跳跃样式已设为 { $style }
+
+lj-code-horizontal = 水平线
+
+lj-code-last-displayed = 最后显示的线条
+
+lj-code-last-routed = 最后布线的线条
+
+lj-code-none = 无
+
+lj-code-vertical = 垂直线
+
+lj-style-2-sides = 2 边
+
+lj-style-3-sides = 3 边
+
+lj-style-4-sides = 4 边
+
+lj-style-5-sides = 5 边
+
+lj-style-6-sides = 6 边
+
+lj-style-7-sides = 7 边
+
+lj-style-arc = 圆弧
+
+lj-style-gap = 间隔
+
+lj-style-square = 方形
+
+routing-appearance = 外观：
+
+routing-deferred = 连接线布线尚不可用。
+
+routing-direction = 方向：
+
+routing-group = 布线
+
+routing-overlap = 重叠：
+
+routing-right-angle = 直角
+
+routing-separate = 分开：
+
+routing-straight = 直线
+
+routing-style = 样式：
+
+routing-unrelated-lines = 无关线条
+
+routing-using-style = 按布线样式
+
 inspect-the-current-page-cells = 检查当前页面的单元格 (PageSheet)
 inspect-the-document-cells = 检查文档的单元格 (DocumentSheet)
 page-shapesheet = 页面 ShapeSheet
@@ -7165,7 +7577,6 @@ inspect-drawing = 检查绘图…
 inspect-the-selected-shape-s-cel = 检查选定形状的单元格
 italic = 倾斜
 italic-planned = 倾斜 — 计划中
-jump-size = 跳跃大小
 justify = 两端对齐
 justify-planned = 两端对齐 — 计划中
 keytip-unavailable = { $key } 不可用
@@ -7521,7 +7932,6 @@ show-hide = 显示/隐藏
 show-hide-comments = 显示/隐藏批注
 show-hide-comments-planned-view = 显示/隐藏批注 — 计划中（“视图”的开关现已接通）
 show-hide-data-graphics-on-the-p = 显示/隐藏页面上的数据图形（M6）
-show-line-jumps = 显示线条跳跃
 show-markup = 显示修订
 show-markup-planned = 显示修订 — 计划中
 show-shapesheet = 显示 ShapeSheet
@@ -7731,6 +8141,8 @@ variants = 变体
 vba-arrives-with-m7-vsdm = VBA 将随 M7 提供（.vsdm）
 vector-svg = 矢量 (SVG)
 vertex-drag-refused = 顶点拖动被拒绝：{ $cell }由公式驱动——请编辑公式以更改它
+vertical-size = 垂直大小：
+
 view = 视图
 views = 视图
 visio-drawing = Visio 绘图
@@ -7759,4 +8171,5 @@ zoom-menu = 缩放…
 zoom-out = 缩小
 zoom-out-tip = 缩小
 zoom-to-selection-shift-z = 缩放到选定内容 (Shift+Z)
+
 

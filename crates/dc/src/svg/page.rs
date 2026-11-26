@@ -1,7 +1,7 @@
 //! Page rendering: the public page render entry points and the full
 //! page assembly (chrome, background pages, the shape walk).
-use std::fmt::Write as _;
 use super::*;
+use std::fmt::Write as _;
 pub fn render_page(doc: &Document, page: &vsdx::Page) -> anyhow::Result<String> {
     render_page_with(doc, page, &[])
 }
@@ -121,6 +121,25 @@ fn render_page_full(
     // per-shape context rebuilt it for every root — the quadratic
     // cost the shared layer exists to remove.
     let fields = crate::fields::FieldsCtx::for_page(doc, page);
+    // #187: line jumps — Visio prints hops. They are computed BEFORE
+    // the ink so each jumping connector can be cut where it hops: the
+    // line is clipped open around every hop and the arc alone bridges
+    // the gap, exactly like Visio's own jump geometry (I3: the hop is
+    // part of the line — the background shows through beneath it, no
+    // paper-white gap painted, no under-line redraw; the old overlay's
+    // white dash sat on every non-white background, #322). Scoped
+    // renders (`only`) draw one shape's subtree — page-wide jumps
+    // would drag in crossings from connectors outside the scope. The
+    // page's Show-Line-Jumps switch gates them (#251), and a resolved
+    // radius of 0 (an explicit LineJumpFactorX=0, #294 review)
+    // computes no hops at all.
+    let radius = crate::geom::jump_radius_in(doc, page);
+    let radius_y = crate::geom::jump_radius_y_in(doc, page);
+    let jumps = if only.is_none() && page.line_jumps_shown() && (radius > 0.0 || radius_y > 0.0) {
+        crate::geom::page_jumps(doc, page, hidden)
+    } else {
+        Vec::new()
+    };
     for shape in &page.shapes {
         if hidden_member(shape) {
             continue;
@@ -136,13 +155,60 @@ fn render_page_full(
                 continue;
             }
         }
+        // A jumping connector renders inside page-space clips that cut
+        // it open around its hops (#324 phase 3). One clip PER HOP,
+        // nested: clip groups INTERSECT, so two hops closer than their
+        // radii still open the shaft along both — a single even-odd
+        // path with overlapping slots would RE-KEEP the overlap
+        // (odd parity) and the shaft would reappear between the arcs
+        // (CodeRabbit round on #324 phase 3). The slot coordinates are
+        // page-space, so the groups wrap the shape OUTSIDE its
+        // transform.
+        let cuts: Vec<&crate::geom::Jump> = jumps.iter().filter(|j| j.jumper == shape.id).collect();
+        for (k, j) in cuts.iter().enumerate() {
+            let id = if k == 0 {
+                format!("dc-jumpcut{}", shape.id)
+            } else {
+                format!("dc-jumpcut{}-{}", shape.id, k)
+            };
+            // Per-crossing hop radius: the jumping SEGMENT's own axis
+            // (the more-horizontal line may hop on a vertical leg —
+            // Visio sizes that with the Y cells, PR #299 review). A
+            // zero on that axis never reaches here: the engine drops
+            // zero-axis hops before they can cluster (#324 phase 2).
+            let hop_r = if j.dir.0.abs() >= j.dir.1.abs() {
+                radius
+            } else {
+                radius_y
+            };
+            let _ = writeln!(
+                svg,
+                r#"<clipPath id="{id}"><path clip-rule="evenodd" d="{}"/></clipPath><g clip-path="url(#{id})">"#,
+                jump_cut_clip_d(j, h, w, hop_r)
+            );
+        }
         render_shape(
             doc,
             shape,
             h,
             &[],
             &page.part,
-            skip_text,
+            // A jumper renders WITHOUT its text inside the clips — the
+            // label re-renders below in a twin group outside every
+            // clip: the hop cuts the SHAFT, never the label's
+            // background or glyphs (CodeRabbit round on #324 phase 3).
+            // Track the two text suppressions INDEPENDENTLY: a
+            // jumper's label never paints inside the clips (the twin
+            // group below owns it), while the caller's own skip — the
+            // in-place editor's shape — still applies to non-jumpers
+            // and keeps the twin from painting over the editor's copy
+            // (CodeRabbit round on #324 phase 3: an editor-selected
+            // shape 2 used to let jumper 1's label paint twice).
+            if cuts.is_empty() {
+                skip_text
+            } else {
+                Some(shape.id)
+            },
             None,
             None,
             Some(&fields),
@@ -157,58 +223,56 @@ fn render_page_full(
             },
             &mut svg,
         );
-    }
-    // #187: line jumps — Visio prints hops. The export appends the
-    // same treatment the canvas paints (white gap, under redraw, hop
-    // arc) as a page-space group above the ink. The gap/extension
-    // paddings pin the canvas's screen-px extras at 96 dpi. Scoped
-    // renders (`only`) draw one shape's subtree — page-wide jumps
-    // would drag in crossings from connectors outside the scope.
-    // The page's Show-Line-Jumps switch gates the overlay (#251), and
-    // a resolved radius of 0 (an explicit LineJumpFactorX=0, #294
-    // review) draws nothing rather than degenerate zero-size hops.
-    let radius = crate::geom::jump_radius_in(doc, page);
-    let radius_y = crate::geom::jump_radius_y_in(doc, page);
-    let jumps = if only.is_none()
-        && page.line_jumps_shown()
-        && (radius > 0.0 || radius_y > 0.0)
-    {
-        crate::geom::page_jumps(doc, page, hidden)
-    } else {
-        Vec::new()
-    };
-    // Per-crossing hop radius: the jumping SEGMENT's own axis (the
-    // more-horizontal line may hop on a vertical leg — Visio sizes
-    // that with the Y cells, PR #299 review). An explicit Factor=0 on
-    // that axis is a zero-size hop — the crossing draws no arc at all,
-    // never a degenerate one (#294 review); a page whose every hop is
-    // zero-sized draws no group.
-    let jumps: Vec<_> = jumps
-        .into_iter()
-        .filter(|j| {
-            if j.dir.0.abs() >= j.dir.1.abs() {
-                radius > 0.0
-            } else {
-                radius_y > 0.0
-            }
-        })
-        .collect();
-    if !jumps.is_empty() {
-        // #294: the hop radius is the page's own LineToLineX/Y ×
-        // LineJumpFactorX/Y / 2, resolved through the style chain —
-        // never the old 0.12 constant.
-        let _ = writeln!(svg, r#"<g data-dc="line-jumps">"#);
-        for j in &jumps {
-            let r = if j.dir.0.abs() >= j.dir.1.abs() {
-                radius
-            } else {
-                radius_y
-            };
-            append_jump_scaled(&mut svg, h, j, r);
+        for _ in &cuts {
+            let _ = writeln!(svg, "</g>");
         }
-        let _ = writeln!(svg, "</g>");
+        // The hop arcs bridge the cuts, painted WITH the connector —
+        // BEFORE later shapes, so an opaque shape above covers shaft
+        // and hop alike, exactly as it covers the connector's own ink
+        // (Visio's paint order; the old post-ink group floated arcs on
+        // top of everything — CodeRabbit round on #324 phase 3). The
+        // radius is the page's own LineToLineX/Y × LineJumpFactorX/Y /
+        // 2, resolved through the style chain — never the old 0.12
+        // constant (#294).
+        if !cuts.is_empty() {
+            let _ = writeln!(svg, r#"<g data-dc="line-jumps">"#);
+            for j in &cuts {
+                let hop_r = if j.dir.0.abs() >= j.dir.1.abs() {
+                    radius
+                } else {
+                    radius_y
+                };
+                append_jump_scaled(&mut svg, h, j, hop_r);
+            }
+            let _ = writeln!(svg, "</g>");
+        }
+        // The jumper's label, in an IDENTICAL transform group outside
+        // every clip — `emit_text` is coordinate-compatible with the
+        // shape's own transform (the same reads render_shape's head
+        // makes, factored into `shape_xform`).
+        if !cuts.is_empty() && skip_text != Some(shape.id) {
+            let xf = shape_xform(doc, shape, &[], h);
+            let _ = writeln!(
+                svg,
+                r#"<g transform="{t}">"#,
+                t = escape_attr(&xf.transform)
+            );
+            emit_text(
+                doc,
+                shape,
+                &[shape],
+                xf.width,
+                xf.height,
+                xf.sx,
+                xf.sy,
+                false,
+                None,
+                Some(&fields),
+                &mut svg,
+            );
+            let _ = writeln!(svg, "</g>");
+        }
     }
     let _ = writeln!(svg, "</svg>");
     Ok(svg)
 }
-

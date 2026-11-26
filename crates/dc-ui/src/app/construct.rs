@@ -145,6 +145,7 @@ impl App {
             snap: crate::snap::SnapSettings::default(),
             snap_dlg_open: false,
             line_jump_draft: None,
+            line_jump_draft_y: None,
             snap_live: Vec::new(),
             conn_fx_last: crate::connectors::ConnPointFx::default(),
             drag_glue: None,
@@ -342,10 +343,7 @@ impl App {
     /// kittest (#304): the avatar-initials fit — (text, font size);
     /// a long configured string must truncate into the 16pt circle.
     #[doc(hidden)]
-    pub fn debug_fit_initials_for_test(
-        ctx: &egui::Context,
-        initials: &str,
-    ) -> (String, f32) {
+    pub fn debug_fit_initials_for_test(ctx: &egui::Context, initials: &str) -> (String, f32) {
         fit_initials_to_avatar(ctx, initials)
     }
     /// kittest: what every editing command does — dirty + version bump

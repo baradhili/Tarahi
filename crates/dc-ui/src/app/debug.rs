@@ -1269,6 +1269,100 @@ impl App {
             .and_then(|c| c.v.clone())
             .map(|v| v.trim().to_string())
     }
+
+    /// kittest: the current page's own PageSheet cell value (#324
+    /// phase 5 — the Layout and Routing dialog's writes).
+    #[doc(hidden)]
+    pub fn debug_page_sheet_cell_for_test(&self, cell: &str) -> Option<String> {
+        let ed = self.ed()?;
+        let page = ed
+            .doc
+            .pages
+            .get(self.page_idx.min(ed.doc.pages.len().saturating_sub(1)))?;
+        page.sheet()?.cell(cell).and_then(|c| c.v.clone())
+    }
+
+    /// kittest: a document with a crossing connector pair plus the
+    /// Page Setup dialog open (#324 phase 5 — the reconcile has a hop
+    /// to rewrite when the style changes; the witness-geometry band
+    /// like the cmd tests).
+    #[doc(hidden)]
+    pub fn debug_page_setup_with_crossing_for_test() -> App {
+        let mut ed = dc_core::Editor::new_blank();
+        let mut h5 = crate::connectors::connector_shape(5, (1.5, 5.0), (6.5, 5.0));
+        h5.sheet.set_cell("Height", vsdx::Cell::value("0.25"));
+        h5.sheet.set_cell("LocPinY", vsdx::Cell::value("0.125"));
+        {
+            use vsdx::model::Row;
+            let xy = |x: f64, y: f64| {
+                vec![
+                    ("X".to_string(), vsdx::Cell::value(format!("{x}"))),
+                    ("Y".to_string(), vsdx::Cell::value(format!("{y}"))),
+                ]
+            };
+            // REPLACE connector_shape's own geometry rows (the
+            // set_geo_rows pattern) — appending a second section
+            // would leave the shape with two and the reconcile's
+            // one-section eligibility guard skips it.
+            for child in h5.sheet.children.iter_mut() {
+                if let vsdx::model::SheetChild::Section(sec) = child {
+                    if sec.name == "Geometry" {
+                        sec.rows = vec![
+                            Row {
+                                t: Some("MoveTo".into()),
+                                ix: 1,
+                                cells: xy(0.0, 0.125),
+                                ..Default::default()
+                            },
+                            Row {
+                                t: Some("LineTo".into()),
+                                ix: 2,
+                                cells: xy(5.0, 0.125),
+                                ..Default::default()
+                            },
+                        ];
+                    }
+                }
+            }
+        }
+        let v6 = crate::connectors::connector_shape(6, (4.0, 2.0), (4.0, 8.0));
+        ed.doc.pages[0].shapes.push(h5);
+        ed.doc.pages[0].shapes.push(v6);
+        let mut app = App::with_blank();
+        app.ed = Some(ed);
+        app.pagesetup_open = true;
+        app.page_idx = 0;
+        app
+    }
+
+    /// kittest: shape geometry row types on the current page (#324
+    /// phase 5 — the stored-hop row forms after a reconcile).
+    #[doc(hidden)]
+    pub fn debug_geometry_row_types_for_test(&self, shape_id: i64) -> Vec<String> {
+        let Some(ed) = self.ed() else {
+            return Vec::new();
+        };
+        let Some(page) = ed
+            .doc
+            .pages
+            .get(self.page_idx.min(ed.doc.pages.len().saturating_sub(1)))
+        else {
+            return Vec::new();
+        };
+        let Some(sh) = vsdx::model::find_shape_by_id(&page.shapes, shape_id) else {
+            return Vec::new();
+        };
+        sh.sheet
+            .sections_named("Geometry")
+            .first()
+            .map(|sec| {
+                sec.rows
+                    .iter()
+                    .map(|r| r.t.clone().unwrap_or_default())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
     /// kittest: the active page's name (#54).
     #[doc(hidden)]
     pub fn debug_active_page_name(&self) -> String {
