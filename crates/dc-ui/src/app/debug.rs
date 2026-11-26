@@ -497,6 +497,10 @@ impl App {
                     ..vsdx::model::Section::default()
                 }));
         }
+        // The write bypasses the command layer: bump the version like
+        // every edit does, so the version-keyed caches (the jump
+        // overlay, #389) recompute (CodeRabbit on PR #391).
+        self.version += 1;
     }
 
     /// #113 tests: the page ids in order.

@@ -162,12 +162,13 @@ struct IndexNode {
     fill: Option<(String, f64)>,
 }
 
-/// A top-level shape of [`BackdropIndex`] with its nodes in walk order.
-struct TopNode {
-    id: i64,
+/// A top-level shape of [`BackdropIndex`]; its nodes (walk order) are
+/// built on the first query that reaches it.
+struct TopNode<'a> {
+    shape: &'a Shape,
     layer: Option<i64>,
     guide: bool,
-    nodes: Vec<IndexNode>,
+    nodes: std::cell::OnceCell<Vec<IndexNode>>,
 }
 
 /// [`backdrop_color_at`]'s per-page work done ONCE (#389): every
@@ -175,219 +176,34 @@ struct TopNode {
 /// canvas builds one per jump pass and asks it per hop; the old per-hop
 /// walk recomputed every ink box for every hop, every frame (a page
 /// with a few hundred hops spent tens of seconds per frame).
-pub struct BackdropIndex {
+pub struct BackdropIndex<'a> {
+    doc: &'a Document,
     page_h: f64,
-    nodes: Vec<TopNode>,
+    tops: Vec<TopNode<'a>>,
 }
 
-impl BackdropIndex {
-    /// Index `page` (the walk the old per-hop lookup ran, run once).
-    pub fn new(doc: &Document, page: &vsdx::Page) -> BackdropIndex {
+impl<'a> BackdropIndex<'a> {
+    /// Index `page`: the top-level order and layer data now; each
+    /// shape's subtree (ink boxes, contour, fill) on the first query
+    /// that reaches it (CodeRabbit on PR #391: shapes above the jumper
+    /// or behind an opaque panel are never built).
+    pub fn new(doc: &'a Document, page: &'a vsdx::Page) -> BackdropIndex<'a> {
         let page_h = num(page.sheet().and_then(|s| s.cell("PageHeight"))).unwrap_or(11.0);
-        /// The fill's color and ALPHA (1 − the chosen cell's
-        /// transparency): a fully transparent fill is no fill; a partial
-        /// one composites over whatever is lower (CodeRabbit round on
-        /// #324 phase 3 — the old 0.5 threshold threw away a 0.75 panel
-        /// and painted uncomposited color at 0.25).
-        fn filled(doc: &Document, s: &Shape, chain: &[&Shape]) -> Option<(String, f64)> {
-            let sheet = doc.effective_sheet(s, chain);
-            let geos = sheet.sections_named("Geometry");
-            // A section the renderer skips (NoShow, the same rule
-            // `section_flag` reads) contributes no fill to the backdrop
-            // (CodeRabbit round on #324 phase 5).
-            let env = super::shape_env(doc, s, chain);
-            let any_fill = geos.iter().any(|g| {
-                // NoShow AND NoFill through the renderer's own
-                // `section_flag` rule (formula first, cached V as
-                // fallback) — a NoFill formula evaluating to 1 with a
-                // stale 0 cache paints nothing (CodeRabbit round on
-                // #324 phase 5).
-                !super::shape_layer::section_flag(g, "NoShow", &env)
-                    && !super::shape_layer::section_flag(g, "NoFill", &env)
-                    && g.rows.iter().any(|r| r.t.is_some())
-            });
-            if !any_fill {
-                return None;
-            }
-            let num_cell = |n: &str| doc.resolve_cell(s, chain, n).and_then(|c| c.numeric());
-            let pattern = num_cell("FillPattern").unwrap_or(1.0);
-            if pattern == 0.0 {
-                return None;
-            }
-            // Fill color per the RENDERER's own pattern rules
-            // (`hatch_fill`, #352): line hatches 2–7 draw fore strokes
-            // over the bkgnd ground (the ground dominates a gap's sample);
-            // patterns 8–23 are the dot/dither MIXES the renderer
-            // composites (8 ≈ ¾ foreground, the rest ½); 24–40 are
-            // gradients — the fore stop stands in (a single-color
-            // approximation); 0/1 are the solid fore (CodeRabbit round on
-            // #324 phase 5: pattern 8's backdrop used to sample the pure
-            // background against a rendered mix).
-            let pat = pattern.round() as i64;
-            // The painter's transparency rule (render_geometry): every
-            // non-gradient pattern 2-23 — line hatches AND the mixes —
-            // takes FillBkgndTrans; solids keep FillForegndTrans
-            // (CodeRabbit round on #324 phase 5: an opaque mixed fill was
-            // discarded in favor of the lower backdrop).
-            let alpha = 1.0
-                - num_cell(if (2..=23).contains(&pat) {
-                    "FillBkgndTrans"
-                } else {
-                    "FillForegndTrans"
-                })
-                .unwrap_or(0.0);
-            if alpha <= 0.0 {
-                return None;
-            }
-            if (8..=23).contains(&pat) {
-                let k = if pat == 8 { 0.75 } else { 0.5 };
-                let (fa, fb) = (
-                    hex_rgb(&themed_color_string(doc, s, chain, "FillForegnd")),
-                    hex_rgb(&themed_color_string(doc, s, chain, "FillBkgnd")),
-                );
-                let mix =
-                    |x: u8, y: u8| (f64::from(x) * k + f64::from(y) * (1.0 - k)).round() as u8;
-                return Some((
-                    format!(
-                        "#{:02x}{:02x}{:02x}",
-                        mix(fa.0, fb.0),
-                        mix(fa.1, fb.1),
-                        mix(fa.2, fb.2)
-                    ),
-                    alpha,
-                ));
-            }
-            let cell = if (2..=7).contains(&pat) {
-                "FillBkgnd"
-            } else {
-                "FillForegnd"
-            };
-            Some((themed_color_string(doc, s, chain, cell), alpha))
-        }
-        /// One painted node of the backdrop index: its ink box, the closed
-        /// contour a TOP-LEVEL shape's exact test casts against (`None`:
-        /// the box alone decides), and its fill (`None`: paints no fill).
-        struct Node {
-            bx: (f64, f64, f64, f64),
-            closed: Option<Vec<Seg>>,
-            fill: Option<(String, f64)>,
-        }
-        /// The walk, run ONCE per page: every node in the order the old
-        /// per-hop walk visited it (later children first, then the parent),
-        /// so a lookup reproduces its hits exactly (#389: the per-hop walk
-        /// recomputed every ink box for every hop, every frame).
-        #[allow(clippy::too_many_arguments)] // the walk carries its whole environment
-        fn collect(
-            doc: &Document,
-            s: &Shape,
-            chain: &[&Shape],
-            page_h: f64,
-            top: bool,
-            to_page: Affine,
-            out: &mut Vec<Node>,
-        ) {
-            let mut chain: Vec<&Shape> = chain.to_vec();
-            chain.push(s);
-            let (bx, a) = node_ink_box(doc, s, &chain, page_h, top, to_page);
-            // Later children paint over earlier ones and over the parent.
-            for sub in s.sub_shapes.iter().rev() {
-                collect(doc, sub, &chain, page_h, false, a, out);
-            }
-            // The ink box only REJECTS — a triangle's empty corner is
-            // inside its box but outside its fill, and the gap would paint
-            // a color nothing draws there (CodeRabbit round on #324 phase
-            // 3). TOP-LEVEL shapes get the exact test: an even-odd ray
-            // cast over the same flattened geometry the crossing set
-            // walks. Group children keep the box alone — their frames are
-            // parent-local here, and panels behind hops are top-level.
-            let closed = if top {
-                let msize = s
-                    .master
-                    .and_then(|mid| doc.master(mid))
-                    .and_then(|m| m.shapes.first())
-                    .map(|root| {
-                        let g = |n: &str| {
-                            doc.resolve_cell(root, &[root], n)
-                                .and_then(|c| c.numeric())
-                                .unwrap_or(1.0)
-                        };
-                        (g("Width"), g("Height"))
-                    })
-                    .unwrap_or((1.0, 1.0));
-                let frame = crate::geom::hit_frame(doc, &chain, s, msize);
-                let segs =
-                    crate::geom::geometry_hit_segments(s, chain.get(1).copied(), &frame, None);
-                (!segs.is_empty()).then(|| close_contours(&segs))
-            } else {
-                None
-            };
-            out.push(Node {
-                bx,
-                closed,
-                fill: filled(doc, s, &chain),
-            });
-        }
-        /// CLOSE each contour before the cast: the renderer fills the
-        /// implied closing edge too (an open M→L→L triangle fills its
-        /// diagonal), and the open cast counted crossings without it.
-        /// Contours break at pen-ups — a segment that does not begin where
-        /// the previous one ended — and never join across a MoveTo
-        /// (CodeRabbit round on #324 phase 3).
-        fn close_contours(segs: &[Seg]) -> Vec<Seg> {
-            let mut closed: Vec<Seg> = Vec::new();
-            let mut cur_start: Option<(f64, f64)> = None;
-            let mut prev_end: Option<(f64, f64)> = None;
-            for (a, b) in segs {
-                match (cur_start, prev_end) {
-                    (None, _) => cur_start = Some(*a),
-                    (Some(st), Some(pe)) => {
-                        if (pe.0 - a.0).abs() > 1e-9 || (pe.1 - a.1).abs() > 1e-9 {
-                            closed.push((pe, st));
-                            cur_start = Some(*a);
-                        }
-                    }
-                    (Some(st), None) => cur_start = Some(st),
-                }
-                closed.push((*a, *b));
-                prev_end = Some(*b);
-            }
-            if let (Some(st), Some(pe)) = (cur_start, prev_end) {
-                if (pe.0 - st.0).abs() > 1e-9 || (pe.1 - st.1).abs() > 1e-9 {
-                    closed.push((pe, st));
-                }
-            }
-            closed
-        }
-        let nodes = page
+        let tops = page
             .shapes
             .iter()
-            .map(|s| {
-                let guide = s.type_.as_deref() == Some("Guide");
-                let layer = s
+            .map(|s| TopNode {
+                shape: s,
+                layer: s
                     .sheet
                     .cell("LayerMember")
                     .and_then(|c| c.numeric())
-                    .map(|m| m as i64);
-                let mut out = Vec::new();
-                if !guide {
-                    collect(doc, s, &[], page_h, true, Affine::IDENTITY, &mut out);
-                }
-                TopNode {
-                    id: s.id,
-                    layer,
-                    guide,
-                    nodes: out
-                        .into_iter()
-                        .map(|n| IndexNode {
-                            bx: n.bx,
-                            closed: n.closed,
-                            fill: n.fill,
-                        })
-                        .collect(),
-                }
+                    .map(|m| m as i64),
+                guide: s.type_.as_deref() == Some("Guide"),
+                nodes: std::cell::OnceCell::new(),
             })
             .collect();
-        BackdropIndex { page_h, nodes }
+        BackdropIndex { doc, page_h, tops }
     }
 
     /// The color visible behind connector `below` at page point `at`
@@ -395,15 +211,15 @@ impl BackdropIndex {
     pub fn color_at(&self, at: (f64, f64), below: i64, hidden: &[i64]) -> (u8, u8, u8) {
         let pt = (at.0, self.page_h - at.1);
         let upto = self
-            .nodes
+            .tops
             .iter()
-            .position(|t| t.id == below)
-            .unwrap_or(self.nodes.len());
+            .position(|t| t.shape.id == below)
+            .unwrap_or(self.tops.len());
         // Topmost-first collection, then the painter's-algorithm blend:
         // each containing fill composites OVER the accumulated lower
         // backdrop until an opaque layer ends the search.
         let mut hits: Vec<(&str, f64)> = Vec::new();
-        'shapes: for t in self.nodes[..upto].iter().rev() {
+        'shapes: for t in self.tops[..upto].iter().rev() {
             if t.guide {
                 continue;
             }
@@ -413,7 +229,20 @@ impl BackdropIndex {
             if t.layer.is_some_and(|m| hidden.contains(&m)) {
                 continue;
             }
-            for n in &t.nodes {
+            let nodes = t.nodes.get_or_init(|| {
+                let mut out = Vec::new();
+                collect(
+                    self.doc,
+                    t.shape,
+                    &[],
+                    self.page_h,
+                    true,
+                    Affine::IDENTITY,
+                    &mut out,
+                );
+                out
+            });
+            for n in nodes {
                 let bx = n.bx;
                 let inside =
                     pt.0 >= bx.0 && pt.0 <= bx.0 + bx.2 && pt.1 >= bx.1 && pt.1 <= bx.1 + bx.3;
@@ -460,4 +289,169 @@ impl BackdropIndex {
         }
         acc
     }
+}
+
+/// The fill's color and ALPHA (1 − the chosen cell's
+/// transparency): a fully transparent fill is no fill; a partial
+/// one composites over whatever is lower (CodeRabbit round on
+/// #324 phase 3 — the old 0.5 threshold threw away a 0.75 panel
+/// and painted uncomposited color at 0.25).
+fn filled(doc: &Document, s: &Shape, chain: &[&Shape]) -> Option<(String, f64)> {
+    let sheet = doc.effective_sheet(s, chain);
+    let geos = sheet.sections_named("Geometry");
+    // A section the renderer skips (NoShow, the same rule
+    // `section_flag` reads) contributes no fill to the backdrop
+    // (CodeRabbit round on #324 phase 5).
+    let env = super::shape_env(doc, s, chain);
+    let any_fill = geos.iter().any(|g| {
+        // NoShow AND NoFill through the renderer's own
+        // `section_flag` rule (formula first, cached V as
+        // fallback) — a NoFill formula evaluating to 1 with a
+        // stale 0 cache paints nothing (CodeRabbit round on
+        // #324 phase 5).
+        !super::shape_layer::section_flag(g, "NoShow", &env)
+            && !super::shape_layer::section_flag(g, "NoFill", &env)
+            && g.rows.iter().any(|r| r.t.is_some())
+    });
+    if !any_fill {
+        return None;
+    }
+    let num_cell = |n: &str| doc.resolve_cell(s, chain, n).and_then(|c| c.numeric());
+    let pattern = num_cell("FillPattern").unwrap_or(1.0);
+    if pattern == 0.0 {
+        return None;
+    }
+    // Fill color per the RENDERER's own pattern rules
+    // (`hatch_fill`, #352): line hatches 2–7 draw fore strokes
+    // over the bkgnd ground (the ground dominates a gap's sample);
+    // patterns 8–23 are the dot/dither MIXES the renderer
+    // composites (8 ≈ ¾ foreground, the rest ½); 24–40 are
+    // gradients — the fore stop stands in (a single-color
+    // approximation); 0/1 are the solid fore (CodeRabbit round on
+    // #324 phase 5: pattern 8's backdrop used to sample the pure
+    // background against a rendered mix).
+    let pat = pattern.round() as i64;
+    // The painter's transparency rule (render_geometry): every
+    // non-gradient pattern 2-23 — line hatches AND the mixes —
+    // takes FillBkgndTrans; solids keep FillForegndTrans
+    // (CodeRabbit round on #324 phase 5: an opaque mixed fill was
+    // discarded in favor of the lower backdrop).
+    let alpha = 1.0
+        - num_cell(if (2..=23).contains(&pat) {
+            "FillBkgndTrans"
+        } else {
+            "FillForegndTrans"
+        })
+        .unwrap_or(0.0);
+    if alpha <= 0.0 {
+        return None;
+    }
+    if (8..=23).contains(&pat) {
+        let k = if pat == 8 { 0.75 } else { 0.5 };
+        let (fa, fb) = (
+            hex_rgb(&themed_color_string(doc, s, chain, "FillForegnd")),
+            hex_rgb(&themed_color_string(doc, s, chain, "FillBkgnd")),
+        );
+        let mix = |x: u8, y: u8| (f64::from(x) * k + f64::from(y) * (1.0 - k)).round() as u8;
+        return Some((
+            format!(
+                "#{:02x}{:02x}{:02x}",
+                mix(fa.0, fb.0),
+                mix(fa.1, fb.1),
+                mix(fa.2, fb.2)
+            ),
+            alpha,
+        ));
+    }
+    let cell = if (2..=7).contains(&pat) {
+        "FillBkgnd"
+    } else {
+        "FillForegnd"
+    };
+    Some((themed_color_string(doc, s, chain, cell), alpha))
+}
+/// The walk, run ONCE per top-level shape: every node in the order the old
+/// per-hop walk visited it (later children first, then the parent),
+/// so a lookup reproduces its hits exactly (#389: the per-hop walk
+/// recomputed every ink box for every hop, every frame).
+#[allow(clippy::too_many_arguments)] // the walk carries its whole environment
+fn collect(
+    doc: &Document,
+    s: &Shape,
+    chain: &[&Shape],
+    page_h: f64,
+    top: bool,
+    to_page: Affine,
+    out: &mut Vec<IndexNode>,
+) {
+    let mut chain: Vec<&Shape> = chain.to_vec();
+    chain.push(s);
+    let (bx, a) = node_ink_box(doc, s, &chain, page_h, top, to_page);
+    // Later children paint over earlier ones and over the parent.
+    for sub in s.sub_shapes.iter().rev() {
+        collect(doc, sub, &chain, page_h, false, a, out);
+    }
+    // The ink box only REJECTS — a triangle's empty corner is
+    // inside its box but outside its fill, and the gap would paint
+    // a color nothing draws there (CodeRabbit round on #324 phase
+    // 3). TOP-LEVEL shapes get the exact test: an even-odd ray
+    // cast over the same flattened geometry the crossing set
+    // walks. Group children keep the box alone — their frames are
+    // parent-local here, and panels behind hops are top-level.
+    let closed = if top {
+        let msize = s
+            .master
+            .and_then(|mid| doc.master(mid))
+            .and_then(|m| m.shapes.first())
+            .map(|root| {
+                let g = |n: &str| {
+                    doc.resolve_cell(root, &[root], n)
+                        .and_then(|c| c.numeric())
+                        .unwrap_or(1.0)
+                };
+                (g("Width"), g("Height"))
+            })
+            .unwrap_or((1.0, 1.0));
+        let frame = crate::geom::hit_frame(doc, &chain, s, msize);
+        let segs = crate::geom::geometry_hit_segments(s, chain.get(1).copied(), &frame, None);
+        (!segs.is_empty()).then(|| close_contours(&segs))
+    } else {
+        None
+    };
+    out.push(IndexNode {
+        bx,
+        closed,
+        fill: filled(doc, s, &chain),
+    });
+}
+/// CLOSE each contour before the cast: the renderer fills the
+/// implied closing edge too (an open M→L→L triangle fills its
+/// diagonal), and the open cast counted crossings without it.
+/// Contours break at pen-ups — a segment that does not begin where
+/// the previous one ended — and never join across a MoveTo
+/// (CodeRabbit round on #324 phase 3).
+fn close_contours(segs: &[Seg]) -> Vec<Seg> {
+    let mut closed: Vec<Seg> = Vec::new();
+    let mut cur_start: Option<(f64, f64)> = None;
+    let mut prev_end: Option<(f64, f64)> = None;
+    for (a, b) in segs {
+        match (cur_start, prev_end) {
+            (None, _) => cur_start = Some(*a),
+            (Some(st), Some(pe)) => {
+                if (pe.0 - a.0).abs() > 1e-9 || (pe.1 - a.1).abs() > 1e-9 {
+                    closed.push((pe, st));
+                    cur_start = Some(*a);
+                }
+            }
+            (Some(st), None) => cur_start = Some(st),
+        }
+        closed.push((*a, *b));
+        prev_end = Some(*b);
+    }
+    if let (Some(st), Some(pe)) = (cur_start, prev_end) {
+        if (pe.0 - st.0).abs() > 1e-9 || (pe.1 - st.1).abs() > 1e-9 {
+            closed.push((pe, st));
+        }
+    }
+    closed
 }

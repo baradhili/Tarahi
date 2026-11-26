@@ -725,10 +725,24 @@ fn jump_overlay_is_cached_until_the_document_changes() {
         fresh.len(),
         "an edit recomputes"
     );
+    // A test hook that writes geometry outside the command layer bumps
+    // the version too (CodeRabbit on PR #391).
+    let (pid, sid) = {
+        let doc = &app.ed.as_ref().unwrap().doc;
+        let page = &doc.pages[app.page_idx];
+        (page.id, page.shapes[0].id)
+    };
+    app.jump_fx_cache = Some((app.jump_fx_cache.as_ref().unwrap().0.clone(), Vec::new()));
+    app.debug_set_geo_row_for_test(pid, sid, 0, 1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]);
+    assert!(
+        !app.jump_fx_cached(r, &[999]).is_empty(),
+        "a hook write recomputes"
+    );
     // The index-backed pass matches the per-hop lookup it replaced.
     let doc = &app.ed.as_ref().unwrap().doc;
     let page = &doc.pages[app.page_idx];
     let jumps = dc::geom::page_jumps(doc, page, &[]);
+    assert_eq!(fresh.len(), jumps.len(), "one effect per hop");
     for (fx, j) in fresh.iter().zip(&jumps) {
         let (gr, gg, gb) = dc::svg::backdrop_color_at(doc, page, j.at, j.jumper, &[]);
         assert_eq!(fx.gap_color, egui::Color32::from_rgb(gr, gg, gb));
