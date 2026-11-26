@@ -197,7 +197,18 @@ fn render_page_full(
             // label re-renders below in a twin group outside every
             // clip: the hop cuts the SHAFT, never the label's
             // background or glyphs (CodeRabbit round on #324 phase 3).
-            skip_text.or_else(|| (!cuts.is_empty()).then_some(shape.id)),
+            // Track the two text suppressions INDEPENDENTLY: a
+            // jumper's label never paints inside the clips (the twin
+            // group below owns it), while the caller's own skip — the
+            // in-place editor's shape — still applies to non-jumpers
+            // and keeps the twin from painting over the editor's copy
+            // (CodeRabbit round on #324 phase 3: an editor-selected
+            // shape 2 used to let jumper 1's label paint twice).
+            if cuts.is_empty() {
+                skip_text
+            } else {
+                Some(shape.id)
+            },
             None,
             None,
             Some(&fields),

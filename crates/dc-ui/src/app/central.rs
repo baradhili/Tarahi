@@ -434,7 +434,13 @@ impl App {
         let jump_fx: Vec<canvas::JumpFx> = if jump_radius.0 > 0.0 || jump_radius.1 > 0.0 {
             let doc = &self.ed.as_ref().unwrap().doc;
             let page = &doc.pages[self.page_idx];
-            crate::connectors::line_jumps(&self.jump_lines(), jump_radius)
+            // THE crossing set (#336): the canvas draws from the same
+            // `page_jumps` computation as the export and the
+            // reconciliation — the page's own jump rules
+            // (`LineJumpCode`, `ConLineJumpCode`), the straight-run
+            // eligibility, the hidden-layer skips — never a
+            // canvas-private re-crossing that could drift.
+            dc::geom::page_jumps(doc, page, &hidden)
                 .into_iter()
                 .map(|j| {
                     // The gap paints the BACKDROP — the fill of the

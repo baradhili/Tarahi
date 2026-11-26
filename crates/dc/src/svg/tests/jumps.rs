@@ -542,3 +542,49 @@ fn backdrop_reads_the_fill_not_the_ink_box() {
         "the box's empty corner reads the page's white"
     );
 }
+
+/// A PARTIALLY transparent panel composites its fill over the lower
+/// backdrop instead of painting uncomposited color or being discarded
+/// (CodeRabbit round on #324 phase 3): red at `FillForegndTrans` 0.25
+/// over nothing reads red·0.75 + white·0.25.
+#[test]
+fn backdrop_composites_partial_transparency() {
+    let mut p = shape_at(1, (2.0, 2.0), 2.0, 2.0, 0.0);
+    p.sheet.set_cell("FillForegnd", Cell::value("#ff0000"));
+    p.sheet.set_cell("FillForegndTrans", Cell::value("0.25"));
+    let mut sec = Section {
+        name: "Geometry".into(),
+        ix: 0,
+        ..Section::default()
+    };
+    let row = |ix: i64, x: f64, y: f64| Row {
+        t: Some("LineTo".into()),
+        ix,
+        cells: vec![
+            ("X".to_string(), Cell::value(format!("{x}"))),
+            ("Y".to_string(), Cell::value(format!("{y}"))),
+        ],
+        ..Row::default()
+    };
+    sec.rows = vec![
+        Row {
+            t: Some("MoveTo".into()),
+            ix: 1,
+            cells: vec![
+                ("X".to_string(), Cell::value("0")),
+                ("Y".to_string(), Cell::value("0")),
+            ],
+            ..Row::default()
+        },
+        row(2, 2.0, 0.0),
+        row(3, 0.0, 2.0),
+    ];
+    p.sheet.children.push(SheetChild::Section(sec));
+    let c = shape_at(2, (2.0, 2.0), 2.0, 0.0, 0.0);
+    let (doc, page) = page_fixture(vec![p, c]);
+    assert_eq!(
+        crate::svg::backdrop_color_at(&doc, &page, (1.3, 1.3), 2, &[]),
+        (0xff, 0x40, 0x40),
+        "0.75 red over white: the blend, not raw red"
+    );
+}

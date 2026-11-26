@@ -667,10 +667,7 @@ fn fit_initials_to_avatar(ctx: &egui::Context, initials: &str) -> (String, f32) 
             job.append(
                 text,
                 0.0,
-                egui::TextFormat::simple(
-                    egui::FontId::proportional(size),
-                    Color32::WHITE,
-                ),
+                egui::TextFormat::simple(egui::FontId::proportional(size), Color32::WHITE),
             );
             f.layout_job(job)
         })
@@ -1182,29 +1179,12 @@ fn classify_dbl_click(formula: Option<&str>) -> DblClick {
     }
 }
 
-/// "#rrggbb" → rgb triple (the renderer's resolved color form);
-/// None on malformed values (#108 line jumps).
-fn parse_hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
-    let h = s.trim_start_matches('#');
-    if h.len() == 6 {
-        if let Ok(v) = u32::from_str_radix(h, 16) {
-            return Some((
-                ((v >> 16) & 0xff) as u8,
-                ((v >> 8) & 0xff) as u8,
-                (v & 0xff) as u8,
-            ));
-        }
-    }
-    None
-}
-
 /// #156: a stencil's master by NameU (SDCONT's gallery names).
 fn find_master_by_name<'a>(doc: &'a Document, name: &str) -> Option<&'a vsdx::Master> {
     doc.masters
         .iter()
         .find(|m| m.name_u.as_deref() == Some(name))
 }
-
 
 // --- module split (move-only): the impl blocks live in the files below;
 // --- every type and free helper above keeps its original path, so

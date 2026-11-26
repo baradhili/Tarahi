@@ -126,7 +126,12 @@ pub fn backdrop_color_at(
 ) -> (u8, u8, u8) {
     let page_h = num(page.sheet().and_then(|s| s.cell("PageHeight"))).unwrap_or(11.0);
     let pt = (at.0, page_h - at.1);
-    fn filled(doc: &Document, s: &Shape, chain: &[&Shape]) -> Option<String> {
+    /// The fill's color and ALPHA (1 − the chosen cell's
+    /// transparency): a fully transparent fill is no fill; a partial
+    /// one composites over whatever is lower (CodeRabbit round on
+    /// #324 phase 3 — the old 0.5 threshold threw away a 0.75 panel
+    /// and painted uncomposited color at 0.25).
+    fn filled(doc: &Document, s: &Shape, chain: &[&Shape]) -> Option<(String, f64)> {
         let sheet = doc.effective_sheet(s, chain);
         let geos = sheet.sections_named("Geometry");
         let any_fill = geos.iter().any(|g| {
@@ -140,16 +145,28 @@ pub fn backdrop_color_at(
         }
         let num_cell = |n: &str| doc.resolve_cell(s, chain, n).and_then(|c| c.numeric());
         let pattern = num_cell("FillPattern").unwrap_or(1.0);
-        if pattern == 0.0 || num_cell("FillForegndTrans").unwrap_or(0.0) >= 0.5 {
+        if pattern == 0.0 {
             return None;
         }
-        let cell = if pattern > 1.5 && !(24.0..=40.0).contains(&pattern) {
+        let background = pattern > 1.5 && !(24.0..=40.0).contains(&pattern);
+        let cell = if background {
             "FillBkgnd"
         } else {
             "FillForegnd"
         };
-        Some(themed_color_string(doc, s, chain, cell))
+        let alpha = 1.0
+            - num_cell(if background {
+                "FillBkgndTrans"
+            } else {
+                "FillForegndTrans"
+            })
+            .unwrap_or(0.0);
+        if alpha <= 0.0 {
+            return None;
+        }
+        Some((themed_color_string(doc, s, chain, cell), alpha))
     }
+    #[allow(clippy::too_many_arguments)] // the walk carries its whole environment
     fn walk(
         doc: &Document,
         s: &Shape,
@@ -158,19 +175,18 @@ pub fn backdrop_color_at(
         top: bool,
         to_page: Affine,
         pt: (f64, f64),
-    ) -> Option<String> {
+        out: &mut Vec<(String, f64)>,
+    ) {
         let mut chain: Vec<&Shape> = chain.to_vec();
         chain.push(s);
         let (bx, a) = node_ink_box(doc, s, &chain, page_h, top, to_page);
         // Later children paint over earlier ones and over the parent.
         for sub in s.sub_shapes.iter().rev() {
-            if let Some(c) = walk(doc, sub, &chain, page_h, false, a, pt) {
-                return Some(c);
-            }
+            walk(doc, sub, &chain, page_h, false, a, pt, out);
         }
         let inside = pt.0 >= bx.0 && pt.0 <= bx.0 + bx.2 && pt.1 >= bx.1 && pt.1 <= bx.1 + bx.3;
         if !inside {
-            return None;
+            return;
         }
         // The ink box only REJECTS — a triangle's empty corner is
         // inside its box but outside its fill, and the gap would paint
@@ -207,17 +223,23 @@ pub fn backdrop_color_at(
                     }
                 }
                 if !in_fill {
-                    return None;
+                    return;
                 }
             }
         }
-        filled(doc, s, &chain)
+        if let Some(hit) = filled(doc, s, &chain) {
+            out.push(hit);
+        }
     }
     let upto = page
         .shapes
         .iter()
         .position(|s| s.id == below)
         .unwrap_or(page.shapes.len());
+    // Topmost-first collection, then the painter's-algorithm blend:
+    // each containing fill composites OVER the accumulated lower
+    // backdrop until an opaque layer ends the search.
+    let mut acc = (0xffu8, 0xffu8, 0xffu8);
     for s in page.shapes[..upto].iter().rev() {
         if s.type_.as_deref() == Some("Guide") {
             continue;
@@ -233,9 +255,19 @@ pub fn backdrop_color_at(
         {
             continue;
         }
-        if let Some(c) = walk(doc, s, &[], page_h, true, Affine::IDENTITY, pt) {
-            return hex_rgb(&c);
+        let mut out = Vec::new();
+        walk(doc, s, &[], page_h, true, Affine::IDENTITY, pt, &mut out);
+        for (color, alpha) in out {
+            let c = hex_rgb(&color);
+            acc = (
+                (c.0 as f64 * alpha + acc.0 as f64 * (1.0 - alpha)).round() as u8,
+                (c.1 as f64 * alpha + acc.1 as f64 * (1.0 - alpha)).round() as u8,
+                (c.2 as f64 * alpha + acc.2 as f64 * (1.0 - alpha)).round() as u8,
+            );
+            if alpha >= 0.999 {
+                return acc;
+            }
         }
     }
-    (0xff, 0xff, 0xff)
+    acc
 }
