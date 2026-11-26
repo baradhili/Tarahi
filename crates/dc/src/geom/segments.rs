@@ -520,6 +520,22 @@ pub fn geometry_hit_segments_straight(
                 }
             }
             "PolylineTo" => {
+                // The EFFECTIVE A: an instance row may omit it and
+                // inherit the master's stored-hop controls — the same
+                // chain fallback the reconcile reads. ONE read feeds
+                // both the classifier and the vertex emission, so a
+                // recognized hop straightens and an authored polyline
+                // still draws its controls (CodeRabbit round on #324
+                // phase 5).
+                let a_text = row
+                    .cell("A")
+                    .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                    .or_else(|| {
+                        (*master)
+                            .and_then(|m| m.cell("A"))
+                            .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                    })
+                    .unwrap_or_default();
                 // A RECOGNIZED stored styled hop (#324 phase 4 —
                 // percentage controls over a 2r slot, collinear runs
                 // both sides) straightens like an arc row: the route
@@ -573,20 +589,6 @@ pub fn geometry_hit_segments_straight(
                             }
                             ni += 1;
                         }
-                        // The EFFECTIVE A: an instance row may omit
-                        // it and inherit the master's stored-hop
-                        // controls — the same chain fallback the
-                        // reconcile reads (CodeRabbit round on #324
-                        // phase 5). Missing/malformed stays ineligible.
-                        let a_text = row
-                            .cell("A")
-                            .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
-                            .or_else(|| {
-                                (*master)
-                                    .and_then(|m| m.cell("A"))
-                                    .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
-                            })
-                            .unwrap_or_default();
                         let (rx, ry) = strip_stored_jumps.unwrap_or((0.0, 0.0));
                         stored = is_stored_jump_polyline(
                             &a_text, c0s, d_class, prev_dir, next_dir, frame.size, rx, ry,
@@ -611,11 +613,9 @@ pub fn geometry_hit_segments_straight(
                 // axis (type 0) lands in the frame's own dims, an
                 // absolute axis takes only the scale. Crossings then
                 // see the bends the renderer draws, not the chord
-                // (Greptile on PR #329).
-                let a_text = row
-                    .cell("A")
-                    .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
-                    .unwrap_or_default();
+                // (Greptile on PR #329). The SAME effective A the
+                // classifier read — an inherited hop's controls
+                // straighten in the hit walk exactly as they draw.
                 if !stored {
                     if let Some((xt, yt, verts)) = crate::curve::parse_polyline(&a_text) {
                         let fx = if xt == 0.0 { frame.size.0 } else { scale.0 };

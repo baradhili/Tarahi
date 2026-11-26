@@ -191,8 +191,13 @@ pub fn backdrop_color_at(
         // #324 phase 5: pattern 8's backdrop used to sample the pure
         // background against a rendered mix).
         let pat = pattern.round() as i64;
+        // The painter's transparency rule (render_geometry): every
+        // non-gradient pattern 2-23 — line hatches AND the mixes —
+        // takes FillBkgndTrans; solids keep FillForegndTrans
+        // (CodeRabbit round on #324 phase 5: an opaque mixed fill was
+        // discarded in favor of the lower backdrop).
         let alpha = 1.0
-            - num_cell(if (2..=7).contains(&pat) {
+            - num_cell(if (2..=23).contains(&pat) {
                 "FillBkgndTrans"
             } else {
                 "FillForegndTrans"

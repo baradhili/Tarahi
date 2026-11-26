@@ -868,12 +868,21 @@ pub fn plan_connector_frame(
     // reconcile stores hops on a master-based line connector, its
     // ArcTo rows must not push it onto the curve-translate path —
     // CodeRabbit on the #303 batch).
+    // The hop-percentage frame: the connector's own (signed) W/H.
+    let conn_wh = {
+        let dim = |n: &str| {
+            doc.resolve_cell(conn, &[], n)
+                .and_then(|c| c.numeric())
+                .unwrap_or(0.0)
+        };
+        (dim("Width"), dim("Height"))
+    };
     let line_frame = conn.master.is_some()
         && conn
             .sheet
             .sections_named("Geometry")
             .first()
-            .is_some_and(|g| route_owned_rows(g, &master_rows, jump_radii));
+            .is_some_and(|g| route_owned_rows(g, &master_rows, jump_radii, conn_wh));
     // #226 (MisterDiagram parity evidence): the CHORD-frame
     // masters — a master-based curve connector whose
     // inherited geometry rows derive their coordinates from
@@ -1166,7 +1175,7 @@ pub fn plan_connector_frame(
                 .sheet
                 .sections_named("Geometry")
                 .first()
-                .is_some_and(|g| route_owned_rows(g, &master_rows, jump_radii));
+                .is_some_and(|g| route_owned_rows(g, &master_rows, jump_radii, conn_wh));
         let grow = (route4 || overgrown) && !existing.is_empty() && rows_owned && frame_spans;
         let mut planned: Vec<(i64, f64, f64)> = rows
             .iter()
@@ -1304,6 +1313,7 @@ fn route_owned_rows(
     g: &vsdx::model::Section,
     master_rows: &[vsdx::model::Row],
     radii: (f64, f64),
+    size: (f64, f64),
 ) -> bool {
     let live: Vec<&vsdx::model::Row> = g.rows.iter().filter(|r| !r.is_deleted()).collect();
     if live.is_empty() {
@@ -1365,12 +1375,17 @@ fn route_owned_rows(
             }
             continue;
         }
-        if t != Some("ArcTo") {
+        // A stored jump: literal A + endpoint, on a run that
+        // continues on both sides, at the page-radius evidence — the
+        // hop's own row family (ArcTo, or the styled POLYLINE
+        // percentage form, #324 phase 4: a saved-square connector
+        // reroutes on endpoint moves like a saved-arc one, while
+        // authored polylines stay out — CodeRabbit round on #324
+        // phase 5).
+        if t != Some("ArcTo") && t != Some("PolylineTo") {
             return false;
         }
-        // A stored jump: literal A + endpoint, a semicircle on a run
-        // that continues on both sides, at the page-radius evidence.
-        let (Some(a), Some(end)) = (lit(r, "A"), pt(r)) else {
+        let Some(end) = pt(r) else {
             return false;
         };
         let Some(start) = i.checked_sub(1).and_then(|p| pt(live[p])) else {
@@ -1408,6 +1423,36 @@ fn route_owned_rows(
             }
             n += 1;
         }
+        if t == Some("PolylineTo") {
+            // The A cell carries the POLYLINE formula string (not a
+            // numeric) — through the chain, like the reconcile reads
+            // it.
+            let a_text = r
+                .cell("A")
+                .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                .or_else(|| {
+                    master_row(r.ix)
+                        .and_then(|m| m.cell("A"))
+                        .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                })
+                .unwrap_or_default();
+            if !dc::geom::is_stored_jump_polyline(
+                &a_text,
+                start,
+                (end.0 - start.0, end.1 - start.1),
+                prev_dir,
+                next_dir,
+                size,
+                radii.0,
+                radii.1,
+            ) {
+                return false;
+            }
+            continue;
+        }
+        let Some(a) = lit(r, "A") else {
+            return false;
+        };
         if !dc::geom::is_stored_jump_arc(
             a,
             (end.0 - start.0, end.1 - start.1),
@@ -2264,17 +2309,19 @@ impl Command for ReconcileLineJumps {
                                 let prev2 = if ri >= 2 { lit_xy(ri - 2) } else { None };
                                 let next2 = lit_xy(ri + 2).or_else(|| lit_xy(ri + 3));
                                 let skip = (mx.0 - p0.0, mx.1 - p0.1);
-                                // The outgoing run: from the NEXT row's
-                                // endpoint toward the one after it — or,
-                                // when the gap lands on the route's last
-                                // row (the generated 4-row form), from
-                                // the gap's own end onward (CodeRabbit
-                                // round on #324 phase 5: `n1 → next2`
-                                // alone passed None and froze every
-                                // saved gap).
-                                let next_dir = next2
-                                    .and_then(|n2| dir_of(n1, n2))
-                                    .or_else(|| dir_of(mx, n1));
+                                // The outgoing run: from the gap's own
+                                // end toward the next distinct endpoint
+                                // (`mx → n1`) — the run LEAVING the gap.
+                                // `n1 → n2` is the direction AFTER the
+                                // next vertex: on a route that turns
+                                // there it points away from the gap and
+                                // the collinearity test would freeze
+                                // every stored gap on a turned segment.
+                                // `mx → n2` covers a degenerate `n1`
+                                // (a zero-length row ON the gap's end).
+                                // (CodeRabbit rounds on #324 phase 5.)
+                                let next_dir =
+                                    dir_of(mx, n1).or_else(|| next2.and_then(|n2| dir_of(mx, n2)));
                                 gap_row = dc::geom::is_stored_jump_gap(
                                     skip,
                                     prev2.and_then(|p| dir_of(p, p0)),
@@ -2397,7 +2444,13 @@ impl Command for ReconcileLineJumps {
             // (collapsing a straight route's degenerate elbows).
             let my_hops: Vec<dc::geom::Jump> =
                 hops.iter().filter(|j| j.jumper == s.id).copied().collect();
-            if plain.len() == stripped.len() && my_hops.is_empty() {
+            // The no-op fast path also requires no stored-gap rows:
+            // plain == stripped holds for a saved gap (the MoveTo
+            // walks identically with and without the strip radii), so
+            // skipping here would freeze a gap whose crossing is gone
+            // or whose jumps are hidden — exactly the rows the
+            // rewrite straightens (CodeRabbit round on #324 phase 5).
+            if plain.len() == stripped.len() && my_hops.is_empty() && gap_movetos == 0 {
                 continue;
             }
             let mut pts: Vec<(f64, f64)> = Vec::with_capacity(stripped.len() + 1);
@@ -4909,6 +4962,24 @@ mod reconcile_jump_tests {
                 assert!((cell(b, n) - cell(a, n)).abs() < 1e-9);
             }
         }
+        // HIDE straightens a saved gap like an arc: the crossing set
+        // empties (LineJumpCode 0) and the reconcile flattens the gap
+        // rows to the bare route — the no-op fast path must not
+        // freeze them (CodeRabbit round on #324 phase 5).
+        ed.apply(dc_core::SetCell::new(
+            dc_core::Scope::PageSheet { page: page_id },
+            "LineJumpCode",
+            VCell::value("0"),
+        ))
+        .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let hidden = rows_of(&ed, 5);
+        let kinds: Vec<&str> = hidden.iter().map(|r| r.t.as_deref().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            vec!["MoveTo", "LineTo"],
+            "the hidden gap straightens: {hidden:?}"
+        );
     }
 
     /// #303 item 2: the stale stored arc drops and the hop lands at
