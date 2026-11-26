@@ -248,7 +248,7 @@ pub fn geometry_hit_segments_straight(
     // The master fallback rode the FIRST pass: every control read the
     // second pass makes is the captured per-row value (the round-3
     // review — a post-pass env read would sample later rows' feeds).
-    for (k, (row, _master, _gname, t, end_local, end, ca, cb, cc, cd)) in
+    for (k, (row, master, _gname, t, end_local, end, ca, cb, cc, cd)) in
         evald.iter().take(MAX_WALK_ROWS).enumerate()
     {
         let t = t.as_str();
@@ -566,9 +566,19 @@ pub fn geometry_hit_segments_straight(
                             }
                             ni += 1;
                         }
+                        // The EFFECTIVE A: an instance row may omit
+                        // it and inherit the master's stored-hop
+                        // controls — the same chain fallback the
+                        // reconcile reads (CodeRabbit round on #324
+                        // phase 5). Missing/malformed stays ineligible.
                         let a_text = row
                             .cell("A")
                             .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                            .or_else(|| {
+                                (*master)
+                                    .and_then(|m| m.cell("A"))
+                                    .and_then(|c| c.v.clone().or_else(|| c.f.clone()))
+                            })
                             .unwrap_or_default();
                         let (rx, ry) = strip_stored_jumps.unwrap_or((0.0, 0.0));
                         stored = is_stored_jump_polyline(

@@ -1980,12 +1980,16 @@ pub fn show(
         // 3. the hop arc — the export's own direction rule (a
         // horizontal-class jumper bulges up on screen, a
         // vertical-class one left — the b01 witness, #322); page y-up
-        // → screen y-down.
+        // → screen y-down. Gap paints nothing after the gap stroke —
+        // the feet-only path would redraw the shaft the gap erased
+        // (CodeRabbit round on #324 phase 5).
+        if let dc::geom::JumpStyle::Gap = j.style {
+            continue;
+        }
         let np = dc::svg::jump_normal(j.dir);
         let n = Vec2::new(np.0 as f32, -(np.1 as f32));
         // The bump's vertices between the slot feet, per style — the
-        // export painter's dispatch (Gap draws nothing: the cut slot
-        // is the whole treatment, #324 phase 4).
+        // export painter's dispatch (#324 phase 4).
         let bump = |ang: f32| at - dir * r * ang.cos() + n * r * ang.sin();
         let lead = |s: f32| at + dir * s * (r + w * 0.5);
         let mids: Vec<egui::Pos2> = match j.style {

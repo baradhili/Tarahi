@@ -478,7 +478,10 @@ fn export_cuts_overlapping_hop_slots_apart() {
         "two hop arcs: {svg}"
     );
     // The jumper's clips NEST: one group per hop (the outer id, then
-    // the -1 twin), so the intersection cuts both slots.
+    // the -1 twin), so the intersection cuts both slots — and the
+    // shaft renders INSIDE both referencing groups (definitions alone
+    // would pass a render that never clips, CodeRabbit round on
+    // #324 phase 5).
     assert_eq!(
         svg.matches(r#"<clipPath id="dc-jumpcut1""#).count(),
         1,
@@ -488,6 +491,21 @@ fn export_cuts_overlapping_hop_slots_apart() {
         svg.matches(r#"<clipPath id="dc-jumpcut1-1""#).count(),
         1,
         "the nested second-hop clip"
+    );
+    // Both referencing groups exist and NEST: the outer group stays
+    // open when the inner one opens (nothing closes it between), so
+    // the connector's ink inside the inner group is clipped by BOTH
+    // slots.
+    let outer = svg
+        .find(r#"<g clip-path="url(#dc-jumpcut1)">"#)
+        .expect("the outer referencing group");
+    let inner = svg
+        .find(r#"<g clip-path="url(#dc-jumpcut1-1)">"#)
+        .expect("the nested referencing group");
+    let outer_closed = svg[outer..].find("</g>").expect("the outer group closes");
+    assert!(
+        outer < inner && inner < outer + outer_closed,
+        "the inner group opens while the outer is still open"
     );
 }
 

@@ -1980,7 +1980,13 @@ fn reconciled_rows(
                     let n_anchor =
                         to_local((a.0 + dir.0 * t + n_p.0 * r, a.1 + dir.1 * t + n_p.1 * r));
                     let nl = ((n_anchor.0 - at_l.0) / r, (n_anchor.1 - at_l.1) / r);
-                    let d = (dir.0, dir.1); // the run's page unit, rigid in local
+                    // The tangent in the SAME frame as at_l/nl: the
+                    // normalized LOCAL chord direction. The page-space
+                    // `dir` would rotate under the frame and write the
+                    // square/sides controls off the run (CodeRabbit
+                    // round on #324 phase 5).
+                    let dl = ldir.0.hypot(ldir.1).max(1e-9);
+                    let d = (ldir.0 / dl, ldir.1 / dl);
                     let verts: Vec<(f64, f64)> = match hop_style {
                         dc::geom::JumpStyle::Square => vec![
                             (at_l.0 - d.0 * r + nl.0 * r, at_l.1 - d.1 * r + nl.1 * r),
@@ -2218,7 +2224,19 @@ impl Command for ReconcileLineJumps {
             let mut poly_extra = 0usize;
             let mut movetos = 0usize;
             let mut owned = true;
-            for r in &live {
+            // Neighbor literals for the stored-gap classification: the
+            // live rows' chain-resolved X/Y, indexed against `live`.
+            let lit_xy = |idx: usize| -> Option<(f64, f64)> {
+                let r = live.get(idx)?;
+                Some((lit(r, "X")?, lit(r, "Y")?))
+            };
+            let dir_of = |a: (f64, f64), b: (f64, f64)| -> Option<(f64, f64)> {
+                let d = (b.0 - a.0, b.1 - a.1);
+                let l = d.0.hypot(d.1);
+                (l > 1e-9).then(|| (d.0 / l, d.1 / l))
+            };
+            let mut gap_row;
+            for (ri, r) in live.iter().enumerate() {
                 // The EFFECTIVE type (a typeless local row inherits
                 // its master row's type — a None-`T` override over a
                 // master `CubicBezTo` is a curve, CodeRabbit on the
@@ -2228,11 +2246,36 @@ impl Command for ReconcileLineJumps {
                         .or_else(|| master_row(r.ix).and_then(|m| m.t.as_deref()));
                 match t {
                     Some("MoveTo") | Some("RelMoveTo") => {
+                        // A RECOGNIZED stored gap (#324 phase 4 —
+                        // collinear skip ≈ 2·radius) is OUR row: the
+                        // rewrite restores the skeleton across it, so
+                        // it must not trip the multi-stroke safeguard
+                        // or a saved gap could never be hidden,
+                        // restyled, or straightened (CodeRabbit round
+                        // on #324 phase 5). Genuine authored stroke
+                        // breaks keep the safeguard.
+                        gap_row = false;
+                        if movetos > 0 && !r.is_deleted() {
+                            let prev = if ri >= 1 { lit_xy(ri - 1) } else { None };
+                            let next = lit_xy(ri + 1).or_else(|| lit_xy(ri + 2));
+                            if let (Some(p0), Some(mx), Some(n1)) = (prev, lit_xy(ri), next) {
+                                let prev2 = if ri >= 2 { lit_xy(ri - 2) } else { None };
+                                let next2 = lit_xy(ri + 2).or_else(|| lit_xy(ri + 3));
+                                let skip = (mx.0 - p0.0, mx.1 - p0.1);
+                                gap_row = dc::geom::is_stored_jump_gap(
+                                    skip,
+                                    prev2.and_then(|p| dir_of(p, p0)),
+                                    next2.and_then(|n| dir_of(n1, n)),
+                                    strip.0,
+                                    strip.1,
+                                );
+                            }
+                        }
+                        if movetos > 0 && !gap_row {
+                            owned = false;
+                            break;
+                        }
                         movetos += 1;
-                        // Straight rows must read literal coordinates
-                        // through the chain — a formula (`X=Width`) is
-                        // authored tracking and must survive the
-                        // rewrite.
                         if lit(r, "X").is_none() || lit(r, "Y").is_none() {
                             owned = false;
                             break;

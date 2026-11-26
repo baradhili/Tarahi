@@ -159,10 +159,15 @@ pub fn backdrop_color_at(
     fn filled(doc: &Document, s: &Shape, chain: &[&Shape]) -> Option<(String, f64)> {
         let sheet = doc.effective_sheet(s, chain);
         let geos = sheet.sections_named("Geometry");
+        // A section the renderer skips (NoShow, the same rule
+        // `section_flag` reads) contributes no fill to the backdrop
+        // (CodeRabbit round on #324 phase 5).
+        let env = super::shape_env(doc, s, chain);
         let any_fill = geos.iter().any(|g| {
-            g.cell("NoFill")
-                .and_then(|c| c.numeric())
-                .is_none_or(|v| v == 0.0)
+            !super::shape_layer::section_flag(g, "NoShow", &env)
+                && g.cell("NoFill")
+                    .and_then(|c| c.numeric())
+                    .is_none_or(|v| v == 0.0)
                 && g.rows.iter().any(|r| r.t.is_some())
         });
         if !any_fill {
@@ -173,14 +178,18 @@ pub fn backdrop_color_at(
         if pattern == 0.0 {
             return None;
         }
-        let background = pattern > 1.5 && !(24.0..=40.0).contains(&pattern);
-        let cell = if background {
-            "FillBkgnd"
-        } else {
-            "FillForegnd"
-        };
+        // Fill color per the RENDERER's own pattern rules
+        // (`hatch_fill`, #352): line hatches 2–7 draw fore strokes
+        // over the bkgnd ground (the ground dominates a gap's sample);
+        // patterns 8–23 are the dot/dither MIXES the renderer
+        // composites (8 ≈ ¾ foreground, the rest ½); 24–40 are
+        // gradients — the fore stop stands in (a single-color
+        // approximation); 0/1 are the solid fore (CodeRabbit round on
+        // #324 phase 5: pattern 8's backdrop used to sample the pure
+        // background against a rendered mix).
+        let pat = pattern.round() as i64;
         let alpha = 1.0
-            - num_cell(if background {
+            - num_cell(if (2..=7).contains(&pat) {
                 "FillBkgndTrans"
             } else {
                 "FillForegndTrans"
@@ -189,6 +198,28 @@ pub fn backdrop_color_at(
         if alpha <= 0.0 {
             return None;
         }
+        if (8..=23).contains(&pat) {
+            let k = if pat == 8 { 0.75 } else { 0.5 };
+            let (fa, fb) = (
+                hex_rgb(&themed_color_string(doc, s, chain, "FillForegnd")),
+                hex_rgb(&themed_color_string(doc, s, chain, "FillBkgnd")),
+            );
+            let mix = |x: u8, y: u8| (f64::from(x) * k + f64::from(y) * (1.0 - k)).round() as u8;
+            return Some((
+                format!(
+                    "#{:02x}{:02x}{:02x}",
+                    mix(fa.0, fb.0),
+                    mix(fa.1, fb.1),
+                    mix(fa.2, fb.2)
+                ),
+                alpha,
+            ));
+        }
+        let cell = if (2..=7).contains(&pat) {
+            "FillBkgnd"
+        } else {
+            "FillForegnd"
+        };
         Some((themed_color_string(doc, s, chain, cell), alpha))
     }
     #[allow(clippy::too_many_arguments)] // the walk carries its whole environment
