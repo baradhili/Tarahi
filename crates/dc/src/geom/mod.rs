@@ -720,6 +720,28 @@ mod tests {
         assert!(!straight, "spline rows are curve geometry");
     }
 
+    #[test]
+    fn ellipse_excludes_connector_without_adding_hit_segments() {
+        let shape = conn_shape(
+            7,
+            2.0,
+            1.0,
+            vec![
+                mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                mrow(2, "Ellipse", &[("X", 1.0), ("Y", 1.0)]),
+                mrow(3, "LineTo", &[("X", 2.0), ("Y", 0.0)]),
+            ],
+        );
+        let doc = vsdx::Document::default();
+        let frame = hit_frame(&doc, &[&shape], &shape, (1.0, 1.0));
+        let (segments, straight) = geometry_hit_segments_straight(&shape, None, &frame, None);
+        assert!(!straight, "an ellipse is curve geometry");
+        assert_eq!(
+            segments,
+            [(frame.to_page((0.0, 0.0)), frame.to_page((2.0, 0.0)))]
+        );
+    }
+
     /// #294 review: a degenerate (zero-length) straight row next to
     /// the stored jump does not break the run lookup — the arc still
     /// strips.

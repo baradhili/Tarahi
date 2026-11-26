@@ -579,6 +579,10 @@ pub fn geometry_hit_segments_straight(
                 cur_local = Some(end_local);
             }
             _ => {
+                // The renderer draws a closed curve for Ellipse rows.
+                if t == "Ellipse" {
+                    straight = false;
+                }
                 if let Some(acc) = spline_acc.take() {
                     if let Some(data) = acc.flush() {
                         for p in crate::curve::SplineData::flatten(&data, 16)
