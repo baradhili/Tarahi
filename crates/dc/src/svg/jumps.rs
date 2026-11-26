@@ -213,8 +213,37 @@ pub fn backdrop_color_at(
             let segs = crate::geom::geometry_hit_segments(s, chain.get(1).copied(), &frame, None);
             if !segs.is_empty() {
                 let q = (pt.0, page_h - pt.1); // the cast runs page y-up
-                let mut in_fill = false;
+                                               // CLOSE each contour before the cast: the renderer
+                                               // fills the implied closing edge too (an open M→L→L
+                                               // triangle fills its diagonal), and the open cast
+                                               // counted crossings without it. Contours break at
+                                               // pen-ups — a segment that does not begin where the
+                                               // previous one ended — and never join across a MoveTo
+                                               // (CodeRabbit round on #324 phase 3).
+                let mut closed: Vec<((f64, f64), (f64, f64))> = Vec::new();
+                let mut cur_start: Option<(f64, f64)> = None;
+                let mut prev_end: Option<(f64, f64)> = None;
                 for (a, b) in &segs {
+                    match (cur_start, prev_end) {
+                        (None, _) => cur_start = Some(*a),
+                        (Some(st), Some(pe)) => {
+                            if (pe.0 - a.0).abs() > 1e-9 || (pe.1 - a.1).abs() > 1e-9 {
+                                closed.push((pe, st));
+                                cur_start = Some(*a);
+                            }
+                        }
+                        (Some(st), None) => cur_start = Some(st),
+                    }
+                    closed.push((*a, *b));
+                    prev_end = Some(*b);
+                }
+                if let (Some(st), Some(pe)) = (cur_start, prev_end) {
+                    if (pe.0 - st.0).abs() > 1e-9 || (pe.1 - st.1).abs() > 1e-9 {
+                        closed.push((pe, st));
+                    }
+                }
+                let mut in_fill = false;
+                for (a, b) in &closed {
                     if (a.1 > q.1) != (b.1 > q.1) {
                         let x = a.0 + (q.1 - a.1) / (b.1 - a.1) * (b.0 - a.0);
                         if x > q.0 {
@@ -239,8 +268,8 @@ pub fn backdrop_color_at(
     // Topmost-first collection, then the painter's-algorithm blend:
     // each containing fill composites OVER the accumulated lower
     // backdrop until an opaque layer ends the search.
-    let mut acc = (0xffu8, 0xffu8, 0xffu8);
-    for s in page.shapes[..upto].iter().rev() {
+    let mut hits: Vec<(String, f64)> = Vec::new();
+    'shapes: for s in page.shapes[..upto].iter().rev() {
         if s.type_.as_deref() == Some("Guide") {
             continue;
         }
@@ -257,17 +286,29 @@ pub fn backdrop_color_at(
         }
         let mut out = Vec::new();
         walk(doc, s, &[], page_h, true, Affine::IDENTITY, pt, &mut out);
-        for (color, alpha) in out {
-            let c = hex_rgb(&color);
-            acc = (
-                (c.0 as f64 * alpha + acc.0 as f64 * (1.0 - alpha)).round() as u8,
-                (c.1 as f64 * alpha + acc.1 as f64 * (1.0 - alpha)).round() as u8,
-                (c.2 as f64 * alpha + acc.2 as f64 * (1.0 - alpha)).round() as u8,
-            );
-            if alpha >= 0.999 {
-                return acc;
+        for hit in out {
+            let opaque = hit.1 >= 0.999;
+            hits.push(hit);
+            // An opaque layer hides everything beneath it — deeper
+            // shapes cannot color the gap.
+            if opaque {
+                break 'shapes;
             }
         }
+    }
+    // Blend BOTTOM-UP (painter's algorithm): each fill composites
+    // over the accumulated LOWER backdrop, so the topmost layer's
+    // color wins by its own alpha. The old loop blended topmost-first
+    // and let a lower opaque panel overwrite the upper blend
+    // (CodeRabbit round on #324 phase 3: red over blue read blue).
+    let mut acc = (0xffu8, 0xffu8, 0xffu8);
+    for (color, alpha) in hits.iter().rev() {
+        let c = hex_rgb(color);
+        acc = (
+            (c.0 as f64 * alpha + acc.0 as f64 * (1.0 - alpha)).round() as u8,
+            (c.1 as f64 * alpha + acc.1 as f64 * (1.0 - alpha)).round() as u8,
+            (c.2 as f64 * alpha + acc.2 as f64 * (1.0 - alpha)).round() as u8,
+        );
     }
     acc
 }

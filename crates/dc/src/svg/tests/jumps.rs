@@ -529,8 +529,8 @@ fn backdrop_reads_the_fill_not_the_ink_box() {
     // A connector ABOVE the triangle (the `below` anchor).
     let c = shape_at(2, (2.0, 2.0), 2.0, 0.0, 0.0);
     let (doc, page) = page_fixture(vec![t, c]);
-    // (1.3, 1.3) page: inside the hypotenuse triangle; (2.7, 2.7) is
-    // inside its 2×2 box but outside the fill.
+    // (1.3, 1.3) page: inside the fill; (2.7, 2.7) is inside its 2×2
+    // box but outside the fill.
     assert_eq!(
         crate::svg::backdrop_color_at(&doc, &page, (1.3, 1.3), 2, &[]),
         (0xff, 0, 0),
@@ -586,5 +586,117 @@ fn backdrop_composites_partial_transparency() {
         crate::svg::backdrop_color_at(&doc, &page, (1.3, 1.3), 2, &[]),
         (0xff, 0x40, 0x40),
         "0.75 red over white: the blend, not raw red"
+    );
+}
+
+/// The even-odd cast counts the renderer's IMPLICIT closing edge: an
+/// open M→L→L contour (right angle at (3,3) page) fills its diagonal,
+/// so a point past the diagonal in the box's far corner reads the
+/// page's white — the open cast counted only the x=3 edge and wrongly
+/// read red there (CodeRabbit round on #324 phase 3).
+#[test]
+fn backdrop_closes_the_contour_in_the_cast() {
+    let mut t = shape_at(1, (2.0, 2.0), 2.0, 2.0, 0.0);
+    t.sheet.set_cell("FillForegnd", Cell::value("#ff0000"));
+    let mut sec = Section {
+        name: "Geometry".into(),
+        ix: 0,
+        ..Section::default()
+    };
+    let row = |ix: i64, x: f64, y: f64| Row {
+        t: Some("LineTo".into()),
+        ix,
+        cells: vec![
+            ("X".to_string(), Cell::value(format!("{x}"))),
+            ("Y".to_string(), Cell::value(format!("{y}"))),
+        ],
+        ..Row::default()
+    };
+    sec.rows = vec![
+        Row {
+            t: Some("MoveTo".into()),
+            ix: 1,
+            cells: vec![
+                ("X".to_string(), Cell::value("0")),
+                ("Y".to_string(), Cell::value("0")),
+            ],
+            ..Row::default()
+        },
+        row(2, 2.0, 0.0),
+        row(3, 2.0, 2.0),
+    ];
+    t.sheet.children.push(SheetChild::Section(sec));
+    let c = shape_at(2, (2.0, 2.0), 2.0, 0.0, 0.0);
+    let (doc, page) = page_fixture(vec![t, c]);
+    // (2.8, 2.2) page: below the diagonal — inside the closed fill.
+    // (2.2, 2.8): above it — outside the fill, inside the box, where
+    // the OPEN cast counted the x=3 edge alone and read red.
+    assert_eq!(
+        crate::svg::backdrop_color_at(&doc, &page, (2.8, 2.2), 2, &[]),
+        (0xff, 0, 0),
+        "below the diagonal the fill reads red"
+    );
+    assert_eq!(
+        crate::svg::backdrop_color_at(&doc, &page, (2.2, 2.8), 2, &[]),
+        (0xff, 0xff, 0xff),
+        "past the diagonal the closed contour reads the page's white"
+    );
+}
+
+/// The blend runs BOTTOM-UP (painter's algorithm): an upper
+/// semi-transparent fill composites over the lower one — red at 0.75
+/// above an opaque blue panel reads red·0.75 + blue·0.25, never the
+/// lower panel overwriting the upper blend (CodeRabbit round on
+/// #324 phase 3).
+#[test]
+fn backdrop_blends_lower_fills_under_upper() {
+    let panel = |id: i64, color: &str, trans: Option<f64>| {
+        let mut p = shape_at(id, (2.0, 2.0), 2.0, 2.0, 0.0);
+        p.sheet.set_cell("FillForegnd", Cell::value(color));
+        if let Some(t) = trans {
+            p.sheet
+                .set_cell("FillForegndTrans", Cell::value(format!("{t}")));
+        }
+        let mut sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        let row = |ix: i64, x: f64, y: f64| Row {
+            t: Some("LineTo".into()),
+            ix,
+            cells: vec![
+                ("X".to_string(), Cell::value(format!("{x}"))),
+                ("Y".to_string(), Cell::value(format!("{y}"))),
+            ],
+            ..Row::default()
+        };
+        sec.rows = vec![
+            Row {
+                t: Some("MoveTo".into()),
+                ix: 1,
+                cells: vec![
+                    ("X".to_string(), Cell::value("0")),
+                    ("Y".to_string(), Cell::value("0")),
+                ],
+                ..Row::default()
+            },
+            row(2, 2.0, 0.0),
+            row(3, 2.0, 2.0),
+            row(4, 0.0, 2.0),
+        ];
+        p.sheet.children.push(SheetChild::Section(sec));
+        p
+    };
+    // Blue opaque at the LOWEST z, red 0.75 above it, the connector
+    // on top (the `below` anchor).
+    let blue = panel(1, "#0000ff", None);
+    let red = panel(2, "#ff0000", Some(0.25));
+    let c = shape_at(3, (2.0, 2.0), 2.0, 0.0, 0.0);
+    let (doc, page) = page_fixture(vec![blue, red, c]);
+    assert_eq!(
+        crate::svg::backdrop_color_at(&doc, &page, (2.0, 2.0), 3, &[]),
+        (191, 0, 64),
+        "red·0.75 + blue·0.25: the upper fill wins by its own alpha"
     );
 }

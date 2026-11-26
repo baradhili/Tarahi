@@ -226,6 +226,26 @@ fn render_page_full(
         for _ in &cuts {
             let _ = writeln!(svg, "</g>");
         }
+        // The hop arcs bridge the cuts, painted WITH the connector —
+        // BEFORE later shapes, so an opaque shape above covers shaft
+        // and hop alike, exactly as it covers the connector's own ink
+        // (Visio's paint order; the old post-ink group floated arcs on
+        // top of everything — CodeRabbit round on #324 phase 3). The
+        // radius is the page's own LineToLineX/Y × LineJumpFactorX/Y /
+        // 2, resolved through the style chain — never the old 0.12
+        // constant (#294).
+        if !cuts.is_empty() {
+            let _ = writeln!(svg, r#"<g data-dc="line-jumps">"#);
+            for j in &cuts {
+                let hop_r = if j.dir.0.abs() >= j.dir.1.abs() {
+                    radius
+                } else {
+                    radius_y
+                };
+                append_jump_scaled(&mut svg, h, j, hop_r);
+            }
+            let _ = writeln!(svg, "</g>");
+        }
         // The jumper's label, in an IDENTICAL transform group outside
         // every clip — `emit_text` is coordinate-compatible with the
         // shape's own transform (the same reads render_shape's head
@@ -250,26 +270,6 @@ fn render_page_full(
                 Some(&fields),
                 &mut svg,
             );
-            let _ = writeln!(svg, "</g>");
-        }
-        // The hop arcs bridge the cuts, painted WITH the connector —
-        // BEFORE later shapes, so an opaque shape above covers shaft
-        // and hop alike, exactly as it covers the connector's own ink
-        // (Visio's paint order; the old post-ink group floated arcs on
-        // top of everything — CodeRabbit round on #324 phase 3). The
-        // radius is the page's own LineToLineX/Y × LineJumpFactorX/Y /
-        // 2, resolved through the style chain — never the old 0.12
-        // constant (#294).
-        if !cuts.is_empty() {
-            let _ = writeln!(svg, r#"<g data-dc="line-jumps">"#);
-            for j in &cuts {
-                let hop_r = if j.dir.0.abs() >= j.dir.1.abs() {
-                    radius
-                } else {
-                    radius_y
-                };
-                append_jump_scaled(&mut svg, h, j, hop_r);
-            }
             let _ = writeln!(svg, "</g>");
         }
     }

@@ -579,10 +579,12 @@ pub fn geometry_hit_segments_straight(
                 cur_local = Some(end_local);
             }
             _ => {
-                // The renderer draws a closed curve for Ellipse rows.
-                if t == "Ellipse" {
-                    straight = false;
-                }
+                // Any row type the walk doesn't recognize as a
+                // positioned or straight run — `Ellipse` and unknown
+                // others — is curve geometry or draws nothing; either
+                // way the connector is not an all-straight route
+                // (#324 phase 2, CodeRabbit round on phase 3).
+                straight = false;
                 if let Some(acc) = spline_acc.take() {
                     if let Some(data) = acc.flush() {
                         for p in crate::curve::SplineData::flatten(&data, 16)
