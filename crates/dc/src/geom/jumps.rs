@@ -194,7 +194,7 @@ pub fn is_stored_jump_polyline(
     let Some((_, controls)) = parse_polyline_controls(a_text) else {
         return false;
     };
-    if controls.is_empty() || size.0 <= 0.0 || size.1 <= 0.0 {
+    if controls.is_empty() || size.0.abs() <= 1e-9 || size.1.abs() <= 1e-9 {
         return false;
     }
     let len = chord.0.hypot(chord.1);
@@ -202,27 +202,92 @@ pub fn is_stored_jump_polyline(
         return false;
     }
     // The chord IS the slot: ≈ 2· the radius, the axis picked by the
-    // chord's class (the arc row's rule).
-    let radius = if chord.0.abs() >= chord.1.abs() {
+    // chord's class (the arc row's rule). A NEAR-DIAGONAL chord takes
+    // whichever axis's radius matches — the >= tie flips across
+    // six-decimal row rounding exactly as the arc classifier's does
+    // (a 45° run saved at the X radius was once re-read against Y and
+    // rejected, CodeRabbit round on #324 phase 5).
+    let near_diagonal = (chord.0.abs() - chord.1.abs()).abs() <= len * 0.02;
+    let band =
+        |radius: f64| radius > 0.0 && (len - 2.0 * radius).abs() <= (radius * 0.05).max(1e-6);
+    let radius = if near_diagonal {
+        if band(radius_x) {
+            radius_x
+        } else {
+            radius_y
+        }
+    } else if chord.0.abs() >= chord.1.abs() {
         radius_x
     } else {
         radius_y
     };
-    if radius <= 0.0 || (len - 2.0 * radius).abs() > (radius * 0.05).max(1e-6) {
+    if !band(radius) {
         return false;
     }
-    // Every control inside the 2r × r box over the chord (a hair of
-    // writer rounding on each side). The fractions are of the WHOLE
-    // SHAPE, so each denormalized control is read relative to the
-    // chord's own start.
+    // Every control's ALONG inside the slot (a hair of writer rounding
+    // on each side). The fractions are of the WHOLE SHAPE, so each
+    // denormalized control is read relative to the chord's own start.
     let (ux, uy) = (chord.0 / len, chord.1 / len);
-    let (nx, ny) = (-uy, ux);
-    controls.iter().all(|(fx, fy)| {
+    let tol = (radius * 0.02).max(1e-6);
+    let rel = |fx: f64, fy: f64| {
         let (cx, cy) = (fx * size.0 - start.0, fy * size.1 - start.1);
-        let along = cx * ux + cy * uy;
-        let off = (cx * nx + cy * ny).abs();
-        along >= -radius * 0.1 && along <= len + radius * 0.1 && off <= radius * 1.1
-    })
+        (cx * ux + cy * uy, cy * ux - cx * uy)
+    };
+    let in_box = controls
+        .iter()
+        .all(|&(fx, fy)| rel(fx, fy).0 >= -radius * 0.1 && rel(fx, fy).0 <= len + radius * 0.1);
+    if !in_box {
+        return false;
+    }
+    // Match the control SEQUENCE against a shape this engine
+    // generates — the single apex at the midpoint (Sides ≥ 2), or the
+    // flat top's two corners at the slot ends. Arbitrary in-box
+    // polylines that double back match no generated hump and stay
+    // authored art (#324 phase-5 review).
+    let near = |v: f64, want: f64| (v - want).abs() <= (tol * 4.0).max(1e-6);
+    // Square: both corners AT the slot ends, a full r off the run,
+    // ordered along the run and on the SAME side (either bulge
+    // direction). Two controls can ALSO be Sides(3)'s inscribed pair
+    // — the square check failing falls THROUGH to the polygonal
+    // check, not out (PR #339 review caught the early return
+    // stranding 3-sided hops).
+    if controls.len() == 2 {
+        let (aa, ao) = rel(controls[0].0, controls[0].1);
+        let (ba, bo) = rel(controls[1].0, controls[1].1);
+        if near(ao.abs(), radius)
+            && near(bo.abs(), radius)
+            && aa <= tol
+            && ba >= len - tol
+            && ao.signum() == bo.signum()
+        {
+            return true;
+        }
+    }
+    // Sides(n): n−1 = controls.len() interior inscribed vertices at
+    // along = len/2 − r·cos(πk/n), off = ±r·sin(πk/n) — the sign
+    // consistent across the sequence (the bump sits on ONE side).
+    let n = controls.len() as i64 + 1;
+    if !(2..=9).contains(&n) {
+        return false; // more controls than any style emits
+    }
+    let mut side = 0.0f64;
+    for (k, (fx, fy)) in controls.iter().enumerate() {
+        let ang = std::f64::consts::PI * (k + 1) as f64 / n as f64;
+        let (along, off) = rel(*fx, *fy);
+        let want_off = radius * ang.sin();
+        if !near(off.abs(), want_off) || !near(along, len / 2.0 - radius * ang.cos()) {
+            return false;
+        }
+        let s = off.signum();
+        if s != 0.0 {
+            if side == 0.0 {
+                side = s;
+            } else if side != s {
+                return false; // zig-zags between the sides
+            }
+        }
+    }
+    true
 }
 
 /// A stored GAP hop (#324 phase 4): a mid-route `MoveTo` whose skip

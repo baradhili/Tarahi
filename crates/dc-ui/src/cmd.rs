@@ -2223,6 +2223,7 @@ impl Command for ReconcileLineJumps {
             let mut arctos = 0usize;
             let mut poly_extra = 0usize;
             let mut movetos = 0usize;
+            let mut gap_movetos = 0usize;
             let mut owned = true;
             // Neighbor literals for the stored-gap classification: the
             // live rows' chain-resolved X/Y, indexed against `live`.
@@ -2256,16 +2257,28 @@ impl Command for ReconcileLineJumps {
                         // breaks keep the safeguard.
                         gap_row = false;
                         if movetos > 0 && !r.is_deleted() {
+                            // (the classification below decides)
                             let prev = if ri >= 1 { lit_xy(ri - 1) } else { None };
                             let next = lit_xy(ri + 1).or_else(|| lit_xy(ri + 2));
                             if let (Some(p0), Some(mx), Some(n1)) = (prev, lit_xy(ri), next) {
                                 let prev2 = if ri >= 2 { lit_xy(ri - 2) } else { None };
                                 let next2 = lit_xy(ri + 2).or_else(|| lit_xy(ri + 3));
                                 let skip = (mx.0 - p0.0, mx.1 - p0.1);
+                                // The outgoing run: from the NEXT row's
+                                // endpoint toward the one after it — or,
+                                // when the gap lands on the route's last
+                                // row (the generated 4-row form), from
+                                // the gap's own end onward (CodeRabbit
+                                // round on #324 phase 5: `n1 → next2`
+                                // alone passed None and froze every
+                                // saved gap).
+                                let next_dir = next2
+                                    .and_then(|n2| dir_of(n1, n2))
+                                    .or_else(|| dir_of(mx, n1));
                                 gap_row = dc::geom::is_stored_jump_gap(
                                     skip,
                                     prev2.and_then(|p| dir_of(p, p0)),
-                                    next2.and_then(|n| dir_of(n1, n)),
+                                    next_dir,
                                     strip.0,
                                     strip.1,
                                 );
@@ -2276,6 +2289,9 @@ impl Command for ReconcileLineJumps {
                             break;
                         }
                         movetos += 1;
+                        if gap_row {
+                            gap_movetos += 1;
+                        }
                         if lit(r, "X").is_none() || lit(r, "Y").is_none() {
                             owned = false;
                             break;
@@ -2343,8 +2359,13 @@ impl Command for ReconcileLineJumps {
             // disjoint segment run per stroke and the rewrite flattens
             // them into a single polyline — welding the strokes with
             // LineTos across gaps the original never drew (review on
-            // the #303 batch).
-            if movetos > 1 {
+            // the #303 batch). A RECOGNIZED stored gap is the
+            // exception (#324 phase 5): its MoveTo is OUR row — the
+            // rewrite restores the skeleton across it — so it does
+            // not count toward the stroke count (CodeRabbit round on
+            // #324 phase 5: a saved gap froze against hide, restyle,
+            // and straighten).
+            if movetos - gap_movetos > 1 {
                 continue;
             }
             // No live master-only rows: they render through
@@ -4847,6 +4868,47 @@ mod reconcile_jump_tests {
         let js = dc::geom::page_jumps(&ed.doc, page, &[]);
         assert_eq!(js.len(), 1, "one hop: {js:?}");
         assert_eq!(js[0].style, dc::geom::JumpStyle::Square);
+        // Square → Gap: the square's PolylineTo row REWRITES to the
+        // gap form (MoveTo over the slot) — a stored styled hop must
+        // not freeze when the style changes away from it (CodeRabbit
+        // round on #324 phase 5).
+        ed.apply(dc_core::SetCell::new(
+            dc_core::Scope::PageSheet { page: page_id },
+            "LineJumpStyle",
+            VCell::value("2"),
+        ))
+        .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let gap_rows = rows_of(&ed, 5);
+        let kinds: Vec<&str> = gap_rows.iter().map(|r| r.t.as_deref().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            vec!["MoveTo", "LineTo", "MoveTo", "LineTo"],
+            "{gap_rows:?}"
+        );
+        // Gap → Arc: the gap's MoveTo rewrites back to the arc — the
+        // full style lifecycle leaves no stale vertices.
+        ed.apply(dc_core::SetCell::new(
+            dc_core::Scope::PageSheet { page: page_id },
+            "LineJumpStyle",
+            VCell::value("1"),
+        ))
+        .unwrap();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let arc_rows = rows_of(&ed, 5);
+        assert_eq!(arc_rows.len(), arc_rows.len());
+        assert_eq!(arc_rows[2].t.as_deref(), Some("ArcTo"), "{arc_rows:?}");
+        // And the second pass over the restored arc writes nothing.
+        let before = arc_rows.clone();
+        ReconcileLineJumps::new(page_id).apply(&mut ed.doc).unwrap();
+        let after = rows_of(&ed, 5);
+        assert_eq!(before.len(), after.len());
+        for (b, a) in before.iter().zip(after.iter()) {
+            assert_eq!(b.t, a.t);
+            for n in ["X", "Y"] {
+                assert!((cell(b, n) - cell(a, n)).abs() < 1e-9);
+            }
+        }
     }
 
     /// #303 item 2: the stale stored arc drops and the hop lands at

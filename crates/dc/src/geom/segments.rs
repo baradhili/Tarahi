@@ -530,8 +530,15 @@ pub fn geometry_hit_segments_straight(
                 // happen to be straight.
                 let mut stored = false;
                 if strip_stored_jumps.is_some() {
-                    if let Some(c0) = cur_local {
-                        let d_class = (end_local.0 - c0.0, end_local.1 - c0.1);
+                    // The classification runs in the frame the RENDER
+                    // emits (instance dims, the ratio-scaled chord) —
+                    // a resized master-only instance classifies
+                    // against the same controls the ink draws
+                    // (CodeRabbit round on #324 phase 5). The
+                    // own-section path is scale-free: identical to the
+                    // row-local frame.
+                    if let (Some(_c0), Some(c0s)) = (cur_local, cur) {
+                        let d_class = (end.0 - c0s.0, end.1 - c0s.1);
                         let mut prev_dir = None;
                         let mut pi = k as isize - 1;
                         while pi >= 1 {
@@ -582,7 +589,7 @@ pub fn geometry_hit_segments_straight(
                             .unwrap_or_default();
                         let (rx, ry) = strip_stored_jumps.unwrap_or((0.0, 0.0));
                         stored = is_stored_jump_polyline(
-                            &a_text, c0, d_class, prev_dir, next_dir, own, rx, ry,
+                            &a_text, c0s, d_class, prev_dir, next_dir, frame.size, rx, ry,
                         );
                     }
                 }

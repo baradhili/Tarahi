@@ -164,10 +164,13 @@ pub fn backdrop_color_at(
         // (CodeRabbit round on #324 phase 5).
         let env = super::shape_env(doc, s, chain);
         let any_fill = geos.iter().any(|g| {
+            // NoShow AND NoFill through the renderer's own
+            // `section_flag` rule (formula first, cached V as
+            // fallback) — a NoFill formula evaluating to 1 with a
+            // stale 0 cache paints nothing (CodeRabbit round on
+            // #324 phase 5).
             !super::shape_layer::section_flag(g, "NoShow", &env)
-                && g.cell("NoFill")
-                    .and_then(|c| c.numeric())
-                    .is_none_or(|v| v == 0.0)
+                && !super::shape_layer::section_flag(g, "NoFill", &env)
                 && g.rows.iter().any(|r| r.t.is_some())
         });
         if !any_fill {
