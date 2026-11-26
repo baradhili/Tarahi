@@ -251,6 +251,9 @@ impl App {
         self.tex.clear();
         self.layers.clear();
         self.page_states.clear();
+        // The jump overlay belongs to the outgoing document: a switch
+        // keeps `version`, so the key alone would serve its hops (#389).
+        self.jump_fx_cache = None;
         self.tab_menu = None;
         self.tab_rename = None;
         self.reorder_open = false;

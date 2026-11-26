@@ -91,6 +91,15 @@ enum FormatSection {
     Text,
 }
 
+/// What a frame's line-jump overlay depends on (`App::jump_fx_cache`).
+#[derive(Debug, Clone, PartialEq)]
+struct JumpFxKey {
+    version: u64,
+    page_idx: usize,
+    hidden: Vec<i64>,
+    radius_bits: (u64, u64),
+}
+
 pub struct App {
     ed: Option<Editor>,
     path: PathBuf,
@@ -320,6 +329,13 @@ pub struct App {
     connpt_sel: Option<(i64, i64)>,
     /// #108: the line-jump hops painted on the last frame (test seam).
     jumps_last: usize,
+    /// #389: the last jump pass and what it was computed for — the
+    /// document version (bumped by every edit, undo, redo and open),
+    /// the page, the hidden layers and the hop radii. An idle frame
+    /// reuses it instead of recomputing the crossing set and every
+    /// hop's backdrop (the same cache #347 kept on the old line-jumps
+    /// branch).
+    jump_fx_cache: Option<(JumpFxKey, Vec<canvas::JumpFx>)>,
     /// #226: whether the last frame painted the styled endpoint-drag
     /// ghost (test seam).
     last_endpoint_ghost: bool,

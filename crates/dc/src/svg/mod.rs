@@ -35,7 +35,7 @@ pub(crate) use text::*;
 
 pub use affine::{page_point_to_parent_local, parent_local_point_to_page, shape_page_rect, Affine};
 pub use ink::{shape_ink_bounds, shape_ink_bounds_focused, subtree_ink_boxes};
-pub use jumps::{backdrop_color_at, jump_normal};
+pub use jumps::{backdrop_color_at, jump_normal, BackdropIndex};
 pub use master::{render_master, render_masters};
 pub use page::{
     render_page, render_page_export, render_page_no_text, render_page_scoped, render_page_with,

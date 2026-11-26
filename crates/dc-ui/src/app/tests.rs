@@ -691,3 +691,46 @@ fn dbl_click_after_stencil_placement_defers_to_the_placement() {
         "a later double-click on the placed shape opens the editor"
     );
 }
+
+/// #389: the frame's jump overlay is cached — an idle frame reuses the
+/// last pass while the document version, the page, the hidden layers
+/// and the radii are unchanged, and any edit (a version bump) recomputes.
+/// The per-frame recomputation ran the backdrop walk for every hop on
+/// every frame (tens of seconds per frame on large pages).
+#[test]
+fn jump_overlay_is_cached_until_the_document_changes() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../dc/tests/fixtures/b01-linejumps.vsdx");
+    let mut app = App::with_doc(&path);
+    let r = {
+        let doc = &app.ed.as_ref().unwrap().doc;
+        crate::connectors::jump_radii_in(doc, &doc.pages[app.page_idx])
+    };
+    let fresh = app.jump_fx_cached(r, &[]);
+    assert!(!fresh.is_empty(), "the fixture page has hops");
+    // Poison the stored pass: an unchanged key must serve it as is.
+    let key = app.jump_fx_cache.as_ref().unwrap().0.clone();
+    app.jump_fx_cache = Some((key, Vec::new()));
+    assert!(
+        app.jump_fx_cached(r, &[]).is_empty(),
+        "an idle frame reuses the pass"
+    );
+    // Any key change recomputes: other hidden layers, other radii, an
+    // edit.
+    assert_eq!(app.jump_fx_cached(r, &[999]).len(), fresh.len());
+    app.jump_fx_cache = Some((app.jump_fx_cache.as_ref().unwrap().0.clone(), Vec::new()));
+    app.simulate_edit_for_test();
+    assert_eq!(
+        app.jump_fx_cached(r, &[999]).len(),
+        fresh.len(),
+        "an edit recomputes"
+    );
+    // The index-backed pass matches the per-hop lookup it replaced.
+    let doc = &app.ed.as_ref().unwrap().doc;
+    let page = &doc.pages[app.page_idx];
+    let jumps = dc::geom::page_jumps(doc, page, &[]);
+    for (fx, j) in fresh.iter().zip(&jumps) {
+        let (gr, gg, gb) = dc::svg::backdrop_color_at(doc, page, j.at, j.jumper, &[]);
+        assert_eq!(fx.gap_color, egui::Color32::from_rgb(gr, gg, gb));
+    }
+}

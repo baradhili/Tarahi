@@ -172,6 +172,7 @@ impl App {
             painter_sticky: false,
             connpt_sel: None,
             jumps_last: 0,
+            jump_fx_cache: None,
             last_endpoint_ghost: false,
             shot_frames: 0,
             // #224: headless default — no branded boot moment (the
