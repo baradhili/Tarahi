@@ -4,7 +4,7 @@
 
 use super::connector::is_connector_in;
 use super::hitframe::hit_frame;
-use super::segments::geometry_hit_segments;
+use super::segments::geometry_hit_segments_straight;
 
 pub struct JumpLine {
     pub id: i64,
@@ -142,7 +142,6 @@ pub fn is_stored_jump_arc(
         }
 }
 
-
 /// Proper segment intersection (interior of both).
 pub fn seg_cross(
     a0: (f64, f64),
@@ -262,15 +261,13 @@ pub fn line_jumps(lines: &[JumpLine], (radius, radius_y): (f64, f64)) -> Vec<Jum
                     };
                     // Off-segment hits (the crossing sits on the
                     // segment's EXTENSION) are not crossings.
-                    if !(-1e-9..=1.0 + 1e-9).contains(&t)
-                        || !(-1e-9..=1.0 + 1e-9).contains(&u)
-                    {
+                    if !(-1e-9..=1.0 + 1e-9).contains(&t) || !(-1e-9..=1.0 + 1e-9).contains(&u) {
                         continue;
                     }
-                    let at_end_i = hugged_vertex(t, k1)
-                        .is_some_and(|ix| ix == 0 || ix == pts[i].len() - 1);
-                    let at_end_j = hugged_vertex(u, k2)
-                        .is_some_and(|ix| ix == 0 || ix == pts[j].len() - 1);
+                    let at_end_i =
+                        hugged_vertex(t, k1).is_some_and(|ix| ix == 0 || ix == pts[i].len() - 1);
+                    let at_end_j =
+                        hugged_vertex(u, k2).is_some_and(|ix| ix == 0 || ix == pts[j].len() - 1);
                     if at_end_i || at_end_j {
                         continue;
                     }
@@ -384,8 +381,10 @@ fn parse_hex_rgb(v: &str) -> Option<(u8, u8, u8)> {
 
 /// The page's connector crossings (#187 export parity): every
 /// top-level connector's polyline — the same `hit_frame` +
-/// [`geometry_hit_segments`] walk the canvas jump overlay uses,
-/// formula-preferred, curve-aware — crossed with Visio's rule
+/// [`geometry_hit_segments_straight`] walk the canvas jump overlay
+/// uses, formula-preferred, restricted to connectors whose geometry
+/// is entirely straight runs (#324 step 1: Visio never hops curved
+/// connectors and never hops over one) — crossed with Visio's rule
 /// ([`line_jumps`]: the more-horizontal line hops, ties to the later
 /// z). Hidden-layer members and guides skip like the render walk.
 pub fn page_jumps(doc: &vsdx::Document, page: &vsdx::Page, hidden: &[i64]) -> Vec<Jump> {
@@ -450,7 +449,19 @@ pub fn page_jumps_stripping(
         // evidence is THIS page's resolved radius (the same value the
         // hop draws with) — or the caller's override, the #301
         // pre-edit radius when a jump-size edit just landed.
-        let segs = geometry_hit_segments(s, master_root, &frame, Some((strip_r, strip_ry)));
+        let (segs, straight) =
+            geometry_hit_segments_straight(s, master_root, &frame, Some((strip_r, strip_ry)));
+        // Straight-run eligibility (#324 step 1): a connector joins
+        // the crossing set only when its geometry is entirely straight
+        // runs — Visio never hops a curved connector and never hops
+        // over one (live-measured, mk-git 2026-11-25). Recognized
+        // stored-hop arcs straightened above and keep a straight
+        // connector eligible; every curve row — authored arcs,
+        // splines, NURBS, polylines — drops the connector whole. The
+        // ink and the hit-testing keep their curve-aware walks.
+        if !straight {
+            continue;
+        }
         if segs.is_empty() {
             continue;
         }
@@ -475,8 +486,13 @@ pub fn page_jumps_stripping(
         // Resolve like the renderer (#218 review): a legacy palette
         // index (`LineColor V='0'`) is common, and the hex-only read
         // drew every such crossing's under line and hop arc in gray.
-        let color = parse_hex_rgb(&crate::svg::themed_color_string(doc, s, &chain, "LineColor"))
-            .unwrap_or((0x42, 0x42, 0x42));
+        let color = parse_hex_rgb(&crate::svg::themed_color_string(
+            doc,
+            s,
+            &chain,
+            "LineColor",
+        ))
+        .unwrap_or((0x42, 0x42, 0x42));
         lines.push(JumpLine {
             id: s.id,
             z,
