@@ -669,7 +669,7 @@ impl App {
             // The loop gate above guarantees a connector, so stored
             // jump arcs strip from the polyline (#294) — with the
             // page's own radius as the evidence.
-            let segs = crate::connectors::geometry_hit_segments(
+            let (segs, straight) = crate::connectors::geometry_hit_segments_straight(
                 sh,
                 root,
                 &frame,
@@ -683,6 +683,15 @@ impl App {
                         .unwrap_or((0.0, 0.0)),
                 ),
             );
+            // Straight-run eligibility (#324 step 1), the same gate
+            // `page_jumps` applies: a curved connector never hops and
+            // is never hopped over (live-measured, mk-git 2026-11-25).
+            // The canvas must agree with the export or a curved
+            // connector's crossing hops on screen while the export
+            // shows none (the #336 parity principle).
+            if !straight {
+                continue;
+            }
             let mut pts = Vec::with_capacity(segs.len() + 1);
             if let Some((a, _)) = segs.first() {
                 pts.push(*a);

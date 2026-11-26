@@ -290,3 +290,83 @@ fn export_without_crossings_has_no_jump_group() {
         "no crossings, no overlay"
     );
 }
+
+/// #324 step 1 (the live-measured rules, mk-git 2026-11-25): a
+/// curved connector never hops and is never hopped over — it leaves
+/// the crossing set whole, while the same crossing between two
+/// straight connectors hops. The curved route's samples DO cross the
+/// straight run geometrically, so only the eligibility gate explains
+/// the empty set.
+#[test]
+fn curved_connectors_leave_the_crossing_set() {
+    let connector = |id: i64, pin: (f64, f64), w: f64, h: f64| {
+        let mut s = shape_at(id, pin, w, h, 0.0);
+        s.sheet.set_cell("ObjType", Cell::value("2"));
+        let line = |ix: i64, x: f64, y: f64| Row {
+            t: Some("LineTo".into()),
+            ix,
+            cells: vec![
+                ("X".to_string(), Cell::value(format!("{x}"))),
+                ("Y".to_string(), Cell::value(format!("{y}"))),
+            ],
+            ..Row::default()
+        };
+        let mut sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec.rows = vec![
+            Row {
+                t: Some("MoveTo".into()),
+                ix: 1,
+                cells: vec![
+                    ("X".to_string(), Cell::value("0")),
+                    ("Y".to_string(), Cell::value("0")),
+                ],
+                ..Row::default()
+            },
+            line(2, w, h),
+        ];
+        s.sheet.children.push(SheetChild::Section(sec));
+        s
+    };
+    // Control: straight H × straight V — one hop.
+    let (doc, page) = page_fixture(vec![
+        connector(1, (3.0, 5.0), 4.0, 0.0),
+        connector(2, (3.0, 5.0), 0.0, 4.0),
+    ]);
+    assert_eq!(crate::geom::page_jumps(&doc, &page, &[]).len(), 1);
+    // The curved twin: a vertical route whose second half is an
+    // authored arc bulging far off the run (sagitta 2 over a 2.5
+    // chord — far outside the stored-hop band, so it classifies as a
+    // curve, not a hop). Its samples cross the horizontal run, but
+    // the crossing set stays empty: neither side hops.
+    let mut curved = shape_at(2, (3.0, 5.0), 0.0, 4.0, 0.0);
+    curved.sheet.set_cell("ObjType", Cell::value("2"));
+    let row = |ix: i64, t: &str, cells: Vec<(&str, f64)>| Row {
+        t: Some(t.into()),
+        ix,
+        cells: cells
+            .into_iter()
+            .map(|(n, v)| (n.to_string(), Cell::value(format!("{v}"))))
+            .collect(),
+        ..Row::default()
+    };
+    let mut sec = Section {
+        name: "Geometry".into(),
+        ix: 0,
+        ..Section::default()
+    };
+    sec.rows = vec![
+        row(1, "MoveTo", vec![("X", 0.0), ("Y", 0.0)]),
+        row(2, "LineTo", vec![("X", 0.0), ("Y", 1.5)]),
+        row(3, "ArcTo", vec![("X", 0.0), ("Y", 4.0), ("A", -2.0)]),
+    ];
+    curved.sheet.children.push(SheetChild::Section(sec));
+    let (doc, page) = page_fixture(vec![connector(1, (3.0, 5.0), 4.0, 0.0), curved]);
+    assert!(
+        crate::geom::page_jumps(&doc, &page, &[]).is_empty(),
+        "the curved connector neither hops nor is hopped over"
+    );
+}

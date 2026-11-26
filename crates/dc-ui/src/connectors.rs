@@ -136,9 +136,9 @@ pub fn rewrite_route_rows(shape: &mut Shape, rows: &[(f64, f64); 3]) {
 // `dc::geom` (the export overlay computes crossings on the dc side);
 // re-exported here so every dc-ui call site and test stays put.
 pub use dc::geom::{
-    arc_row, cubic_row, geometry_hit_segments, hit_frame, is_connector, is_connector_in,
-    is_stored_jump_arc, jump_radii_in, line_jumps, row_cell_value, seg_cross, ArcRow, CubicRow,
-    HitFrame, Jump, JumpLine,
+    arc_row, cubic_row, geometry_hit_segments, geometry_hit_segments_straight, hit_frame,
+    is_connector, is_connector_in, is_stored_jump_arc, jump_radii_in, line_jumps, row_cell_value,
+    seg_cross, ArcRow, CubicRow, HitFrame, Jump, JumpLine,
 };
 fn set(cells: &mut Vec<SheetChild>, n: &str, v: f64) {
     cells.push(SheetChild::Cell(n.to_string(), Cell::value(fmt(v))));
