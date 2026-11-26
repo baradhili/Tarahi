@@ -2372,3 +2372,66 @@ fn field_page_number_renders_live() {
         "PAGENUMBER renders the 1-based position: {svg}"
     );
 }
+
+/// #378 / CodeRabbit on PR #381: an instance without its own `<Text>`
+/// shows its master's — but a multi-root master's instance draws every
+/// root (with its text) through the mirroring, so its first root's
+/// label must not also land in the instance's text block.
+#[test]
+fn multi_root_master_label_renders_once() {
+    let mut doc = Document::default();
+    let root = |id: i64, px: &str, text: Option<&str>| {
+        let mut r = Shape {
+            id,
+            ..Shape::default()
+        };
+        for (n, v) in [
+            ("Width", "1.0"),
+            ("Height", "0.5"),
+            ("PinX", px),
+            ("PinY", "0.25"),
+            ("LocPinX", "0.5"),
+            ("LocPinY", "0.25"),
+            ("TxtWidth", "1.0"),
+            ("TxtHeight", "0.5"),
+        ] {
+            r.sheet.set_cell(n, Cell::value(v));
+        }
+        r.sheet.text = text.map(str::to_string);
+        r
+    };
+    doc.masters.push(vsdx::Master {
+        id: 3,
+        shapes: vec![root(1, "0.5", Some("FIRSTROOT")), root(2, "1.5", None)],
+        ..vsdx::Master::default()
+    });
+    let mut inst = Shape {
+        id: 9,
+        master: Some(3),
+        ..Shape::default()
+    };
+    for (n, v) in [
+        ("Width", "2.0"),
+        ("Height", "0.5"),
+        ("PinX", "2.0"),
+        ("PinY", "2.0"),
+    ] {
+        inst.sheet.set_cell(n, Cell::value(v));
+    }
+    let mut page = vsdx::Page {
+        id: 0,
+        name: "Page-1".into(),
+        ..vsdx::Page::default()
+    };
+    let mut ps = Sheet::default();
+    ps.set_cell("PageWidth", Cell::value("8.5"));
+    ps.set_cell("PageHeight", Cell::value("11.0"));
+    page.children.push(IndexChild::Sheet {
+        tag: "PageSheet".into(),
+        sheet: ps,
+    });
+    page.shapes.push(inst);
+    doc.pages.push(page);
+    let svg = render_page(&doc, &doc.pages[0]).unwrap();
+    assert_eq!(svg.matches("FIRSTROOT").count(), 1, "{svg}");
+}

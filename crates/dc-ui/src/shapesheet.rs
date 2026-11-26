@@ -601,22 +601,41 @@ fn cell_text(c: &Cell, cell: &str) -> String {
 pub struct MergedCell {
     pub text: String,
     pub inherited: bool,
+    /// The VALUES view's text (#197) for a cell whose formula view
+    /// shows a formula: the evaluated result in the cell's unit. `None`
+    /// when `text` already is the value, or nothing evaluates (the
+    /// values view then shows the formula verbatim, never a made-up
+    /// number).
+    pub value: Option<String>,
+    /// `text` is a formula (the live evaluation pass may fill `value`).
+    formula: bool,
 }
 
 impl MergedCell {
     /// The shape's own cell, shown undimmed.
     fn local(c: &Cell, cell: &str) -> MergedCell {
-        MergedCell {
-            text: cell_text(c, cell),
-            inherited: false,
-        }
+        MergedCell::of(c, cell, false)
     }
     /// A cell sourced from deeper in the chain (master, style, or
     /// document sheet), shown inherited.
     fn deep(c: &Cell, cell: &str) -> MergedCell {
+        MergedCell::of(c, cell, true)
+    }
+    fn of(c: &Cell, cell: &str, inherited: bool) -> MergedCell {
+        let formula =
+            c.f.as_deref()
+                .is_some_and(|f| !f.is_empty() && f != "Inh" && f != "No Formula");
+        // Visio's cached result is the value it computed; only a
+        // formula without one evaluates live (`fill_live_values`).
+        let value =
+            c.v.as_deref()
+                .filter(|v| formula && !v.is_empty())
+                .map(|v| fmt_value(v, c.u.as_deref(), cell));
         MergedCell {
             text: cell_text(c, cell),
-            inherited: true,
+            inherited,
+            value,
+            formula,
         }
     }
     /// A synthesized display (Visio's observed default or "No
@@ -625,6 +644,54 @@ impl MergedCell {
         MergedCell {
             text,
             inherited: true,
+            value: None,
+            formula: false,
+        }
+    }
+    /// The text this cell shows in the given display mode.
+    pub fn shown(&self, values: bool) -> &str {
+        match (&self.value, values) {
+            (Some(v), true) => v,
+            _ => &self.text,
+        }
+    }
+}
+
+/// #197: a formula without a cached value evaluates through the
+/// renderer's environment for the shape (the engine that draws its ink);
+/// a numeric result shows in the cell's display unit. A formula the
+/// environment cannot evaluate (`Sheet.N!` refs, unsupported functions)
+/// keeps no value, so the values view shows it verbatim.
+fn fill_live_values(views: &mut [SectionView], env: &vsdx::formula::Env) {
+    let fill = |name: &str, c: &mut MergedCell| {
+        if c.formula && c.value.is_none() {
+            c.value = vsdx::formula::eval(&c.text, env)
+                .ok()
+                .and_then(|v| v.as_f64())
+                .filter(|v| v.is_finite())
+                .map(|v| fmt_value(&format!("{v}"), None, name));
+        }
+    };
+    for v in views.iter_mut() {
+        match v {
+            SectionView::Transform { cols } => {
+                for (n, c) in cols.iter_mut().flatten() {
+                    fill(n, c);
+                }
+            }
+            SectionView::Pairs { pairs, .. } => {
+                for (n, c) in pairs.iter_mut() {
+                    fill(n, c);
+                }
+            }
+            SectionView::Rows { headers, rows, .. } => {
+                for (_, _, cells) in rows.iter_mut() {
+                    for (h, c) in headers.iter().zip(cells.iter_mut()) {
+                        fill(h, c);
+                    }
+                }
+            }
+            SectionView::Bare { .. } => {}
         }
     }
 }
@@ -1069,10 +1136,7 @@ pub fn build_views(doc: &Document, page_id: i64, shape_id: i64) -> Vec<SectionVi
             }
         }
         doc.resolve_cell(shape, ancestors, name)
-            .map(|c| MergedCell {
-                text: cell_text(&c, name),
-                inherited: true,
-            })
+            .map(|c| MergedCell::deep(&c, name))
             .unwrap_or_else(|| {
                 MergedCell::fallback(
                     display_default(name)
@@ -1221,6 +1285,7 @@ pub fn build_views(doc: &Document, page_id: i64, shape_id: i64) -> Vec<SectionVi
         // jumped ahead of them).
         SectionView::Rows { rank, .. } | SectionView::Bare { rank, .. } => *rank,
     });
+    fill_live_values(&mut views, &dc::svg::shape_env(doc, shape, &chain));
 
     views
 }
@@ -1492,11 +1557,13 @@ fn cell_label(ui: &mut Ui, w: f32, text: &str) {
 /// The value-or-formula display, clipped at the column with the full
 /// text on hover. Visio 2016 shows inherited and unset cells in the
 /// normal text color (the screenshots pin this), so no dimming here.
-fn value_label(ui: &mut Ui, w: f32, cell: &MergedCell) {
+/// In the values view (#197) an evaluated cell shows its result, with
+/// the formula on hover.
+fn value_label(ui: &mut Ui, w: f32, cell: &MergedCell, values: bool) {
     bounded_label(
         ui,
         w,
-        Label::new(RichText::new(&cell.text)),
+        Label::new(RichText::new(cell.shown(values))),
         false,
         &cell.text,
     );
@@ -1536,6 +1603,28 @@ pub fn panel_for(ui: &mut Ui, doc: &Document, page_id: i64, target: SheetTarget,
     // sizing cells against the live window width feeds an egui Grid
     // settle loop (grid.rs recalibrates its columns every frame).
     let view_w = max_w.clamp(300.0, 800.0);
+    // #197: Visio's formula/value toggle, per window (the formula view
+    // is the default, as before).
+    let mode_id = egui::Id::unique(("dc-shapesheet-values", target));
+    let mut values = ui.data(|d| d.get_temp::<bool>(mode_id)).unwrap_or(false);
+    ui.horizontal(|ui| {
+        let strs = crate::i18n::strs();
+        if ui
+            .selectable_label(!values, strs.msg_ss_view_formulas())
+            .on_hover_text(strs.msg_ss_view_formulas_tip())
+            .clicked()
+        {
+            values = false;
+        }
+        if ui
+            .selectable_label(values, strs.msg_ss_view_values())
+            .on_hover_text(strs.msg_ss_view_values_tip())
+            .clicked()
+        {
+            values = true;
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(mode_id, values));
     egui::ScrollArea::vertical()
         .id_salt(("dc-shapesheet-scroll", target))
         .max_height(420.0)
@@ -1564,7 +1653,7 @@ pub fn panel_for(ui: &mut Ui, doc: &Document, page_id: i64, target: SheetTarget,
                                         match col.get(r) {
                                             Some((n, c)) => {
                                                 cell_label(ui, name_w, n);
-                                                value_label(ui, val_w, c);
+                                                value_label(ui, val_w, c, values);
                                             }
                                             None => {
                                                 ui.label("");
@@ -1591,7 +1680,7 @@ pub fn panel_for(ui: &mut Ui, doc: &Document, page_id: i64, target: SheetTarget,
                                 for chunk in pairs.chunks(*per_row) {
                                     for (n, c) in chunk {
                                         cell_label(ui, name_w, n);
-                                        value_label(ui, val_w, c);
+                                        value_label(ui, val_w, c, values);
                                     }
                                     for _ in chunk.len()..*per_row {
                                         ui.label("");
@@ -1654,7 +1743,7 @@ pub fn panel_for(ui: &mut Ui, doc: &Document, page_id: i64, target: SheetTarget,
                                             });
                                     }
                                     for c in cells {
-                                        value_label(ui, col_w, c);
+                                        value_label(ui, col_w, c, values);
                                     }
                                     ui.end_row();
                                 }
@@ -2291,5 +2380,90 @@ mod tests {
         );
         // A shape target is build_views' job.
         assert!(build_sheet_views(&doc, SheetTarget::Shape(100)).is_empty());
+    }
+
+    /// #197: the values view. A formula with Visio's cached result
+    /// shows that result in the cell's unit; a formula without one
+    /// evaluates through the renderer's env; one nothing evaluates keeps
+    /// no value (the values view shows the formula, never a made-up
+    /// number). The formula view is unchanged.
+    #[test]
+    fn values_view_shows_cached_and_live_results() {
+        let mut doc = fixture();
+        let s = &mut doc.pages[0].shapes[0];
+        s.sheet.set_cell(
+            "Width",
+            Cell {
+                v: Some("2".into()),
+                f: Some("GUARD(2)".into()),
+                ..Cell::default()
+            },
+        );
+        s.sheet.set_cell(
+            "Height",
+            Cell {
+                f: Some("Width*0.5".into()),
+                ..Cell::default()
+            },
+        );
+        s.sheet.set_cell(
+            "PinX",
+            Cell {
+                f: Some("Sheet.99!Width".into()),
+                ..Cell::default()
+            },
+        );
+        let views = build_views(&doc, 1, 100);
+        let cell = |name: &str| {
+            views
+                .iter()
+                .find_map(|v| match v {
+                    SectionView::Transform { cols } => cols
+                        .iter()
+                        .flatten()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, c)| c.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{name}"))
+        };
+        let w = cell("Width");
+        assert_eq!((w.shown(false), w.shown(true)), ("GUARD(2)", "50.8 mm"));
+        let h = cell("Height");
+        assert_eq!((h.shown(false), h.shown(true)), ("Width*0.5", "25.4 mm"));
+        let x = cell("PinX");
+        assert_eq!(x.shown(true), "Sheet.99!Width", "no fake number");
+    }
+
+    /// #197: the window's Values toggle switches the painted text.
+    #[test]
+    fn values_toggle_switches_the_painted_cells() {
+        use egui_kittest::{kittest::Queryable, Harness};
+        let mut doc = fixture();
+        doc.pages[0].shapes[0].sheet.set_cell(
+            "Width",
+            Cell {
+                v: Some("2".into()),
+                f: Some("GUARD(2)".into()),
+                ..Cell::default()
+            },
+        );
+        let mut h = Harness::new_ui(|ui| panel_for(ui, &doc, 1, SheetTarget::Shape(100), 600.0));
+        h.run();
+        // (The cell's hover container carries the formula as its label in
+        // both views; the painted Label is what switches.)
+        let n = |h: &Harness<'_>, t: &str| h.query_all_by_label(t).count();
+        let guard = n(&h, "GUARD(2)");
+        let mm = n(&h, "50.8 mm");
+        assert!(guard > 0);
+        h.get_by_label("Values").click();
+        h.run();
+        h.run();
+        assert!(n(&h, "GUARD(2)") < guard, "the formula gave way");
+        assert!(n(&h, "50.8 mm") > mm, "its value shows");
+        h.get_by_label("Formulas").click();
+        h.run();
+        h.run();
+        assert_eq!(n(&h, "GUARD(2)"), guard);
     }
 }

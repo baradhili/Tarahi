@@ -6,6 +6,9 @@ use super::jumps::is_stored_jump_arc;
 use super::rows::row_cell_value;
 use vsdx::model::{Row, Section, Shape};
 
+/// One walked run: start and end in PAGE space.
+pub type HitSeg = ((f64, f64), (f64, f64));
+
 /// One walked geometry row of the hit walk: the row, its master
 /// fallback, the section feed name, the type, the endpoint in the
 /// LOCAL frame and the frame-scaled one, and the row's A/B/C/D
@@ -49,7 +52,30 @@ pub fn geometry_hit_segments(
     master_root: Option<&Shape>,
     frame: &HitFrame,
     strip_stored_jumps: Option<(f64, f64)>,
-) -> Vec<((f64, f64), (f64, f64))> {
+) -> Vec<HitSeg> {
+    geometry_hit_segments_straight(s, master_root, frame, strip_stored_jumps).0
+}
+
+/// [`geometry_hit_segments`] plus the shape's straight-run
+/// eligibility (#324 step 1): the flag is `true` when every walked
+/// row draws a STRAIGHT run — `MoveTo`/`LineTo` (Rel variants), an
+/// `ArcTo` that classified as a stored jump arc and straightened,
+/// or a zero-width `EllipticalArcTo` (an authored `D=0` draws its
+/// endpoint chord, #233 — the ink is straight). Any other row — a
+/// real arc or elliptical arc, splines, NURBS, polylines, infinite
+/// lines, unknown `*To` rows drawn as chords — makes the shape
+/// INELIGIBLE for the crossing set: Visio never hops a curved
+/// connector and never hops over one (live-measured in Visio 2021,
+/// mk-git 2026-11-25, #324). Stored hops need `strip_stored_jumps`
+/// (the caller's radii) to classify; a walk without it counts every
+/// `ArcTo` a curve. Rows past [`MAX_WALK_ROWS`] stay invisible to
+/// the flag, as to the walk itself.
+pub fn geometry_hit_segments_straight(
+    s: &Shape,
+    master_root: Option<&Shape>,
+    frame: &HitFrame,
+    strip_stored_jumps: Option<(f64, f64)>,
+) -> (Vec<HitSeg>, bool) {
     let mut sections: Vec<&Section> = s.sheet.sections_named("Geometry");
     // (owning width/height for Rel rows, x/y scale). The scale only
     // applies when the WHOLE section is the master's (its cached
@@ -71,16 +97,13 @@ pub fn geometry_hit_segments(
     });
     let (own, scale) = if sections.is_empty() {
         let Some(root) = master_root else {
-            return Vec::new();
+            return (Vec::new(), true);
         };
         sections = root.sheet.sections_named("Geometry");
         if sections.is_empty() {
-            return Vec::new();
+            return (Vec::new(), true);
         }
-        (
-            frame.master_size,
-            master_ratio.unwrap_or((1.0, 1.0)),
-        )
+        (frame.master_size, master_ratio.unwrap_or((1.0, 1.0)))
     } else {
         (frame.size, (1.0, 1.0))
     };
@@ -109,14 +132,15 @@ pub fn geometry_hit_segments(
     // `Geometry1.X2+…` controls kept the hit walk at the authored pose
     // while the SVG walked the resized route).
     let mut env = frame.env.clone();
-    let cell = |env: &vsdx::formula::Env, row: &Row, master: Option<&Row>, name: &str| -> Option<f64> {
-        row_cell_value(
-            row.cell(name),
-            master.and_then(|m| m.cell(name)),
-            axis_scale(name),
-            env,
-        )
-    };
+    let cell =
+        |env: &vsdx::formula::Env, row: &Row, master: Option<&Row>, name: &str| -> Option<f64> {
+            row_cell_value(
+                row.cell(name),
+                master.and_then(|m| m.cell(name)),
+                axis_scale(name),
+                env,
+            )
+        };
     let to_page = |p: (f64, f64)| -> (f64, f64) { frame.to_page(p) };
     let quad = |c0: (f64, f64), ctrl: (f64, f64), c1: (f64, f64), u: f64| -> (f64, f64) {
         (
@@ -125,15 +149,18 @@ pub fn geometry_hit_segments(
         )
     };
     let mut pts: Vec<(f64, f64)> = Vec::new();
+    // Straight-run eligibility (#324 step 1): cleared by the first
+    // row that draws real curve geometry (see the function doc).
+    let mut straight = true;
     let mut cur: Option<(f64, f64)> = None; // shape-local
-    // The same pen in the UNSCALED row frame — stored-jump
-    // classification classifies there, matching the ink path (#294
-    // review).
+                                            // The same pen in the UNSCALED row frame — stored-jump
+                                            // classification classifies there, matching the ink path (#294
+                                            // review).
     let mut cur_local: Option<(f64, f64)> = None;
-                                            // #188: the spline accumulator — SplineStart opens, SplineKnot
-                                            // rows extend, anything else flushes; NURBSTo rows evaluate
-                                            // standalone. The flattened samples ARE the hit polyline, so
-                                            // hit-testing agrees with the rendered ink (crate::curve::flatten).
+    // #188: the spline accumulator — SplineStart opens, SplineKnot
+    // rows extend, anything else flushes; NURBSTo rows evaluate
+    // standalone. The flattened samples ARE the hit polyline, so
+    // hit-testing agrees with the rendered ink (crate::curve::flatten).
     let mut spline_acc: Option<crate::curve::SplineAcc> = None;
     // The ordered walk: the instance's rows, then master-only rows
     // (by ix) the instance never overrode. Each row carries its
@@ -302,12 +329,14 @@ pub fn geometry_hit_segments(
                     // radius. The comparison is authored inches against
                     // page inches in every frame.
                     let stored_jump = match strip_stored_jumps {
-                        Some(r) => {
-                            is_stored_jump_arc(raw_a, d_class, prev_dir, next_dir, r.0, r.1)
-                        }
+                        Some(r) => is_stored_jump_arc(raw_a, d_class, prev_dir, next_dir, r.0, r.1),
                         None => false,
                     };
                     if !stored_jump {
+                        // A non-hop arc is real curve geometry: the
+                        // connector leaves the crossing set's
+                        // eligibility (#324 step 1).
+                        straight = false;
                         // The bump is geometry in the scaled frame:
                         // the local sagitta scales with the local
                         // chord's perpendicular axis.
@@ -346,6 +375,10 @@ pub fn geometry_hit_segments(
                 let a = *ca;
                 let b = *cb;
                 if !zero_width {
+                    // A real elliptical arc is curve geometry (#324
+                    // step 1); a zero-width one draws its endpoint
+                    // chord (#233) and stays straight.
+                    straight = false;
                     if let (Some(a), Some(b), Some(c0)) = (a, b, cur) {
                         let ctrl = (
                             2.0 * a - (c0.0 + end.0) / 2.0,
@@ -361,6 +394,8 @@ pub fn geometry_hit_segments(
                 cur_local = Some(end_local);
             }
             "SplineStart" => {
+                // Spline rows are curve geometry (#324 step 1).
+                straight = false;
                 // #188: opens a spline (§2.4.2.15) — X/Y is the
                 // second control point; A/B/C/D are second/first/
                 // last knots and the degree.
@@ -385,19 +420,27 @@ pub fn geometry_hit_segments(
                 cur = Some(end);
                 cur_local = Some(end_local);
             }
-            "SplineKnot" => match spline_acc.as_mut() {
-                Some(acc) => {
-                    acc.knot(end, (*ca).unwrap_or(0.0));
-                    cur = Some(end);
-                cur_local = Some(end_local);
+            "SplineKnot" => {
+                // Spline rows are curve geometry (#324 step 1) — a
+                // stray knot without an open spline draws only its
+                // endpoint, but the row type still says curve.
+                straight = false;
+                match spline_acc.as_mut() {
+                    Some(acc) => {
+                        acc.knot(end, (*ca).unwrap_or(0.0));
+                        cur = Some(end);
+                        cur_local = Some(end_local);
+                    }
+                    None => {
+                        pts.push(to_page(end));
+                        cur = Some(end);
+                        cur_local = Some(end_local);
+                    }
                 }
-                None => {
-                    pts.push(to_page(end));
-                    cur = Some(end);
-                cur_local = Some(end_local);
-                }
-            },
+            }
             "NURBSTo" => {
+                // NURBS rows are curve geometry (#324 step 1).
+                straight = false;
                 if let Some(acc) = spline_acc.take() {
                     if let Some(data) = acc.flush() {
                         for p in crate::curve::SplineData::flatten(&data, 16)
@@ -427,8 +470,16 @@ pub fn geometry_hit_segments(
                     // scale. An inherited resized master keeps the
                     // hit polyline ON the rendered curve.
                     let (fx, fy) = (
-                        if f.x_type == 0.0 { frame.size.0 } else { scale.0 },
-                        if f.y_type == 0.0 { frame.size.1 } else { scale.1 },
+                        if f.x_type == 0.0 {
+                            frame.size.0
+                        } else {
+                            scale.0
+                        },
+                        if f.y_type == 0.0 {
+                            frame.size.1
+                        } else {
+                            scale.1
+                        },
                     );
                     let start = cur.unwrap_or(end);
                     let mut points = vec![start];
@@ -458,17 +509,21 @@ pub fn geometry_hit_segments(
                             pts.push(to_page(p));
                         }
                         cur = Some(end);
-                cur_local = Some(end_local);
+                        cur_local = Some(end_local);
                         drew = true;
                     }
                 }
                 if !drew {
                     pts.push(to_page(end));
                     cur = Some(end);
-                cur_local = Some(end_local);
+                    cur_local = Some(end_local);
                 }
             }
             "PolylineTo" => {
+                // A `POLYLINE()` row is authored multi-vertex
+                // geometry, not a routed straight run (#324 step 1) —
+                // even when its vertices happen to be straight.
+                straight = false;
                 if let Some(acc) = spline_acc.take() {
                     if let Some(data) = acc.flush() {
                         for p in crate::curve::SplineData::flatten(&data, 16)
@@ -501,7 +556,14 @@ pub fn geometry_hit_segments(
                 cur_local = Some(end_local);
             }
             _ if t.ends_with("To") || t.contains("Spline") || t == "InfiniteLine" => {
-                // LineTo plus the v0.2 infinite-line chord.
+                // LineTo plus the v0.2 infinite-line chord. Only the
+                // KNOWN straight rows keep the eligibility: an unknown
+                // `*To` row or an infinite line draws its endpoint
+                // chord — the ink is straight, but the row type is
+                // not a routed straight run (#324 step 1).
+                if t != "LineTo" && t != "RelLineTo" {
+                    straight = false;
+                }
                 if let Some(acc) = spline_acc.take() {
                     if let Some(data) = acc.flush() {
                         for p in crate::curve::SplineData::flatten(&data, 16)
@@ -517,6 +579,10 @@ pub fn geometry_hit_segments(
                 cur_local = Some(end_local);
             }
             _ => {
+                // The renderer draws a closed curve for Ellipse rows.
+                if t == "Ellipse" {
+                    straight = false;
+                }
                 if let Some(acc) = spline_acc.take() {
                     if let Some(data) = acc.flush() {
                         for p in crate::curve::SplineData::flatten(&data, 16)
@@ -540,5 +606,5 @@ pub fn geometry_hit_segments(
             }
         }
     }
-    pts.windows(2).map(|w| (w[0], w[1])).collect()
+    (pts.windows(2).map(|w| (w[0], w[1])).collect(), straight)
 }

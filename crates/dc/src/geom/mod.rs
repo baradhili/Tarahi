@@ -24,7 +24,7 @@ pub use jumps::{
     page_jumps_stripping, seg_cross, Jump, JumpLine,
 };
 pub use rows::{arc_row, cubic_row, row_cell_value, ArcRow, CubicRow};
-pub use segments::{geometry_hit_segments, MAX_WALK_ROWS};
+pub use segments::{geometry_hit_segments, geometry_hit_segments_straight, MAX_WALK_ROWS};
 
 #[cfg(test)]
 mod tests {
@@ -108,10 +108,7 @@ mod tests {
             (2.0, 1.0),
         ];
         let js = line_jumps(
-            &[
-                l(1, 0, &arc),
-                l(2, 1, &[(0.8, 2.0), (1.2, 0.0)]),
-            ],
+            &[l(1, 0, &arc), l(2, 1, &[(0.8, 2.0), (1.2, 0.0)])],
             (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         );
         assert_eq!(js.len(), 1, "the converging pair merges: {js:?}");
@@ -142,7 +139,6 @@ mod tests {
     fn stored_jump_arcs_match_the_repro_row() {
         // Mid-run with collinear continuation on both sides (the run).
         assert!(is_stored_jump_arc(
-
             -0.041_666_7,
             (0.083_333_3, 0.0),
             Some((1.0, 0.0)),
@@ -152,7 +148,6 @@ mod tests {
         ));
         // A corner arc cuts across the run — never a jump.
         assert!(!is_stored_jump_arc(
-
             0.09,
             (0.5, 0.5),
             Some((1.0, 0.0)),
@@ -163,7 +158,6 @@ mod tests {
         // An authored shallow bump (the #294 review's control) is a
         // curve: |A| ≪ the semicircle band.
         assert!(!is_stored_jump_arc(
-
             0.25,
             (4.0, 0.0),
             Some((1.0, 0.0)),
@@ -176,7 +170,6 @@ mod tests {
         // cap wrongly rejected documented factor-10 jumps, #294
         // review).
         assert!(!is_stored_jump_arc(
-
             1.0,
             (0.0, 4.0),
             Some((0.0, 1.0)),
@@ -187,7 +180,6 @@ mod tests {
         // A large SEMICIRCLE with full route context is a jump at any
         // size (LineJumpFactorX=10 → 0.625 in at the defaults).
         assert!(is_stored_jump_arc(
-
             2.0,
             (0.0, 4.0),
             Some((0.0, 1.0)),
@@ -198,7 +190,6 @@ mod tests {
         // Degenerate: zero chord and a zero-sagitta straight row
         // (which the ink path already emits as a line).
         assert!(!is_stored_jump_arc(
-
             0.0,
             (0.0, 0.0),
             Some((1.0, 0.0)),
@@ -207,7 +198,6 @@ mod tests {
             0.041_666_7,
         ));
         assert!(!is_stored_jump_arc(
-
             0.0,
             (0.0, 1.0),
             Some((1.0, 0.0)),
@@ -217,11 +207,17 @@ mod tests {
         ));
         // An authored whole-route semicircle (#294 review) has no
         // continuing runs — it stays a curve.
-        assert!(!is_stored_jump_arc(0.25, (0.5, 0.0), None, None, 0.25, 0.25));
+        assert!(!is_stored_jump_arc(
+            0.25,
+            (0.5, 0.0),
+            None,
+            None,
+            0.25,
+            0.25
+        ));
         // Mid-run geometry but a run that stops at the arc (an
         // authored end-arc) is not a jump either.
         assert!(!is_stored_jump_arc(
-
             -0.041_666_7,
             (0.083_333_3, 0.0),
             Some((1.0, 0.0)),
@@ -260,7 +256,6 @@ mod tests {
         ));
         // No radius evidence (0) never strips — preserve the arc.
         assert!(!is_stored_jump_arc(
-
             -0.041_666_7,
             (0.083_333_3, 0.0),
             Some((1.0, 0.0)),
@@ -609,6 +604,144 @@ mod tests {
         );
     }
 
+    /// #324 step 1 (the live-measured rules, mk-git 2026-11-25): the
+    /// walk's straight-run eligibility. Line rows, an L route's
+    /// bends, and a recognized stored-hop arc all keep the connector
+    /// eligible — the arc straightens, exactly as the crossing set
+    /// walks it.
+    #[test]
+    fn straight_walk_lines_bends_and_stored_hops_stay_eligible() {
+        let doc = vsdx::Document::default();
+        // The straight route with a mid-run stored hop.
+        let s = conn_shape(7, 3.0, 0.25, jump_rows());
+        let chain = vec![&s];
+        let frame = hit_frame(&doc, &chain, &s, (1.0, 1.0));
+        let (segs, straight) =
+            geometry_hit_segments_straight(&s, None, &frame, Some((0.041_666_7, 0.041_666_7)));
+        assert!(straight, "a stored hop is not a curve: it straightens");
+        assert!(
+            !segs.is_empty() && flat(&segs),
+            "the route stays one run: {segs:?}"
+        );
+        // An L route: both legs are straight runs.
+        let bent = conn_shape(
+            8,
+            1.0,
+            1.0,
+            vec![
+                mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                mrow(2, "LineTo", &[("X", 1.0), ("Y", 0.0)]),
+                mrow(3, "LineTo", &[("X", 1.0), ("Y", 1.0)]),
+            ],
+        );
+        let chain = vec![&bent];
+        let frame = hit_frame(&doc, &chain, &bent, (1.0, 1.0));
+        let (_, straight) = geometry_hit_segments_straight(&bent, None, &frame, None);
+        assert!(straight, "an L route is entirely straight runs");
+    }
+
+    /// #324 step 1: curve rows drop the connector from the crossing
+    /// set's eligibility whole — an authored arc, a polyline row, a
+    /// spline — while the same rows still walk (the hit path is
+    /// unchanged).
+    #[test]
+    fn curve_rows_leave_the_straight_run_eligibility() {
+        let doc = vsdx::Document::default();
+        // An authored arc: sagitta far off the page radius and no
+        // continuing run after it, so it classifies as a curve.
+        let arc = conn_shape(
+            7,
+            1.0,
+            1.0,
+            vec![
+                mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                mrow(2, "LineTo", &[("X", 0.0), ("Y", 0.5)]),
+                mrow(3, "ArcTo", &[("X", 0.0), ("Y", 1.0), ("A", -0.5)]),
+            ],
+        );
+        let chain = vec![&arc];
+        let frame = hit_frame(&doc, &chain, &arc, (1.0, 1.0));
+        let (segs, straight) =
+            geometry_hit_segments_straight(&arc, None, &frame, Some((0.041_666_7, 0.041_666_7)));
+        assert!(!straight, "an authored arc is curve geometry");
+        assert!(
+            segs.iter()
+                .any(|(a, b)| (a.0 - b.0).abs() > 1e-9 || (a.1 - b.1).abs() > 1e-9),
+            "the walk still draws the arc: {segs:?}"
+        );
+        // A polyline row.
+        let mut poly = mrow(2, "PolylineTo", &[("X", 2.0), ("Y", 0.0)]);
+        poly.cells.push((
+            "A".into(),
+            Cell {
+                v: Some("POLYLINE(1, 1, 0,1, 2,1)".into()),
+                ..Cell::default()
+            },
+        ));
+        let poly_s = conn_shape(
+            8,
+            2.0,
+            1.0,
+            vec![mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]), poly],
+        );
+        let chain = vec![&poly_s];
+        let frame = hit_frame(&doc, &chain, &poly_s, (1.0, 1.0));
+        let (_, straight) = geometry_hit_segments_straight(&poly_s, None, &frame, None);
+        assert!(
+            !straight,
+            "a POLYLINE row is authored geometry, not a routed run"
+        );
+        // Spline rows.
+        let spline = conn_shape(
+            9,
+            1.0,
+            1.0,
+            vec![
+                mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                mrow(
+                    2,
+                    "SplineStart",
+                    &[
+                        ("X", 0.3),
+                        ("Y", 0.5),
+                        ("A", 0.2),
+                        ("B", 0.1),
+                        ("C", 1.0),
+                        ("D", 3.0),
+                    ],
+                ),
+                mrow(3, "SplineKnot", &[("X", 0.7), ("Y", 0.5), ("A", 0.5)]),
+                mrow(4, "SplineKnot", &[("X", 1.0), ("Y", 0.0), ("A", 1.0)]),
+            ],
+        );
+        let chain = vec![&spline];
+        let frame = hit_frame(&doc, &chain, &spline, (1.0, 1.0));
+        let (_, straight) = geometry_hit_segments_straight(&spline, None, &frame, None);
+        assert!(!straight, "spline rows are curve geometry");
+    }
+
+    #[test]
+    fn ellipse_excludes_connector_without_adding_hit_segments() {
+        let shape = conn_shape(
+            7,
+            2.0,
+            1.0,
+            vec![
+                mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+                mrow(2, "Ellipse", &[("X", 1.0), ("Y", 1.0)]),
+                mrow(3, "LineTo", &[("X", 2.0), ("Y", 0.0)]),
+            ],
+        );
+        let doc = vsdx::Document::default();
+        let frame = hit_frame(&doc, &[&shape], &shape, (1.0, 1.0));
+        let (segments, straight) = geometry_hit_segments_straight(&shape, None, &frame, None);
+        assert!(!straight, "an ellipse is curve geometry");
+        assert_eq!(
+            segments,
+            [(frame.to_page((0.0, 0.0)), frame.to_page((2.0, 0.0)))]
+        );
+    }
+
     /// #294 review: a degenerate (zero-length) straight row next to
     /// the stored jump does not break the run lookup — the arc still
     /// strips.
@@ -616,10 +749,7 @@ mod tests {
     fn stored_jumps_survive_degenerate_neighbor_rows() {
         let mut rows = jump_rows();
         // A collapsed elbow between the arc and the continuing run.
-        rows.insert(
-            3,
-            mrow(4, "LineTo", &[("X", 1.083_333_3), ("Y", 0.0)]),
-        );
+        rows.insert(3, mrow(4, "LineTo", &[("X", 1.083_333_3), ("Y", 0.0)]));
         rows[4].ix = 5;
         let s = conn_shape(7, 3.0, 0.25, rows);
         let doc = vsdx::Document::default();
@@ -651,12 +781,10 @@ mod tests {
             let doc = vsdx::Document::default();
             let chain = vec![&inst, &root];
             let frame = hit_frame(&doc, &chain, &inst, (2.0, 0.5));
-            let segs = geometry_hit_segments(&inst, Some(&root), &frame, Some((0.041_666_7, 0.041_666_7)));
+            let segs =
+                geometry_hit_segments(&inst, Some(&root), &frame, Some((0.041_666_7, 0.041_666_7)));
             assert!(!segs.is_empty());
-            assert!(
-                flat(&segs),
-                "the arc strips at instance scale ({iw}, {ih})"
-            );
+            assert!(flat(&segs), "the arc strips at instance scale ({iw}, {ih})");
         }
     }
 
@@ -735,7 +863,11 @@ mod tests {
             rows: vec![
                 mrow(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
                 mrow(2, "LineTo", &[("X", 1.4583), ("Y", 0.0)]),
-                mrow(3, "ArcTo", &[("X", 1.5417), ("Y", 0.0), ("A", -0.041_666_7)]),
+                mrow(
+                    3,
+                    "ArcTo",
+                    &[("X", 1.5417), ("Y", 0.0), ("A", -0.041_666_7)],
+                ),
                 mrow(4, "LineTo", &[("X", 3.0), ("Y", 0.0)]),
             ],
             ..Section::default()
@@ -776,10 +908,7 @@ mod tests {
                 Row {
                     t: Some("ArcTo".into()),
                     ix: 3,
-                    cells: vec![
-                        ("X".to_string(), inh()),
-                        ("A".to_string(), inh()),
-                    ],
+                    cells: vec![("X".to_string(), inh()), ("A".to_string(), inh())],
                     ..Row::default()
                 },
                 Row {
@@ -801,7 +930,8 @@ mod tests {
         // polyline keeps the bump exactly like the ink does (the old
         // code retained it here while the ink stripped — or vice versa
         // — depending on the scale).
-        let segs = geometry_hit_segments(&inst, Some(&root), &frame, Some((0.041_666_7, 0.041_666_7)));
+        let segs =
+            geometry_hit_segments(&inst, Some(&root), &frame, Some((0.041_666_7, 0.041_666_7)));
         assert!(!segs.is_empty());
         assert!(
             !flat(&segs),
@@ -882,7 +1012,7 @@ mod tests {
     }
 
     use super::*;
-    use vsdx::model::{Cell, Row, Section, SheetChild, Shape};
+    use vsdx::model::{Cell, Row, Section, Shape, SheetChild};
 
     /// #188: a NURBSTo row's hit segments follow the EVALUATED curve
     /// (the E formula's interior points pull the polyline off the
@@ -1036,62 +1166,64 @@ mod tests {
 
         // A zero-weight connector is excluded from the crossing set:
         // the horizontal axis line no longer hops over it.
-        let connector = |id: i64, pin: (f64, f64), w: f64, h: f64, angle: f64, weight: Option<f64>| {
-            let mut c = Shape {
-                id,
-                type_: Some("Shape".into()),
-                ..Shape::default()
-            };
-            for (n, v) in [
-                ("PinX", pin.0),
-                ("PinY", pin.1),
-                ("Width", w),
-                ("Height", h),
-                ("LocPinX", w / 2.0),
-                ("LocPinY", h / 2.0),
-                ("Angle", angle),
-                ("ObjType", 2.0),
-            ] {
-                c.sheet.set_cell(n, Cell::value(format!("{v}")));
-            }
-            if let Some(wt) = weight {
-                c.sheet.set_cell("LineWeight", Cell::value(format!("{wt}")));
-            }
-            let row = |ix: i64, x: f64, y: f64| Row {
-                t: Some("LineTo".into()),
-                ix,
-                cells: vec![
-                    ("X".to_string(), Cell::value(format!("{x}"))),
-                    ("Y".to_string(), Cell::value(format!("{y}"))),
-                ],
-                ..Row::default()
-            };
-            let mut sec = Section {
-                name: "Geometry".into(),
-                ix: 0,
-                ..Section::default()
-            };
-            sec.rows = vec![
-                Row {
-                    t: Some("MoveTo".into()),
-                    ix: 1,
+        let connector =
+            |id: i64, pin: (f64, f64), w: f64, h: f64, angle: f64, weight: Option<f64>| {
+                let mut c = Shape {
+                    id,
+                    type_: Some("Shape".into()),
+                    ..Shape::default()
+                };
+                for (n, v) in [
+                    ("PinX", pin.0),
+                    ("PinY", pin.1),
+                    ("Width", w),
+                    ("Height", h),
+                    ("LocPinX", w / 2.0),
+                    ("LocPinY", h / 2.0),
+                    ("Angle", angle),
+                    ("ObjType", 2.0),
+                ] {
+                    c.sheet.set_cell(n, Cell::value(format!("{v}")));
+                }
+                if let Some(wt) = weight {
+                    c.sheet.set_cell("LineWeight", Cell::value(format!("{wt}")));
+                }
+                let row = |ix: i64, x: f64, y: f64| Row {
+                    t: Some("LineTo".into()),
+                    ix,
                     cells: vec![
-                        ("X".to_string(), Cell::value("0")),
-                        ("Y".to_string(), Cell::value("0")),
+                        ("X".to_string(), Cell::value(format!("{x}"))),
+                        ("Y".to_string(), Cell::value(format!("{y}"))),
                     ],
                     ..Row::default()
-                },
-                row(2, w, h),
-            ];
-            c.sheet.children.push(SheetChild::Section(sec));
-            c
-        };
+                };
+                let mut sec = Section {
+                    name: "Geometry".into(),
+                    ix: 0,
+                    ..Section::default()
+                };
+                sec.rows = vec![
+                    Row {
+                        t: Some("MoveTo".into()),
+                        ix: 1,
+                        cells: vec![
+                            ("X".to_string(), Cell::value("0")),
+                            ("Y".to_string(), Cell::value("0")),
+                        ],
+                        ..Row::default()
+                    },
+                    row(2, w, h),
+                ];
+                c.sheet.children.push(SheetChild::Section(sec));
+                c
+            };
         let mut page = vsdx::Page {
             id: 0,
             name: "T".into(),
             ..vsdx::Page::default()
         };
-        page.shapes.push(connector(1, (3.0, 1.0), 4.0, 0.0, 0.0, Some(0.0)));
+        page.shapes
+            .push(connector(1, (3.0, 1.0), 4.0, 0.0, 0.0, Some(0.0)));
         page.shapes.push(connector(
             2,
             (3.0, 1.0),

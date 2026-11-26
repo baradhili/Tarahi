@@ -327,3 +327,45 @@ fn group_members_flip_about_their_loc_pin() {
         flipped.0
     );
 }
+
+/// A hidden section bounds nothing: an inline copy that inherits
+/// NoShow=1 and an endpoint 2 in up from its master never paints that
+/// endpoint, so the ink box stays the shape's own (CodeRabbit on
+/// PR #381).
+#[test]
+fn inherited_noshow_sections_do_not_bound_the_ink() {
+    let mut master = shape_at(1, (1.0, 0.5), 1.0, 1.0, 0.0);
+    push_geo(
+        &mut master,
+        vec![
+            geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "LineTo", &[("X", 1.0), ("Y", 3.0)]),
+        ],
+    );
+    if let Some(SheetChild::Section(sec)) = master
+        .sheet
+        .children
+        .iter_mut()
+        .find(|c| matches!(c, SheetChild::Section(s) if s.name == "Geometry"))
+    {
+        sec.cells.push(("NoShow".into(), Cell::value("1")));
+    }
+    let mut inst = shape_at(1, (4.0, 5.0), 1.0, 1.0, 0.0);
+    inst.master = Some(7);
+    // The inline copy keeps X only; Y and NoShow inherit.
+    push_geo(
+        &mut inst,
+        vec![
+            geo_row(1, "MoveTo", &[("X", 0.0), ("Y", 0.0)]),
+            geo_row(2, "LineTo", &[("X", 1.0)]),
+        ],
+    );
+    let (mut doc, page) = page_fixture(vec![inst]);
+    doc.masters.push(vsdx::model::Master {
+        id: 7,
+        shapes: vec![master],
+        ..vsdx::model::Master::default()
+    });
+    let b = subtree_ink_boxes(&doc, &page, 1).unwrap()[&1];
+    assert!(b.3 < 1.5, "the hidden endpoint stays out: {b:?}");
+}
