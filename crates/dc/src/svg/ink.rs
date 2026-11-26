@@ -1,8 +1,8 @@
 //! Ink bounds: the geometry walks behind selection boxes, the canvas
 //! damage region, and layer viewBoxes.
+use super::*;
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use super::*;
 /// Union sink for the ink-bounds walk with the #219 focus gate:
 /// nodes contribute only once the walk is inside the focus subtree
 /// (always, when unfocused). `enter` arms the gate at the focus node;
@@ -116,7 +116,7 @@ pub fn shape_ink_bounds_focused(
 /// placement box; no padding, no clamping (the callers decide).
 /// Mirrored master content maps into the instance box, so this box
 /// bounds it too.
-fn node_ink_box(
+pub(crate) fn node_ink_box(
     doc: &Document,
     s: &Shape,
     chain: &[&Shape],
@@ -700,4 +700,3 @@ fn union_box(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> (f64, f64, f64
     let ny = a.1.min(b.1);
     (nx, ny, x1 - nx, y1 - ny)
 }
-

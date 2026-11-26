@@ -51,9 +51,17 @@ fn export_renders_line_jumps() {
         svg.contains(r#"data-dc="line-jumps""#),
         "the jump overlay group is present"
     );
+    // The jumper is CUT open (no paper-white gap painted over the
+    // background — the hop is part of the line, #322/#324 phase 3):
+    // connector 1 renders inside its jump clip, and no white stroke
+    // is drawn.
     assert!(
-        svg.contains(r##"stroke="#ffffff""##),
-        "the white gap stroke is present"
+        svg.contains(r#"<g clip-path="url(#dc-jumpcut1)">"#),
+        "the jumping connector is clipped open: {svg}"
+    );
+    assert!(
+        !svg.contains(r##"stroke="#ffffff""##),
+        "no white gap stroke"
     );
     // The arc bulges page-UP: the apex sits at a SMALLER SVG y
     // than the crossing's (page y 5 → SVG y 6 on an 11in page).
@@ -262,15 +270,16 @@ fn export_straightens_stored_jump_arcs() {
         "the stored jump arc renders as a straight run"
     );
     assert_eq!(
-        svg.matches(r##"stroke="#ffffff""##).count(),
+        svg.matches(r#"data-dc="hop-arc""#).count(),
         1,
-        "one jump at the crossing"
+        "one hop arc at the crossing"
     );
-    // The gap spans the crossing ± the page's resolved radius
-    // (prefix match: the gap line writes full-precision floats).
+    // The cut slot spans the crossing ± the page's resolved radius
+    // (prefix match: the slot writes full-precision floats, page x
+    // first).
     assert!(
-        svg.contains(r#"x1="2.95833"#) && svg.contains(r#"x2="3.04166"#),
-        "the gap is LineToLineX × factor / 2 wide"
+        svg.contains("M 2.95833 ") && svg.contains("L 3.04167 "),
+        "the cut is LineToLineX × factor / 2 to each side: {svg}"
     );
     // The stale case: the stored arc sits at page x = 3 while the
     // crossing moved to x = 4.5 — the arc vanishes, one hop at the
@@ -282,7 +291,7 @@ fn export_straightens_stored_jump_arcs() {
     let svg = render_page(&doc, &page).unwrap();
     assert!(!svg.contains(" A "), "the stale stored arc does not render");
     assert!(
-        svg.contains(r#"x1="4.45833"#) && !svg.contains(r#"x1="2.95833"#),
+        svg.contains("M 4.45833 ") && !svg.contains("M 2.95833 "),
         "one hop at the current crossing, nothing at the stale arc"
     );
 }
@@ -407,5 +416,129 @@ fn curved_connectors_leave_the_crossing_set() {
     assert!(
         crate::geom::page_jumps(&doc, &page, &[]).is_empty(),
         "the curved connector neither hops nor is hopped over"
+    );
+}
+
+/// Two hops closer together than their radii still open the shaft
+/// along BOTH: the clips NEST one per hop (clip groups intersect),
+/// where a single even-odd path with overlapping slots would re-keep
+/// the overlap and the shaft would reappear between the arcs
+/// (CodeRabbit round on #324 phase 3).
+#[test]
+fn export_cuts_overlapping_hop_slots_apart() {
+    let connector = |id: i64, pin: (f64, f64), w: f64, h: f64| {
+        let mut s = shape_at(id, pin, w, h, 0.0);
+        s.sheet.set_cell("ObjType", Cell::value("2"));
+        let line = |ix: i64, x: f64, y: f64| Row {
+            t: Some("LineTo".into()),
+            ix,
+            cells: vec![
+                ("X".to_string(), Cell::value(format!("{x}"))),
+                ("Y".to_string(), Cell::value(format!("{y}"))),
+            ],
+            ..Row::default()
+        };
+        let mut sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec.rows = vec![
+            Row {
+                t: Some("MoveTo".into()),
+                ix: 1,
+                cells: vec![
+                    ("X".to_string(), Cell::value("0")),
+                    ("Y".to_string(), Cell::value("0")),
+                ],
+                ..Row::default()
+            },
+            line(2, w, h),
+        ];
+        s.sheet.children.push(SheetChild::Section(sec));
+        s
+    };
+    // FactorX 0.8 → radius 0.05: two verticals 0.06 apart cross the
+    // horizontal jumper — the slots [2.95, 3.05] and [3.01, 3.11]
+    // overlap.
+    let (mut doc, mut page) = page_fixture(vec![
+        connector(1, (3.0, 5.0), 4.0, 0.0),
+        connector(2, (3.0, 5.0), 0.0, 4.0),
+        connector(3, (3.06, 5.0), 0.0, 4.0),
+    ]);
+    doc.pages[0]
+        .sheet_mut()
+        .unwrap()
+        .set_cell("LineJumpFactorX", Cell::value("0.8"));
+    let _ = &mut page;
+    let svg = render_page(&doc, &page).unwrap();
+    assert_eq!(
+        svg.matches(r#"data-dc="hop-arc""#).count(),
+        2,
+        "two hop arcs: {svg}"
+    );
+    // The jumper's clips NEST: one group per hop (the outer id, then
+    // the -1 twin), so the intersection cuts both slots.
+    assert_eq!(
+        svg.matches(r#"<clipPath id="dc-jumpcut1""#).count(),
+        1,
+        "the outer clip"
+    );
+    assert_eq!(
+        svg.matches(r#"<clipPath id="dc-jumpcut1-1""#).count(),
+        1,
+        "the nested second-hop clip"
+    );
+}
+
+/// The backdrop's ink box only REJECTS: a point inside a triangle's
+/// box but outside its fill is NOT the triangle's color (the even-odd
+/// ray cast decides — CodeRabbit round on #324 phase 3).
+#[test]
+fn backdrop_reads_the_fill_not_the_ink_box() {
+    let mut t = shape_at(1, (2.0, 2.0), 2.0, 2.0, 0.0);
+    t.sheet.set_cell("FillForegnd", Cell::value("#ff0000"));
+    let mut sec = Section {
+        name: "Geometry".into(),
+        ix: 0,
+        ..Section::default()
+    };
+    let row = |ix: i64, x: f64, y: f64| Row {
+        t: Some("LineTo".into()),
+        ix,
+        cells: vec![
+            ("X".to_string(), Cell::value(format!("{x}"))),
+            ("Y".to_string(), Cell::value(format!("{y}"))),
+        ],
+        ..Row::default()
+    };
+    sec.rows = vec![
+        Row {
+            t: Some("MoveTo".into()),
+            ix: 1,
+            cells: vec![
+                ("X".to_string(), Cell::value("0")),
+                ("Y".to_string(), Cell::value("0")),
+            ],
+            ..Row::default()
+        },
+        row(2, 2.0, 0.0),
+        row(3, 0.0, 2.0),
+    ];
+    t.sheet.children.push(SheetChild::Section(sec));
+    // A connector ABOVE the triangle (the `below` anchor).
+    let c = shape_at(2, (2.0, 2.0), 2.0, 0.0, 0.0);
+    let (doc, page) = page_fixture(vec![t, c]);
+    // (1.3, 1.3) page: inside the hypotenuse triangle; (2.7, 2.7) is
+    // inside its 2×2 box but outside the fill.
+    assert_eq!(
+        crate::svg::backdrop_color_at(&doc, &page, (1.3, 1.3), 2, &[]),
+        (0xff, 0, 0),
+        "a point inside the fill reads the fill"
+    );
+    assert_eq!(
+        crate::svg::backdrop_color_at(&doc, &page, (2.7, 2.7), 2, &[]),
+        (0xff, 0xff, 0xff),
+        "the box's empty corner reads the page's white"
     );
 }

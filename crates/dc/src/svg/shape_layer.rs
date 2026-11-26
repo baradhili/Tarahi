@@ -187,6 +187,61 @@ fn render_shape_layer_inner(
 /// wraps geometry, master mirroring, sub-shape recursion, and the
 /// text block.
 #[allow(clippy::too_many_arguments)] // the walk carries its whole environment
+/// The page-level transform context `render_shape`'s head derives: the
+/// emitted `<g transform>` string plus the width/height and flip signs
+/// `emit_text` needs. Shared with `render_page_full`, which re-opens
+/// an identical group for a jumping connector's TEXT outside its jump
+/// clips (#324 phase 3: the clip cuts the shaft, never the label).
+pub(crate) struct ShapeXform {
+    pub transform: String,
+    pub width: f64,
+    pub height: f64,
+    pub sx: f64,
+    pub sy: f64,
+}
+
+/// The same reads `render_shape`'s head makes, factored out for
+/// [`crate::svg::page`]'s label-twin group.
+pub(crate) fn shape_xform(doc: &Document, s: &Shape, chain: &[&Shape], page_h: f64) -> ShapeXform {
+    let mut chain: Vec<&Shape> = chain.to_vec();
+    chain.push(s);
+    let env = shape_env(doc, s, &chain);
+    let get = |n: &str| -> Option<f64> {
+        doc.resolve_cell(s, &chain, n)
+            .and_then(|c| cell_num(&c, &env))
+    };
+    let width = get("Width").unwrap_or(1.0);
+    let height = get("Height").unwrap_or(1.0);
+    let (sx, sy) = (
+        if get("FlipX").unwrap_or(0.0) != 0.0 {
+            -1.0
+        } else {
+            1.0
+        },
+        if get("FlipY").unwrap_or(0.0) != 0.0 {
+            -1.0
+        } else {
+            1.0
+        },
+    );
+    let transform = format!(
+        "translate({px:.6},{py:.6}) rotate({deg:.6}) scale({sx},{sy}) translate({lx:.6},{ly:.6})",
+        px = get("PinX").unwrap_or(0.0),
+        py = page_h - get("PinY").unwrap_or(0.0),
+        deg = -get("Angle").unwrap_or(0.0).to_degrees(),
+        lx = -get("LocPinX").unwrap_or(width / 2.0),
+        ly = get("LocPinY").unwrap_or(height / 2.0),
+    );
+    ShapeXform {
+        transform,
+        width,
+        height,
+        sx,
+        sy,
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // the walk carries its whole environment
 pub(crate) fn render_shape<'a>(
     doc: &'a Document,
     s: &'a Shape,

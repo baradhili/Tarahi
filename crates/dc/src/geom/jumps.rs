@@ -459,6 +459,16 @@ pub fn line_jumps_with(
                 } else {
                     radius_y
                 };
+                // A hop on a zero-radius axis cannot draw — and must
+                // not ENTER a cluster either: its stroke-width reach
+                // would absorb a valid hop on the other axis and the
+                // merged direction would draw nothing (CodeRabbit
+                // round on #324 phase 2). The strip side already holds
+                // the same rule — a zero on the chosen axis never
+                // strips (`is_stored_jump_arc`, PR #299 round-3).
+                if jr <= 0.0 {
+                    continue;
+                }
                 let reach = (jr * 2.0).max((jmp.weight + jmp.under_weight) * 2.0);
                 // Compare EVERY existing cluster (#218 review): the
                 // last-only check (under the old x-sort) let a jump
