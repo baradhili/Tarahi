@@ -137,8 +137,8 @@ pub fn rewrite_route_rows(shape: &mut Shape, rows: &[(f64, f64); 3]) {
 // re-exported here so every dc-ui call site and test stays put.
 pub use dc::geom::{
     arc_row, cubic_row, geometry_hit_segments, geometry_hit_segments_straight, hit_frame,
-    is_connector, is_connector_in, is_stored_jump_arc, jump_radii_in, line_jumps, row_cell_value,
-    seg_cross, ArcRow, CubicRow, HitFrame, Jump, JumpLine,
+    is_connector, is_connector_in, is_jump_candidate, is_stored_jump_arc, jump_radii_in,
+    line_jumps, row_cell_value, seg_cross, ArcRow, CubicRow, HitFrame, Jump, JumpLine, JumpRules,
 };
 fn set(cells: &mut Vec<SheetChild>, n: &str, v: f64) {
     cells.push(SheetChild::Cell(n.to_string(), Cell::value(fmt(v))));
@@ -528,10 +528,8 @@ pub fn unglue_cmds(
             // record names it. Either way the record drops and the
             // glue formula yields to its resolved value (the body-drag
             // release's write set, without the drag).
-            let glue_formula =
-                dc_core::commands::effective_formula(doc, sh, &chain, end.cell()).is_some_and(
-                    |f| f.contains("PAR(PNT(") || f.contains("_WALKGLUE("),
-                );
+            let glue_formula = dc_core::commands::effective_formula(doc, sh, &chain, end.cell())
+                .is_some_and(|f| f.contains("PAR(PNT(") || f.contains("_WALKGLUE("));
             let glued = glue_formula
                 || connects
                     .list
@@ -546,16 +544,14 @@ pub fn unglue_cmds(
             };
             released_cells.push(end.cell());
             for (name, val) in [(end.cell(), x), (end.y_cell(), y)] {
-                cmds.push(
-                    Box::new(dc_core::SetGluedCell::new(
-                        dc_core::Scope::Shape {
-                            page: page.id,
-                            shape: sid,
-                        },
-                        name,
-                        Cell::value(fmt(val)),
-                    )) as Box<dyn dc_core::Command>,
-                );
+                cmds.push(Box::new(dc_core::SetGluedCell::new(
+                    dc_core::Scope::Shape {
+                        page: page.id,
+                        shape: sid,
+                    },
+                    name,
+                    Cell::value(fmt(val)),
+                )) as Box<dyn dc_core::Command>);
             }
         }
         if !released_cells.is_empty() {
@@ -586,7 +582,6 @@ pub fn unglue_cmds(
     }
     (cmds, released)
 }
-
 
 /// The route polyline (page inches) between two endpoints under a
 /// style: straight is the chord; right-angle runs a Z with the elbow
@@ -639,7 +634,6 @@ pub fn route_rows(begin: (f64, f64), points: &[(f64, f64)]) -> [(f64, f64); 3] {
         .unwrap_or(points.get(1).copied().unwrap_or(last));
     [local(e1), local(e2), local(last)]
 }
-
 
 /// The localized endpoint word (#257 value-side vocabulary): the
 /// endpoint macros' labels carry the reading-order word, not the cell
@@ -1095,8 +1089,16 @@ mod tests {
         let r = (0.0, 0.0, 2.0, 1.0);
         assert!(near(attach_point(r, (5.0, 0.5)), (2.0, 0.5)), "right side");
         assert!(near(attach_point(r, (-5.0, 0.5)), (0.0, 0.5)), "left side");
-        assert!(near(attach_point(r, (1.0, 9.0)), (1.0, 1.0)), "{}", crate::i18n::strs().msg_align_top_kind());
-        assert!(near(attach_point(r, (1.0, -9.0)), (1.0, 0.0)), "{}", crate::i18n::strs().msg_align_bottom_kind());
+        assert!(
+            near(attach_point(r, (1.0, 9.0)), (1.0, 1.0)),
+            "{}",
+            crate::i18n::strs().msg_align_top_kind()
+        );
+        assert!(
+            near(attach_point(r, (1.0, -9.0)), (1.0, 0.0)),
+            "{}",
+            crate::i18n::strs().msg_align_bottom_kind()
+        );
         // The other end inside the shape → degenerate center.
         assert!(near(attach_point(r, (1.0, 0.5)), (1.0, 0.5)));
     }
@@ -1143,8 +1145,10 @@ mod tests {
     }
 
     /// #108: line jumps — a proper crossing hops the horizontal line;
-    /// a tie hops the later-in-z line; parallel/near-touching pairs
-    /// never hop.
+    /// two equally steep lines (a diagonal X) never hop — Visio's
+    /// steepness rule, the mirrored-X witness (live-measured, mk-git
+    /// 2026-11-25, b01's untouched 4/5 pair); parallel/near-touching
+    /// pairs never hop.
     #[test]
     fn line_jumps_hop_the_horizontal_line() {
         let l = |id: i64, z: usize, pts: &[(f64, f64)]| JumpLine {
@@ -1172,7 +1176,9 @@ mod tests {
             (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         )
         .is_empty());
-        // Perpendicular tie (both diagonal): the later z hops.
+        // Perpendicular mirror (both 45° diagonals, equally steep):
+        // no hop — Visio draws no jump between two equally steep
+        // segments.
         let js = line_jumps(
             &[
                 l(1, 0, &[(0.0, 0.0), (2.0, 2.0)]),
@@ -1180,20 +1186,7 @@ mod tests {
             ],
             (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS),
         );
-        assert_eq!(js.len(), 1);
-        // The later-in-z line 2 hops: its direction (0,2)->(2,0)
-        // normalizes to (1/sqrt(2), -1/sqrt(2)).
-        let sq = 1.0 / (2.0f64).sqrt();
-        assert!(
-            (js[0].dir.0 - sq).abs() < 1e-9,
-            "the later-z line hops: dir.x = {}",
-            js[0].dir.0
-        );
-        assert!(
-            (js[0].dir.1 - (-sq)).abs() < 1e-9,
-            "the later-z line hops: dir.y = {}",
-            js[0].dir.1
-        );
+        assert!(js.is_empty(), "{js:?}");
         // Non-crossing segments never hop.
         assert!(line_jumps(
             &[

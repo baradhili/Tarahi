@@ -644,7 +644,11 @@ impl App {
             let Ok(chain) = shape_chain(&ed.doc, page_id, sh.id) else {
                 continue;
             };
-            if !crate::connectors::is_connector_in(&ed.doc, &chain, sh) {
+            // Jump candidacy (#324 phase 2), the same gate
+            // `page_jumps` applies — a plain glued 1D line never hops
+            // on the canvas either, or the overlay would drift from
+            // the export (the #336 parity principle).
+            if !crate::connectors::is_jump_candidate(&ed.doc, &chain, sh) {
                 continue;
             }
             // #187 slice 2: rotated connectors hop too — the polyline
@@ -730,7 +734,10 @@ impl App {
         out
     }
 
-    pub(super) fn glue_candidates(&self, excluding: &[i64]) -> Vec<crate::connectors::GlueCandidate> {
+    pub(super) fn glue_candidates(
+        &self,
+        excluding: &[i64],
+    ) -> Vec<crate::connectors::GlueCandidate> {
         let Some(ed) = self.ed() else {
             return Vec::new();
         };
@@ -909,7 +916,11 @@ impl App {
     /// against the post-move document (an eager build would read
     /// stale, pre-move geometry). `None` when nothing glues to the
     /// moved shapes, so Macros stay clean of no-ops.
-    pub(super) fn reroute_cmd(&self, page_id: i64, moved: &[i64]) -> Option<Box<dyn dc_core::Command>> {
+    pub(super) fn reroute_cmd(
+        &self,
+        page_id: i64,
+        moved: &[i64],
+    ) -> Option<Box<dyn dc_core::Command>> {
         let ed = self.ed()?;
         let page = ed.doc.pages.iter().find(|p| p.id == page_id)?;
         let touches = page
@@ -1198,7 +1209,9 @@ impl App {
             vsdx::Cell::value(format!("{factor:.6}")),
         ))];
         if let Some(pre) = pre {
-            cmds.push(Box::new(crate::cmd::ReconcileLineJumps::with_strip(page_id, pre)));
+            cmds.push(Box::new(crate::cmd::ReconcileLineJumps::with_strip(
+                page_id, pre,
+            )));
         }
         self.apply(dc_core::Macro::new("set line jump factor", cmds));
         // The factor steps in fractions (0.5 .. 3.0) — the i64 cast

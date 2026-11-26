@@ -65,6 +65,49 @@ fn export_renders_line_jumps() {
     // review): 0.125 in × 2/3 / 2.
     let apex = format!("{:.5} {:.5}", 3.0, 6.0 - 0.125 * (2.0 / 3.0) / 2.0);
     assert!(svg.contains(&apex), "the arc apex is page-up: {apex}");
+    // A VERTICAL-class jumper bulges page-LEFT (Visio's default
+    // hop directions, PageLineJumpDirX/Y = 0 — the b01 witness,
+    // #322): the horizontal carries ConLineJumpCode 3 ("other
+    // line"), so the vertical hops — and it runs SOUTH (its rows
+    // walk top to bottom), the heading where flipping toward
+    // page-up alone used to bulge the arc sideways RIGHT.
+    let (doc, page) = {
+        let mut h = connector(1, (3.0, 5.0), 4.0, 0.0);
+        h.sheet.set_cell("ConLineJumpCode", Cell::value("3"));
+        let mut v = shape_at(2, (3.0, 5.0), 0.0, 4.0, 0.0);
+        v.sheet.set_cell("ObjType", Cell::value("2"));
+        let row = |ix: i64, y: f64| Row {
+            t: Some("LineTo".into()),
+            ix,
+            cells: vec![
+                ("X".to_string(), Cell::value("0")),
+                ("Y".to_string(), Cell::value(format!("{y}"))),
+            ],
+            ..Row::default()
+        };
+        let mut sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        sec.rows = vec![
+            Row {
+                t: Some("MoveTo".into()),
+                ix: 1,
+                cells: vec![
+                    ("X".to_string(), Cell::value("0")),
+                    ("Y".to_string(), Cell::value("4")),
+                ],
+                ..Row::default()
+            },
+            row(2, 0.0),
+        ];
+        v.sheet.children.push(SheetChild::Section(sec));
+        page_fixture(vec![h, v])
+    };
+    let svg = render_page(&doc, &page).unwrap();
+    let apex = format!("{:.5} {:.5}", 3.0 - 0.125 * (2.0 / 3.0) / 2.0, 6.0);
+    assert!(svg.contains(&apex), "the arc apex is page-left: {apex}");
 }
 
 /// #251: the page's Show-Line-Jumps switch (`ConLineJumpCode=1`
@@ -157,56 +200,55 @@ fn export_gates_line_jumps_on_the_page_setting() {
 /// A stored arc sitting OFF any crossing simply vanishes.
 #[test]
 fn export_straightens_stored_jump_arcs() {
-    let connector =
-        |id: i64, pin: (f64, f64), w: f64, h: f64, stored_jump: Option<(f64, f64)>| {
-            let mut s = shape_at(id, pin, w, h, 0.0);
-            s.sheet.set_cell("ObjType", Cell::value("2"));
-            let line = |ix: i64, x: f64, y: f64| Row {
-                t: Some("LineTo".into()),
-                ix,
-                cells: vec![
-                    ("X".to_string(), Cell::value(format!("{x}"))),
-                    ("Y".to_string(), Cell::value(format!("{y}"))),
-                ],
-                ..Row::default()
-            };
-            let mut sec = Section {
-                name: "Geometry".into(),
-                ix: 0,
-                ..Section::default()
-            };
-            let mut rows = vec![Row {
-                t: Some("MoveTo".into()),
-                ix: 1,
-                cells: vec![
-                    ("X".to_string(), Cell::value("0")),
-                    ("Y".to_string(), Cell::value("0")),
-                ],
-                ..Row::default()
-            }];
-            // A stored jump mid-run (the #294 repro's row shape):
-            // chord along the run, |A| = the jump radius.
-            match stored_jump {
-                Some((mid, half)) => {
-                    rows.push(line(2, mid - half, 0.0));
-                    rows.push(Row {
-                        t: Some("ArcTo".into()),
-                        ix: 3,
-                        cells: vec![
-                            ("X".to_string(), Cell::value(format!("{}", mid + half))),
-                            ("Y".to_string(), Cell::value("0")),
-                            ("A".to_string(), Cell::value(format!("{}", -half))),
-                        ],
-                        ..Row::default()
-                    });
-                    rows.push(line(4, w, h));
-                }
-                None => rows.push(line(2, w, h)),
-            }
-            sec.rows = rows;
-            s.sheet.children.push(SheetChild::Section(sec));
-            s
+    let connector = |id: i64, pin: (f64, f64), w: f64, h: f64, stored_jump: Option<(f64, f64)>| {
+        let mut s = shape_at(id, pin, w, h, 0.0);
+        s.sheet.set_cell("ObjType", Cell::value("2"));
+        let line = |ix: i64, x: f64, y: f64| Row {
+            t: Some("LineTo".into()),
+            ix,
+            cells: vec![
+                ("X".to_string(), Cell::value(format!("{x}"))),
+                ("Y".to_string(), Cell::value(format!("{y}"))),
+            ],
+            ..Row::default()
         };
+        let mut sec = Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..Section::default()
+        };
+        let mut rows = vec![Row {
+            t: Some("MoveTo".into()),
+            ix: 1,
+            cells: vec![
+                ("X".to_string(), Cell::value("0")),
+                ("Y".to_string(), Cell::value("0")),
+            ],
+            ..Row::default()
+        }];
+        // A stored jump mid-run (the #294 repro's row shape):
+        // chord along the run, |A| = the jump radius.
+        match stored_jump {
+            Some((mid, half)) => {
+                rows.push(line(2, mid - half, 0.0));
+                rows.push(Row {
+                    t: Some("ArcTo".into()),
+                    ix: 3,
+                    cells: vec![
+                        ("X".to_string(), Cell::value(format!("{}", mid + half))),
+                        ("Y".to_string(), Cell::value("0")),
+                        ("A".to_string(), Cell::value(format!("{}", -half))),
+                    ],
+                    ..Row::default()
+                });
+                rows.push(line(4, w, h));
+            }
+            None => rows.push(line(2, w, h)),
+        }
+        sec.rows = rows;
+        s.sheet.children.push(SheetChild::Section(sec));
+        s
+    };
     let jump_half = 0.125 * (2.0 / 3.0) / 2.0;
     // Stored jump centered on the crossing (page x = 3): the ink
     // is a straight run, one hop at the crossing.
@@ -238,10 +280,7 @@ fn export_straightens_stored_jump_arcs() {
         connector(2, (4.5, 5.0), 0.0, 4.0, None),
     ]);
     let svg = render_page(&doc, &page).unwrap();
-    assert!(
-        !svg.contains(" A "),
-        "the stale stored arc does not render"
-    );
+    assert!(!svg.contains(" A "), "the stale stored arc does not render");
     assert!(
         svg.contains(r#"x1="4.45833"#) && !svg.contains(r#"x1="2.95833"#),
         "one hop at the current crossing, nothing at the stale arc"

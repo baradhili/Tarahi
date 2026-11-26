@@ -12,7 +12,12 @@ const JUMP_UNDER_EXT_IN: f64 = 1.0 / 96.0;
 /// page-up (`canvas.rs`'s screen-up flip, computed here in page
 /// space so rotated jumpers stay correct). `radius` is the page's
 /// resolved jump radius (#294 — LineToLineX × LineJumpFactorX / 2).
-pub(crate) fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::geom::Jump, radius: f64) {
+pub(crate) fn append_jump_scaled(
+    svg: &mut String,
+    page_h: f64,
+    j: &crate::geom::Jump,
+    radius: f64,
+) {
     let (r, w, uw) = (radius, j.weight, j.under_weight);
     let sy = |y: f64| page_h - y;
     let pt = |p: (f64, f64)| format!("{:.5} {:.5}", p.0, sy(p.1));
@@ -45,9 +50,14 @@ pub(crate) fn append_jump_scaled(svg: &mut String, page_h: f64, j: &crate::geom:
         uw = uw,
     );
     // 3. the hop arc — a 9-point semicircle from g1 around to g2
-    // through at + n·r, the normal flipped toward page-up.
+    // through at + n·r. Visio's default hop directions
+    // (PageLineJumpDirX/Y = 0): a horizontal-class jumper bulges UP,
+    // a vertical-class one bulges LEFT (the b01 witness) — flipping
+    // toward page-up alone drew sideways zigzags on steep lines
+    // (#322).
     let mut n = (-j.dir.1, j.dir.0);
-    if n.1 < 0.0 {
+    let horizontal = j.dir.0.abs() >= j.dir.1.abs();
+    if (horizontal && n.1 < 0.0) || (!horizontal && n.0 > 0.0) {
         n = (-n.0, -n.1);
     }
     let mut path = String::new();

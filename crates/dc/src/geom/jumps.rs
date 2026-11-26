@@ -2,10 +2,11 @@
 //! stored-jump classifier, the crossing set (`line_jumps`), and the
 //! page walk that feeds it (`page_jumps`).
 
-use super::connector::is_connector_in;
+use super::connector::is_connector;
 use super::hitframe::hit_frame;
 use super::segments::geometry_hit_segments_straight;
 
+#[derive(Clone)]
 pub struct JumpLine {
     pub id: i64,
     pub z: usize,
@@ -75,25 +76,29 @@ fn run_continues(dir: Option<(f64, f64)>, chord: (f64, f64)) -> bool {
         && d.0 * chord.0 + d.1 * chord.1 > 0.0
 }
 
-/// A stored line-jump arc (#294): Visio saves a connector's jump as an
-/// `ArcTo` row ON the orthogonal run — the chord lies along one axis,
+/// A stored line-jump arc (#294): Visio saves a connector's jump as
+/// an `ArcTo` row ON a straight run — the chord lies ALONG the run
+/// (orthogonal or diagonal: b01's 18° link carries its hop on a
+/// diagonal run, live-measured Visio behavior per mk-git 2026-11-25),
 /// the arc is a SEMICIRCLE over the gap (`|A| = radius = chord / 2`
 /// exactly; the #294 repro's row: chord 0.0833, A −0.0416667 — the
 /// band admits writer rounding), and the route continues collinear on
 /// both sides (`prev_dir`/`next_dir`: the neighboring segments'
-/// directions; `None` = no such run). Corner arcs cut ACROSS the run
-/// (a diagonal chord), authored shallow bumps fall far below the
-/// band, and whole-route semicircles have no continuing runs — all
-/// stay curves. The callers additionally gate on connector-ness so
+/// directions; `None` = no such run). Corner arcs cut ACROSS their
+/// runs (the route turns there, so a side fails the collinear
+/// context), authored shallow bumps fall far below the band, and
+/// whole-route semicircles have no continuing runs — all stay
+/// curves. The callers additionally gate on connector-ness so
 /// artwork arcs never strip. Once stripped, the route is straight at
 /// the old arc and the jump overlay draws the ONE arc at the current
 /// crossing with the page's own radius — a stored arc stops lingering
 /// after a move (#294).
 ///
-/// `radius` is the page's own jump radius ([`jump_radius_in`])
-/// expressed in THIS frame — the shape-local units the sagitta and
-/// chord are measured in (the caller divides by the frame's
-/// perpendicular-axis scale when the rows live in master units). The
+/// `radius_x`/`radius_y` are the page's own jump radii
+/// ([`jump_radii_in`]), passed UNCONVERTED: every geometry frame is
+/// inches, and the stored arc's A was authored at the page's radius
+/// (both callers — the geom walk and the svg ink path — pass the
+/// resolved page radii as they are). The
 /// shape checks alone cannot tell an AUTHORED semicircle between two
 /// straight runs from a stored jump (a 1-inch arc with A=−0.5 over
 /// collinear runs matches every geometric test — CodeRabbit rounds 1–2
@@ -116,13 +121,16 @@ pub fn is_stored_jump_arc(
     // No absolute size cap: the radius is LineToLineX ×
     // LineJumpFactorX / 2 and LineJumpFactorX=10 is documented-valid
     // (a 0.625 in semicircle at the default spacing) — the semicircle
-    // band, the axis-aligned chord, the straight-run context, the
-    // connector gate and the page-radius evidence already separate
-    // jumps from artwork (#294 review).
+    // band, the straight-run context, the connector gate and the
+    // page-radius evidence already separate jumps from artwork (#294
+    // review). No axis-aligned-chord requirement either: Visio stores
+    // jumps on DIAGONAL straight connectors too — `LineTo · ArcTo(A =
+    // radius) · LineTo` along the run (b01's 18° link); the
+    // collinear runs on BOTH sides are the evidence, and a rounded
+    // corner's chord cuts across its runs and fails it (#324).
     len > 1e-9
         && a >= 0.4 * len
         && a <= 0.6 * len
-        && chord.0.abs().min(chord.1.abs()) <= len * 0.02
         && run_continues(prev_dir, chord)
         && run_continues(next_dir, chord)
         // The arc's own axis picks the evidence radius: Visio authors
@@ -132,13 +140,22 @@ pub fn is_stored_jump_arc(
         // Only the CHOSEN axis's radius must be positive: a FactorY=0
         // page still recognizes horizontal stored jumps (PR #299
         // round-3 review); a zero on the chosen axis never strips.
+        // A NEAR-DIAGONAL chord tests BOTH radii: the writer and this
+        // classifier pick the axis on an >= tie that six-decimal row
+        // rounding can flip across (the dead branch's #324 phase-5
+        // review — unwitnessed robustness, not invented behavior).
         && {
-            let radius = if chord.0.abs() >= chord.1.abs() {
-                radius_x
-            } else {
-                radius_y
+            let near_diagonal = (chord.0.abs() - chord.1.abs()).abs() <= len * 0.02;
+            let pick = |radius: f64| {
+                radius > 0.0 && (a - radius).abs() <= (radius * 0.05).max(1e-6)
             };
-            radius > 0.0 && (a - radius).abs() <= (radius * 0.05).max(1e-6)
+            if near_diagonal {
+                pick(radius_x) || pick(radius_y)
+            } else if chord.0.abs() >= chord.1.abs() {
+                pick(radius_x)
+            } else {
+                pick(radius_y)
+            }
         }
 }
 
@@ -215,12 +232,111 @@ fn hugged_vertex(t: f64, window_index: usize) -> Option<usize> {
     }
 }
 
-/// Every crossing hop among the lines (#108): pairwise proper
-/// segment intersections; the more-horizontal segment jumps.
-/// `radius` is the page's resolved jump radius (inches —
-/// [`jump_radius_in`]): it sizes the hop arc and bounds what counts
-/// as one crossing REGION (#251) when converging crossings cluster.
+/// Which line hops at a crossing — Visio's page `LineJumpCode` and
+/// the connectors' `ConLineJumpCode` (live-measured in Visio 2021,
+/// mk-git 2026-11-25, #324; the Visio-authored b01/c02 fixtures
+/// agree):
+/// - page 1 "horizontal lines": the FLATTER crossing segment hops —
+///   steepness, not class: between two steep lines the more
+///   horizontal one still hops (29° over 61°, 75° over 85°, 5° over
+///   15° — measured live), and two EQUALLY steep segments (an X of
+///   mirrored diagonals, b01's untouched 4/5 pair) draw no hop;
+/// - page 2 "vertical lines": the mirror image — the steeper hops;
+/// - page 3/4 "last routed/displayed": the later line in z hops;
+///   page 5 "first displayed": the earlier one;
+/// - connector 1 "never" — it never hops; 2 "always" — it hops over
+///   the other; 3 "other line" — the other one hops over it;
+///   4 "neither" — no hop at its crossings. `ConFixedCode` is inert
+///   (c02's whole top row: identical hops under every value).
+#[derive(Debug, Clone)]
+pub struct JumpRules {
+    pub page_code: i64,
+    /// `ConLineJumpCode` per connector id (absent = 0, the page rule).
+    pub con_codes: std::collections::HashMap<i64, i64>,
+}
+
+impl Default for JumpRules {
+    fn default() -> Self {
+        Self {
+            page_code: 1,
+            con_codes: std::collections::HashMap::new(),
+        }
+    }
+}
+
+/// Two crossing segments within this |Δ sin θ| count as EQUALLY
+/// steep — the mirrored-X no-hop case. The band absorbs the writer
+/// rounding of coordinates that reached the crossing through
+/// different frames; genuinely different steepness (60° vs 84° is
+/// |Δ sin| ≈ 0.13) stays far above it. Only EXACT ties are witnessed
+/// (the mirrored pairs); the band width is a judgment call recorded
+/// in `Analysis/line-jump-selection-witnesses.md`.
+const STEEPNESS_TIE: f64 = 1e-3;
+
+impl JumpRules {
+    /// `Some(true)` when line `a` (its crossing segment running `da`)
+    /// hops over `b`, `Some(false)` when `b` hops, `None` for no hop.
+    fn jumper(&self, a: &JumpLine, da: (f64, f64), b: &JumpLine, db: (f64, f64)) -> Option<bool> {
+        let code = |l: &JumpLine| self.con_codes.get(&l.id).copied().unwrap_or(0);
+        let (ca, cb) = (code(a), code(b));
+        // 4 on either side: no hop at this crossing at all.
+        if ca == 4 || cb == 4 {
+            return None;
+        }
+        // The connector codes that FORCE the answer regardless of the
+        // page rule: 2 "always" hops, 3 demands the OTHER line hop.
+        let forced = match (ca, cb) {
+            (2, c) if c != 2 => Some(true),
+            (c, 2) if c != 2 => Some(false),
+            (3, c) if c != 3 => Some(false),
+            (c, 3) if c != 3 => Some(true),
+            _ => None,
+        };
+        let a_jumps = forced.or_else(|| match self.page_code {
+            // The steepness rule: |sin θ| is the unit direction's
+            // |dy|. Code 1 hops the flatter segment, code 2 the
+            // steeper; equally steep segments never hop.
+            1 | 2 => {
+                let (sa, sb) = (da.1.abs(), db.1.abs());
+                if (sa - sb).abs() < STEEPNESS_TIE {
+                    None
+                } else if self.page_code == 1 {
+                    Some(sa < sb)
+                } else {
+                    Some(sa > sb)
+                }
+            }
+            3 | 4 => Some(a.z > b.z),
+            5 => Some(a.z < b.z),
+            // 0 is the off switch and 6 the legacy off (the read side
+            // of #251); anything else unknown — never hop.
+            _ => None,
+        })?;
+        // 1 "never": the chosen jumper's own veto (the under line's
+        // code 1 is silent — the other line may still hop over it).
+        let jumper_code = if a_jumps { ca } else { cb };
+        (jumper_code != 1).then_some(a_jumps)
+    }
+}
+
+/// Every crossing hop among the lines (#108) under the page-1
+/// defaults; pairwise proper segment intersections, the flatter
+/// segment jumping. `radius` is the page's resolved jump radius
+/// (inches — [`jump_radius_in`]): it sizes the hop arc and bounds
+/// what counts as one crossing REGION (#251) when converging
+/// crossings cluster.
 pub fn line_jumps(lines: &[JumpLine], (radius, radius_y): (f64, f64)) -> Vec<Jump> {
+    line_jumps_with(lines, (radius, radius_y), &JumpRules::default())
+}
+
+/// [`line_jumps`] under explicit page/connector rules ([`JumpRules`])
+/// — what [`page_jumps_stripping`] crosses with once it has read the
+/// page's own cells through [`page_jump_rules`].
+pub fn line_jumps_with(
+    lines: &[JumpLine],
+    (radius, radius_y): (f64, f64),
+    rules: &JumpRules,
+) -> Vec<Jump> {
     // Degenerate rows (a straight route's elbow LineTos collapse onto
     // the end) repeat points; the endpoint classification below reads
     // indices, so normalize first or the connector's geometric END
@@ -305,10 +421,12 @@ pub fn line_jumps(lines: &[JumpLine], (radius, radius_y): (f64, f64)) -> Vec<Jum
                         (d.0 / l, d.1 / l)
                     };
                     let (d1, d2) = (unit(w1[0], w1[1]), unit(w2[0], w2[1]));
-                    // The more-horizontal line hops; a tie gives the
-                    // later-in-z line the hop.
-                    let i_jumps = d1.1.abs() < d2.1.abs()
-                        || (d1.1.abs() - d2.1.abs()).abs() < 1e-9 && lines[i].z > lines[j].z;
+                    // Visio's selection rule ([`JumpRules`]): which
+                    // line hops — or neither (equally steep segments,
+                    // a connector's veto).
+                    let Some(i_jumps) = rules.jumper(&lines[i], d1, &lines[j], d2) else {
+                        continue;
+                    };
                     let (jmp, und) = if i_jumps {
                         (&lines[i], &lines[j])
                     } else {
@@ -379,14 +497,71 @@ fn parse_hex_rgb(v: &str) -> Option<(u8, u8, u8)> {
     ))
 }
 
+/// Jump candidacy (#324 phase 2, the #322 witness): the crossing set
+/// hops only true connectors — `ObjType = 2`, local or
+/// chain-resolved through the master. A plain glued 1D line —
+/// `ObjType 0`, static `PAR(PNT` glue — never joins the crossing
+/// set. The wider glue-ownership gate [`is_connector_in`] stays what
+/// reroute and glue use; jump candidacy is deliberately narrower.
+pub fn is_jump_candidate(
+    doc: &vsdx::Document,
+    chain: &[&vsdx::model::Shape],
+    s: &vsdx::model::Shape,
+) -> bool {
+    is_connector(s)
+        || doc
+            .resolve_cell(s, chain, "ObjType")
+            .and_then(|c| c.numeric())
+            .is_some_and(|v| v == 2.0)
+}
+
+/// The page's jump rules (#324 phase 2): the PageSheet's
+/// `LineJumpCode` — resolved through the page's style inheritance
+/// like the radius cells, absent meaning Visio's "horizontal lines"
+/// default 1 — plus every jump candidate's resolved
+/// `ConLineJumpCode`. One resolver behind the crossing set: the
+/// export, the canvas overlay and the stored-jump reconciliation all
+/// cross through [`page_jumps_stripping`], which reads its rules
+/// here.
+pub fn page_jump_rules(doc: &vsdx::Document, page: &vsdx::Page) -> JumpRules {
+    let page_code = doc
+        .resolve_page_layout_cell(page, "LineJumpCode")
+        .and_then(|c| c.numeric())
+        .map_or(1, |v| v.round() as i64);
+    let mut rules = JumpRules {
+        page_code,
+        ..JumpRules::default()
+    };
+    for s in &page.shapes {
+        let mut chain = vec![s];
+        if let Some(root) = s
+            .master
+            .and_then(|mid| doc.master(mid))
+            .and_then(|m| m.shapes.first())
+        {
+            chain.push(root);
+        }
+        if !is_jump_candidate(doc, &chain, s) {
+            continue;
+        }
+        if let Some(code) = doc
+            .resolve_cell(s, &chain, "ConLineJumpCode")
+            .and_then(|c| c.numeric())
+        {
+            rules.con_codes.insert(s.id, code.round() as i64);
+        }
+    }
+    rules
+}
+
 /// The page's connector crossings (#187 export parity): every
 /// top-level connector's polyline — the same `hit_frame` +
 /// [`geometry_hit_segments_straight`] walk the canvas jump overlay
 /// uses, formula-preferred, restricted to connectors whose geometry
 /// is entirely straight runs (#324 step 1: Visio never hops curved
-/// connectors and never hops over one) — crossed with Visio's rule
-/// ([`line_jumps`]: the more-horizontal line hops, ties to the later
-/// z). Hidden-layer members and guides skip like the render walk.
+/// connectors and never hops over one) — crossed under the page's
+/// own jump rules ([`page_jump_rules`]). Hidden-layer members and
+/// guides skip like the render walk.
 pub fn page_jumps(doc: &vsdx::Document, page: &vsdx::Page, hidden: &[i64]) -> Vec<Jump> {
     page_jumps_stripping(doc, page, hidden, None)
 }
@@ -410,6 +585,7 @@ pub fn page_jumps_stripping(
     let radius = jump_radius_in(doc, page);
     let radius_y = jump_radius_y_in(doc, page);
     let (strip_r, strip_ry) = strip.unwrap_or((radius, radius_y));
+    let rules = page_jump_rules(doc, page);
     let mut lines: Vec<JumpLine> = Vec::new();
     for (z, s) in page.shapes.iter().enumerate() {
         if s.sheet
@@ -438,7 +614,11 @@ pub fn page_jumps_stripping(
                 (g("Width"), g("Height"))
             })
             .unwrap_or((1.0, 1.0));
-        if !is_connector_in(doc, &chain, s) {
+        // Jump candidacy (#324 phase 2), deliberately narrower than
+        // the glue-ownership gate: only ObjType-2 connectors join the
+        // crossing set — a plain glued 1D line never hops and is
+        // never hopped over (#322's witness).
+        if !is_jump_candidate(doc, &chain, s) {
             continue;
         }
         let frame = hit_frame(doc, &chain, s, msize);
@@ -501,5 +681,5 @@ pub fn page_jumps_stripping(
             pts,
         });
     }
-    line_jumps(&lines, (radius, radius_y))
+    line_jumps_with(&lines, (radius, radius_y), &rules)
 }

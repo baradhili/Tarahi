@@ -189,12 +189,7 @@ pub struct ThumbGeom {
 /// whole track), and its position follows `pan_axis` across the pan
 /// range. The margin scales with zoom so the thumb never jitters
 /// across the 1/384 raster buckets (`apply_fit`'s hysteresis note).
-pub fn thumb_geom(
-    track_len: f32,
-    view_px: f32,
-    page_px: f32,
-    pan_rel: f32,
-) -> ThumbGeom {
+pub fn thumb_geom(track_len: f32, view_px: f32, page_px: f32, pan_rel: f32) -> ThumbGeom {
     // Standard scrollbar sizing, WITHOUT any pan limit (#286): the
     // thumb length is the viewport's share of the page+view span, and
     // its position tracks the page's offset. Pans past the paper pin
@@ -205,22 +200,14 @@ pub fn thumb_geom(
     let len = (track_len * frac).clamp(THUMB_MIN.min(track_len), track_len);
     let span = (track_len - len).max(0.0);
     let t = ((view_px - pan_rel) / total).clamp(0.0, 1.0);
-    ThumbGeom {
-        pos: t * span,
-        len,
-    }
+    ThumbGeom { pos: t * span, len }
 }
 
 /// The pan a thumb position (track-local px) maps back to, one axis —
 /// the inverse of [`thumb_geom`] (#284 round 4). Unbounded: the pan
 /// tracks the thumb across the full track without any extent clamp
 /// (#286 — pan limits removed).
-pub fn pan_from_thumb(
-    thumb_pos: f32,
-    track_len: f32,
-    view_px: f32,
-    page_px: f32,
-) -> f32 {
+pub fn pan_from_thumb(thumb_pos: f32, track_len: f32, view_px: f32, page_px: f32) -> f32 {
     let total = (page_px + view_px).max(1.0);
     let frac = (view_px / total).clamp(0.0, 1.0);
     let len = (track_len * frac).clamp(THUMB_MIN.min(track_len), track_len);
@@ -684,7 +671,10 @@ pub struct DragFx {
 /// egui temp slot the canvas arms on press (#226: the live
 /// endpoint-drag preview keys off a `LineBegin`/`LineEnd` gesture).
 pub fn armed_handle(ctx: &egui::Context) -> Option<HandleId> {
-    ctx.memory(|m| m.data.get_temp::<HandleId>(egui::Id::unique("dc-handle-drag")))
+    ctx.memory(|m| {
+        m.data
+            .get_temp::<HandleId>(egui::Id::unique("dc-handle-drag"))
+    })
 }
 
 /// The dynamic-grid hint color: Visio's blue dashed alignment aid.
@@ -825,8 +815,7 @@ pub fn show(
     // zoom are manual: both leave fit mode. The same command modifier
     // gates the drag pan below — a press gesture, untouched here.
     if let Some(hp) = resp.hover_pos() {
-        let (delta, zoom_step) =
-            ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
+        let (delta, zoom_step) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
         if zoom_step != 1.0 {
             // The factor IS egui's smoothed step (`zoom_factor_delta`
             // = exp(scroll_zoom_speed × delta)): it already decays
@@ -910,7 +899,7 @@ pub fn show(
     // The scrollable EXTENT (paper ∪ landed content, PR #284 review
     // round 2): off-page shapes must stay reachable, so the clamp and
     // the scrollbars cover the whole drawing, not just the paper.
-// ---- gesture arming, on the PRESS frame (see module note) ----
+    // ---- gesture arming, on the PRESS frame (see module note) ----
     // Handles in screen coords; a press inside HANDLE_GRAB of one wins
     // over everything (resize takes precedence over move, #59).
     let handles_screen: Vec<(HandleId, Pos2)> = handles
@@ -1977,9 +1966,16 @@ pub fn show(
             [at - under * ext, at + under * ext],
             Stroke::new(uw, j.under_color),
         );
-        // 3. the hop arc, bulging up on screen.
+        // 3. the hop arc — Visio's default directions: a
+        // horizontal-class jumper bulges up on screen, a
+        // vertical-class one left (the b01 witness, #322).
         let n = Vec2::new(-dir.y, dir.x);
-        let n = if n.y > 0.0 { -n } else { n };
+        let horizontal = j.dir.0.abs() >= j.dir.1.abs();
+        let n = if (horizontal && n.y > 0.0) || (!horizontal && n.x > 0.0) {
+            -n
+        } else {
+            n
+        };
         let mut pts = Vec::with_capacity(9);
         for k in 0..=8 {
             let t = k as f32 / 8.0;
@@ -1994,7 +1990,14 @@ pub fn show(
     // Rulers — on the bars-shrunk rect: the bands stop at the
     // scrollbars exactly like Visio's layout (#283).
     if view.show_rulers {
-        draw_rulers(&p, inner_canvas_rect(canvas_r), view, page, out.page_rect, &t);
+        draw_rulers(
+            &p,
+            inner_canvas_rect(canvas_r),
+            view,
+            page,
+            out.page_rect,
+            &t,
+        );
     }
 
     // Mouse position in page coords (y-up) for the status bar.
@@ -2258,20 +2261,29 @@ fn grab_state(
     pan_rel_press: f32,
 ) -> (f32, f32, f32) {
     let id = egui::Id::unique(("dc-scroll-grab", r.id));
-    if r.drag_started() || ui.ctx().memory(|m| m.data.get_temp::<(f32, f32, f32)>(id).is_none()) {
+    if r.drag_started()
+        || ui
+            .ctx()
+            .memory(|m| m.data.get_temp::<(f32, f32, f32)>(id).is_none())
+    {
         ui.ctx().memory_mut(|m| {
-            m.data.insert_temp(id, (press_track_pos - thumb_pos, pan_rel_press, thumb_pos))
+            m.data
+                .insert_temp(id, (press_track_pos - thumb_pos, pan_rel_press, thumb_pos))
         });
     }
-    ui.ctx()
-        .memory(|m| m.data.get_temp::<(f32, f32, f32)>(id).unwrap_or((0.0, 0.0, 0.0)))
+    ui.ctx().memory(|m| {
+        m.data
+            .get_temp::<(f32, f32, f32)>(id)
+            .unwrap_or((0.0, 0.0, 0.0))
+    })
 }
 
 /// Clear the latched drag state once the drag is over.
 fn grab_offset_clear(ui: &Ui, r: &egui::Response) {
     let id = egui::Id::unique(("dc-scroll-grab", r.id));
     if !r.dragged() {
-        ui.ctx().memory_mut(|m| m.data.remove::<(f32, f32, f32)>(id));
+        ui.ctx()
+            .memory_mut(|m| m.data.remove::<(f32, f32, f32)>(id));
     }
 }
 
@@ -2281,7 +2293,15 @@ fn grab_offset_clear(ui: &Ui, r: &egui::Response) {
 /// the track's end scrolls toward the content's end). Equal to
 /// `pan_from_thumb` inside the mapped range; continuous outside it
 /// (no snap from a saturated thumb).
-fn pan_from_drag(input: f32, input_press: f32, pan_press: f32, track_len: f32, thumb_len: f32, page_px: f32, view_px: f32) -> f32 {
+fn pan_from_drag(
+    input: f32,
+    input_press: f32,
+    pan_press: f32,
+    track_len: f32,
+    thumb_len: f32,
+    page_px: f32,
+    view_px: f32,
+) -> f32 {
     let total = (page_px + view_px).max(1.0);
     let span = (track_len - thumb_len).max(1.0);
     pan_press - (input - input_press) * (total / span)
@@ -2427,19 +2447,15 @@ fn draw_rulers(
         let (tick_x, label_x, anchor) = if rtl {
             // ticks grow inward from the band's left edge (the mirrored
             // reading edge), labels anchor to it
-            (
-                left.left(),
-                left.left() + 2.0,
-                egui::Align2::LEFT_TOP,
-            )
+            (left.left(), left.left() + 2.0, egui::Align2::LEFT_TOP)
         } else {
-            (
-                left.right(),
-                left.left() + 1.0,
-                egui::Align2::LEFT_TOP,
-            )
+            (left.right(), left.left() + 1.0, egui::Align2::LEFT_TOP)
         };
-        let tick_inner = if rtl { tick_x + tier.len } else { tick_x - tier.len };
+        let tick_inner = if rtl {
+            tick_x + tier.len
+        } else {
+            tick_x - tier.len
+        };
         p.line_segment(
             [Pos2::new(tick_inner, sy_top), Pos2::new(tick_x, sy_top)],
             Stroke::new(0.8, t.ruler_tick),
@@ -2627,8 +2643,17 @@ mod tests {
         view.apply_fit(Vec2::new(800.0, 600.0), Vec2::new(22.0, 22.0), &page);
         // A 1×1 in selection: the height axis governs — 600 px / 96 =
         // 6.25× fills exactly (the width axis would want 8.33×).
-        view.zoom_to_selection((1.0, 1.0, 1.0, 1.0), Vec2::new(800.0, 600.0), Vec2::ZERO, &page);
-        assert!((view.zoom - 6.25).abs() < 1e-4, "fills at 6.25×: {}", view.zoom);
+        view.zoom_to_selection(
+            (1.0, 1.0, 1.0, 1.0),
+            Vec2::new(800.0, 600.0),
+            Vec2::ZERO,
+            &page,
+        );
+        assert!(
+            (view.zoom - 6.25).abs() < 1e-4,
+            "fills at 6.25×: {}",
+            view.zoom
+        );
         assert!(!view.fit_mode, "leaves fit mode");
         assert!(!view.fit_pending, "no pending fit");
         // The selection's page center sits at the content center.
@@ -2642,7 +2667,12 @@ mod tests {
         // 400/96 = 4.17 → fill zoom = 2.083 (the min axis fills).
         let mut view = View::default();
         view.apply_fit(Vec2::new(800.0, 600.0), Vec2::ZERO, &page);
-        view.zoom_to_selection((0.0, 0.0, 2.0, 1.0), Vec2::new(400.0, 400.0), Vec2::ZERO, &page);
+        view.zoom_to_selection(
+            (0.0, 0.0, 2.0, 1.0),
+            Vec2::new(400.0, 400.0),
+            Vec2::ZERO,
+            &page,
+        );
         let want = ((400.0f32 / (2.0 * 96.0)) * 384.0).floor() / 384.0;
         assert!((view.zoom - want).abs() < 1e-4, "fill zoom: {}", view.zoom);
         // The rect's center lands at the content center.
@@ -2657,7 +2687,12 @@ mod tests {
             fit_mode: false,
             ..View::default()
         };
-        view.zoom_to_selection((0.0, 0.0, 16.0, 20.0), Vec2::new(400.0, 400.0), Vec2::ZERO, &page);
+        view.zoom_to_selection(
+            (0.0, 0.0, 16.0, 20.0),
+            Vec2::new(400.0, 400.0),
+            Vec2::ZERO,
+            &page,
+        );
         assert!(
             (view.zoom - (400.0 / (20.0 * 96.0))).abs() < 0.01,
             "zoomed out to fit: {}",
@@ -2665,8 +2700,17 @@ mod tests {
         );
         // Degenerate rects floor at 0.25 in instead of absurd zooms.
         let mut view = View::default();
-        view.zoom_to_selection((0.0, 0.0, 0.0, 0.0), Vec2::new(400.0, 400.0), Vec2::ZERO, &page);
-        assert!((view.zoom - 8.0).abs() < 1e-4, "hairline caps at 8×: {}", view.zoom);
+        view.zoom_to_selection(
+            (0.0, 0.0, 0.0, 0.0),
+            Vec2::new(400.0, 400.0),
+            Vec2::ZERO,
+            &page,
+        );
+        assert!(
+            (view.zoom - 8.0).abs() < 1e-4,
+            "hairline caps at 8×: {}",
+            view.zoom
+        );
     }
 
     /// #237: the wheel zoom anchors on the selection's center — the
@@ -2758,7 +2802,7 @@ mod tests {
     /// The scrollable range: the view may show at most one margin
     /// band past each paper edge, and an extent that fits pins to the
     /// centered form (min == max).
-        /// #286: the thumb sizes from the viewport's share of the PAGE
+    /// #286: the thumb sizes from the viewport's share of the PAGE
     /// span (no pan limit — panning is unrestricted, so the thumb
     /// simply pins at a track edge when the pan goes past the paper).
     #[test]
@@ -2766,7 +2810,10 @@ mod tests {
         let track = 600.0;
         let g = thumb_geom(track, 500.0, 1200.0, 300.0);
         assert!(g.len < track, "a page wider than the view: {g:?}");
-        assert!(g.pos <= track - g.len + 0.01, "the thumb stays on the track");
+        assert!(
+            g.pos <= track - g.len + 0.01,
+            "the thumb stays on the track"
+        );
         // A page smaller than the view: the thumb is partial too (the
         // view share of the page) — panning is unbounded, so it never
         // claims a scroll range that does not exist.
