@@ -88,6 +88,87 @@ impl App {
         self.mdi_arranging = false;
     }
 
+    /// #108/#324: the frame's line-jump hops — THE crossing set (#336)
+    /// with each hop's gap painted in its backdrop color.
+    pub(super) fn jump_fx(&self, jump_radius: (f64, f64), hidden: &[i64]) -> Vec<canvas::JumpFx> {
+        if jump_radius.0 > 0.0 || jump_radius.1 > 0.0 {
+            let doc = &self.ed.as_ref().unwrap().doc;
+            let page = &doc.pages[self.page_idx];
+            // THE crossing set (#336): the canvas draws from the same
+            // `page_jumps` computation as the export and the
+            // reconciliation — the page's own jump rules
+            // (`LineJumpCode`, `ConLineJumpCode`), the straight-run
+            // eligibility, the hidden-layer skips — never a
+            // canvas-private re-crossing that could drift.
+            // One backdrop index per pass, built when the first hop
+            // needs a gap color: every hop's color is then a lookup,
+            // not a walk over the whole page (#389).
+            let backdrop = std::cell::OnceCell::new();
+            dc::geom::page_jumps(doc, page, hidden)
+                .into_iter()
+                .map(|j| {
+                    // The gap paints the BACKDROP — the fill of the
+                    // topmost filled shape beneath the connector at
+                    // the hop, else page white: the canvas cannot cut
+                    // cached rasters, so this mimics the export's cut
+                    // in the color that shows through it (#324
+                    // phase 3).
+                    let (gr, gg, gb) = backdrop
+                        .get_or_init(|| dc::svg::BackdropIndex::new(doc, page))
+                        .color_at(j.at, j.jumper, hidden);
+                    canvas::JumpFx {
+                        gap_color: Color32::from_rgb(gr, gg, gb),
+                        style: j.style,
+                        at: j.at,
+                        dir: j.dir,
+                        under: j.under,
+                        weight: j.weight,
+                        under_weight: j.under_weight,
+                        color: Color32::from_rgb(j.color.0, j.color.1, j.color.2),
+                        under_color: Color32::from_rgb(
+                            j.under_color.0,
+                            j.under_color.1,
+                            j.under_color.2,
+                        ),
+                        // The hop sizes with the radius of the jumping
+                        // segment's own axis (the svg overlay's rule —
+                        // PR #299 review).
+                        radius_in: (if j.dir.0.abs() >= j.dir.1.abs() {
+                            jump_radius.0
+                        } else {
+                            jump_radius.1
+                        }) as f32,
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// [`App::jump_fx`] for the frame, reused while nothing it depends
+    /// on changed (`jump_fx_cache`, #389).
+    pub(super) fn jump_fx_cached(
+        &mut self,
+        jump_radius: (f64, f64),
+        hidden: &[i64],
+    ) -> Vec<canvas::JumpFx> {
+        let key = JumpFxKey {
+            version: self.version,
+            page_idx: self.page_idx,
+            hidden: hidden.to_vec(),
+            radius_bits: (jump_radius.0.to_bits(), jump_radius.1.to_bits()),
+        };
+        if let Some((k, fx)) = &self.jump_fx_cache {
+            if *k == key {
+                return fx.clone();
+            }
+        }
+        let fx = self.jump_fx(jump_radius, hidden);
+        self.jump_fx_cache = Some((key, fx.clone()));
+        fx
+    }
+
     pub(super) fn central_inner(&mut self, ui: &mut Ui) {
         if self.ed.is_none() {
             // Visio 2016 start screen shape: Recent on the left,
@@ -431,54 +512,7 @@ impl App {
                 (0.0, 0.0)
             }
         };
-        let jump_fx: Vec<canvas::JumpFx> = if jump_radius.0 > 0.0 || jump_radius.1 > 0.0 {
-            let doc = &self.ed.as_ref().unwrap().doc;
-            let page = &doc.pages[self.page_idx];
-            // THE crossing set (#336): the canvas draws from the same
-            // `page_jumps` computation as the export and the
-            // reconciliation — the page's own jump rules
-            // (`LineJumpCode`, `ConLineJumpCode`), the straight-run
-            // eligibility, the hidden-layer skips — never a
-            // canvas-private re-crossing that could drift.
-            dc::geom::page_jumps(doc, page, &hidden)
-                .into_iter()
-                .map(|j| {
-                    // The gap paints the BACKDROP — the fill of the
-                    // topmost filled shape beneath the connector at
-                    // the hop, else page white: the canvas cannot cut
-                    // cached rasters, so this mimics the export's cut
-                    // in the color that shows through it (#324
-                    // phase 3).
-                    let (gr, gg, gb) =
-                        dc::svg::backdrop_color_at(doc, page, j.at, j.jumper, &hidden);
-                    canvas::JumpFx {
-                        gap_color: Color32::from_rgb(gr, gg, gb),
-                        style: j.style,
-                        at: j.at,
-                        dir: j.dir,
-                        under: j.under,
-                        weight: j.weight,
-                        under_weight: j.under_weight,
-                        color: Color32::from_rgb(j.color.0, j.color.1, j.color.2),
-                        under_color: Color32::from_rgb(
-                            j.under_color.0,
-                            j.under_color.1,
-                            j.under_color.2,
-                        ),
-                        // The hop sizes with the radius of the jumping
-                        // segment's own axis (the svg overlay's rule —
-                        // PR #299 review).
-                        radius_in: (if j.dir.0.abs() >= j.dir.1.abs() {
-                            jump_radius.0
-                        } else {
-                            jump_radius.1
-                        }) as f32,
-                    }
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let jump_fx = self.jump_fx_cached(jump_radius, &hidden);
         self.jumps_last = jump_fx.len();
         // #177: everything the connection-point overlay needs, built
         // before the destructuring borrows below (the closure runs
