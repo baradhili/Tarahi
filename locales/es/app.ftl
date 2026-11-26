@@ -25,6 +25,8 @@ add-in-manager = Administrador de complementos
 add-in-manager-m8 = Administrador de complementos — M8
 add-ins = Complementos
 # $name - argumento
+add-line-jumps-to = Agregar saltos de línea a:
+
 add-name-prop-row-test = agregar la fila prop { $name } (prueba)
 add-to-new-container = Agregar a un nuevo contenedor
 add-to-quick-shapes = Agregar a Quick Shapes
@@ -346,8 +348,64 @@ field-preview = Vista previa:
 field-subject = Asunto
 field-title = Título
 field-width = Ancho
+horizontal-size = Tamaño horizontal:
+
 insert-a-text-field = Insertar un campo de texto
 insert-field = Insertar campo
+line-jump-style = Estilo de salto de línea:
+
+line-jump-style-set = estilo de salto de línea establecido en { $style }
+
+lj-code-horizontal = Líneas horizontales
+
+lj-code-last-displayed = Última línea mostrada
+
+lj-code-last-routed = Última línea enrutada
+
+lj-code-none = Ninguno
+
+lj-code-vertical = Líneas verticales
+
+lj-style-2-sides = 2 lados
+
+lj-style-3-sides = 3 lados
+
+lj-style-4-sides = 4 lados
+
+lj-style-5-sides = 5 lados
+
+lj-style-6-sides = 6 lados
+
+lj-style-7-sides = 7 lados
+
+lj-style-arc = Arco
+
+lj-style-gap = Separación
+
+lj-style-square = Cuadrado
+
+routing-appearance = Apariencia:
+
+routing-deferred = El enrutamiento de conectores aún no está disponible.
+
+routing-direction = Dirección:
+
+routing-group = Enrutamiento
+
+routing-overlap = Superposición:
+
+routing-right-angle = Ángulo recto
+
+routing-separate = Separar:
+
+routing-straight = Recta
+
+routing-style = Estilo:
+
+routing-unrelated-lines = Líneas no relacionadas
+
+routing-using-style = Según el estilo de enrutamiento
+
 inspect-the-current-page-cells = Inspeccionar las celdas de la página actual (PageSheet)
 inspect-the-document-cells = Inspeccionar las celdas del documento (DocumentSheet)
 page-shapesheet = ShapeSheet de página
@@ -489,7 +547,6 @@ inspect-drawing = Inspeccionar dibujo…
 inspect-the-selected-shape-s-cel = Inspeccionar las celdas de la forma seleccionada
 italic = Cursiva
 italic-planned = Cursiva — planeado
-jump-size = Tamaño del salto
 justify = Justificar
 justify-planned = Justificar — planeado
 # $key - tecla del acceso de teclado
@@ -917,7 +974,6 @@ show-hide = Mostrar u ocultar
 show-hide-comments = Mostrar u ocultar comentarios
 show-hide-comments-planned-view = Mostrar u ocultar comentarios — planeado (hoy el interruptor está en Ver)
 show-hide-data-graphics-on-the-p = Mostrar u ocultar los gráficos de datos de la página (M6)
-show-line-jumps = Mostrar saltos de línea
 show-markup = Mostrar marcado
 show-markup-planned = Mostrar marcado — planeado
 show-shapesheet = Mostrar ShapeSheet
@@ -1147,6 +1203,8 @@ vba-arrives-with-m7-vsdm = VBA llega con M7 (.vsdm)
 vector-svg = Vectorial (SVG)
 # $cell - la descripción de la celda controlada por fórmula
 vertex-drag-refused = arrastre de vértice rechazado: { $cell } está controlado por una fórmula — edite la fórmula para cambiarlo
+vertical-size = Tamaño vertical:
+
 view = Ver
 views = Vistas
 visio-drawing = Dibujo de Visio
@@ -1178,3 +1236,4 @@ zoom-menu = Zoom…
 zoom-out = Alejar
 zoom-out-tip = Alejar
 zoom-to-selection-shift-z = Zoom a la selección (Mayús+Z)
+

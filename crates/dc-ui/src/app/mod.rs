@@ -248,6 +248,8 @@ pub struct App {
     /// per frame flooded history; the draft edits locally and commits
     /// once, when the drag stops (typed input commits immediately).
     line_jump_draft: Option<f32>,
+    /// The twin draft for the Vertical size slider (#324 phase 5).
+    line_jump_draft_y: Option<f32>,
     /// Dynamic-grid hints for the frame in progress (#109, URS-1088),
     /// recomputed by `update_drag` while a move drag is live and
     /// painted by the canvas from `DragFx::hints`.

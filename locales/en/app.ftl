@@ -26,7 +26,8 @@ add-in-hosting-arrives-with-m8 = Add-in hosting arrives with M8
 add-in-manager = Add-in Manager
 add-in-manager-m8 = Add-in manager — M8
 add-ins = Add-ins
-# $name (String) - argument
+add-line-jumps-to = Add line jumps to:
+
 add-name-prop-row-test = add { $name } prop row (test)
 add-to-new-container = Add to New Container
 add-to-quick-shapes = Add to Quick Shapes
@@ -348,8 +349,65 @@ field-preview = Preview:
 field-subject = Subject
 field-title = Title
 field-width = Width
+horizontal-size = Horizontal size:
+
 insert-a-text-field = Insert a text field
 insert-field = Insert Field
+line-jump-style = Line jump style:
+
+# $style (String) - the chosen jump style's display name
+line-jump-style-set = line jump style set to { $style }
+
+lj-code-horizontal = Horizontal Lines
+
+lj-code-last-displayed = Last Displayed Line
+
+lj-code-last-routed = Last Routed Line
+
+lj-code-none = None
+
+lj-code-vertical = Vertical Lines
+
+lj-style-2-sides = 2 Sides
+
+lj-style-3-sides = 3 Sides
+
+lj-style-4-sides = 4 Sides
+
+lj-style-5-sides = 5 Sides
+
+lj-style-6-sides = 6 Sides
+
+lj-style-7-sides = 7 Sides
+
+lj-style-arc = Arc
+
+lj-style-gap = Gap
+
+lj-style-square = Square
+
+routing-appearance = Appearance:
+
+routing-deferred = Connector routing is not available yet.
+
+routing-direction = Direction:
+
+routing-group = Routing
+
+routing-overlap = Overlap:
+
+routing-right-angle = Right Angle
+
+routing-separate = Separate:
+
+routing-straight = Straight
+
+routing-style = Style:
+
+routing-unrelated-lines = Unrelated lines
+
+routing-using-style = Using routing style
+
 inspect-the-current-page-cells = Inspect the current page's cells (PageSheet)
 inspect-the-document-cells = Inspect the document's cells (DocumentSheet)
 page-shapesheet = Page ShapeSheet
@@ -491,7 +549,6 @@ inspect-drawing = Inspect Drawing…
 inspect-the-selected-shape-s-cel = Inspect the selected shape's cells
 italic = Italic
 italic-planned = Italic — planned
-jump-size = Jump size
 justify = Justify
 justify-planned = Justify — planned
 # $key (String) - keytip key
@@ -920,7 +977,6 @@ show-hide = Show/Hide
 show-hide-comments = Show/Hide Comments
 show-hide-comments-planned-view = Show/hide comments — planned (View's toggle is wired today)
 show-hide-data-graphics-on-the-p = Show/hide data graphics on the page (M6)
-show-line-jumps = Show line jumps
 show-markup = Show Markup
 show-markup-planned = Show markup — planned
 show-shapesheet = Show ShapeSheet
@@ -1152,6 +1208,8 @@ vba-arrives-with-m7-vsdm = VBA arrives with M7 (.vsdm)
 vector-svg = Vector (SVG)
 # $cell (String) - the formula-driven cell description
 vertex-drag-refused = vertex drag refused: { $cell } is formula-driven — edit the formula to change it
+vertical-size = Vertical size:
+
 view = View
 views = Views
 visio-drawing = Visio drawing
@@ -1183,3 +1241,4 @@ zoom-menu = Zoom…
 zoom-out = Zoom Out
 zoom-out-tip = Zoom out
 zoom-to-selection-shift-z = Zoom to selection (Shift+Z)
+

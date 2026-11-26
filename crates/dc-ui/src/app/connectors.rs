@@ -1048,34 +1048,51 @@ impl App {
     /// #113 (URS-1122): write the page's size (page inches, portrait
     /// orientation of the pair as given) as one undo Macro, then
     /// refit the view to the new page.
-    /// #251: the page's Show-Line-Jumps toggle (Page Setup ▸ Layout
-    /// and Routing) — the PageSheet's `LineJumpCode` (the
-    /// PageLayout-section cell): 1 = horizontal lines jump (Visio's
-    /// authored default), 6 = "no line gets jumps" (the off switch).
-    /// One undoable command.
-    pub(super) fn apply_line_jumps_shown(&mut self, show: bool) {
+    /// #251/#324 phase 5: the "Add line jumps to" dropdown — Visio's
+    /// five-entry list (None / Horizontal Lines / Vertical Lines /
+    /// Last Routed Line / Last Displayed Line), `LineJumpCode`
+    /// 0–4. The reconcile rides the same macro (normalize-on-edit,
+    /// #301) so the stored rows track the switch. One undoable step.
+    pub(super) fn apply_line_jump_code(&mut self, code: i64) {
         let Some(page_id) = self.page_id() else {
             return;
         };
-        // #301: hiding jumps straightens the stored arcs in the same
-        // step — the render already draws them straight, and the file
-        // should agree.
         let cmds: Vec<Box<dyn dc_core::Command>> = vec![
             Box::new(SetCell::new(
                 Scope::PageSheet { page: page_id },
                 "LineJumpCode",
                 // Off writes 0 (visPLOJumpNone, [MS-Learn]) — 6 was
                 // never in the enumeration (#218 review).
-                vsdx::Cell::value(if show { "1" } else { "0" }),
+                vsdx::Cell::value(code.to_string()),
             )),
             Box::new(crate::cmd::ReconcileLineJumps::new(page_id)),
         ];
         self.apply(dc_core::Macro::new("set line jumps shown", cmds));
-        self.status = if show {
-            crate::i18n::strs().msg_line_jumps_shown()
-        } else {
+        self.status = if code == 0 {
             crate::i18n::strs().msg_line_jumps_hidden()
+        } else {
+            crate::i18n::strs().msg_line_jumps_shown()
         };
+    }
+
+    /// #324 phase 5: the "Line jump style" dropdown — `LineJumpStyle`
+    /// 1–9 (Arc/Gap/Square/2–7 Sides). The reconcile rides the same
+    /// macro: a style change swaps the stored hop rows only, never
+    /// the route (I1, pinned in the cmd tests).
+    pub(super) fn apply_line_jump_style(&mut self, code: i64, name: String) {
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
+        let cmds: Vec<Box<dyn dc_core::Command>> = vec![
+            Box::new(SetCell::new(
+                Scope::PageSheet { page: page_id },
+                "LineJumpStyle",
+                vsdx::Cell::value(code.to_string()),
+            )),
+            Box::new(crate::cmd::ReconcileLineJumps::new(page_id)),
+        ];
+        self.apply(dc_core::Macro::new("set line jump style", cmds));
+        self.status = crate::i18n::strs().msg_line_jump_style_set(&name);
     }
 
     /// #251: the page's jump-size multiplier (`LineJumpFactorX`).
@@ -1108,6 +1125,33 @@ impl App {
         // The factor steps in fractions (0.5 .. 3.0) — the i64 cast
         // truncated them to ×0/×1 in the status note (PR #269
         // review); FluentNumber carries the decimal through.
+        self.status = crate::i18n::strs().msg_line_jump_factor_set(factor);
+    }
+
+    /// #324 phase 5: the twin of [`Self::apply_line_jump_factor`] for
+    /// `LineJumpFactorY` — Visio's "Vertical size" slider.
+    pub(super) fn apply_line_jump_factor_y(&mut self, factor: f64) {
+        let Some(page_id) = self.page_id() else {
+            return;
+        };
+        let pre = self.ed.as_ref().and_then(|ed| {
+            ed.doc
+                .pages
+                .iter()
+                .find(|p| p.id == page_id)
+                .map(|p| dc::geom::jump_radii_in(&ed.doc, p))
+        });
+        let mut cmds: Vec<Box<dyn dc_core::Command>> = vec![Box::new(SetCell::new(
+            Scope::PageSheet { page: page_id },
+            "LineJumpFactorY",
+            vsdx::Cell::value(format!("{factor:.6}")),
+        ))];
+        if let Some(pre) = pre {
+            cmds.push(Box::new(crate::cmd::ReconcileLineJumps::with_strip(
+                page_id, pre,
+            )));
+        }
+        self.apply(dc_core::Macro::new("set line jump factor", cmds));
         self.status = crate::i18n::strs().msg_line_jump_factor_set(factor);
     }
 }

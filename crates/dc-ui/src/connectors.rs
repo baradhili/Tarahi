@@ -137,9 +137,10 @@ pub fn rewrite_route_rows(shape: &mut Shape, rows: &[(f64, f64); 3]) {
 // re-exported here so every dc-ui call site and test stays put.
 pub use dc::geom::{
     arc_row, cubic_row, geometry_hit_segments, geometry_hit_segments_straight, hit_frame,
-    is_connector, is_connector_in, is_jump_candidate, is_stored_jump_arc, jump_radii_in,
-    line_jumps, row_cell_value, seg_cross, ArcRow, CubicRow, HitFrame, Jump, JumpLine, JumpRules,
-    JumpStyle,
+    is_connector, is_connector_in, is_jump_candidate, is_stored_jump_arc, is_stored_jump_gap,
+    is_stored_jump_polyline, jump_radii_in, line_jumps, line_jumps_with, page_jump_rules,
+    page_jump_style, page_jumps, page_jumps_stripping, parse_polyline_controls, row_cell_value,
+    seg_cross, ArcRow, CubicRow, HitFrame, Jump, JumpLine, JumpRules, JumpStyle,
 };
 fn set(cells: &mut Vec<SheetChild>, n: &str, v: f64) {
     cells.push(SheetChild::Cell(n.to_string(), Cell::value(fmt(v))));

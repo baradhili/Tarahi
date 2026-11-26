@@ -9903,7 +9903,10 @@ fn spell_dialog_change_fixes_with_one_undo() {
     // The dictionary's ranked suggestions carry the fix (the quality
     // bar: a common typo's suggestion list contains the intended word).
     let sugs = h.state().debug_spell_suggestions();
-    assert!(sugs.contains(&"test".to_string()), "the fix is suggested: {sugs:?}");
+    assert!(
+        sugs.contains(&"test".to_string()),
+        "the fix is suggested: {sugs:?}"
+    );
 
     // Change applies the SELECTED suggestion (the list preselects the
     // top rank) in one undo step.
@@ -9982,7 +9985,10 @@ fn spell_dialog_ignore_all_and_add() {
     // The store round-trips (explicit-path hooks — kittest tests run
     // parallel in one process and never touch the user's config dir).
     let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("diagramcraft").join("custom-dictionary.json");
+    let path = tmp
+        .path()
+        .join("diagramcraft")
+        .join("custom-dictionary.json");
     dc_ui::spellcheck::save_custom_to_for_test(&path, &["tset".to_string(), "zork".to_string()]);
     assert_eq!(
         dc_ui::spellcheck::load_custom_from_for_test(&path),
@@ -10118,11 +10124,8 @@ fn options_dialog_save_page_round_trips() {
     open_options(&mut h);
     options_nav(&mut h, "Save");
     h.run();
-    h.get_by_role_and_label(
-        egui::Role::TextInput,
-        "Save AutoRecover information every:",
-    )
-    .set_text_value_accesskit("15");
+    h.get_by_role_and_label(egui::Role::TextInput, "Save AutoRecover information every:")
+        .set_text_value_accesskit("15");
     h.get_by_role_and_label(egui::Role::TextInput, "AutoRecover file location:")
         .set_text_value_accesskit("/tmp/autorecover");
     h.run();
@@ -10185,7 +10188,10 @@ fn close_confirmation_owns_escape_over_the_options_draft() {
     // close the dialog under the pending close decision.
     h.key_press(egui::Key::Enter);
     h.run();
-    assert!(h.state().debug_close_prompt(), "the confirm still owns the frame");
+    assert!(
+        h.state().debug_close_prompt(),
+        "the confirm still owns the frame"
+    );
     assert!(
         h.state().debug_options_open(),
         "Enter did not commit-and-close Options under the confirm"
@@ -10231,9 +10237,10 @@ fn options_settings_save_failure_warns_and_a_retry_persists() {
     let mut h = harness_with_blank();
     // A PERSISTING store whose options.json sits under a regular FILE
     // — the write fails while the in-memory apply succeeds.
-    h.state_mut().set_options_store_for_test(
-        dc_ui::options::Options::persisting_for_test(blocker.join("options.json")),
-    );
+    h.state_mut()
+        .set_options_store_for_test(dc_ui::options::Options::persisting_for_test(
+            blocker.join("options.json"),
+        ));
     open_options(&mut h);
     h.get_by_role_and_label(egui::Role::TextInput, "User name:")
         .set_text_value_accesskit("Bret Watson");
@@ -10245,15 +10252,17 @@ fn options_settings_save_failure_warns_and_a_retry_persists() {
         "OK keeps the dialog open after a failed settings save"
     );
     assert!(
-        h.query_by_label_contains("Couldn't save your settings").is_some(),
+        h.query_by_label_contains("Couldn't save your settings")
+            .is_some(),
         "the in-dialog warning is up"
     );
     assert!(!blocker.join("options.json").exists());
 
     // The retry: a writable store, OK again — closes and lands.
-    h.state_mut().set_options_store_for_test(
-        dc_ui::options::Options::persisting_for_test(dir.path().join("options.json")),
-    );
+    h.state_mut()
+        .set_options_store_for_test(dc_ui::options::Options::persisting_for_test(
+            dir.path().join("options.json"),
+        ));
     h.get_by_label("OK").click();
     h.run();
     assert!(
@@ -10271,9 +10280,7 @@ fn options_settings_save_failure_warns_and_a_retry_persists() {
 fn comment_avatar_initials_fit_the_circle() {
     // A minimal harness that only installs the production fonts and
     // hands the Context out (the fit measures through its fonts).
-    let ctx_cell = std::rc::Rc::new(std::cell::RefCell::new(
-        Option::<egui::Context>::None,
-    ));
+    let ctx_cell = std::rc::Rc::new(std::cell::RefCell::new(Option::<egui::Context>::None));
     let cell = ctx_cell.clone();
     let mut h = egui_kittest::Harness::builder()
         .with_size(egui::vec2(200.0, 100.0))
@@ -10288,7 +10295,10 @@ fn comment_avatar_initials_fit_the_circle() {
         fitted.chars().count() <= 2,
         "eight Ws truncate hard: {fitted}"
     );
-    assert!(size <= 8.0 + f32::EPSILON, "the truncation tier is the floor font");
+    assert!(
+        size <= 8.0 + f32::EPSILON,
+        "the truncation tier is the floor font"
+    );
     // A normal configured pair survives whole — shrunk, not dropped.
     let (pair, _) = App::debug_fit_initials_for_test(&ctx, "BW");
     assert_eq!(pair, "BW");
@@ -10403,10 +10413,7 @@ fn options_modal_blocks_backstage_navigation() {
     // backstage nor strands the dialog (CodeRabbit round).
     h.get_by_label("<  Back").click();
     h.run();
-    assert!(
-        h.state().backstage,
-        "Back is blocked while Options is up"
-    );
+    assert!(h.state().backstage, "Back is blocked while Options is up");
     assert!(h.state().debug_options_open(), "the dialog stays up");
     // Cancel closes the dialog, and Back works again.
     h.get_by_label("Cancel").click();
@@ -10476,4 +10483,98 @@ fn page_and_document_shapesheets_open_from_the_page_and_the_ribbon() {
     h.run();
     assert!(h.query_by_label_contains("Show ShapeSheet").is_none());
     assert_eq!(h.state().debug_sheet_targets(), vec![SheetTarget::Document]);
+}
+
+// #324 phase 5: the Page Setup ▸ Layout and Routing section — the
+// line-jump dropdowns write the PageSheet cells through one undo step
+// each with the stored-hop reconcile riding the same macro, and the
+// Routing group paints Visio's controls disabled (routing proper is
+// #225's deferred bulk).
+#[test]
+fn layout_and_routing_dialog_writes_jump_cells() {
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(
+            |ui, app: &mut App| {
+                dc_ui::theme::install(ui.ctx());
+                app.draw(ui);
+            },
+            App::debug_page_setup_with_crossing_for_test(),
+        );
+    h.run();
+    assert!(
+        h.state()
+            .debug_page_sheet_cell_for_test("LineJumpStyle")
+            .is_none(),
+        "the blank page carries no style cell"
+    );
+    // The style dropdown shows "Arc  ›"; open it and pick Gap.
+    let btn = h
+        .get_all_by_label_contains("Arc")
+        .filter(|n| n.rect().width() < 120.0)
+        .max_by_key(|n| n.rect().min.y as i64)
+        .expect("the line jump style dropdown");
+    btn.click();
+    h.run();
+    h.get_by_label("Gap").click();
+    h.run();
+    assert_eq!(
+        h.state()
+            .debug_page_sheet_cell_for_test("LineJumpStyle")
+            .as_deref(),
+        Some("2"),
+        "the dropdown wrote LineJumpStyle = 2 (Gap)"
+    );
+    // The reconcile rode the macro: the stored rows are the gap form.
+    assert_eq!(
+        h.state().debug_geometry_row_types_for_test(5),
+        vec!["MoveTo", "LineTo", "MoveTo", "LineTo"],
+        "the gap form landed"
+    );
+    // One undo restores the absent cell and the straight rows.
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run();
+    assert!(
+        h.state()
+            .debug_page_sheet_cell_for_test("LineJumpStyle")
+            .is_none(),
+        "one undo removed the style cell"
+    );
+    assert_eq!(
+        h.state().debug_geometry_row_types_for_test(5),
+        vec!["MoveTo", "LineTo"],
+        "the route is back"
+    );
+    // "Add line jumps to: None" hides the page's jumps — LineJumpCode
+    // 0, one more undo step back to shown.
+    let btn = h
+        .get_all_by_label_contains("Horizontal Lines")
+        .filter(|n| n.rect().width() < 140.0)
+        .max_by_key(|n| n.rect().min.y as i64)
+        .expect("the add-line-jumps-to dropdown");
+    btn.click();
+    h.run();
+    h.get_by_label("None").click();
+    h.run();
+    assert_eq!(
+        h.state()
+            .debug_page_sheet_cell_for_test("LineJumpCode")
+            .as_deref(),
+        Some("0"),
+        "None wrote the off switch"
+    );
+    // The Routing group paints disabled: the Style row's button exists
+    // and writes nothing (routing proper is deferred).
+    let disabled = h
+        .get_all_by_label_contains("Right Angle")
+        .max_by_key(|n| n.rect().min.y as i64);
+    assert!(disabled.is_some(), "the routing Style control paints");
+    assert!(
+        h.state()
+            .debug_page_sheet_cell_for_test("RouteStyle")
+            .is_none(),
+        "no routing cell was written"
+    );
 }
