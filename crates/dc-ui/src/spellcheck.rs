@@ -111,21 +111,38 @@ impl SpellState {
         if !self.lang.is_empty() {
             return self.lang.clone();
         }
-        let wanted = match crate::i18n::current() {
-            crate::l10n::L10n::En => "en",
-            crate::l10n::L10n::De => "de",
-            crate::l10n::L10n::Fa => "fa",
-            crate::l10n::L10n::Es => "es",
-            // No CJK hunspell path (#298): the CJK UIs check English.
-            crate::l10n::L10n::ZhHans => "en",
-            crate::l10n::L10n::Ja => "en",
-            crate::l10n::L10n::Ko => "en",
-        };
+        let wanted = Self::ui_check_lang();
         spellcheck::available()
             .into_iter()
             .find(|e| e.stem.starts_with(wanted))
             .map(|e| e.stem)
             .unwrap_or_else(|| "en_US".to_string())
+    }
+
+    /// #209 step 5: the proofing language the status bar names — the
+    /// chosen dictionary stem, else the UI language's check language
+    /// (the primary subtag; no dictionary disk scan, which the
+    /// per-frame status bar must not pay and the headless ctors
+    /// forbid).
+    pub(crate) fn proofing_stem(&self) -> String {
+        if !self.lang.is_empty() {
+            return self.lang.clone();
+        }
+        Self::ui_check_lang().to_string()
+    }
+    /// The check language the current UI language resolves to (the
+    /// primary subtag; no CJK hunspell path — #298 — so the CJK UIs
+    /// check English).
+    fn ui_check_lang() -> &'static str {
+        match crate::i18n::current() {
+            crate::l10n::L10n::En => "en",
+            crate::l10n::L10n::De => "de",
+            crate::l10n::L10n::Fa => "fa",
+            crate::l10n::L10n::Es => "es",
+            crate::l10n::L10n::ZhHans => "en",
+            crate::l10n::L10n::Ja => "en",
+            crate::l10n::L10n::Ko => "en",
+        }
     }
 
     /// The pass's decision function: the dictionary plus the custom
@@ -156,6 +173,17 @@ impl SpellState {
         };
         scan(doc, session, &checker)
     }
+}
+
+/// Native display name for a dictionary stem (#209 step 5) — dc's
+/// `LangEntry::display_name` vocabulary, never translated (the
+/// master-NameU rule: dictionary language names are content).
+pub(crate) fn lang_display_name(stem: &str) -> String {
+    dc::spellcheck::LangEntry {
+        stem: stem.to_string(),
+        local: None,
+    }
+    .display_name()
 }
 
 /// The scan loop (free so the session borrow never aliases the state).

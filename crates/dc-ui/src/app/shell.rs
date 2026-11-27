@@ -919,6 +919,11 @@ impl App {
                 left = "no document".into();
             }
             ui.label(egui::RichText::new(left).color(t.status_text).size(11.0));
+            // #209 step 5 (spec §3.2): the proofing language's native
+            // name, read-only — dictionary vocabulary, never translated
+            // (dc's display_name rule), and NOT the UI language.
+            let lang = crate::spellcheck::lang_display_name(&self.spell.proofing_stem());
+            ui.label(egui::RichText::new(lang).color(t.status_text).size(11.0));
             // #209 step 1: Visio's Snap & Glue status-bar chip — one
             // click toggles both masters on or off together (the
             // per-target dialog stays on the View ribbon's magnet
