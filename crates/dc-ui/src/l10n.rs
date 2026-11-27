@@ -2130,6 +2130,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "get-help-on",
+        attribute: None,
+        vars: &["query"],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "horizontal-size",
         attribute: None,
         vars: &[],
@@ -2257,6 +2264,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "lj-style-square",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "no-matching-commands",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -7408,13 +7422,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..51799,
-            Self::En => 51799..101636,
-            Self::Es => 101636..156588,
-            Self::Fa => 156588..221975,
-            Self::Ja => 221975..277489,
-            Self::Ko => 277489..328593,
-            Self::ZhHans => 328593..373343,
+            Self::De => 0..51890,
+            Self::En => 51890..101853,
+            Self::Es => 101853..156904,
+            Self::Fa => 156904..222433,
+            Self::Ja => 222433..278065,
+            Self::Ko => 278065..329282,
+            Self::ZhHans => 329282..374125,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -8615,6 +8629,12 @@ impl L10nLanguage {
     pub fn msg_field_width(&self) -> String {
         self.0.msg("field-width", None).unwrap()
     }
+    /// $query (String) - the live Tell Me query
+    pub fn msg_get_help_on<F0: AsRef<str>>(&self, query: F0) -> String {
+        let mut _args = FluentArgs::new();
+        _args.set("query", query.as_ref());
+        self.0.msg("get-help-on", Some(_args)).unwrap()
+    }
     pub fn msg_horizontal_size(&self) -> String {
         self.0.msg("horizontal-size", None).unwrap()
     }
@@ -8674,6 +8694,9 @@ impl L10nLanguage {
     }
     pub fn msg_lj_style_square(&self) -> String {
         self.0.msg("lj-style-square", None).unwrap()
+    }
+    pub fn msg_no_matching_commands(&self) -> String {
+        self.0.msg("no-matching-commands", None).unwrap()
     }
     pub fn msg_routing_appearance(&self) -> String {
         self.0.msg("routing-appearance", None).unwrap()

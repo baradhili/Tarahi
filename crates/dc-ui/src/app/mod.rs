@@ -256,6 +256,10 @@ pub struct App {
     /// typing (see `tab_strip`) so a replace-text-and-Enter frame
     /// runs the new query's hit, not the stale one.
     tellme_enter: bool,
+    /// #204 step 7: the basic help window stub, pre-filled with the
+    /// query that opened it (real help content/pane depth is the
+    /// follow-up issue per the plan's deferral).
+    tellme_help: Option<String>,
     /// #192 spec: the open ShapeSheet windows, one per target (each
     /// its own child window; a target appears at most once). #272: a
     /// target is a shape, a page's PageSheet or the DocumentSheet.

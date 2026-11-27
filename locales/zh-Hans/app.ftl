@@ -307,6 +307,7 @@ field-preview = 预览：
 field-subject = 主题
 field-title = 标题
 field-width = 宽度
+get-help-on = 获取关于"{ $query }"的帮助
 horizontal-size = 水平大小：
 
 insert-a-text-field = 插入文本域
@@ -343,6 +344,7 @@ lj-style-gap = 间隔
 
 lj-style-square = 方形
 
+no-matching-commands = 没有匹配的命令
 routing-appearance = 外观：
 
 routing-deferred = 连接线布线尚不可用。

@@ -858,6 +858,12 @@ fn tellme_try_list_drills_down() {
     harness.get_by_label("Tell Me").click();
     harness.run();
     harness.get_by_label("Turn the grid on or off").click();
+    // Move the pointer off the panel in the SAME batch as the click:
+    // the taller results panel (help footer) reaches the click
+    // position, and the stationary pointer's hover would legitimately
+    // own the selection there — a keyboard user's Enter starts from
+    // the drill's reset row.
+    harness.hover_at(egui::Pos2::new(200.0, 400.0));
     harness.run();
     assert!(
         harness.query_by_label("Grid").is_some(),
@@ -872,5 +878,71 @@ fn tellme_try_list_drills_down() {
     assert!(
         !harness.state().debug_tellme_open(),
         "the panel closed after the run"
+    );
+}
+
+/// #204 step 7: an unmatched query shows the explicit "No matching
+/// commands" row (with the help footer below it), and the Get-Help
+/// footer opens the basic help window stub pre-filled with the query —
+/// Esc closes the stub.
+#[test]
+fn tellme_no_results_and_get_help() {
+    use egui_kittest::kittest::Queryable;
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(
+            |ui, app: &mut App| {
+                dc_ui::theme::install(ui.ctx());
+                app.draw(ui);
+            },
+            App::with_blank(),
+        );
+    harness.run();
+
+    // An unmatched query: the explicit row, plus the footer.
+    harness.get_by_label("Tell Me").click();
+    harness.run();
+    harness.get_by_label("Tell Me").type_text("zzqqxy");
+    harness.run();
+    assert!(
+        harness.query_by_label("No matching commands").is_some(),
+        "the unmatched query shows the explicit row"
+    );
+    // Fluent isolates the inserted query with Unicode bidi marks
+    // (invisible, direction-safe) — match by prefix, not joined text.
+    assert!(
+        harness.query_by_label_contains("Get help on").is_some(),
+        "the help footer is present"
+    );
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(!harness.state().debug_tellme_open());
+
+    // The footer opens the stub window pre-filled with the query;
+    // Esc closes it.
+    harness.get_by_label("Tell Me").click();
+    harness.run();
+    harness.get_by_label("Tell Me").type_text("grid");
+    harness.run();
+    harness.get_by_label_contains("Get help on").click();
+    harness.hover_at(egui::Pos2::new(200.0, 400.0));
+    harness.run();
+    assert!(
+        !harness.state().debug_tellme_open(),
+        "picking help closed the panel"
+    );
+    assert_eq!(
+        harness.state().debug_tellme_help_query(),
+        Some("grid".to_string()),
+        "the stub opened pre-filled with the query"
+    );
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert_eq!(
+        harness.state().debug_tellme_help_query(),
+        None,
+        "Esc closed the help stub"
     );
 }

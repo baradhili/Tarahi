@@ -639,5 +639,38 @@ impl App {
                 });
             self.about_open = open && self.about_open;
         }
+
+        // #204 step 7: the basic help window stub, pre-filled with
+        // the query that opened it (the About window's pattern —
+        // Esc-first, the close button honored). Real help content is
+        // the follow-up issue per the plan's deferral.
+        if let Some(query) = self.tellme_help.clone() {
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.tellme_help = None;
+                return;
+            }
+            let mut open = true;
+            egui::Window::new(crate::i18n::strs().msg_get_help_on(&query))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ui.ctx(), |ui| {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(300.0, 80.0), egui::Sense::hover());
+                    // The stub's one piece of content: the query it
+                    // was opened for.
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        &query,
+                        egui::FontId::proportional(15.0),
+                        crate::theme::shell_tokens(ui.visuals()).label,
+                    );
+                });
+            if !open {
+                self.tellme_help = None;
+            }
+        }
     }
 }

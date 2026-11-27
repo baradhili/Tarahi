@@ -188,9 +188,10 @@ pub fn field_id() -> egui::Id {
     egui::Id::unique("tellme-field")
 }
 
-/// One panel row (#204 step 6): a search result, or an idle "Try"
-/// suggestion shown while the query is empty (spec 3.1 — clicking /
-/// Enter populates the query, a drill-down).
+/// One panel row (#204 steps 6–7): a search result, an idle "Try"
+/// suggestion (spec 3.1 — clicking / Enter populates the query, a
+/// drill-down), or the "Get Help on '<query>'" footer (spec 3.3.3/5 —
+/// basics: the stub window; real help depth is a follow-up issue).
 pub enum PanelRow {
     Result(CommandEntry),
     Try {
@@ -201,18 +202,29 @@ pub enum PanelRow {
         /// language.
         query: &'static str,
     },
+    /// The help footer, appended after the results under a divider —
+    /// the acceptance's "Get Help on '<query>'" opens the stub.
+    Help {
+        /// The localized footer text.
+        label: String,
+    },
 }
 
-/// The panel's rows for a query (#204 steps 2–6): the live search
-/// results while typing; the idle Try list while the query is empty.
+/// The panel's rows for a query (#204 steps 2–7): the live search
+/// results while typing (capped), the help footer after them; the
+/// idle Try list while the query is empty.
 pub fn rows(ctx: &TabCtx, query: &str) -> Vec<PanelRow> {
     if query.trim().is_empty() {
         return try_rows();
     }
-    search(&registry(ctx), query)
+    let mut out: Vec<PanelRow> = search(&registry(ctx), query)
         .into_iter()
         .map(|e| PanelRow::Result(e.clone()))
-        .collect()
+        .collect();
+    out.push(PanelRow::Help {
+        label: crate::i18n::strs().msg_get_help_on(query),
+    });
+    out
 }
 
 /// The idle "Try" list (#204 step 6, spec 3.1): curated from REAL

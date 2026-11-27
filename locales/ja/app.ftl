@@ -308,6 +308,7 @@ field-preview = プレビュー:
 field-subject = 件名
 field-title = タイトル
 field-width = 幅
+get-help-on = 「{ $query }」のヘルプを表示
 horizontal-size = 横のサイズ：
 
 insert-a-text-field = 文字フィールドを挿入します
@@ -344,6 +345,7 @@ lj-style-gap = ギャップ
 
 lj-style-square = 四角
 
+no-matching-commands = 一致するコマンドはありません
 routing-appearance = 外観：
 
 routing-deferred = コネクタのルーティングはまだ利用できません。
