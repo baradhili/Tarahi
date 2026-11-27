@@ -40,10 +40,11 @@ Rules:
 
 ## Manifest
 
-| File             | Source         | License / IP status                          | Consuming test(s)                   |
-| ---------------- | -------------- | -------------------------------------------- | ----------------------------------- |
-| kreuzung.vsdx    | issue #303     | generated once by throw-away code/tracked    | crates/dc-ui/tests/kreuzung.rs      |
-| utilisation.vsdx | owner-authored | reporter-supplied, untracked - to be rebuilt | crates/dc-ui/tests/arc_line_drag.rs |
+| File                    | Source         | License / IP status                          | Consuming test(s)                   |
+| ----------------------- | -------------- | -------------------------------------------- | ----------------------------------- |
+| kreuzung.vsdx           | issue #303     | generated once by throw-away code/tracked    | crates/dc-ui/tests/kreuzung.rs      |
+| utilisation.vsdx        | owner-authored | reporter-supplied, untracked - to be rebuilt | crates/dc-ui/tests/arc_line_drag.rs |
+| orbus-shape-layout.vsdx | issue #397     | owner-authored in Visio, tracked; reference render beside it (.png) | none yet — regression test lands with the #397 fix |
 
 (Synthetic/ rows: none yet. The committed builder in dc-core that
 produces the blank_doc/shape_doc/etc. fixtures used by
