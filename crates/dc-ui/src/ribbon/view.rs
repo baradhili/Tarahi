@@ -5,7 +5,7 @@
 //! is placeholder (Switch Windows maps to the strip's #192 switcher
 //! eventually).
 
-use super::{Action, Group, Icon, RibbonButton, TabCtx, big, grid, stack};
+use super::{Action, Group, Icon, RibbonButton, ShowFrom, TabCtx, big, grid, stack};
 
 pub(crate) fn groups(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<Group> {
     vec![
@@ -22,15 +22,34 @@ pub(crate) fn groups(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec
 }
 
 fn views_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<super::Col> {
-    vec![big(
-        // #209 step 7: Presentation Mode is real — hides the chrome;
-        // Esc or the status-bar button restores (the stale "planned"
-        // tip retires with the feature).
-        RibbonButton::new(Icon::Presentation, s.msg_presentation_mode(), Action::PresentationMode)
+    vec![
+        big(
+            // #209 step 7: Presentation Mode is real — hides the
+            // chrome (full screen since #130); Esc or the status-bar
+            // button restores (the stale "planned" tip retired with
+            // the feature).
+            RibbonButton::new(
+                Icon::Presentation,
+                s.msg_presentation_mode(),
+                Action::PresentationMode,
+            )
             .enabled(ctx.has_doc)
             .selected(ctx.chrome_hidden)
             .tip(s.msg_presentation_mode()),
-    )]
+        ),
+        // #130: Slide Show — the read-only, page-at-a-time
+        // presentation (full screen, keyboard advance, hyperlink
+        // jumps); the button runs it from the first page, F5's rule.
+        big(
+            RibbonButton::new(
+                Icon::Play,
+                s.msg_slide_show(),
+                Action::Slideshow(ShowFrom::First),
+            )
+            .enabled(ctx.has_doc)
+            .tip(s.msg_slide_show_f5()),
+        ),
+    ]
 }
 
 fn show_grid(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<super::Col> {

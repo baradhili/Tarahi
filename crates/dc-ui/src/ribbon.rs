@@ -145,6 +145,15 @@ pub(crate) fn anchor_labels(tab: Tab, ctx: &TabCtx) -> Vec<String> {
     out
 }
 
+/// Where a Slide Show starts (#130): F5 and the ribbon button run
+/// from the first page (PowerPoint's rule), Shift+F5 from the
+/// current one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShowFrom {
+    First,
+    Current,
+}
+
 /// Everything the ribbon can ask the app to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -161,7 +170,13 @@ pub enum Action {
     Zoom100,
     FitPage,
     /// #209 step 7: Presentation Mode — hide the chrome, Esc restores.
+    /// #130: the mode is full screen now (the toggle drives the
+    /// viewport command with the chrome).
     PresentationMode,
+    /// #130: enter the Slide Show — the read-only, page-at-a-time
+    /// full-screen presentation (F5 / Shift+F5 / the View ▸ Views
+    /// button). `ShowFrom` picks the first slide.
+    Slideshow(ShowFrom),
     /// #209 step 3: Visio's Page Width — zoom to the page's width.
     FitPageWidth,
     /// #209 step 3: the Zoom dialog (the status-bar % button and the
@@ -385,6 +400,8 @@ pub enum Icon {
     Hand,
     /// #209 step 7: Presentation Mode (MDI projector).
     Presentation,
+    /// #130: Slide Show (MDI play — the page-at-a-time deck).
+    Play,
     /// #396: the Options dialog's page headers — General (MDI cog).
     Cog,
     /// #396: Options ▸ Advanced (MDI tune, the sliders idiom).
@@ -470,6 +487,7 @@ impl Icon {
             Icon::Orientation => "orientation",
             Icon::Hand => "hand",
             Icon::Presentation => "projector",
+            Icon::Play => "play",
             Icon::Pointer => "pointer",
             Icon::TextBox => "textbox",
             Icon::NewPage => "newpage",
@@ -537,7 +555,7 @@ impl Icon {
             | Icon::IndentMore
             | Icon::LineSpacing => Color32::from_rgb(0x42, 0x42, 0x42),
             Icon::Delete => Color32::from_rgb(0xc0, 0x3a, 0x2b),
-            Icon::Spell | Icon::Refresh | Icon::Check | Icon::New => {
+            Icon::Spell | Icon::Refresh | Icon::Check | Icon::New | Icon::Play => {
                 Color32::from_rgb(0x2e, 0x8b, 0x57)
             }
             Icon::TellMe => Color32::from_rgb(0x82, 0x82, 0x82),
@@ -1614,6 +1632,7 @@ impl Icon {
             | Icon::Eye
             | Icon::Lock
             | Icon::Presentation
+            | Icon::Play
             | Icon::Cog
             | Icon::Tune
             | Icon::Tab

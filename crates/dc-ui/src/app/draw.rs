@@ -158,6 +158,13 @@ impl App {
             self.group_edit.truncate(ok);
         }
         let ctx = ui.ctx().clone();
+        // #130: a fullscreen toggle decided without a Context (the
+        // Presentation Mode dispatch / the Slide Show entry and exit)
+        // rides the next frame, like `os_clipboard_text`.
+        if let Some(on) = self.fullscreen_pending.take() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+            self.debug_fullscreen = Some(on);
+        }
         // OS theme flips (GitHub #52): the watcher thread re-probes the
         // OS preference on its period; switch the active style slot when
         // it reports a change, and ask for a repaint on the same period
@@ -232,6 +239,16 @@ impl App {
         // File screen is open (Save & New) must retitle immediately,
         // not when the user leaves backstage (branch review).
         self.sync_window_title(ui.ctx());
+        // #130: while the Slide Show runs it IS the frame — black
+        // screen, the fitted page, nothing else. The close prompts
+        // stay reachable above it (Alt-F4 mid-show on a dirty
+        // document must still ask).
+        if self.slideshow.is_some() {
+            self.slideshow_view(ui);
+            self.confirm_new_window(&ctx);
+            self.confirm_close_window(&ctx);
+            return;
+        }
         if self.backstage {
             self.backstage_view(ui);
             // #268: the Options dialog opens over the File screen and

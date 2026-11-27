@@ -48,12 +48,19 @@ impl App {
             Action::FitPage => self.view.fit_pending = true,
             // #209 step 7: Presentation Mode — hide the chrome; the
             // backstage screen is chrome too, so it closes with it.
+            // #130 closes the footer-spec §3.4 variance: the mode is
+            // FULL screen — entering and leaving drive the viewport
+            // command with the chrome.
             Action::PresentationMode => {
                 self.chrome_hidden = !self.chrome_hidden;
                 if self.chrome_hidden {
                     self.backstage = false;
                 }
+                self.fullscreen_pending = Some(self.chrome_hidden);
             }
+            // #130: the Slide Show — read-only, page-at-a-time
+            // presenting; the module owns the entry/exit machinery.
+            Action::Slideshow(from) => self.enter_slideshow(from),
             // #209 step 3: Page Width — the width fit is a zoom, not a
             // mode (a later manual zoom or a resize never re-fits).
             Action::FitPageWidth => self.apply_page_width_fit(),
