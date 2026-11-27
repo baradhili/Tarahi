@@ -986,3 +986,89 @@ fn language_switch_renders_german_options_dialog() {
     );
     harness.snapshot("i18n_german_options_dialog");
 }
+
+/// #204 step 9 (the fa RTL audit of the popup): under the Persian
+/// catalog the results panel mirrors — rows read right-to-left with
+/// the icon at the reading start (right) — while an ENGLISH query
+/// still finds the command through the English anchor (the #257
+/// dual-build). The golden pins the mirrored panel.
+#[test]
+fn tellme_popup_mirrors_under_persian() {
+    use egui_kittest::kittest::Queryable;
+    let _guard = LANG_LOCK.lock().unwrap();
+    let _english = EnglishOnDrop;
+    dc_ui::i18n::pin_english();
+    let mut app = App::with_blank();
+    dc_ui::i18n::set_language_ephemeral(dc_ui::i18n::L10n::Fa);
+
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_ui(move |ui| {
+            dc_ui::theme::install_for(ui.ctx(), egui::ThemePreference::Light);
+            app.draw(ui);
+        });
+    for _ in 0..6 {
+        harness.run();
+    }
+    // Open the panel and type the ENGLISH word "grid" — the Persian
+    // chrome finds the Grid command through its English anchor.
+    harness.get_by_label("Tell Me").click();
+    harness.run();
+    harness.get_by_label("Tell Me").type_text("grid");
+    harness.run();
+    // The Persian label for the Grid command renders in the results
+    // (the fa catalog's msg_grid), a11y-named like every row.
+    assert!(
+        harness.get_all_by_label_contains("شبکه").next().is_some(),
+        "the English query found the command under the Persian catalog"
+    );
+    // The mirrored geometry (icon at the reading start, RTL rows)
+    // rides the golden — READ it (the step-9 fa audit).
+    harness.snapshot("i18n_persian_tellme");
+}
+
+/// #204 step 9 (the acceptance's German walk): under the German
+/// catalog, the panel finds commands by the GERMAN label and by the
+/// ENGLISH anchor in the same run — "Raster" and "grid" both surface
+/// View ▸ Raster.
+#[test]
+fn tellme_matches_german_and_english_words() {
+    use egui_kittest::kittest::Queryable;
+    let _guard = LANG_LOCK.lock().unwrap();
+    let _english = EnglishOnDrop;
+    dc_ui::i18n::pin_english();
+    let mut app = App::with_blank();
+    dc_ui::i18n::set_language_ephemeral(dc_ui::i18n::L10n::De);
+
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_ui(move |ui| {
+            dc_ui::theme::install_for(ui.ctx(), egui::ThemePreference::Light);
+            app.draw(ui);
+        });
+    for _ in 0..6 {
+        harness.run();
+    }
+    // The German word finds it by the display label.
+    harness.get_by_label("Tell Me").click();
+    harness.run();
+    harness.get_by_label("Tell Me").type_text("Raster");
+    harness.run();
+    assert!(
+        harness.query_by_label("Raster").is_some(),
+        "the German label matched"
+    );
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    // The English word finds the SAME command through the anchor.
+    harness.get_by_label("Tell Me").click();
+    harness.run();
+    harness.get_by_label("Tell Me").type_text("grid");
+    harness.run();
+    assert!(
+        harness.query_by_label("Raster").is_some(),
+        "the English anchor matched under the German catalog"
+    );
+}
