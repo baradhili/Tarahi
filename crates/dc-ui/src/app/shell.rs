@@ -934,17 +934,6 @@ impl App {
             let lang = crate::spellcheck::lang_display_name(&self.spell.proofing_stem());
             ui.label(egui::RichText::new(lang).color(t.status_text).size(11.0));
             if self.ed.is_some() {
-                // #209 step 2: the Connect chip — the same document
-                // AutoConnect bit the View ribbon's toggle drives.
-                if status_chip(
-                    ui,
-                    crate::ribbon::Icon::Connector,
-                    crate::i18n::strs().msg_autoconnect_chip_tip(),
-                    self.snap.autoconnect,
-                    true,
-                ) {
-                    self.dispatch(Action::ToggleAutoConnect);
-                }
                 // #209 step 6 (spec §3.3): the macro-record chip in its
                 // resting state — disabled, the spec's tooltip. No macro
                 // engine exists yet (M7); the active-recording visual

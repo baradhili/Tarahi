@@ -443,13 +443,6 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "autoconnect-chip-tip",
-        attribute: None,
-        vars: &[],
-        bool_vars: &[],
-        elements: &[],
-    },
-    MessageContract {
         message: "autoconnect-needs-a-2d-shape",
         attribute: None,
         vars: &[],
@@ -7289,13 +7282,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..50858,
-            Self::En => 50858..99890,
-            Self::Es => 99890..153898,
-            Self::Fa => 153898..218155,
-            Self::Ja => 218155..272638,
-            Self::Ko => 272638..322809,
-            Self::ZhHans => 322809..366816,
+            Self::De => 0..50757,
+            Self::En => 50757..99707,
+            Self::Es => 99707..153615,
+            Self::Fa => 153615..217738,
+            Self::Ja => 217738..272109,
+            Self::Ko => 272109..322191,
+            Self::ZhHans => 322191..366120,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -7573,9 +7566,6 @@ impl L10nLanguage {
     }
     pub fn msg_autoconnect(&self) -> String {
         self.0.msg("autoconnect", None).unwrap()
-    }
-    pub fn msg_autoconnect_chip_tip(&self) -> String {
-        self.0.msg("autoconnect-chip-tip", None).unwrap()
     }
     pub fn msg_autoconnect_needs_a_2d_shape(&self) -> String {
         self.0.msg("autoconnect-needs-a-2d-shape", None).unwrap()

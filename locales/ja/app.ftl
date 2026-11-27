@@ -67,7 +67,6 @@ auto-layout-planned = 自動レイアウト — 予定
 auto-page-size-planned = ページ サイズの自動設定 — 予定
 auto-size = 自動サイズ
 autoconnect = 自動接続
-autoconnect-chip-tip = 自動接続。クリックすると自動接続のオン/オフを切り替えます。
 autoconnect-needs-a-2d-shape = 自動接続には 2D 図形が必要です
 autoconnect-tip = 自動接続のオン/オフを切り替えます。オンのとき、自動接続矢印をクリックするとコピーを作成して接続します。
 autocorrect-options = オートコレクトのオプション

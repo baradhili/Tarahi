@@ -74,7 +74,6 @@ auto-layout-planned = Diseño automático — planeado
 auto-page-size-planned = Tamaño de página automático — planeado
 auto-size = Tamaño automático
 autoconnect = Autoconexión
-autoconnect-chip-tip = Autoconexión. Haga clic para activar o desactivar la conexión automática.
 autoconnect-needs-a-2d-shape = La autoconexión necesita una forma 2D
 autoconnect-tip = Active o desactive la autoconexión. Cuando está activada, hacer clic en una flecha de autoconexión crea y conecta una copia.
 autocorrect-options = Opciones de Autocorrección

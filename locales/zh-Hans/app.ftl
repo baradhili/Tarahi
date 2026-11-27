@@ -66,7 +66,6 @@ auto-layout-planned = 自动布局 — 计划中
 auto-page-size-planned = 自动页面大小 — 计划中
 auto-size = 自动调整大小
 autoconnect = 自动连接
-autoconnect-chip-tip = 自动连接。单击可打开或关闭自动连接。
 autoconnect-needs-a-2d-shape = 自动连接需要一个二维形状
 autoconnect-tip = 打开或关闭自动连接。打开时，单击自动连接箭头将创建并连接一个副本。
 autocorrect-options = 自动更正选项

@@ -74,6 +74,7 @@ fn svg(name: &str) -> Option<&'static str> {
         "delete" => include_str!("../assets/icons/delete.svg"),
         "lightbulb" => include_str!("../assets/icons/lightbulb.svg"),
         "flip-vertical" => include_str!("../assets/icons/flip-vertical.svg"),
+        "projector" => include_str!("../assets/icons/projector.svg"),
         _ => return None,
     })
 }

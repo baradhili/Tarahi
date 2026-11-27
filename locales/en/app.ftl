@@ -75,7 +75,6 @@ auto-layout-planned = Auto layout — planned
 auto-page-size-planned = Auto page size — planned
 auto-size = Auto Size
 autoconnect = AutoConnect
-autoconnect-chip-tip = AutoConnect. Click to turn automatic connection on or off.
 autoconnect-needs-a-2d-shape = AutoConnect needs a 2D shape
 autoconnect-tip = Turn AutoConnect on or off. When on, clicking an AutoConnect arrow creates and connects a copy.
 autocorrect-options = AutoCorrect Options
