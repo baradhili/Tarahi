@@ -390,8 +390,8 @@ fn reads_corpus_defaults() {
     assert_eq!(s.snap, 295);
     assert_eq!(s.glue, 9);
     assert!(s.dynamic_grid);
-    // No corpus element carries <AutoConnect> — the missing child
-    // reads as ON (#209 step 2).
+    // No corpus file carries the User.AutoConnect row — absent reads
+    // as ON (#209 step 2).
     assert!(s.autoconnect);
 }
 
@@ -402,7 +402,7 @@ fn missing_element_reads_none() {
 }
 
 #[test]
-fn setting_patches_only_the_four_children() {
+fn setting_patches_only_the_three_children() {
     let mut doc = doc_with_settings(vec![("TopPage".to_string(), "0".to_string())], CORPUS_INNER);
     let before = doc
         .items
@@ -426,30 +426,92 @@ fn setting_patches_only_the_four_children() {
             _ => None,
         })
         .unwrap();
-    // Attributes and every unmodeled child stay verbatim.
+    // Attributes and every unmodeled child stay verbatim; no
+    // AutoConnect child exists — the flag lives in the DocumentSheet's
+    // User row (see the User-row tests below).
     assert_eq!(before.attrs, after.attrs);
     assert!(after.inner.contains("<SnapExtensions>34</SnapExtensions>"));
     assert!(after.inner.contains("<SnapAngles/>"));
     assert!(after.inner.contains("<ProtectStyles>0</ProtectStyles>"));
-    // The four modeled children carry the new values, in canonical
-    // child order (AutoConnect follows DynamicGridEnabled).
+    assert!(!after.inner.contains("AutoConnect"));
+    // The three modeled children carry the new values, in corpus
+    // child order.
     let g = after.inner.find("<GlueSettings>").unwrap();
     let s = after.inner.find("<SnapSettings>").unwrap();
     let d = after.inner.find("<DynamicGridEnabled>").unwrap();
-    let a = after.inner.find("<AutoConnect>").unwrap();
-    assert!(g < s && s < d && d < a, "canonical child order: {}", after.inner);
+    assert!(g < s && s < d, "corpus child order: {}", after.inner);
     assert!(after.inner.contains("<GlueSettings>0</GlueSettings>"));
     assert!(after.inner.contains("<SnapSettings>65847</SnapSettings>"));
     assert!(after
         .inner
         .contains("<DynamicGridEnabled>0</DynamicGridEnabled>"));
-    assert!(after.inner.contains("<AutoConnect>0</AutoConnect>"));
-    // And reading back yields exactly what was written.
+    // And reading back yields exactly what was written (AutoConnect
+    // from the newly written User row).
     let read = doc.doc_snap_glue().unwrap();
     assert_eq!(read.snap, 65847);
     assert_eq!(read.glue, 0);
     assert!(!read.dynamic_grid);
     assert!(!read.autoconnect);
+}
+
+/// The schema-supported AutoConnect home (#209 review): a
+/// `User.AutoConnect` row on the DocumentSheet — the writer emits the
+/// corpus User-row form (`<Row N='AutoConnect'><Cell N='Value'
+/// V='0'/><Cell N='Prompt' V=''/></Row>`), never a non-schema
+/// `<DocumentSettings>` child. ON removes the row again (pristine
+/// document); an existing User section survives with its other rows.
+#[test]
+fn autoconnect_persists_in_the_document_sheet_user_row() {
+    let mut doc = Document::default();
+    doc.items.push(DocItem::DocumentSheet);
+    // OFF with no DocumentSettings: both elements grow; the row is the
+    // corpus User-row shape.
+    doc.set_doc_snap_glue(DocSnapGlue {
+        autoconnect: false,
+        ..DocSnapGlue::CORPUS_DEFAULT
+    });
+    assert!(matches!(doc.items.first(), Some(DocItem::Raw(r)) if r.name == "DocumentSettings"));
+    assert!(!doc.doc_snap_glue().unwrap().autoconnect);
+    let sec = doc
+        .sheet
+        .sections_named("User")
+        .into_iter()
+        .find(|s| s.named_row("AutoConnect").is_some())
+        .expect("User section with the AutoConnect row");
+    let row = sec.named_row("AutoConnect").unwrap();
+    assert_eq!(row.n.as_deref(), Some("AutoConnect"));
+    assert_eq!(row.cell("Value").unwrap().v.as_deref(), Some("0"));
+    assert!(row.cell("Prompt").is_some());
+
+    // A pre-existing User section keeps its other rows; toggling back
+    // ON removes only our row (and the section it emptied).
+    doc.sheet.children.push(SheetChild::Section(Section {
+        name: "User".to_string(),
+        ix: 1,
+        attrs: Vec::new(),
+        cells: Vec::new(),
+        rows: vec![Row {
+            t: None,
+            ix: 0,
+            n: Some("MyFlag".to_string()),
+            attrs: Vec::new(),
+            cells: vec![("Value".to_string(), Cell::value("7"))],
+        }],
+    }));
+    doc.set_doc_snap_glue(DocSnapGlue {
+        autoconnect: true,
+        ..DocSnapGlue::CORPUS_DEFAULT
+    });
+    assert!(doc.doc_snap_glue().unwrap().autoconnect);
+    let users = doc.sheet.sections_named("User");
+    assert!(
+        users.iter().all(|s| s.named_row("AutoConnect").is_none()),
+        "the AutoConnect row is gone"
+    );
+    assert!(
+        users.iter().any(|s| s.named_row("MyFlag").is_some()),
+        "foreign User rows survive"
+    );
 }
 
 #[test]
@@ -467,8 +529,7 @@ fn setting_creates_a_missing_element_in_corpus_shape() {
         inner,
         "<GlueSettings>9</GlueSettings><SnapSettings>295</SnapSettings>\
          <SnapExtensions>34</SnapExtensions><SnapAngles/>\
-         <DynamicGridEnabled>1</DynamicGridEnabled>\
-         <AutoConnect>1</AutoConnect>"
+         <DynamicGridEnabled>1</DynamicGridEnabled>"
     );
     assert_eq!(doc.doc_snap_glue(), Some(DocSnapGlue::CORPUS_DEFAULT));
 }

@@ -157,6 +157,11 @@ impl App {
             self.snap_dlg_open = false;
             return true;
         }
+        // #209: the Zoom dialog.
+        if self.zoom_dlg_open {
+            self.zoom_dlg_open = false;
+            return true;
+        }
         if self.pagesetup_open {
             self.pagesetup_open = false;
             return true;

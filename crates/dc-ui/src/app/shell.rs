@@ -948,8 +948,7 @@ impl App {
                     true,
                 ) {
                     let on = !both;
-                    self.snap.snap_active = on;
-                    self.snap.glue_active = on;
+                    self.snap.enable_sides(on, on);
                     self.apply_snap_settings();
                 }
                 // #209 step 2: the Connect chip — the same document
