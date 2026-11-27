@@ -9,10 +9,10 @@ use super::{Action, Group, Icon, RibbonButton, TabCtx, big, grid, stack};
 
 pub(crate) fn groups(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<Group> {
     vec![
-        Group::new(s.msg_views(), views_cols(s, )),
+        Group::new(s.msg_views(), views_cols(s, ctx)),
         Group::new(s.msg_show(), show_grid(s, ctx)),
         Group::new(s.msg_visual_aids(), visual_aids_cols(s, ctx)),
-        Group::new(s.msg_zoom(), zoom_cols(s, )),
+        Group::new(s.msg_zoom(), zoom_cols(s, ctx)),
         Group::new(s.msg_window(), window_cols(s, )),
         Group::new(
             s.msg_macros(),
@@ -21,11 +21,15 @@ pub(crate) fn groups(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec
     ]
 }
 
-fn views_cols(s: &'static crate::l10n::L10nLanguage) -> Vec<super::Col> {
+fn views_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<super::Col> {
     vec![big(
-        RibbonButton::new(Icon::Fit, s.msg_presentation_mode(), Action::Macros)
-            .enabled(false)
-            .tip(s.msg_presentation_mode_planned()),
+        // #209 step 7: Presentation Mode is real — hides the chrome;
+        // Esc or the status-bar button restores (the stale "planned"
+        // tip retires with the feature).
+        RibbonButton::new(Icon::Presentation, s.msg_presentation_mode(), Action::PresentationMode)
+            .enabled(ctx.has_doc)
+            .selected(ctx.chrome_hidden)
+            .tip(s.msg_presentation_mode()),
     )]
 }
 
@@ -81,14 +85,18 @@ fn visual_aids_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<
             RibbonButton::new(Icon::Magnet, s.msg_snap_glue(), Action::SnapGlue)
                 .selected(ctx.snap_dlg_open)
                 .tip(s.msg_configure_snap_and_glue_targets()),
-            RibbonButton::new(Icon::Connector, s.msg_autoconnect(), Action::Macros)
-                .enabled(false)
-                .tip(s.msg_autoconnect_arrows_the_108_remai()),
+            // #209 step 2: the AutoConnect toggle is real — the same
+            // document bit the status-bar Connect chip drives (the
+            // stale "planned" tip retires with the feature).
+            RibbonButton::new(Icon::Connector, s.msg_autoconnect(), Action::ToggleAutoConnect)
+                .enabled(ctx.has_doc)
+                .selected(ctx.autoconnect)
+                .tip(s.msg_autoconnect_tip()),
         ]),
     ]
 }
 
-fn zoom_cols(s: &'static crate::l10n::L10nLanguage) -> Vec<super::Col> {
+fn zoom_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<super::Col> {
     vec![
         stack(vec![
             RibbonButton::new(Icon::ZoomIn, "", Action::ZoomIn)
@@ -106,12 +114,16 @@ fn zoom_cols(s: &'static crate::l10n::L10nLanguage) -> Vec<super::Col> {
                     .tip(s.msg_fit_the_whole_page_in_the_window()),
             ],
             vec![
-                RibbonButton::new(Icon::Fit, s.msg_page_width(), Action::Macros)
-                    .enabled(false)
-                    .tip(s.msg_fit_the_page_width_planned()),
-                RibbonButton::new(Icon::Shapes, s.msg_zoom_menu(), Action::Macros)
-                    .enabled(false)
-                    .tip(s.msg_zoom_dialog_planned()),
+                // #209 step 3: Page Width is real — a width fit, not
+                // a mode.
+                RibbonButton::new(Icon::Fit, s.msg_page_width(), Action::FitPageWidth)
+                    .enabled(ctx.has_doc)
+                    .tip(s.msg_fit_the_page_width_in_the_window()),
+                // #209 step 3: the Zoom dialog (the stale "planned"
+                // tip retires with the feature).
+                RibbonButton::new(Icon::Shapes, s.msg_zoom_menu(), Action::ZoomDialog)
+                    .enabled(ctx.has_doc)
+                    .tip(s.msg_zoom_level_tip()),
             ],
         ]),
         stack(vec![

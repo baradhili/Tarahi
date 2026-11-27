@@ -44,6 +44,10 @@ pub(crate) struct TabCtx {
     pub size_pos_open: bool,
     pub dynamic_grid: bool,
     pub snap_dlg_open: bool,
+    /// #209 step 2: the document's AutoConnect toggle.
+    pub autoconnect: bool,
+    /// #209 step 7: Presentation Mode is on (the chrome is hidden).
+    pub chrome_hidden: bool,
     /// A shapesheet window is open for the selection.
     pub shapesheet_open: bool,
     /// #272: the current page's PageSheet window is open.
@@ -156,6 +160,15 @@ pub enum Action {
     ZoomOut,
     Zoom100,
     FitPage,
+    /// #209 step 7: Presentation Mode — hide the chrome, Esc restores.
+    PresentationMode,
+    /// #209 step 3: Visio's Page Width — zoom to the page's width.
+    FitPageWidth,
+    /// #209 step 3: the Zoom dialog (the status-bar % button and the
+    /// View ▸ Zoom… button).
+    ZoomDialog,
+    /// #209 step 3: a zoom percentage (0–800) from the Zoom dialog.
+    ZoomSet(u32),
     ZoomSelection,
     About,
     ToggleGrid,
@@ -166,6 +179,9 @@ pub enum Action {
     ToggleUnits,
     ToggleDynamicGrid,
     SnapGlue,
+    /// #209 step 2: the document's AutoConnect toggle (View ▸ Visual
+    /// Aids button and the status-bar Connect chip).
+    ToggleAutoConnect,
     PointerTool,
     ConnectorTool,
     /// #283: the Pan tool (Home ▸ Tools) — a plain drag moves the view.
@@ -367,6 +383,8 @@ pub enum Icon {
     /// #283: the Pan tool (MDI hand-back-right-outline, the hand
     /// Visio's pan reads as).
     Hand,
+    /// #209 step 7: Presentation Mode (MDI projector).
+    Presentation,
 }
 
 impl Icon {
@@ -437,6 +455,7 @@ impl Icon {
             Icon::OnlinePic => "onlinepic",
             Icon::Orientation => "orientation",
             Icon::Hand => "hand",
+            Icon::Presentation => "projector",
             Icon::Pointer => "pointer",
             Icon::TextBox => "textbox",
             Icon::NewPage => "newpage",
@@ -1566,7 +1585,8 @@ impl Icon {
             | Icon::DateTime
             | Icon::Title
             | Icon::Eye
-            | Icon::Lock => {
+            | Icon::Lock
+            | Icon::Presentation => {
                 p.rect_filled(r.shrink(6.0), 2.0, gray);
             }
         }

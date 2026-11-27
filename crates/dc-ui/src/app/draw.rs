@@ -199,6 +199,7 @@ impl App {
         self.backgrounds_window(&ctx);
         self.select_by_type_window(&ctx);
         self.snap_glue_window(&ctx);
+        self.zoom_window(&ctx);
         self.hyperlink_window(&ctx);
         self.fields_insert_window(&ctx);
         self.spell_window(&ctx);
@@ -239,19 +240,26 @@ impl App {
 
         // Shell order: top bands, bottom bands, side panels, canvas.
         let t = theme::shell_tokens(ui.visuals());
-        self.tab_strip(ui);
-        egui::Panel::top("ribbon_content")
-            .frame(
-                egui::Frame::new()
-                    .fill(t.ribbon_content)
-                    .inner_margin(egui::Margin::symmetric(4, 3)),
-            )
-            .show(ui, |ui| self.ribbon_content(ui));
-        // Visio: a hairline rule closes the ribbon off from the canvas.
-        egui::Panel::top("ribbon_rule")
-            .exact_size(1.0)
-            .frame(egui::Frame::new().fill(t.ribbon_edge))
-            .show(ui, |_| {});
+        // #209 step 7: Presentation Mode — the ribbon, tab strip, page
+        // tabs and docked panes hide; the status bar stays (its button
+        // and Esc restore). The canvas grows into the freed space and
+        // the fit-mode view re-fits (a content-size change re-fires it).
+        let chrome = !self.chrome_hidden;
+        if chrome {
+            self.tab_strip(ui);
+            egui::Panel::top("ribbon_content")
+                .frame(
+                    egui::Frame::new()
+                        .fill(t.ribbon_content)
+                        .inner_margin(egui::Margin::symmetric(4, 3)),
+                )
+                .show(ui, |ui| self.ribbon_content(ui));
+            // Visio: a hairline rule closes the ribbon off from the canvas.
+            egui::Panel::top("ribbon_rule")
+                .exact_size(1.0)
+                .frame(egui::Frame::new().fill(t.ribbon_edge))
+                .show(ui, |_| {});
+        }
         // #184: the ribbon panels have laid out — paint the armed
         // keytip veil + badges above them (no-op while disarmed).
         self.paint_keytips(&ctx);
@@ -262,13 +270,15 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(10, 3)),
             )
             .show(ui, |ui| self.status_bar(ui));
-        egui::Panel::bottom("page_tabs")
-            .frame(
-                egui::Frame::new()
-                    .fill(t.tabs_bg)
-                    .inner_margin(egui::Margin::same(2)),
-            )
-            .show(ui, |ui| self.page_tabs(ui));
+        if chrome {
+            egui::Panel::bottom("page_tabs")
+                .frame(
+                    egui::Frame::new()
+                        .fill(t.tabs_bg)
+                        .inner_margin(egui::Margin::same(2)),
+                )
+                .show(ui, |ui| self.page_tabs(ui));
+        }
         // The pane lists the document's masters plus every open
         // stencil (#63): it stays up once a stencil is open, even for
         // a master-less document — but it needs a document to render
@@ -277,7 +287,7 @@ impl App {
             .ed()
             .map(|ed| !ed.doc.masters.is_empty() || !self.stencils.is_empty())
             .unwrap_or(false);
-        if pane_wanted {
+        if chrome && pane_wanted {
             // #257 item 3: RTL mirrors the pane sides — Shapes on the
             // right, Format on the left (the observed Office RTL
             // behavior; the stable ids keep user sizing).
@@ -365,7 +375,7 @@ impl App {
                     });
                 });
         }
-        if self.format_pane_open && self.sel.is_some() {
+        if chrome && self.format_pane_open && self.sel.is_some() {
             if crate::i18n::rtl() {
                 egui::Panel::left("format_pane")
             } else {

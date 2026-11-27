@@ -93,6 +93,17 @@ fn shell_snapshot_view_tab() {
     run_shell("dc_ui_shell_view", app);
 }
 
+/// #209 step 7: Presentation Mode — ribbon, tab strip, page tabs and
+/// the docked panes hide; the status bar (with its restore button)
+/// stays and the fit-mode view re-fills the freed space.
+#[test]
+fn shell_snapshot_presentation_mode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = App::with_doc(&fixture(tmp.path()));
+    app.set_chrome_hidden_for_test(true);
+    run_shell("dc_ui_shell_presentation", app);
+}
+
 #[test]
 fn shell_snapshot_selected_shapesheet() {
     let tmp = tempfile::tempdir().unwrap();

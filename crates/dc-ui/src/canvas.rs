@@ -82,6 +82,23 @@ impl View {
         self.last_origin = origin;
     }
 
+    /// Zoom so the page's WIDTH fills the content area (Visio's
+    /// Page Width, #209 step 3): the width-derived zoom bucket-floors
+    /// like [`Self::apply_fit`], the page centers horizontally, and the
+    /// vertical position centers with the same margin clamp. Not fit
+    /// mode — the command is a zoom, not a mode, so a later manual
+    /// zoom or a window resize never re-fits.
+    pub fn apply_fit_width(&mut self, content: Vec2, origin: Vec2, page: &PageGeom) {
+        let zx = content.x / (page.w_in as f32 * 96.0);
+        self.zoom = ((zx * 384.0).floor() / 384.0).clamp(0.1, 8.0);
+        let pw = page.w_in as f32 * self.px_per_in();
+        let ph = page.h_in as f32 * self.px_per_in();
+        self.pan = origin
+            + Vec2::new((content.x - pw) / 2.0, (content.y - ph) / 2.0).max(Vec2::new(12.0, 12.0));
+        self.fit_mode = false;
+        self.fit_pending = false;
+    }
+
     /// Whether a newly laid-out content area should trigger a re-fit:
     /// only in fit mode, and only beyond sub-pixel layout jitter — a
     /// change in either the content SIZE or its ORIGIN (the RTL ruler
@@ -754,8 +771,11 @@ pub fn show(
     guides: &[GuideFx],       // #113: guide overlay, above ink
     jumps: &[JumpFx],         // #108: line-jump hops, above ink
     underlays: &[crate::layers::ShapeQuad], // #113: background pages, beneath ink
-    connector_tool: bool,     // #108: the Connector Tool is active
-    lasso_tool: bool,         // #110: the Lasso Select tool is active
+    connector_tool: bool, // #108: the Connector Tool is active
+    // #209 step 2: the document's AutoConnect toggle — off hides the
+    // selection's AutoConnect arrows entirely (Visio hides the tags).
+    autoconnect: bool,
+    lasso_tool: bool, // #110: the Lasso Select tool is active
     freeform_tool: bool,      // #132: the Freeform tool is active
     pan_tool: bool,           // #283: the Pan tool is active (hand cursor, drag pans)
     stencil_hover: bool,
@@ -941,18 +961,22 @@ pub fn show(
             ),
         )
     });
-    let autoc_arrows: Option<Vec<(Rect, (f64, f64))>> = sel_screen.map(|sr| {
-        let c = sr.center();
-        [
-            (Pos2::new(sr.right() + 9.0, c.y), (1.0, 0.0)),
-            (Pos2::new(sr.left() - 9.0, c.y), (-1.0, 0.0)),
-            (Pos2::new(c.x, sr.top() - 9.0), (0.0, 1.0)),
-            (Pos2::new(c.x, sr.bottom() + 9.0), (0.0, -1.0)),
-        ]
-        .into_iter()
-        .map(|(pos, dir)| (Rect::from_center_size(pos, Vec2::splat(18.0)), dir))
-        .collect()
-    });
+    let autoc_arrows: Option<Vec<(Rect, (f64, f64))>> = if autoconnect {
+        sel_screen.map(|sr| {
+            let c = sr.center();
+            [
+                (Pos2::new(sr.right() + 9.0, c.y), (1.0, 0.0)),
+                (Pos2::new(sr.left() - 9.0, c.y), (-1.0, 0.0)),
+                (Pos2::new(c.x, sr.top() - 9.0), (0.0, 1.0)),
+                (Pos2::new(c.x, sr.bottom() + 9.0), (0.0, -1.0)),
+            ]
+            .into_iter()
+            .map(|(pos, dir)| (Rect::from_center_size(pos, Vec2::splat(18.0)), dir))
+            .collect()
+        })
+    } else {
+        None
+    };
     let arrow_at = |pos: Pos2| -> Option<(f64, f64)> {
         autoc_arrows
             .as_ref()?

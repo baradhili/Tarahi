@@ -265,7 +265,7 @@ impl App {
                             let label = f.label();
                             ui.label(&label);
                             let current = self.size_pos_value(st, f);
-                            let shown = current.map(|v| fmt_field(v)).unwrap_or_default();
+                            let shown = current.map(fmt_field).unwrap_or_default();
                             let guard = self.size_pos_guard(st, f);
                             let buf = bufs.entry(f).or_insert_with(|| shown.clone());
                             // Not being edited: track the document (an

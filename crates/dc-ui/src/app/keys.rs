@@ -22,6 +22,11 @@ impl App {
         let mut save_as = false;
         let mut new_doc = false;
         let kb_owned = ctx.egui_wants_keyboard_input();
+        // An Esc that CLOSES something (dialog / presentation chrome)
+        // is consumed after this closure (see `esc_dialog`) so the one
+        // keypress cannot also reach the shape-text editor, whose own
+        // Esc abandons the edit.
+        let mut esc_dialog = false;
         ctx.input(|i| {
             let ctrl = i.modifiers.ctrl || i.modifiers.command;
             if ctrl && i.key_pressed(egui::Key::N) {
@@ -62,6 +67,13 @@ impl App {
                     self.delete_selection();
                 }
             }
+            // #209 step 7: Presentation Mode owns Esc outright — the
+            // chrome is hidden, so restoring it is the only Esc action
+            // (nothing else is reachable anyway).
+            if self.chrome_hidden && i.key_pressed(egui::Key::Escape) {
+                self.chrome_hidden = false;
+                esc_dialog = true;
+            } else
             // Esc closes the frontmost open dialog first (#110
             // tab-order audit: Visio dismisses a dialog on Esc);
             // only with none open do the tool/painter shortcuts run.
@@ -69,6 +81,9 @@ impl App {
             // itself in `page_context_menu`, and nothing behind it.
             if i.key_pressed(egui::Key::Escape) && !kb_owned && self.page_menu.is_none() {
                 let consumed = self.close_front_dialog();
+                if consumed {
+                    esc_dialog = true;
+                }
                 if !consumed {
                     if matches!(
                         self.tool,
@@ -174,6 +189,17 @@ impl App {
                 }
             }
         });
+        // The closing Esc consumes the event (egui's InputState::consume_key
+        // removes it from this frame's events) so the in-place shape-text
+        // editor — which reads Esc later in the frame and abandons the
+        // edit — never sees the same press. The no-dialog path stays
+        // unconsumed: Esc with nothing to close still reaches the editor
+        // and abandons the edit as before.
+        if esc_dialog {
+            ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            });
+        }
         if new_doc {
             self.do_new();
         }
@@ -396,6 +422,7 @@ impl App {
     pub(super) fn shell_surface_open(&self) -> bool {
         self.selby_open
             || self.snap_dlg_open
+            || self.zoom_dlg_open
             || self.pagesetup_open
             || self.options_open
             || self.copypic_open

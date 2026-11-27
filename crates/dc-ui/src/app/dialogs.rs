@@ -3,6 +3,16 @@
 
 use super::*;
 
+/// The Zoom dialog's chosen option (#209 step 3). `Preset` carries the
+/// percent — one of the eight standard values when a radio is checked,
+/// any custom percent when the field edited it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ZoomPick {
+    Preset(u32),
+    WholePage,
+    PageWidth,
+}
+
 impl App {
     /// The shape's Prop rows for the Shape Data dialog (#30):
     /// instance rows, then the master's (effective view); edits always
@@ -1644,6 +1654,103 @@ impl App {
                 self.status =
                     crate::i18n::strs().msg_action_deferred(format!("{:?}", row.menu), why.clone());
             }
+        }
+    }
+
+    /// The Zoom dialog (#209 step 3, Visio's View ▸ Zoom… and the
+    /// status-bar % button): radio presets, Whole page and Page width,
+    /// plus a custom percent field. OK applies through the same
+    /// dispatch the ribbon buttons use; the dialog opens with the
+    /// current zoom preselected (an off-preset value preselects as the
+    /// custom percent).
+    pub(super) fn zoom_window(&mut self, ctx: &egui::Context) {
+        if !self.zoom_dlg_open {
+            return;
+        }
+        let mut open = true;
+        let mut apply = false;
+        // The window's own `open` is borrowed for the title-bar X; the
+        // Cancel button reports through this flag instead (#209: the
+        // closure can't touch `open`).
+        let mut cancel = false;
+        const PRESETS: [u32; 8] = [400, 200, 150, 100, 75, 50, 25, 10];
+        egui::Window::new(crate::i18n::strs().msg_zoom())
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .default_width(220.0)
+            .show(ctx, |ui| {
+                // #257 item 3: the dialog pass mirrors the window.
+                ui.with_layout(dialog_dir(), |ui| {
+                    let mut pick = self.zoom_pick;
+                    for p in PRESETS {
+                        if ui
+                            .radio(pick == dialogs::ZoomPick::Preset(p), format!("{p}%"))
+                            .clicked()
+                        {
+                            pick = dialogs::ZoomPick::Preset(p);
+                        }
+                    }
+                    if ui
+                        .radio(
+                            pick == dialogs::ZoomPick::WholePage,
+                            crate::i18n::strs().msg_whole_page(),
+                        )
+                        .clicked()
+                    {
+                        pick = dialogs::ZoomPick::WholePage;
+                    }
+                    if ui
+                        .radio(
+                            pick == dialogs::ZoomPick::PageWidth,
+                            crate::i18n::strs().msg_page_width(),
+                        )
+                        .clicked()
+                    {
+                        pick = dialogs::ZoomPick::PageWidth;
+                    }
+                    ui.add_space(4.0);
+                    // The percent field doubles as the custom option:
+                    // editing it selects it (Visio's Percent box).
+                    let mut pct = match pick {
+                        dialogs::ZoomPick::Preset(v) => v,
+                        _ => 100,
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label(crate::i18n::strs().msg_zoom_percent());
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut pct)
+                                    .range(10..=800)
+                                    .suffix("%"),
+                            )
+                            .changed()
+                        {
+                            pick = dialogs::ZoomPick::Preset(pct);
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(crate::i18n::strs().msg_ok()).clicked() {
+                            apply = true;
+                        }
+                        if ui.button(crate::i18n::strs().msg_cancel()).clicked() {
+                            cancel = true;
+                        }
+                    });
+                    self.zoom_pick = pick;
+                });
+            });
+        if apply {
+            match self.zoom_pick {
+                dialogs::ZoomPick::Preset(p) => self.dispatch(Action::ZoomSet(p)),
+                dialogs::ZoomPick::WholePage => self.dispatch(Action::FitPage),
+                dialogs::ZoomPick::PageWidth => self.dispatch(Action::FitPageWidth),
+            }
+            self.zoom_dlg_open = false;
+        }
+        if cancel || !open {
+            self.zoom_dlg_open = false;
         }
     }
 }

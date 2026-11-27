@@ -34,6 +34,10 @@ pub struct SnapSettings {
     /// The dynamic grid aid (URS-1088) — alignment/spacing hints while
     /// dragging, independent of whether snapping itself is on.
     pub dynamic_grid: bool,
+    /// #209 step 2: AutoConnect — the status-bar Connect chip and the
+    /// View ribbon toggle gating #108's arrow auto-connect. Carried
+    /// through [`DocSnapGlue::autoconnect`] (corpus default on).
+    pub autoconnect: bool,
 }
 
 impl Default for SnapSettings {
@@ -65,6 +69,7 @@ impl SnapSettings {
             glue_shape_vertices: g & glue_bits::SHAPE_VERTICES != 0,
             glue_connection_points: g & glue_bits::CONNECTION_POINTS != 0,
             dynamic_grid: d.dynamic_grid,
+            autoconnect: d.autoconnect,
         }
     }
 
@@ -94,6 +99,7 @@ impl SnapSettings {
             snap,
             glue,
             dynamic_grid: self.dynamic_grid,
+            autoconnect: self.autoconnect,
         }
     }
 }

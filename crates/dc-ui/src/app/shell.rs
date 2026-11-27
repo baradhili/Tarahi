@@ -46,6 +46,29 @@ impl App {
                 self.view.fit_mode = false;
             }
             Action::FitPage => self.view.fit_pending = true,
+            // #209 step 7: Presentation Mode — hide the chrome; the
+            // backstage screen is chrome too, so it closes with it.
+            Action::PresentationMode => {
+                self.chrome_hidden = !self.chrome_hidden;
+                if self.chrome_hidden {
+                    self.backstage = false;
+                }
+            }
+            // #209 step 3: Page Width — the width fit is a zoom, not a
+            // mode (a later manual zoom or a resize never re-fits).
+            Action::FitPageWidth => self.apply_page_width_fit(),
+            // The Zoom dialog opens with the current zoom preselected.
+            Action::ZoomDialog => {
+                self.zoom_dlg_open = !self.zoom_dlg_open;
+                if self.zoom_dlg_open {
+                    self.zoom_pick =
+                        dialogs::ZoomPick::Preset((self.view.zoom * 100.0).round() as u32);
+                }
+            }
+            Action::ZoomSet(pct) => {
+                self.view.zoom = (pct as f32 / 100.0).clamp(0.1, 8.0);
+                self.view.fit_mode = false;
+            }
             Action::About => self.about_open = !self.about_open,
             // #237: zoom-to-selection defers to the canvas frame — it
             // needs the content area + selection rects the frame owns.
@@ -59,6 +82,12 @@ impl App {
                 self.apply_snap_settings();
             }
             Action::SnapGlue => self.snap_dlg_open = !self.snap_dlg_open,
+            // #209 step 2: AutoConnect is document state like Snap &
+            // Glue — the toggle writes through, never into undo history.
+            Action::ToggleAutoConnect => {
+                self.snap.autoconnect = !self.snap.autoconnect;
+                self.apply_snap_settings();
+            }
             Action::SpellCheck => self.start_spellcheck(),
             Action::PointerTool => {
                 self.tool = Tool::Pointer;
@@ -232,6 +261,18 @@ impl App {
                 }
             }
         }
+    }
+
+    /// #209 step 3: Visio's Page Width — zoom to the page's width
+    /// against the current content area (the last canvas frame's
+    /// layout; a no-op before the first frame or without a document).
+    pub(super) fn apply_page_width_fit(&mut self) {
+        if self.ed.is_none() || self.canvas_rect.width() <= 0.0 {
+            return;
+        }
+        let (origin, content) = canvas::content_area(self.canvas_rect, self.view.show_rulers);
+        let geom = self.page_geom();
+        self.view.apply_fit_width(content, origin.to_vec2(), &geom);
     }
 
     // -- shell panels -----------------------------------------------------
@@ -626,6 +667,8 @@ impl App {
             size_pos_open: self.size_pos_open,
             dynamic_grid: self.snap.dynamic_grid,
             snap_dlg_open: self.snap_dlg_open,
+            autoconnect: self.snap.autoconnect,
+            chrome_hidden: self.chrome_hidden,
             shapesheet_open: self.sel.is_some_and(|(_, sid)| {
                 self.shapesheets
                     .contains(&crate::shapesheet::SheetTarget::Shape(sid))
@@ -885,16 +928,49 @@ impl App {
                 left = "no document".into();
             }
             ui.label(egui::RichText::new(left).color(t.status_text).size(11.0));
+            // #209 step 5 (spec §3.2): the proofing language's native
+            // name, read-only — dictionary vocabulary, never translated
+            // (dc's display_name rule), and NOT the UI language.
+            let lang = crate::spellcheck::lang_display_name(&self.spell.proofing_stem());
+            ui.label(egui::RichText::new(lang).color(t.status_text).size(11.0));
+            if self.ed.is_some() {
+                // #209 step 6 (spec §3.3): the macro-record chip in its
+                // resting state — disabled, the spec's tooltip. No macro
+                // engine exists yet (M7); the active-recording visual
+                // waits for that feature's own issue.
+                status_chip(
+                    ui,
+                    crate::ribbon::Icon::Macro,
+                    crate::i18n::strs().msg_macro_record_tip(),
+                    false,
+                    false,
+                );
+            }
             ui.with_layout(rev, |ui| {
                 // Visio status bar right end: − [zoom slider] + N%
                 if self.ed.is_some() {
+                    // #209 step 4: the Fit Page chip (spec §3.5.5) —
+                    // rightmost in the zoom cluster, dispatching the
+                    // existing Whole Page fit.
+                    if status_chip(
+                        ui,
+                        crate::ribbon::Icon::Fit,
+                        crate::i18n::strs().msg_fit_page_window_tip(),
+                        self.view.fit_mode,
+                        true,
+                    ) {
+                        self.dispatch(Action::FitPage);
+                    }
                     let pct = (self.view.zoom * 100.0).round() as u32;
-                    ui.label(
-                        egui::RichText::new(format!("{pct}%"))
-                            .color(t.status_text)
-                            .size(11.0)
-                            .strong(),
-                    );
+                    // #209 step 3: the % is a button opening the Zoom
+                    // dialog (Visio's status-bar zoom level).
+                    if ui
+                        .button(format!("{pct}%"))
+                        .on_hover_text(crate::i18n::strs().msg_zoom_level_tip())
+                        .clicked()
+                    {
+                        self.dispatch(Action::ZoomDialog);
+                    }
                     let mut z = self.view.zoom;
                     let slider = egui::Slider::new(&mut z, 0.1..=8.0).show_value(false);
                     let sresp = ui
@@ -918,6 +994,18 @@ impl App {
                     {
                         self.dispatch(Action::ZoomIn);
                     }
+                    // #209 step 7 (spec §3.4): Presentation Mode —
+                    // leftmost of the zoom cluster; clicking again
+                    // (or Esc) restores the chrome.
+                    if status_chip(
+                        ui,
+                        crate::ribbon::Icon::Presentation,
+                        crate::i18n::strs().msg_presentation_mode(),
+                        self.chrome_hidden,
+                        true,
+                    ) {
+                        self.dispatch(Action::PresentationMode);
+                    }
                     ui.separator();
                 }
                 if let Some((x, y)) = self.mouse_page {
@@ -932,4 +1020,34 @@ impl App {
             });
         });
     }
+}
+
+/// A status-bar toggle chip (#209): the MDI icon in a compact hit box,
+/// Visio's chip treatment — a selected fill when on, the hover fill
+/// otherwise — and one tooltip carrying the accessible name. A
+/// disabled chip (the macro placeholder) paints the muted icon and
+/// never clicks. Returns whether it was clicked.
+fn status_chip(
+    ui: &mut Ui,
+    icon: crate::ribbon::Icon,
+    tip: String,
+    selected: bool,
+    enabled: bool,
+) -> bool {
+    let t = theme::shell_tokens(ui.visuals());
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(20.0, 16.0), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, &tip));
+    let resp = resp.on_hover_text(tip);
+    if enabled && (selected || resp.hovered()) {
+        let (fill, edge) = if selected {
+            (t.ribbon_selected, t.ribbon_selected_edge)
+        } else {
+            (t.ribbon_hover, t.ribbon_hover_edge)
+        };
+        ui.painter().rect_filled(r, 2.0, fill);
+        ui.painter()
+            .rect_stroke(r, 2.0, Stroke::new(1.0, edge), egui::StrokeKind::Middle);
+    }
+    icon.paint(ui, r.shrink(2.0), enabled);
+    enabled && resp.clicked()
 }

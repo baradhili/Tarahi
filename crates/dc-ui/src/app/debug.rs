@@ -860,6 +860,12 @@ impl App {
         self.about_open
     }
 
+    /// #209: whether Presentation Mode (the hidden chrome) is on.
+    #[doc(hidden)]
+    pub fn debug_chrome_hidden_for_test(&self) -> bool {
+        self.chrome_hidden
+    }
+
     /// #242: a pointer click at the screen center, for the splash-skip
     /// test (the splash reads raw input, not widgets).
     #[doc(hidden)]

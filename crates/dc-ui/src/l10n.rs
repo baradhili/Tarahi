@@ -443,14 +443,14 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "autoconnect-arrows-the-108-remai",
+        message: "autoconnect-needs-a-2d-shape",
         attribute: None,
         vars: &[],
         bool_vars: &[],
         elements: &[],
     },
     MessageContract {
-        message: "autoconnect-needs-a-2d-shape",
+        message: "autoconnect-tip",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -2599,7 +2599,14 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "fit-the-page-width-planned",
+        message: "fit-page-window-tip",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "fit-the-page-width-in-the-window",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -3489,6 +3496,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "long-dash",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "macro-record-tip",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -4539,13 +4553,6 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "presentation-mode",
-        attribute: None,
-        vars: &[],
-        bool_vars: &[],
-        elements: &[],
-    },
-    MessageContract {
-        message: "presentation-mode-planned",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -7121,13 +7128,6 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "zoom-dialog-planned",
-        attribute: None,
-        vars: &[],
-        bool_vars: &[],
-        elements: &[],
-    },
-    MessageContract {
         message: "zoom-in",
         attribute: None,
         vars: &[],
@@ -7136,6 +7136,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "zoom-in-tip",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "zoom-level-tip",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -7157,6 +7164,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "zoom-out-tip",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "zoom-percent",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -7268,13 +7282,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..50596,
-            Self::En => 50596..99413,
-            Self::Es => 99413..153141,
-            Self::Fa => 153141..217027,
-            Self::Ja => 217027..271136,
-            Self::Ko => 271136..321005,
-            Self::ZhHans => 321005..364792,
+            Self::De => 0..50757,
+            Self::En => 50757..99707,
+            Self::Es => 99707..153615,
+            Self::Fa => 153615..217738,
+            Self::Ja => 217738..272109,
+            Self::Ko => 272109..322191,
+            Self::ZhHans => 322191..366120,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -7553,13 +7567,11 @@ impl L10nLanguage {
     pub fn msg_autoconnect(&self) -> String {
         self.0.msg("autoconnect", None).unwrap()
     }
-    pub fn msg_autoconnect_arrows_the_108_remai(&self) -> String {
-        self.0
-            .msg("autoconnect-arrows-the-108-remai", None)
-            .unwrap()
-    }
     pub fn msg_autoconnect_needs_a_2d_shape(&self) -> String {
         self.0.msg("autoconnect-needs-a-2d-shape", None).unwrap()
+    }
+    pub fn msg_autoconnect_tip(&self) -> String {
+        self.0.msg("autoconnect-tip", None).unwrap()
     }
     pub fn msg_autocorrect_options(&self) -> String {
         self.0.msg("autocorrect-options", None).unwrap()
@@ -8708,8 +8720,13 @@ impl L10nLanguage {
     pub fn msg_first_page(&self) -> String {
         self.0.msg("first-page", None).unwrap()
     }
-    pub fn msg_fit_the_page_width_planned(&self) -> String {
-        self.0.msg("fit-the-page-width-planned", None).unwrap()
+    pub fn msg_fit_page_window_tip(&self) -> String {
+        self.0.msg("fit-page-window-tip", None).unwrap()
+    }
+    pub fn msg_fit_the_page_width_in_the_window(&self) -> String {
+        self.0
+            .msg("fit-the-page-width-in-the-window", None)
+            .unwrap()
     }
     pub fn msg_fit_the_whole_page_in_the_window(&self) -> String {
         self.0
@@ -9199,6 +9216,9 @@ impl L10nLanguage {
     }
     pub fn msg_long_dash(&self) -> String {
         self.0.msg("long-dash", None).unwrap()
+    }
+    pub fn msg_macro_record_tip(&self) -> String {
+        self.0.msg("macro-record-tip", None).unwrap()
     }
     pub fn msg_macro_security(&self) -> String {
         self.0.msg("macro-security", None).unwrap()
@@ -9827,9 +9847,6 @@ impl L10nLanguage {
     }
     pub fn msg_presentation_mode(&self) -> String {
         self.0.msg("presentation-mode", None).unwrap()
-    }
-    pub fn msg_presentation_mode_planned(&self) -> String {
-        self.0.msg("presentation-mode-planned", None).unwrap()
     }
     pub fn msg_preset_sizes(&self) -> String {
         self.0.msg("preset-sizes", None).unwrap()
@@ -11225,14 +11242,14 @@ impl L10nLanguage {
     pub fn msg_zoom(&self) -> String {
         self.0.msg("zoom", None).unwrap()
     }
-    pub fn msg_zoom_dialog_planned(&self) -> String {
-        self.0.msg("zoom-dialog-planned", None).unwrap()
-    }
     pub fn msg_zoom_in(&self) -> String {
         self.0.msg("zoom-in", None).unwrap()
     }
     pub fn msg_zoom_in_tip(&self) -> String {
         self.0.msg("zoom-in-tip", None).unwrap()
+    }
+    pub fn msg_zoom_level_tip(&self) -> String {
+        self.0.msg("zoom-level-tip", None).unwrap()
     }
     pub fn msg_zoom_menu(&self) -> String {
         self.0.msg("zoom-menu", None).unwrap()
@@ -11242,6 +11259,9 @@ impl L10nLanguage {
     }
     pub fn msg_zoom_out_tip(&self) -> String {
         self.0.msg("zoom-out-tip", None).unwrap()
+    }
+    pub fn msg_zoom_percent(&self) -> String {
+        self.0.msg("zoom-percent", None).unwrap()
     }
     pub fn msg_zoom_to_selection_shift_z(&self) -> String {
         self.0.msg("zoom-to-selection-shift-z", None).unwrap()

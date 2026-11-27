@@ -259,6 +259,15 @@ pub struct App {
     snap: crate::snap::SnapSettings,
     /// The Snap & Glue dialog is open (View ▸ Visual Aids, #109).
     snap_dlg_open: bool,
+    /// The Zoom dialog is open (#209 step 3 — the status-bar % button
+    /// and the View ▸ Zoom… button).
+    zoom_dlg_open: bool,
+    /// The Zoom dialog's chosen option (#209 step 3); the dialog opens
+    /// with the current zoom preselected.
+    zoom_pick: dialogs::ZoomPick,
+    /// #209 step 7: Presentation Mode — ribbon, tab strip, panes and
+    /// backstage chrome hidden; Esc or the status-bar button restores.
+    chrome_hidden: bool,
     /// #246: the Language dialog is open.
     /// #218 review: the Jump-size drag's draft — a DragValue commit
     /// per frame flooded history; the draft edits locally and commits
