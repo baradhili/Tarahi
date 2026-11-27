@@ -251,6 +251,11 @@ pub struct App {
     /// #204: the keyboard-selected result row — hover moves it too,
     /// Office-style.
     tellme_sel: usize,
+    /// #204 (CodeRabbit PR review): an Enter captured by the input
+    /// path, resolved AFTER the query field applies this frame's
+    /// typing (see `tab_strip`) so a replace-text-and-Enter frame
+    /// runs the new query's hit, not the stale one.
+    tellme_enter: bool,
     /// #192 spec: the open ShapeSheet windows, one per target (each
     /// its own child window; a target appears at most once). #272: a
     /// target is a shape, a page's PageSheet or the DocumentSheet.

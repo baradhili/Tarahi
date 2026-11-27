@@ -181,6 +181,68 @@ enum MatchRank {
 /// Result-row cap (#204 step 2: "cap ~8").
 const RESULT_CAP: usize = 8;
 
+/// The query field's stable egui id (#204 step 4): the shell lays the
+/// field out in the Tell Me box; Alt+Q and the Q keytip request focus
+/// on it from the input path.
+pub fn field_id() -> egui::Id {
+    egui::Id::unique("tellme-field")
+}
+
+/// One panel row (#204 step 6): a search result, or an idle "Try"
+/// suggestion shown while the query is empty (spec 3.1 — clicking /
+/// Enter populates the query, a drill-down).
+pub enum PanelRow {
+    Result(CommandEntry),
+    Try {
+        /// The localized intent text the row shows.
+        label: String,
+        /// The ENGLISH drill string that populates the query — it
+        /// matches through the English anchor under any display
+        /// language.
+        query: &'static str,
+    },
+}
+
+/// The panel's rows for a query (#204 steps 2–6): the live search
+/// results while typing; the idle Try list while the query is empty.
+pub fn rows(ctx: &TabCtx, query: &str) -> Vec<PanelRow> {
+    if query.trim().is_empty() {
+        return try_rows();
+    }
+    search(&registry(ctx), query)
+        .into_iter()
+        .map(|e| PanelRow::Result(e.clone()))
+        .collect()
+}
+
+/// The idle "Try" list (#204 step 6, spec 3.1): curated from REAL
+/// delivered commands only — Visio's example intents (a theme, CAD
+/// insert, link-shapes-to-data) map to areas we don't ship (the
+/// Themes gallery is still a disabled stub; CAD/data-link are
+/// undelivered). Each intent drills into a query that finds its
+/// command.
+fn try_rows() -> Vec<PanelRow> {
+    let s = crate::i18n::strs();
+    vec![
+        PanelRow::Try {
+            label: s.msg_try_page_orientation(),
+            query: "orientation",
+        },
+        PanelRow::Try {
+            label: s.msg_try_grid(),
+            query: "grid",
+        },
+        PanelRow::Try {
+            label: s.msg_try_whole_page(),
+            query: "whole page zoom",
+        },
+        PanelRow::Try {
+            label: s.msg_try_connectors(),
+            query: "connector",
+        },
+    ]
+}
+
 /// Search the registry (#204 step 2). Every whitespace token of the
 /// query must match — case-insensitively — somewhere in the entry's
 /// searchable text: the display-language label, the English anchor,

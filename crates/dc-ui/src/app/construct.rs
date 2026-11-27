@@ -155,6 +155,7 @@ impl App {
             tellme_open: false,
             tellme_query: String::new(),
             tellme_sel: 0,
+            tellme_enter: false,
             snap: crate::snap::SnapSettings::default(),
             snap_dlg_open: false,
             zoom_dlg_open: false,
@@ -313,6 +314,18 @@ impl App {
     #[doc(hidden)]
     pub fn debug_tellme_open(&self) -> bool {
         self.tellme_open
+    }
+    /// #204 tests: the View ▸ Grid toggle (a Tell Me Enter's
+    /// observable effect).
+    #[doc(hidden)]
+    pub fn debug_show_grid(&self) -> bool {
+        self.view.show_grid
+    }
+    /// #204 tests: the Dynamic Grid toggle (the arrow-walked second
+    /// "grid" row's effect).
+    #[doc(hidden)]
+    pub fn debug_dynamic_grid(&self) -> bool {
+        self.snap.dynamic_grid
     }
     /// #192 4a tests: File > Open ADDS a document — parse the file
     /// and activate it, stashing the current one (the real load()

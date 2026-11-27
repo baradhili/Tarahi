@@ -485,16 +485,7 @@ impl App {
                     ui.with_layout(tellme_dir, |ui| {
                         ui.add_space(6.0);
                         let (pr, presp) =
-                            ui.allocate_exact_size(Vec2::new(196.0, 20.0), Sense::click());
-                        // Painted placeholder, so name the control for
-                        // screen readers (GitHub #56).
-                        presp.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::Role::Button,
-                                true,
-                                crate::i18n::strs().msg_tell_me(),
-                            )
-                        });
+                            ui.allocate_exact_size(Vec2::new(196.0, 20.0), Sense::hover());
                         let hot = presp.hovered();
                         ui.painter().rect_filled(pr, 2, tk.tellme_bg);
                         ui.painter().rect_stroke(
@@ -511,141 +502,6 @@ impl App {
                             ),
                             true,
                         );
-                        ui.painter().text(
-                            Pos2::new(pr.left() + 24.0, pr.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            crate::i18n::strs().msg_tell_me_what_you_want_to_do(),
-                            egui::FontId::proportional(11.0),
-                            tk.hint_text,
-                        );
-                        let presp = presp.on_hover_text(
-                            crate::i18n::strs().msg_tell_me_planned_for_a_later_mile(),
-                        );
-                        // #204 step 3: clicking the box opens the
-                        // results panel (spec 3.1 — the dropdown opens
-                        // on interaction; the real query field that
-                        // feeds it lands with step 4).
-                        if presp.clicked() {
-                            self.tellme_open = true;
-                            self.tellme_sel = 0;
-                        }
-                        // #184: Tell Me badges Q (Office's Alt+Q).
-                        self.keytips.badges.push(crate::keytips::Badge {
-                            rect: pr,
-                            key: "Q".into(),
-                            hit: crate::keytips::Hit::TellMe,
-                            anchor: None,
-                        });
-                        // #204 step 3: the results panel — a menu
-                        // popup anchored under the box, rebuilt per
-                        // frame from the same snapshot the ribbon
-                        // renders from. Rows carry the button's own
-                        // icon + label in the display language;
-                        // disabled commands render faded and never
-                        // dispatch. The keyboard machine (arrows /
-                        // Enter / Esc) lives in `handle_shortcuts`;
-                        // the row layout mirrors under RTL like the
-                        // box's own inner layout does.
-                        if self.tellme_open {
-                            let results = self.tellme_results();
-                            self.tellme_sel = self.tellme_sel.min(results.len().saturating_sub(1));
-                            let sel = self.tellme_sel;
-                            let rtl = crate::i18n::rtl();
-                            let mut run: Option<Action> = None;
-                            let mut close = false;
-                            egui::Popup::menu(&presp).show(|ui| {
-                                ui.set_min_width(240.0);
-                                let t = theme::menu_tokens(ui.visuals());
-                                for (i, e) in results.iter().enumerate() {
-                                    let (r, resp) = ui.allocate_exact_size(
-                                        Vec2::new(ui.available_width(), 22.0),
-                                        Sense::click(),
-                                    );
-                                    // Painted galley rows — name each
-                                    // for screen readers (#56; the
-                                    // issue's step-9 a11y walk).
-                                    resp.widget_info(|| {
-                                        egui::WidgetInfo::labeled(
-                                            egui::Role::Button,
-                                            e.enabled,
-                                            e.label.as_str(),
-                                        )
-                                    });
-                                    if resp.hovered() {
-                                        self.tellme_sel = i;
-                                    }
-                                    if i == sel || resp.hovered() {
-                                        ui.painter().rect_filled(r, 2.0, t.hover_fill);
-                                    }
-                                    // The mirrored row: icon at the
-                                    // reading start, shortcut hint at
-                                    // the reading end.
-                                    let icon_r = Rect::from_min_size(
-                                        if rtl {
-                                            r.right_top() + Vec2::new(-20.0, 2.0)
-                                        } else {
-                                            r.left_top() + Vec2::new(2.0, 2.0)
-                                        },
-                                        Vec2::splat(18.0),
-                                    );
-                                    e.icon.paint(ui, icon_r, e.enabled);
-                                    let (tx, ta) = if rtl {
-                                        (
-                                            Pos2::new(icon_r.left() - 4.0, r.center().y),
-                                            egui::Align2::RIGHT_CENTER,
-                                        )
-                                    } else {
-                                        (
-                                            Pos2::new(icon_r.right() + 4.0, r.center().y),
-                                            egui::Align2::LEFT_CENTER,
-                                        )
-                                    };
-                                    ui.painter().text(
-                                        tx,
-                                        ta,
-                                        &e.label,
-                                        egui::FontId::proportional(11.5),
-                                        if e.enabled {
-                                            t.label
-                                        } else {
-                                            t.label_disabled
-                                        },
-                                    );
-                                    if let Some(sc) = e.shortcut {
-                                        let (hx, ha) = if rtl {
-                                            (
-                                                Pos2::new(r.left() + 4.0, r.center().y),
-                                                egui::Align2::LEFT_CENTER,
-                                            )
-                                        } else {
-                                            (
-                                                Pos2::new(r.right() - 4.0, r.center().y),
-                                                egui::Align2::RIGHT_CENTER,
-                                            )
-                                        };
-                                        ui.painter().text(
-                                            hx,
-                                            ha,
-                                            sc,
-                                            egui::FontId::proportional(10.0),
-                                            t.hint,
-                                        );
-                                    }
-                                    if resp.clicked() && e.enabled {
-                                        run = Some(e.action);
-                                        close = true;
-                                    }
-                                }
-                            });
-                            if close {
-                                self.tellme_open = false;
-                                self.tellme_query.clear();
-                                self.tellme_sel = 0;
-                            }
-                            if let Some(a) = run {
-                                self.dispatch(a);
-                            }
-                        }
                         // The QAT cluster lands LEFT of Tell Me (this is
                         // a right-to-left layout): Save/Undo/Redo as
                         // window-level document controls on the menu
@@ -691,6 +547,340 @@ impl App {
                             self,
                             4,
                         );
+                        // #204 step 4: a REAL query field in the same
+                        // chrome — typing feeds the live search,
+                        // gaining focus opens the panel, and Alt+Q /
+                        // the Q keytip land here from the input path.
+                        // The placeholder stays PAINTED (not the
+                        // TextEdit's own hint): egui's hint-text
+                        // rendering varies per OS at the anti-alias
+                        // level, and the exact-match i18n goldens
+                        // would not survive it (the macOS CI round of
+                        // PR #409); the painter galley is the
+                        // deterministic path the old box used.
+                        let field_r = Rect::from_min_max(
+                            Pos2::new(pr.left() + 22.0, pr.top()),
+                            Pos2::new(pr.right() - 4.0, pr.bottom()),
+                        );
+                        let editor = egui::TextEdit::singleline(&mut self.tellme_query)
+                            .id(crate::tellme::field_id())
+                            .frame(egui::Frame::NONE)
+                            .font(egui::FontId::proportional(11.0))
+                            .desired_width(field_r.width());
+                        // `put` advances the mirrored layout's cursor
+                        // past the field rect — the field therefore
+                        // lives at the END of this closure, after the
+                        // QAT, so that advance has nothing left to
+                        // crowd (the QAT shift it caused was caught by
+                        // the macOS CI golden round of PR #409).
+                        let fresp = ui.put(field_r, editor);
+                        if self.tellme_query.is_empty() {
+                            ui.painter().text(
+                                Pos2::new(pr.left() + 24.0, pr.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                crate::i18n::strs().msg_tell_me_what_you_want_to_do(),
+                                egui::FontId::proportional(11.0),
+                                tk.hint_text,
+                            );
+                        }
+                        // Name the field for screen readers — a real
+                        // TextEdit keeps its own role; the label keeps
+                        // the a11y lookups (#56) keying on it.
+                        fresp.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::Role::TextInput,
+                                true,
+                                crate::i18n::strs().msg_tell_me(),
+                            )
+                        });
+                        let fresp =
+                            fresp.on_hover_text(crate::i18n::strs().msg_tell_me_tip());
+                        if fresp.gained_focus() {
+                            self.tellme_open = true;
+                            self.tellme_sel = 0;
+                        }
+                        // #204 (CodeRabbit PR review): an Enter seen by
+                        // the input path is CAPTURED there (before this
+                        // field updates the query) and resolved HERE,
+                        // against the query this frame's typing just
+                        // produced — replace-text-and-Enter in one
+                        // frame must run the NEW query's top hit, not
+                        // the stale one.
+                        if self.tellme_enter {
+                            self.tellme_enter = false;
+                            let rows = self.tellme_rows();
+                            self.tellme_sel = self.tellme_sel.min(rows.len().saturating_sub(1));
+                            if let Some(row) = rows.get(self.tellme_sel) {
+                                match row {
+                                    crate::tellme::PanelRow::Result(e) if e.enabled => {
+                                        self.tellme_open = false;
+                                        self.tellme_query.clear();
+                                        self.tellme_sel = 0;
+                                        ui.ctx().memory_mut(|m| {
+                                            m.surrender_focus(crate::tellme::field_id())
+                                        });
+                                        self.dispatch(e.action);
+                                    }
+                                    crate::tellme::PanelRow::Try { query, .. } => {
+                                        self.tellme_query = query.to_string();
+                                        self.tellme_sel = 0;
+                                    }
+                                    // A faded row does nothing (the
+                                    // acceptance rule).
+                                    crate::tellme::PanelRow::Result(_) => {}
+                                }
+                            }
+                        }
+                        // #184: Tell Me badges Q (Office's Alt+Q).
+                        self.keytips.badges.push(crate::keytips::Badge {
+                            rect: pr,
+                            key: "Q".into(),
+                            hit: crate::keytips::Hit::TellMe,
+                            anchor: None,
+                        });
+                        // #204 step 3: the results panel — a menu
+                        // popup anchored under the box, rebuilt per
+                        // frame from the same snapshot the ribbon
+                        // renders from. Rows carry the button's own
+                        // icon + label in the display language;
+                        // disabled commands render faded and never
+                        // dispatch. The keyboard machine (arrows /
+                        // Enter / Esc) lives in `handle_shortcuts`;
+                        // the row layout mirrors under RTL like the
+                        // box's own inner layout does.
+                        if self.tellme_open {
+                            let rows = self.tellme_rows();
+                            let idle = self.tellme_query.trim().is_empty();
+                            self.tellme_sel = self.tellme_sel.min(rows.len().saturating_sub(1));
+                            let sel = self.tellme_sel;
+                            let rtl = crate::i18n::rtl();
+                            let mut run: Option<Action> = None;
+                            let mut drill: Option<&'static str> = None;
+                            let mut close = false;
+                            let mut hover: Option<usize> = None;
+                            // A click on a faded row keeps the session
+                            // editable (CodeRabbit PR review): egui
+                            // surrenders the field's focus on pointer
+                            // clicks elsewhere, so an explicit
+                            // re-request follows the no-dispatch.
+                            let mut refocus = false;
+                            // `open_bool` drives egui's popup memory
+                            // from OUR flag (the field, not a button,
+                            // anchors the panel) and writes egui's
+                            // outside-click close back into it. The
+                            // close behavior is OUTSIDE-clicks only:
+                            // a menu's default closes on ANY click,
+                            // which would kill the Try drill-down
+                            // (result rows close themselves on run).
+                            let mut open = self.tellme_open;
+                            egui::Popup::menu(&fresp)
+                                .open_bool(&mut open)
+                                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                .show(|ui| {
+                                ui.set_min_width(240.0);
+                                let t = theme::menu_tokens(ui.visuals());
+                                if idle {
+                                    // The idle category header (spec
+                                    // 3.1's styled "Try" header) — a
+                                    // painted label, so name it (#56).
+                                    let (hr, hresp) = ui.allocate_exact_size(
+                                        Vec2::new(ui.available_width(), 18.0),
+                                        Sense::hover(),
+                                    );
+                                    hresp.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::Role::Label,
+                                            true,
+                                            crate::i18n::strs().msg_try_header(),
+                                        )
+                                    });
+                                    let hx = if rtl {
+                                        hr.left() + 4.0
+                                    } else {
+                                        hr.right() - 4.0
+                                    };
+                                    ui.painter().text(
+                                        Pos2::new(hx, hr.center().y),
+                                        if rtl {
+                                            egui::Align2::LEFT_CENTER
+                                        } else {
+                                            egui::Align2::RIGHT_CENTER
+                                        },
+                                        crate::i18n::strs().msg_try_header(),
+                                        egui::FontId::proportional(10.0),
+                                        t.hint,
+                                    );
+                                }
+                                for (i, row) in rows.iter().enumerate() {
+                                    let (r, resp) = ui.allocate_exact_size(
+                                        Vec2::new(ui.available_width(), 22.0),
+                                        Sense::click(),
+                                    );
+                                    // Painted galley rows — name each
+                                    // for screen readers (#56; the
+                                    // issue's step-9 a11y walk).
+                                    resp.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::Role::Button,
+                                            matches!(row, crate::tellme::PanelRow::Try { .. })
+                                                || matches!(row, crate::tellme::PanelRow::Result(e) if e.enabled),
+                                            row_label(row),
+                                        )
+                                    });
+                                    if resp.hovered() {
+                                        hover = Some(i);
+                                    }
+                                    let selected = i == sel || resp.hovered();
+                                    if selected {
+                                        ui.painter().rect_filled(r, 2.0, t.hover_fill);
+                                    }
+                                    let label_color = match row {
+                                        crate::tellme::PanelRow::Result(e) if e.enabled => t.label,
+                                        crate::tellme::PanelRow::Result(_) => t.label_disabled,
+                                        // Try rows are plain prompts —
+                                        // always actionable.
+                                        crate::tellme::PanelRow::Try { .. } => t.label,
+                                    };
+                                    match row {
+                                        crate::tellme::PanelRow::Result(e) => {
+                                            // The mirrored row: icon at
+                                            // the reading start,
+                                            // shortcut hint at the
+                                            // reading end.
+                                            let icon_r = Rect::from_min_size(
+                                                if rtl {
+                                                    r.right_top() + Vec2::new(-20.0, 2.0)
+                                                } else {
+                                                    r.left_top() + Vec2::new(2.0, 2.0)
+                                                },
+                                                Vec2::splat(18.0),
+                                            );
+                                            e.icon.paint(ui, icon_r, e.enabled);
+                                            let (tx, ta) = if rtl {
+                                                (
+                                                    Pos2::new(icon_r.left() - 4.0, r.center().y),
+                                                    egui::Align2::RIGHT_CENTER,
+                                                )
+                                            } else {
+                                                (
+                                                    Pos2::new(icon_r.right() + 4.0, r.center().y),
+                                                    egui::Align2::LEFT_CENTER,
+                                                )
+                                            };
+                                            ui.painter().text(
+                                                tx,
+                                                ta,
+                                                &e.label,
+                                                egui::FontId::proportional(11.5),
+                                                label_color,
+                                            );
+                                            if let Some(sc) = e.shortcut {
+                                                let (hx, ha) = if rtl {
+                                                    (
+                                                        Pos2::new(r.left() + 4.0, r.center().y),
+                                                        egui::Align2::LEFT_CENTER,
+                                                    )
+                                                } else {
+                                                    (
+                                                        Pos2::new(r.right() - 4.0, r.center().y),
+                                                        egui::Align2::RIGHT_CENTER,
+                                                    )
+                                                };
+                                                ui.painter().text(
+                                                    hx,
+                                                    ha,
+                                                    sc,
+                                                    egui::FontId::proportional(10.0),
+                                                    t.hint,
+                                                );
+                                            }
+                                            if resp.clicked() && e.enabled {
+                                                run = Some(e.action);
+                                                close = true;
+                                            } else if resp.clicked() {
+                                                refocus = true;
+                                            }
+                                        }
+                                        crate::tellme::PanelRow::Try { label, query } => {
+                                            // A plain prompt row: text at
+                                            // the reading start, no icon
+                                            // (Office's Try items).
+                                            let (tx, ta) = if rtl {
+                                                (
+                                                    Pos2::new(r.right() - 6.0, r.center().y),
+                                                    egui::Align2::RIGHT_CENTER,
+                                                )
+                                            } else {
+                                                (
+                                                    Pos2::new(r.left() + 6.0, r.center().y),
+                                                    egui::Align2::LEFT_CENTER,
+                                                )
+                                            };
+                                            ui.painter().text(
+                                                tx,
+                                                ta,
+                                                label,
+                                                egui::FontId::proportional(11.5),
+                                                label_color,
+                                            );
+                                            if resp.clicked() {
+                                                drill = Some(query);
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                            // A caret-positioning click in the query is
+                            // NOT a dismissal (CodeRabbit review): the
+                            // field is part of the panel, so a click
+                            // egui counted as "outside the popup body"
+                            // keeps it open — only clicks outside BOTH
+                            // close it.
+                            if !open && fresp.clicked() {
+                                open = true;
+                            }
+                            self.tellme_open = open;
+                            if let Some(i) = hover {
+                                self.tellme_sel = i;
+                            }
+                            if let Some(q) = drill {
+                                // A Try pick drills down: the query
+                                // populates and the results show (#204
+                                // step 6, spec 3.1). Re-focus the
+                                // field (CodeRabbit PR review): egui
+                                // surrenders focus on a pointer click
+                                // outside the focused widget, and the
+                                // populated query must stay editable.
+                                self.tellme_query = q.to_string();
+                                self.tellme_sel = 0;
+                                ui.ctx().memory_mut(|m| {
+                                    m.request_focus(crate::tellme::field_id())
+                                });
+                            }
+                            if refocus {
+                                // A faded-row click dispatched nothing
+                                // and kept the panel open — put the
+                                // keyboard back in the query.
+                                ui.ctx().memory_mut(|m| {
+                                    m.request_focus(crate::tellme::field_id())
+                                });
+                            }
+                            if close || !open {
+                                self.tellme_open = false;
+                                self.tellme_query.clear();
+                                self.tellme_sel = 0;
+                                // Running a command (or clicking away)
+                                // returns focus to the canvas (#204
+                                // steps 3–4).
+                                ui.ctx().memory_mut(|m| {
+                                    m.surrender_focus(crate::tellme::field_id())
+                                });
+                            }
+                            if let Some(a) = run {
+                                self.dispatch(a);
+                            }
+                        }
+
                     });
                 });
                 // #184: the armed veil covers the strip's rect
@@ -761,18 +951,13 @@ impl App {
         ui.add_space(2.0);
     }
 
-    /// #204 step 3: the Tell Me panel's result rows — the flattened
-    /// registry searched with the live query. Rebuilt per frame while
-    /// the panel is open (the same snapshot cost class as the keytips
-    /// path), never cached.
-    pub(super) fn tellme_results(&self) -> Vec<crate::tellme::CommandEntry> {
-        crate::tellme::search(
-            &crate::tellme::registry(&self.ribbon_ctx()),
-            &self.tellme_query,
-        )
-        .into_iter()
-        .cloned()
-        .collect()
+    /// #204 step 3: the Tell Me panel's rows — the flattened registry
+    /// searched with the live query, or the idle Try list while the
+    /// query is empty (step 6). Rebuilt per frame while the panel is
+    /// open (the same snapshot cost class as the keytips path), never
+    /// cached.
+    pub(super) fn tellme_rows(&self) -> Vec<crate::tellme::PanelRow> {
+        crate::tellme::rows(&self.ribbon_ctx(), &self.tellme_query)
     }
 
     /// The per-frame ribbon snapshot (#252): every fact a tab's group
@@ -1185,4 +1370,13 @@ fn status_chip(
     }
     icon.paint(ui, r.shrink(2.0), enabled);
     enabled && resp.clicked()
+}
+
+/// The a11y label of a Tell Me panel row (#204 step 6): a result
+/// carries its command's name, a Try row its intent text.
+fn row_label(row: &crate::tellme::PanelRow) -> &str {
+    match row {
+        crate::tellme::PanelRow::Result(e) => e.label.as_str(),
+        crate::tellme::PanelRow::Try { label, .. } => label,
+    }
 }

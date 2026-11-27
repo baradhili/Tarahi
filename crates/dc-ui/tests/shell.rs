@@ -720,3 +720,157 @@ fn page_tab_rename_edits_inline() {
     h.run();
     assert_eq!(h.state().debug_page_names(), vec!["One", "Two"]);
 }
+
+/// #204 step 5: execution + context sync ride the existing `Action`
+/// path for free — typing filters, Enter dispatches the selected row
+/// through the same dispatch the ribbon buttons use (asserted on view
+/// state), ArrowDown moves the selection, and Enter on a faded
+/// (disabled) row dispatches nothing. Result rows carry a11y names.
+#[test]
+fn tellme_type_arrow_enter_dispatches() {
+    use egui_kittest::kittest::Queryable;
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(
+            |ui, app: &mut App| {
+                dc_ui::theme::install(ui.ctx());
+                app.draw(ui);
+            },
+            App::with_blank(),
+        );
+    harness.run();
+    // The grid is on by default; the fixture's dynamic grid rides its
+    // DocumentSettings, so the arrow test asserts the TOGGLE against
+    // the captured start state rather than an assumed default.
+    assert!(harness.state().debug_show_grid());
+    let dyn0 = harness.state().debug_dynamic_grid();
+
+    // Type "grid": the top hit is View ▸ Grid; Enter runs it through
+    // the Action path and closes the panel.
+    harness.get_by_label("Tell Me").click();
+    harness.run();
+    assert!(
+        harness.state().debug_tellme_open(),
+        "focusing the field opened the panel"
+    );
+    harness.get_by_label("Tell Me").type_text("grid");
+    harness.run();
+    assert!(
+        harness.query_by_label("Grid").is_some(),
+        "a result row carries its a11y name"
+    );
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(
+        !harness.state().debug_show_grid(),
+        "Enter dispatched the top hit (View \u{25b8} Grid toggled off)"
+    );
+    assert!(
+        !harness.state().debug_tellme_open(),
+        "the panel closed after the run"
+    );
+
+    // Again with ArrowDown first: the SECOND row (Dynamic Grid) runs
+    // — the grid itself stays on.
+    harness.get_by_label("Tell Me").click();
+    harness.run();
+    harness.get_by_label("Tell Me").type_text("grid");
+    harness.run();
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(
+        !harness.state().debug_show_grid(),
+        "the top hit did not run this time (the grid stayed off)"
+    );
+    assert_eq!(
+        harness.state().debug_dynamic_grid(),
+        !dyn0,
+        "the arrow-walked second row ran"
+    );
+
+    // "paste" only matches disabled clipboard stubs: Enter does
+    // nothing and the panel stays open (the acceptance's faded-row
+    // rule).
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    harness.get_by_label("Tell Me").click();
+    harness.run();
+    harness.get_by_label("Tell Me").type_text("paste");
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(
+        harness.state().debug_tellme_open(),
+        "Enter on a faded row dispatched nothing"
+    );
+}
+
+/// #204 step 6: the idle panel opens with the "Try" list (spec 3.1) —
+/// curated from real delivered commands only. Enter (and a click)
+/// drills an intent into the query and its results show; picking the
+/// grid intent all the way through dispatches the Grid command.
+#[test]
+fn tellme_try_list_drills_down() {
+    use egui_kittest::kittest::Queryable;
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(
+            |ui, app: &mut App| {
+                dc_ui::theme::install(ui.ctx());
+                app.draw(ui);
+            },
+            App::with_blank(),
+        );
+    harness.run();
+    assert!(harness.state().debug_show_grid());
+
+    // The empty-query panel is the Try list, under its header.
+    harness.get_by_label("Tell Me").click();
+    harness.run();
+    assert!(
+        harness.state().debug_tellme_open(),
+        "focusing the field opened the panel"
+    );
+    assert!(
+        harness.query_by_label("Try").is_some(),
+        "the Try header is labeled"
+    );
+
+    // Enter on the first Try intent (page orientation) drills the
+    // query; the command's result row shows.
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(
+        harness.query_by_label("Orientation").is_some(),
+        "the intent drilled into its results"
+    );
+
+    // The click path: back to the Try list, click the grid intent,
+    // run the result — the Grid command dispatches through Action.
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    harness.get_by_label("Tell Me").click();
+    harness.run();
+    harness.get_by_label("Turn the grid on or off").click();
+    harness.run();
+    assert!(
+        harness.query_by_label("Grid").is_some(),
+        "the grid intent drilled into its results"
+    );
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(
+        !harness.state().debug_show_grid(),
+        "the drilled result dispatched the Grid command"
+    );
+    assert!(
+        !harness.state().debug_tellme_open(),
+        "the panel closed after the run"
+    );
+}
