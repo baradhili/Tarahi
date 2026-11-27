@@ -2606,6 +2606,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "fit-page-window-tip",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "fit-the-page-width-in-the-window",
         attribute: None,
         vars: &[],
@@ -7289,13 +7296,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..50897,
-            Self::En => 50897..99962,
-            Self::Es => 99962..154013,
-            Self::Fa => 154013..218315,
-            Self::Ja => 218315..272855,
-            Self::Ko => 272855..323062,
-            Self::ZhHans => 323062..367100,
+            Self::De => 0..50959,
+            Self::En => 50959..100074,
+            Self::Es => 100074..154187,
+            Self::Fa => 154187..218570,
+            Self::Ja => 218570..273190,
+            Self::Ko => 273190..323460,
+            Self::ZhHans => 323460..367551,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -8729,6 +8736,9 @@ impl L10nLanguage {
     }
     pub fn msg_first_page(&self) -> String {
         self.0.msg("first-page", None).unwrap()
+    }
+    pub fn msg_fit_page_window_tip(&self) -> String {
+        self.0.msg("fit-page-window-tip", None).unwrap()
     }
     pub fn msg_fit_the_page_width_in_the_window(&self) -> String {
         self.0

@@ -408,6 +408,7 @@ find-planned-later-milestone = 찾기 — 예정(이후 마일스톤)
 fine-dash = 가는 파선
 fine-dot = 가는 점선
 first-page = 첫 페이지
+fit-page-window-tip = 현재 창에 페이지를 맞춥니다.
 fit-the-page-width-in-the-window = 창에 페이지 너비 맞추기
 fit-the-whole-page-in-the-window = 페이지 전체를 창에 맞추기
 fit-to-contents = 내용에 맞추기

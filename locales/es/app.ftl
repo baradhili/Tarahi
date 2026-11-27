@@ -451,6 +451,7 @@ find-planned-later-milestone = Buscar — planeado (hito posterior)
 fine-dash = Guion fino
 fine-dot = Punto fino
 first-page = Primera página
+fit-page-window-tip = Ajustar la página a la ventana actual.
 fit-the-page-width-in-the-window = Ajustar el ancho de la página a la ventana
 fit-the-whole-page-in-the-window = Ajustar la página completa a la ventana
 fit-to-contents = Ajustar al contenido

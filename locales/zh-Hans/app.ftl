@@ -407,6 +407,7 @@ find-planned-later-milestone = 查找 — 计划中（后期里程碑）
 fine-dash = 细虚线
 fine-dot = 细点
 first-page = 第一页
+fit-page-window-tip = 使页面适应当前窗口。
 fit-the-page-width-in-the-window = 在窗口中显示页宽
 fit-the-whole-page-in-the-window = 在窗口中显示整个页面
 fit-to-contents = 适应内容大小

@@ -453,6 +453,7 @@ find-planned-later-milestone = Find — planned (later milestone)
 fine-dash = Fine Dash
 fine-dot = Fine Dot
 first-page = First page
+fit-page-window-tip = Fit page to current window.
 fit-the-page-width-in-the-window = Fit the page width in the window
 fit-the-whole-page-in-the-window = Fit the whole page in the window
 fit-to-contents = Fit to Contents

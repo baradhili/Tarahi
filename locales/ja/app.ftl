@@ -407,6 +407,7 @@ find-planned-later-milestone = 検索 — 予定（後のマイルストーン�
 fine-dash = 細かい破線
 fine-dot = 細かい点線
 first-page = 先頭ページ
+fit-page-window-tip = ページを現在のウィンドウに合わせます。
 fit-the-page-width-in-the-window = ページの幅をウィンドウに合わせる
 fit-the-whole-page-in-the-window = ページ全体をウィンドウに合わせる
 fit-to-contents = 内容に合わせる

@@ -951,6 +951,17 @@ impl App {
             ui.with_layout(rev, |ui| {
                 // Visio status bar right end: − [zoom slider] + N%
                 if self.ed.is_some() {
+                    // #209 step 4: the Fit Page chip (spec §3.5.5) —
+                    // rightmost in the zoom cluster, dispatching the
+                    // existing Whole Page fit.
+                    if status_chip(
+                        ui,
+                        crate::ribbon::Icon::Fit,
+                        crate::i18n::strs().msg_fit_page_window_tip(),
+                        self.view.fit_mode,
+                    ) {
+                        self.dispatch(Action::FitPage);
+                    }
                     let pct = (self.view.zoom * 100.0).round() as u32;
                     // #209 step 3: the % is a button opening the Zoom
                     // dialog (Visio's status-bar zoom level).

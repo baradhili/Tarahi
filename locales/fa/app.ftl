@@ -427,6 +427,7 @@ find-planned-later-milestone = یافتن — برنامه‌ریزی‌شده (
 fine-dash = خط‌چین ریز
 fine-dot = نقطهٔ ریز
 first-page = صفحهٔ نخست
+fit-page-window-tip = مناسب‌سازی صفحه با پنجره کنونی.
 fit-the-page-width-in-the-window = گنجاندن عرض صفحه در پنجره
 fit-the-whole-page-in-the-window = گنجاندن تمام صفحه در پنجره
 fit-to-contents = هم‌اندازه با محتوا
