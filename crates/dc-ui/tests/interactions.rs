@@ -10333,6 +10333,161 @@ fn options_settings_save_failure_warns_and_a_retry_persists() {
     assert!(text.contains("Bret Watson"), "the settings landed: {text}");
 }
 
+// ---------------------------------------------------------------------------
+// File ▸ Options — theme choice (#300)
+// ---------------------------------------------------------------------------
+
+/// #300: a theme-flip harness. `harness_with_blank` re-installs the
+/// LIGHT theme every frame, which would paper over a committed flip
+/// one frame later — this one installs both style slots once (first
+/// frame, the #52 startup shape) and lets the tests read the live
+/// theme off the public `h.ctx` (the root Ui's own visuals are a
+/// style snapshot from its first creation and never reflect a flip).
+fn theme_harness_with_blank() -> Harness<'static, App> {
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut first_frame = true;
+    Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(
+            move |ui, app: &mut App| {
+                if std::mem::take(&mut first_frame) {
+                    dc_ui::theme::install_for(
+                        ui.ctx(),
+                        egui::ThemePreference::Light,
+                    );
+                }
+                app.draw(ui);
+            },
+            App::with_blank(),
+        )
+}
+
+/// #300: picking Dark on the General page flips the shell on the very
+/// next frame — the same single `set_theme` the OS watcher makes — and
+/// lands the choice in the store.
+#[test]
+fn options_theme_choice_switches_the_shell_live() {
+    let mut h = theme_harness_with_blank();
+    open_options(&mut h);
+    h.get_by_label("Dark").click();
+    h.run();
+    h.get_by_label("OK").click();
+    h.run();
+    h.run(); // one more pass: the flip lands on the next frame
+    assert!(
+        !h.state().debug_options_open(),
+        "OK closed the dialog"
+    );
+    assert_eq!(
+        h.state().debug_options().theme,
+        dc_ui::options::ThemeChoice::Dark
+    );
+    assert_eq!(
+        h.ctx.theme(),
+        egui::Theme::Dark,
+        "the shell's live theme is dark"
+    );
+}
+
+/// #300: Cancel discards the draft — a picked-but-uncommitted flip
+/// never touches the shell or the store.
+#[test]
+fn options_theme_cancel_discards_the_flip() {
+    let mut h = theme_harness_with_blank();
+    open_options(&mut h);
+    h.get_by_label("Dark").click();
+    h.run();
+    h.get_by_label("Cancel").click();
+    h.run();
+    h.run();
+    assert!(!h.state().debug_options_open());
+    assert_eq!(
+        h.state().debug_options().theme,
+        dc_ui::options::ThemeChoice::FollowOs
+    );
+    assert_eq!(
+        h.ctx.theme(),
+        egui::Theme::Light,
+        "the shell stayed light"
+    );
+}
+
+/// #300: the choice survives a restart — session 1 commits Dark
+/// against a persisting store; session 2 reads the file back and maps
+/// it onto the startup selection (a pre-#300 file boots Follow-OS —
+/// the #52 behavior, no override).
+#[test]
+fn options_theme_choice_survives_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("options.json");
+    // Session 1: commit Dark through the real dialog path.
+    let mut h = theme_harness_with_blank();
+    h.state_mut().set_options_store_for_test(
+        dc_ui::options::Options::persisting_for_test(path.clone()),
+    );
+    open_options(&mut h);
+    h.get_by_label("Dark").click();
+    h.run();
+    h.get_by_label("OK").click();
+    h.run();
+    assert_eq!(h.ctx.theme(), egui::Theme::Dark, "session 1 flipped");
+    let text = std::fs::read_to_string(&path).expect("the choice landed on disk");
+    assert!(
+        text.contains(r#""theme":"dark""#),
+        "the additive key rides options.json: {text}"
+    );
+    // Session 2: the ctor's store read + the startup mapping.
+    let reopened =
+        dc_ui::options::Options::parse_for_test(&text).expect("round-trips");
+    assert_eq!(reopened.theme, dc_ui::options::ThemeChoice::Dark);
+    assert_eq!(
+        reopened.theme.startup_pref(),
+        Some(egui::ThemePreference::Dark)
+    );
+    let legacy = dc_ui::options::Options::parse_for_test(
+        r#"{"version":1,"user_name":"x"}"#,
+    )
+    .unwrap();
+    assert_eq!(legacy.theme.startup_pref(), None);
+}
+
+/// #300: the theme contract under a FAILED `options.json` write — the
+/// flip still applies in-session (the in-memory apply always happens)
+/// while the dialog stays open on the warning, the same retry
+/// contract as the other settings.
+#[test]
+fn options_theme_flips_live_even_when_the_save_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    let mut h = theme_harness_with_blank();
+    h.state_mut().set_options_store_for_test(
+        dc_ui::options::Options::persisting_for_test(blocker.join("options.json")),
+    );
+    open_options(&mut h);
+    h.get_by_label("Dark").click();
+    h.run();
+    h.get_by_label("OK").click();
+    h.run();
+    h.run();
+    assert!(
+        h.state().debug_options_open(),
+        "OK keeps the dialog open after a failed settings save"
+    );
+    assert_eq!(
+        h.state().debug_options().theme,
+        dc_ui::options::ThemeChoice::Dark,
+        "the in-memory apply happened"
+    );
+    assert_eq!(
+        h.ctx.theme(),
+        egui::Theme::Dark,
+        "the session flipped dark regardless of the write"
+    );
+}
+
+
 /// #304: the comment-avatar initials FIT the 16pt circle — a long
 /// configured string truncates until its laid-out width clears it.
 #[test]

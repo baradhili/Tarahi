@@ -161,12 +161,18 @@ impl App {
         // OS theme flips (GitHub #52): the watcher thread re-probes the
         // OS preference on its period; switch the active style slot when
         // it reports a change, and ask for a repaint on the same period
-        // so an idle app still wakes to pick a flip up.
+        // so an idle app still wakes to pick a flip up. A manual #300
+        // Light/Dark choice OVERRIDES the OS: the channel is still
+        // drained (a queued flip must not sit waiting for a later
+        // re-arm), but only the Follow-OS choice applies it.
         if let Some(watcher) = &self.os_theme {
-            if let Some(pref) = watcher.poll() {
-                ctx.set_theme(pref);
+            let flip = watcher.poll();
+            if self.options_store.theme == crate::options::ThemeChoice::FollowOs {
+                if let Some(pref) = flip {
+                    ctx.set_theme(pref);
+                }
+                ctx.request_repaint_after(Duration::from_secs(2));
             }
-            ctx.request_repaint_after(Duration::from_secs(2));
         }
         self.handle_shortcuts(&ctx);
         // #113: a copy queued OS-clipboard text (the copy path runs

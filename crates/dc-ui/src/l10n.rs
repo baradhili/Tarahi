@@ -4314,6 +4314,34 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "options-theme",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-theme-dark",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-theme-follow-os",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-theme-light",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "options-user-name",
         attribute: None,
         vars: &[],
@@ -7282,13 +7310,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..50757,
-            Self::En => 50757..99707,
-            Self::Es => 99707..153615,
-            Self::Fa => 153615..217738,
-            Self::Ja => 217738..272109,
-            Self::Ko => 272109..322191,
-            Self::ZhHans => 322191..366120,
+            Self::De => 0..50887,
+            Self::En => 50887..99963,
+            Self::Es => 99963..154002,
+            Self::Fa => 154002..218279,
+            Self::Ja => 218279..272812,
+            Self::Ko => 272812..323027,
+            Self::ZhHans => 323027..367081,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -9649,6 +9677,18 @@ impl L10nLanguage {
     }
     pub fn msg_options_settings_save_failed(&self) -> String {
         self.0.msg("options-settings-save-failed", None).unwrap()
+    }
+    pub fn msg_options_theme(&self) -> String {
+        self.0.msg("options-theme", None).unwrap()
+    }
+    pub fn msg_options_theme_dark(&self) -> String {
+        self.0.msg("options-theme-dark", None).unwrap()
+    }
+    pub fn msg_options_theme_follow_os(&self) -> String {
+        self.0.msg("options-theme-follow-os", None).unwrap()
+    }
+    pub fn msg_options_theme_light(&self) -> String {
+        self.0.msg("options-theme-light", None).unwrap()
     }
     pub fn msg_options_user_name(&self) -> String {
         self.0.msg("options-user-name", None).unwrap()

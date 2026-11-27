@@ -38,6 +38,13 @@ impl App {
         // #268: the persisted options (user name/initials, the Save
         // page's AutoRecover settings) — headless ctors stay ephemeral.
         app.options_store = crate::options::Options::open();
+        // #300: a persisted manual theme choice overrides the detected
+        // mode BEFORE the first frame — both slots are installed above,
+        // so selecting is the whole override (no light flash at boot
+        // for a dark user). Follow-OS keeps the #52 startup exactly.
+        if let Some(pref) = app.options_store.theme.startup_pref() {
+            cc.egui_ctx.set_theme(pref);
+        }
         dc::spellcheck::enable_local_discovery();
         dc::spellcheck::register_local_dirs(
             crate::recent::config_base()
@@ -61,7 +68,10 @@ impl App {
         // like any stencil without the first run blocking or going
         // silent (owner report 2026-10-30). Best-effort: an
         // unwritable My Shapes degrades to the embedded bytes.
-        app.stencil_extract = crate::stencil::disk::extract_catalog_async(Self::my_shapes_dir());
+        app.stencil_extract = crate::stencil::disk::extract_catalog_async(
+            Self::my_shapes_dir(),
+            cc.egui_ctx.clone(),
+        );
         if let Some(p) = path {
             // #242: the CLI entry's open rides the async flight like
             // every interactive open — the splash covers the boot and

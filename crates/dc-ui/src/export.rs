@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
 
 use dc::export::{self, Format, Options};
-use egui::{Ui, Vec2};
+use egui::{Context, Ui, Vec2};
 
 /// What the pane asks the App to do after a frame.
 #[derive(Debug, Clone, PartialEq)]
@@ -273,8 +273,19 @@ impl ExportPane {
     }
 
     /// Spawn the export worker (App-side: clones the document as the
-    /// snapshot the export renders).
-    pub fn launch(&mut self, doc: &vsdx::Document, current_page: usize, doc_dir: Option<PathBuf>) {
+    /// snapshot the export renders). `ctx` is the wake-up channel:
+    /// `App::draw` polls `Self::poll`, and an idle window only runs
+    /// frames something asked for — the worker requests a repaint when
+    /// its result lands, so the completion note/status surface without
+    /// user input (#399 review; the OS-theme timer used to cover this
+    /// accidentally, and only on Linux).
+    pub fn launch(
+        &mut self,
+        ctx: &Context,
+        doc: &vsdx::Document,
+        current_page: usize,
+        doc_dir: Option<PathBuf>,
+    ) {
         if self.in_flight.is_some() {
             return; // one export at a time
         }
@@ -312,6 +323,7 @@ impl ExportPane {
             png_dpi: dpi,
         };
         let doc = doc.clone();
+        let ctx = ctx.clone();
         let (tx, rx) = channel();
         self.in_flight = Some(rx);
         self.note = None;
@@ -320,6 +332,9 @@ impl ExportPane {
                 .map(|(files, notes)| (files.len(), notes))
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(result);
+            // Wake the UI: an idle window runs no frames, and the
+            // result is only drained from `App::draw`.
+            ctx.request_repaint();
         });
     }
 
