@@ -74,3 +74,81 @@ fn square_loop_bounds_cover_the_merged_master_rows() {
     assert!(loop_top < box_top - 0.1, "the loop rises above the box");
     assert!(loop_h > 0.5, "not a sliver: {loop_h}");
 }
+
+/// #397 against its own fixture, `corpus/imported/orbus-shape-layout.vsdx`
+/// (Visio 2021 reference next to it): one box per layout. Layouts 0 and
+/// 1 keep the type label in their panel; 2, 3 and 4 hide it, and the
+/// fixture carries Visio's own `HideText V='1' F='Inh'` caches for them.
+#[test]
+fn orbus_layouts_hide_the_type_label_like_visio() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/imported/orbus-shape-layout.vsdx");
+    let d = vsdx::parse::parse(&path).expect("the fixture parses");
+    let svg = dc::svg::render_page(&d, &d.pages[0]).unwrap();
+    for shown in ["PRINCIPLE", "CONSTRAINT"] {
+        assert!(svg.contains(&format!("{shown}</tspan>")), "{shown} shows");
+    }
+    for hidden in ["REQUIREMENT", "CAPABILITY", "WORK PACKAGE"] {
+        assert!(
+            !svg.contains(&format!("{hidden}</tspan>")),
+            "{hidden} is hidden"
+        );
+    }
+}
+
+/// #397: the box masters hide their type label once the layout leaves
+/// the panel modes (`HideText = Sheet.5!User.ShapeLayout>1` on the
+/// panel; Visio 2021 hides it for layouts 2-4). A layout switched in
+/// the app writes only the box's `User.ShapeLayout`, no cache on the
+/// panel, so the master's formula decides, its `Sheet.5!` read through
+/// the box, the master root's counterpart.
+#[test]
+fn layout_switch_hides_the_panel_label() {
+    for (layout, shown) in [("2", false), ("4", false), ("1", true)] {
+        let mut d = doc();
+        let bx = shape_mut(&mut d.pages[0].shapes, 1).expect("Constraint box");
+        let row = vsdx::model::Row {
+            n: Some("ShapeLayout".into()),
+            cells: vec![("Value".into(), vsdx::Cell::value(layout))],
+            ..Default::default()
+        };
+        let user = bx.sheet.children.iter_mut().find_map(|c| match c {
+            vsdx::model::SheetChild::Section(sec) if sec.name == "User" => Some(sec),
+            _ => None,
+        });
+        match user {
+            Some(sec) => {
+                sec.rows.retain(|r| r.n.as_deref() != Some("ShapeLayout"));
+                sec.rows.push(row);
+            }
+            None => {
+                bx.sheet
+                    .children
+                    .push(vsdx::model::SheetChild::Section(vsdx::model::Section {
+                        name: "User".into(),
+                        rows: vec![row],
+                        ..Default::default()
+                    }))
+            }
+        }
+        let page = &d.pages[0];
+        let svg = dc::svg::render_page(&d, page).unwrap();
+        assert_eq!(svg.contains("CONSTRAINT</tspan>"), shown, "layout {layout}");
+        assert!(
+            svg.contains("REQUIREMENT</tspan>"),
+            "layout {layout}: the other boxes keep theirs"
+        );
+    }
+}
+
+fn shape_mut(shapes: &mut [vsdx::Shape], id: i64) -> Option<&mut vsdx::Shape> {
+    for s in shapes {
+        if s.id == id {
+            return Some(s);
+        }
+        if let Some(found) = shape_mut(&mut s.sub_shapes, id) {
+            return Some(found);
+        }
+    }
+    None
+}

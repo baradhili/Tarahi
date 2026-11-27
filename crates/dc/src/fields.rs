@@ -605,6 +605,15 @@ fn field_row<'a>(
         .and_then(|sec| sec.row_by_ix(ix))
 }
 
+/// The page-side scope for a formula the shape authors itself: its own
+/// User/Prop rows over its master's, bare and `Sheet.ID!`-qualified
+/// (`HideText = Prop.HideLabel`, CodeRabbit on PR #400).
+pub(crate) fn local_scope(doc: &Document, s: &Shape, chain: &[&Shape]) -> formula::StrEnv {
+    let mut env = formula::StrEnv::new();
+    seed_sheet_strings(doc, s, chain, &mut env);
+    env
+}
+
 /// Seed the string/numeric environments from the shape's own sheet
 /// and its master chain (the `resolve_cell` layering for rows).
 fn seed_sheet_strings(doc: &Document, s: &Shape, chain: &[&Shape], strs: &mut formula::StrEnv) {
@@ -641,8 +650,15 @@ fn seed_sheet_strings(doc: &Document, s: &Shape, chain: &[&Shape], strs: &mut fo
 /// targets, `MasterShape` sub-shapes, and bare inline copies matched by
 /// ID or `NameU` (CodeRabbit on PR #381).
 fn master_local_env(doc: &Document, s: &Shape, chain: &[&Shape]) -> Option<formula::StrEnv> {
+    doc.instance_source(s, chain)?.sheet.section("Field", 0)?;
+    master_scope(doc, s, chain)
+}
+
+/// The master-local `Sheet.N!` scope of [`master_local_env`] for any
+/// formula the shape inherits from its master, field or not: `HideText`
+/// reads `Sheet.5!User.ShapeLayout>1` on the box masters' panel (#397).
+pub(crate) fn master_scope(doc: &Document, s: &Shape, chain: &[&Shape]) -> Option<formula::StrEnv> {
     let src = doc.instance_source(s, chain)?;
-    src.sheet.section("Field", 0)?;
     // The owner and its ancestors.
     let (owner, owner_anc): (&Shape, &[&Shape]) = if s.master.is_some() {
         (s, chain)

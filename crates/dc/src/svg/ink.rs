@@ -558,7 +558,8 @@ pub(crate) fn node_ink_box(
             .text_raw
             .as_deref()
             .is_some_and(|r| r.contains("<fld"));
-    if has_text {
+    // Hidden text (#397) paints nothing, so it bounds nothing.
+    if has_text && !super::text::text_hidden(doc, s, chain) {
         let tw = get("TxtWidth", &text_env).unwrap_or(width).max(0.02);
         let th = get("TxtHeight", &text_env).unwrap_or(height).max(0.02);
         let (tlx, tly) = (
