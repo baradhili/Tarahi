@@ -1035,6 +1035,48 @@ pub(crate) fn wrap_block_text_scaled(
     lines
 }
 
+/// `HideText` (Miscellaneous): the shape keeps its text but does not
+/// show it (#397). Formula first, as [`shape_layer::section_flag`]
+/// reads NoShow, so a layout switched in the app takes effect without
+/// a fresh cache. A formula the instance inherits names its MASTER's
+/// shape IDs (the box masters' panel reads `Sheet.5!User.ShapeLayout>1`,
+/// 5 being the master root) and evaluates in the master-local scope the
+/// fields use (#378). Without a usable formula the instance's OWN cache
+/// comes before the master's: Visio stores the value it computed for the
+/// instance as `V` under `F='Inh'`, while the master's cache holds its
+/// own layout's 0.
+pub(crate) fn text_hidden(doc: &Document, s: &Shape, chain: &[&Shape]) -> bool {
+    let Some(cell) = doc.resolve_cell(s, chain, "HideText") else {
+        return false;
+    };
+    let own = s.sheet.cell("HideText");
+    // The envs are built only for a live formula: most shapes carry a
+    // plain `0` (or no cell), and this runs for every text block.
+    let by_formula = cell
+        .f
+        .as_deref()
+        .filter(|f| *f != "Inh" && *f != "No Formula")
+        .and_then(|f| {
+            let env = shape_env(doc, s, chain);
+            let inherited = own.is_none_or(|c| c.f.as_deref() == Some("Inh"));
+            let scope = if inherited {
+                crate::fields::master_scope(doc, s, chain)
+            } else {
+                None
+            };
+            match &scope {
+                Some(scope) => vsdx::formula::eval_field(f, &env, scope, None).ok(),
+                None => vsdx::formula::eval(f, &env).ok(),
+            }
+        })
+        .and_then(|v| v.as_f64())
+        .filter(|v| v.is_finite());
+    by_formula
+        .or_else(|| own.and_then(Cell::numeric))
+        .or_else(|| cell.numeric())
+        .is_some_and(|v| v != 0.0)
+}
+
 #[allow(clippy::too_many_arguments)] // placement + flip axes + the #22 skip + #124 greek ctx + #267 fields
 pub(crate) fn emit_text(
     doc: &Document,
@@ -1049,7 +1091,7 @@ pub(crate) fn emit_text(
     fields: Option<&crate::fields::FieldsCtx<'_>>,
     out: &mut String,
 ) {
-    if skip {
+    if skip || text_hidden(doc, s, chain) {
         return;
     }
     // Authored leading spacing is content (#144): trim only the END —
