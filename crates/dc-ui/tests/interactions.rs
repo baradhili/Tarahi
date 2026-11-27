@@ -1929,6 +1929,8 @@ fn double_click_opens_inplace_text_editor_and_edits_shape_text() {
     // And a following edit still commits normally.
     dbl_click_at(&mut h, to);
     h.run();
+    assert!(h.state().debug_text_edit().is_some());
+    h.run();
     h.get_by_role(egui::Role::MultilineTextInput)
         .set_text_value_accesskit("Router");
     h.run();
@@ -1953,6 +1955,63 @@ fn double_click_opens_inplace_text_editor_and_edits_shape_text() {
         "double-click on empty page must not open an editor"
     );
     assert_eq!(h.state().debug_shape_count(), 1);
+}
+
+/// A CLOSING Esc is consumed by the shell (#209 review round): with
+/// Presentation Mode on and the in-place editor open, the chrome branch
+/// restores the chrome AND consumes the key, so the editor never sees
+/// the press and the draft survives. The NEXT Esc — nothing left to
+/// close — reaches the editor and abandons the edit as before.
+#[test]
+fn esc_restoring_presentation_chrome_does_not_abandon_the_text_edit() {
+    let mut h = dblclick_harness_with_blank();
+    h.run();
+    let from = h.state().debug_master_cells()[0].1.center();
+    let to = h.state().debug_canvas_rect().center();
+    click_at(&mut h, from, egui::PointerButton::Primary);
+    click_at(&mut h, to, egui::PointerButton::Primary);
+    h.run();
+    let (_, sid) = h.state().debug_sel().expect("placed shape selected");
+
+    // In-place editor open with a typed draft.
+    dbl_click_at(&mut h, to);
+    h.run();
+    h.get_by_role(egui::Role::MultilineTextInput)
+        .set_text_value_accesskit("Router");
+    h.run();
+
+    // Presentation Mode on (the status-bar chip / ribbon button both
+    // dispatch the same flag; neither click commits the edit — only
+    // canvas clicks do).
+    h.state_mut().set_chrome_hidden_for_test(true);
+    h.run();
+    assert!(h.state().debug_chrome_hidden_for_test());
+
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(
+        !h.state().debug_chrome_hidden_for_test(),
+        "Esc restored the chrome"
+    );
+    assert!(
+        h.state().debug_text_edit().is_some(),
+        "the editor never saw the chrome-restoring Esc"
+    );
+    assert_eq!(
+        h.state().debug_shape_text(sid),
+        None,
+        "the draft is still only in the editor"
+    );
+
+    // No-dialog Esc: reaches the editor and abandons, as always.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert_eq!(h.state().debug_text_edit(), None, "second Esc abandoned the edit");
+    assert_eq!(
+        h.state().debug_shape_text(sid),
+        None,
+        "the abandoned draft never landed"
+    );
 }
 
 /// #22 review: the text-suppression toggle bumps only the previously
