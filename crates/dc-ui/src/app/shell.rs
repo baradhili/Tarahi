@@ -658,6 +658,12 @@ impl App {
                             let mut drill: Option<&'static str> = None;
                             let mut close = false;
                             let mut hover: Option<usize> = None;
+                            // A click on a faded row keeps the session
+                            // editable (CodeRabbit PR review): egui
+                            // surrenders the field's focus on pointer
+                            // clicks elsewhere, so an explicit
+                            // re-request follows the no-dispatch.
+                            let mut refocus = false;
                             // `open_bool` drives egui's popup memory
                             // from OUR flag (the field, not a button,
                             // anchors the panel) and writes egui's
@@ -791,6 +797,8 @@ impl App {
                                             if resp.clicked() && e.enabled {
                                                 run = Some(e.action);
                                                 close = true;
+                                            } else if resp.clicked() {
+                                                refocus = true;
                                             }
                                         }
                                         crate::tellme::PanelRow::Try { label, query } => {
@@ -845,6 +853,14 @@ impl App {
                                 // populated query must stay editable.
                                 self.tellme_query = q.to_string();
                                 self.tellme_sel = 0;
+                                ui.ctx().memory_mut(|m| {
+                                    m.request_focus(crate::tellme::field_id())
+                                });
+                            }
+                            if refocus {
+                                // A faded-row click dispatched nothing
+                                // and kept the panel open — put the
+                                // keyboard back in the query.
                                 ui.ctx().memory_mut(|m| {
                                     m.request_focus(crate::tellme::field_id())
                                 });
