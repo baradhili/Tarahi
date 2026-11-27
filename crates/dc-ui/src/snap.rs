@@ -76,64 +76,30 @@ impl SnapSettings {
     /// The persisted form: an inactive side collapses to a zero mask
     /// (Visio's representation of "Active" off).
     pub fn to_doc(self) -> DocSnapGlue {
+        let snap = if self.snap_active {
+            (self.snap_ruler_subdivisions as u32 * snap_bits::RULER_SUBDIVISIONS)
+                | (self.snap_grid as u32 * snap_bits::GRID)
+                | (self.snap_guides as u32 * snap_bits::GUIDES)
+                | (self.snap_alignment_boxes as u32 * snap_bits::ALIGNMENT_BOXES)
+                | (self.snap_shape_extensions as u32 * snap_bits::SHAPE_EXTENSIONS)
+                | (self.snap_shape_intersections as u32 * snap_bits::SHAPE_INTERSECTIONS)
+                | (self.snap_connection_points as u32 * snap_bits::CONNECTION_POINTS)
+        } else {
+            0
+        };
+        let glue = if self.glue_active {
+            (self.glue_guides as u32 * glue_bits::GUIDES)
+                | (self.glue_shape_handles as u32 * glue_bits::SHAPE_HANDLES)
+                | (self.glue_shape_vertices as u32 * glue_bits::SHAPE_VERTICES)
+                | (self.glue_connection_points as u32 * glue_bits::CONNECTION_POINTS)
+        } else {
+            0
+        };
         DocSnapGlue {
-            snap: self.snap_mask(),
-            glue: self.glue_mask(),
+            snap,
+            glue,
             dynamic_grid: self.dynamic_grid,
             autoconnect: self.autoconnect,
-        }
-    }
-
-    /// The snap-side target mask — also the "Active" encoding: a zero
-    /// mask IS an inactive side (the enable S-bit doesn't exist), so an
-    /// active side must never carry zero targets (see [`Self::enable_sides`]).
-    pub fn snap_mask(&self) -> u32 {
-        if !self.snap_active {
-            return 0;
-        }
-        (self.snap_ruler_subdivisions as u32 * snap_bits::RULER_SUBDIVISIONS)
-            | (self.snap_grid as u32 * snap_bits::GRID)
-            | (self.snap_guides as u32 * snap_bits::GUIDES)
-            | (self.snap_alignment_boxes as u32 * snap_bits::ALIGNMENT_BOXES)
-            | (self.snap_shape_extensions as u32 * snap_bits::SHAPE_EXTENSIONS)
-            | (self.snap_shape_intersections as u32 * snap_bits::SHAPE_INTERSECTIONS)
-            | (self.snap_connection_points as u32 * snap_bits::CONNECTION_POINTS)
-    }
-
-    /// The glue-side target mask (see [`Self::snap_mask`]).
-    pub fn glue_mask(&self) -> u32 {
-        if !self.glue_active {
-            return 0;
-        }
-        (self.glue_guides as u32 * glue_bits::GUIDES)
-            | (self.glue_shape_handles as u32 * glue_bits::SHAPE_HANDLES)
-            | (self.glue_shape_vertices as u32 * glue_bits::SHAPE_VERTICES)
-            | (self.glue_connection_points as u32 * glue_bits::CONNECTION_POINTS)
-    }
-
-    /// Set both sides' Active state for the status-bar Snap & Glue
-    /// chip (#209 review): a side enabled while EVERY target is off
-    /// would persist a zero mask — which reads back as inactive — so
-    /// that side's corpus-default targets are restored first. A side
-    /// with targets already chosen keeps them untouched.
-    pub fn enable_sides(&mut self, snap: bool, glue: bool) {
-        self.snap_active = snap;
-        self.glue_active = glue;
-        let d = Self::default();
-        if snap && self.snap_mask() == 0 {
-            self.snap_ruler_subdivisions = d.snap_ruler_subdivisions;
-            self.snap_grid = d.snap_grid;
-            self.snap_guides = d.snap_guides;
-            self.snap_alignment_boxes = d.snap_alignment_boxes;
-            self.snap_shape_extensions = d.snap_shape_extensions;
-            self.snap_shape_intersections = d.snap_shape_intersections;
-            self.snap_connection_points = d.snap_connection_points;
-        }
-        if glue && self.glue_mask() == 0 {
-            self.glue_guides = d.glue_guides;
-            self.glue_shape_handles = d.glue_shape_handles;
-            self.glue_shape_vertices = d.glue_shape_vertices;
-            self.glue_connection_points = d.glue_connection_points;
         }
     }
 }
@@ -785,44 +751,6 @@ mod tests {
         assert_eq!(d.glue, 0);
         let back = SnapSettings::from_doc(d);
         assert!(!back.snap_active && !back.glue_active);
-    }
-
-    /// #209 review: enabling a side with every target off must not
-    /// persist a zero mask (which reads back as INACTIVE) — the side's
-    /// corpus-default targets are restored; chosen targets stay.
-    #[test]
-    fn enable_sides_restores_targets_on_an_all_off_side() {
-        let mut s = SnapSettings {
-            snap_active: false,
-            glue_active: false,
-            snap_grid: false,
-            snap_guides: false,
-            snap_alignment_boxes: false,
-            snap_shape_extensions: false,
-            snap_shape_intersections: false,
-            snap_connection_points: false,
-            ..SnapSettings::default() // ruler subdivisions left ON
-        };
-        s.enable_sides(true, true);
-        assert!(s.snap_active && s.glue_active);
-        // Snap: the one chosen target (ruler subdivisions) stays; the
-        // zero mask never happens, so the roundtrip reads active.
-        assert!(s.snap_ruler_subdivisions && !s.snap_grid);
-        assert!(s.to_doc().snap != 0);
-        assert_eq!(SnapSettings::from_doc(s.to_doc()).snap_active, true);
-        // Glue had NO chosen targets: the corpus defaults restore.
-        let d = SnapSettings::default();
-        assert_eq!(s.glue_guides, d.glue_guides);
-        assert_eq!(s.glue_connection_points, d.glue_connection_points);
-        assert!(s.to_doc().glue == d.to_doc().glue);
-
-        // Disabling keeps the zero-mask encoding as before.
-        s.enable_sides(false, false);
-        assert_eq!(s.to_doc().snap, 0);
-        let mut chosen = SnapSettings::default();
-        chosen.snap_grid = false; // a nonempty, non-default choice
-        chosen.enable_sides(true, true);
-        assert!(chosen.snap_ruler_subdivisions && !chosen.snap_grid, "chosen targets untouched");
     }
 
     #[test]

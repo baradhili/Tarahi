@@ -5728,13 +5728,6 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "snap-glue-chip-tip",
-        attribute: None,
-        vars: &[],
-        bool_vars: &[],
-        elements: &[],
-    },
-    MessageContract {
         message: "snap-to",
         attribute: None,
         vars: &[],
@@ -7296,13 +7289,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..50957,
-            Self::En => 50957..100068,
-            Self::Es => 100068..154179,
-            Self::Fa => 154179..218570,
-            Self::Ja => 218570..273181,
-            Self::Ko => 273181..323453,
-            Self::ZhHans => 323453..367542,
+            Self::De => 0..50858,
+            Self::En => 50858..99890,
+            Self::Es => 99890..153898,
+            Self::Fa => 153898..218155,
+            Self::Ja => 218155..272638,
+            Self::Ko => 272638..322809,
+            Self::ZhHans => 322809..366816,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -10477,9 +10470,6 @@ impl L10nLanguage {
     }
     pub fn msg_snap_glue(&self) -> String {
         self.0.msg("snap-glue", None).unwrap()
-    }
-    pub fn msg_snap_glue_chip_tip(&self) -> String {
-        self.0.msg("snap-glue-chip-tip", None).unwrap()
     }
     pub fn msg_snap_to(&self) -> String {
         self.0.msg("snap-to", None).unwrap()

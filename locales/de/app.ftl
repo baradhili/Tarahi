@@ -926,7 +926,6 @@ snap = Einrasten
 snap-conn-points = Verbindungspunkte
 snap-dynamic-grid = Dynamisches Raster
 snap-glue = Einrasten & Kleben
-snap-glue-chip-tip = Einrasten & Kleben. Klicken, um Einrasten und Kleben ein- oder auszuschalten.
 snap-to = Einrasten an:
 snapglue-note = Einstellungen liegen in der Zeichnung. Führungslinien als Ziele kommen mit #113; Konnektor-Klebung mit #108.
 solid = Einfarbig

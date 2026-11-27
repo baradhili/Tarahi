@@ -933,24 +933,7 @@ impl App {
             // (dc's display_name rule), and NOT the UI language.
             let lang = crate::spellcheck::lang_display_name(&self.spell.proofing_stem());
             ui.label(egui::RichText::new(lang).color(t.status_text).size(11.0));
-            // #209 step 1: Visio's Snap & Glue status-bar chip — one
-            // click toggles both masters on or off together (the
-            // per-target dialog stays on the View ribbon's magnet
-            // button). It rides the left cluster, so the RTL mirror
-            // carries it.
             if self.ed.is_some() {
-                let both = self.snap.snap_active && self.snap.glue_active;
-                if status_chip(
-                    ui,
-                    crate::ribbon::Icon::Magnet,
-                    crate::i18n::strs().msg_snap_glue_chip_tip(),
-                    both,
-                    true,
-                ) {
-                    let on = !both;
-                    self.snap.enable_sides(on, on);
-                    self.apply_snap_settings();
-                }
                 // #209 step 2: the Connect chip — the same document
                 // AutoConnect bit the View ribbon's toggle drives.
                 if status_chip(

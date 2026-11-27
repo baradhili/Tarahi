@@ -994,7 +994,6 @@ snap = Snap
 snap-conn-points = Connection points
 snap-dynamic-grid = Dynamic grid
 snap-glue = Snap & Glue
-snap-glue-chip-tip = Snap & Glue. Click to turn snapping and gluing on or off.
 snap-to = Snap to:
 snapglue-note = Settings are stored in the drawing. Guides as targets arrive with #113; connector glue with #108.
 solid = Solid

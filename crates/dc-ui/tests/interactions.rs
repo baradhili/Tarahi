@@ -6209,8 +6209,6 @@ fn snap_glue_dialog_toggles_persist_to_the_document() {
 
     h.get_by_label_contains("View").click();
     h.run();
-    // Exact label: the #209 status-bar chip's tip also contains
-    // "Snap & Glue", so the substring query matches two nodes.
     h.get_by_label("Snap & Glue").click();
     h.run();
     // "Alignment boxes" is off in the corpus default (295) — turn it

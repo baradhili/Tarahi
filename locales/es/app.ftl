@@ -991,7 +991,6 @@ snap = Ajustar
 snap-conn-points = Puntos de conexión
 snap-dynamic-grid = Cuadrícula dinámica
 snap-glue = Ajustar y conectar
-snap-glue-chip-tip = Ajustar y conectar. Haga clic para activar o desactivar el ajuste y la conexión.
 snap-to = Ajustar a:
 snapglue-note = La configuración se guarda en el dibujo. Las guías como destino llegan con #113; la conexión de conectores, con #108.
 solid = Sólido
