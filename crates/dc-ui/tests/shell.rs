@@ -221,8 +221,9 @@ fn shell_snapshot_backstage_new() {
 }
 
 /// #268: the Options dialog over the File screen, one golden per
-/// first-class page (the grayed Proofing/Advanced nav rows ride the
-/// General golden). The path is pinned like the Info golden.
+/// page with controls (#396 spec 1: every category is now a live row;
+/// the framework-only pages' headers ride these three goldens). The
+/// path is pinned like the Info golden.
 fn run_options_shell(name: &str, page: &'static str) {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = App::with_doc(&fixture(tmp.path()));

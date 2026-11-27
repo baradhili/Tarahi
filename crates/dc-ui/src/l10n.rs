@@ -4202,13 +4202,6 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "options-advanced-planned",
-        attribute: None,
-        vars: &[],
-        bool_vars: &[],
-        elements: &[],
-    },
-    MessageContract {
         message: "options-autorecover-location",
         attribute: None,
         vars: &[],
@@ -4217,6 +4210,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "options-autorecover-location-hint",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-customize-ribbon",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -4286,6 +4286,62 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "options-page-desc-addins",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-page-desc-advanced",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-page-desc-customize-ribbon",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-page-desc-general",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-page-desc-language",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-page-desc-proofing",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-page-desc-quick-access-toolbar",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "options-page-desc-save",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "options-proofing",
         attribute: None,
         vars: &[],
@@ -4293,7 +4349,7 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "options-proofing-planned",
+        message: "options-quick-access-toolbar",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -7310,13 +7366,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..50887,
-            Self::En => 50887..99963,
-            Self::Es => 99963..154002,
-            Self::Fa => 154002..218279,
-            Self::Ja => 218279..272812,
-            Self::Ko => 272812..323027,
-            Self::ZhHans => 323027..367081,
+            Self::De => 0..51679,
+            Self::En => 51679..101397,
+            Self::Es => 101397..156172,
+            Self::Fa => 156172..221361,
+            Self::Ja => 221361..276712,
+            Self::Ko => 276712..327676,
+            Self::ZhHans => 327676..372316,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -9626,9 +9682,6 @@ impl L10nLanguage {
     pub fn msg_options_advanced(&self) -> String {
         self.0.msg("options-advanced", None).unwrap()
     }
-    pub fn msg_options_advanced_planned(&self) -> String {
-        self.0.msg("options-advanced-planned", None).unwrap()
-    }
     pub fn msg_options_autorecover_location(&self) -> String {
         self.0.msg("options-autorecover-location", None).unwrap()
     }
@@ -9636,6 +9689,9 @@ impl L10nLanguage {
         self.0
             .msg("options-autorecover-location-hint", None)
             .unwrap()
+    }
+    pub fn msg_options_customize_ribbon(&self) -> String {
+        self.0.msg("options-customize-ribbon", None).unwrap()
     }
     pub fn msg_options_default_marker(&self) -> String {
         self.0.msg("options-default-marker", None).unwrap()
@@ -9666,11 +9722,39 @@ impl L10nLanguage {
     pub fn msg_options_minutes(&self) -> String {
         self.0.msg("options-minutes", None).unwrap()
     }
+    pub fn msg_options_page_desc_addins(&self) -> String {
+        self.0.msg("options-page-desc-addins", None).unwrap()
+    }
+    pub fn msg_options_page_desc_advanced(&self) -> String {
+        self.0.msg("options-page-desc-advanced", None).unwrap()
+    }
+    pub fn msg_options_page_desc_customize_ribbon(&self) -> String {
+        self.0
+            .msg("options-page-desc-customize-ribbon", None)
+            .unwrap()
+    }
+    pub fn msg_options_page_desc_general(&self) -> String {
+        self.0.msg("options-page-desc-general", None).unwrap()
+    }
+    pub fn msg_options_page_desc_language(&self) -> String {
+        self.0.msg("options-page-desc-language", None).unwrap()
+    }
+    pub fn msg_options_page_desc_proofing(&self) -> String {
+        self.0.msg("options-page-desc-proofing", None).unwrap()
+    }
+    pub fn msg_options_page_desc_quick_access_toolbar(&self) -> String {
+        self.0
+            .msg("options-page-desc-quick-access-toolbar", None)
+            .unwrap()
+    }
+    pub fn msg_options_page_desc_save(&self) -> String {
+        self.0.msg("options-page-desc-save", None).unwrap()
+    }
     pub fn msg_options_proofing(&self) -> String {
         self.0.msg("options-proofing", None).unwrap()
     }
-    pub fn msg_options_proofing_planned(&self) -> String {
-        self.0.msg("options-proofing-planned", None).unwrap()
+    pub fn msg_options_quick_access_toolbar(&self) -> String {
+        self.0.msg("options-quick-access-toolbar", None).unwrap()
     }
     pub fn msg_options_save_autorecover(&self) -> String {
         self.0.msg("options-save-autorecover", None).unwrap()

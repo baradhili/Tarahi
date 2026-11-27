@@ -64,9 +64,11 @@ impl App {
             return;
         }
         let freshly_opened = std::mem::take(&mut self.options_opened_this_frame);
-        // #304: a confirm modal ABOVE the dialog (the close/new
-        // confirmation) owns Escape while it is up.
-        let esc_blocked = self.confirm_close.is_some() || self.confirm_new;
+        // #304: a modal ABOVE the dialog (the close/new confirmation,
+        // or an About window left open behind it) owns Escape while
+        // it is up.
+        let esc_blocked =
+            self.confirm_close.is_some() || self.confirm_new || self.about_open;
         let outcome = match self.options_draft.as_mut() {
             Some(draft) => {
                 draft.lang_persist_failed = self.lang_write_failed;
@@ -90,7 +92,6 @@ impl App {
                     self.options_draft = None;
                 }
             }
-            crate::options::Outcome::Apply => self.commit_options(ctx),
             crate::options::Outcome::Cancel => {
                 self.options_open = false;
                 self.options_draft = None;
@@ -118,7 +119,8 @@ impl App {
         };
         // #305 review: the SETTINGS write result rides up too — a
         // failed options.json save warns in the dialog and retries on
-        // the next Apply/OK (the in-memory apply always happened).
+        // the next OK (the in-memory apply always happened; #396
+        // retired the mid-dialog Apply).
         match self.options_store.apply(d) {
             Ok(()) => self.settings_write_failed = false,
             Err(e) => {

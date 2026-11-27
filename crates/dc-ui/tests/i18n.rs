@@ -925,22 +925,17 @@ fn options_language_save_failure_warns_and_a_retry_persists() {
     // The file did NOT land on the unwritable spot.
     assert!(!blocker.join("language.json").exists());
 
-    // The retry: point the store at the writable tempdir and Apply
+    // The retry: point the store at the writable tempdir and OK
     // again — the draft's language matches the in-memory current, so
-    // only the failed-write retry rule makes this write.
+    // only the failed-write retry rule makes this write. The
+    // successful retry closes the dialog too (OK's contract; #396
+    // retired the mid-dialog Apply, so OK is the retry surface).
     dc_ui::i18n::set_store_dir_for_tests(Some(dir.path().to_path_buf()));
-    harness.get_by_label("Übernehmen").click();
-    harness.run();
-    assert!(
-        harness.query_by_label_contains("Sprachwahl").is_none(),
-        "the warning cleared after the successful retry"
-    );
-    // A saved choice closes cleanly on OK.
     harness.get_by_label("OK").click();
     harness.run();
     assert!(
         !harness.state().debug_options_open(),
-        "OK closes the dialog once the save succeeded"
+        "the successful OK retry closes the dialog"
     );
     let text = std::fs::read_to_string(dir.path().join("language.json")).unwrap();
     assert!(text.contains("\"de\""), "the choice landed: {text}");
