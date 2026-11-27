@@ -1,20 +1,25 @@
-//! The Tell Me command registry (#204 step 1): the ribbon tree
-//! flattened into a searchable command list.
+//! The Tell Me command registry and matcher (#204 steps 1–2): the
+//! ribbon tree flattened into a searchable command list.
 //!
 //! `ribbon::groups(tab, ctx)` is a pure function of the [`TabCtx`]
 //! snapshot and every `RibbonButton` already carries the (label,
 //! tip, icon, enabled, action) the search needs — so the registry IS
 //! the tree, flattened per frame from the same snapshot the ribbon
-//! renders from (the keytips path already rebuilds the tree twice
-//! per frame; flattening all tabs is the same cost). Zero drift by
-//! construction: a command becomes searchable the moment its button
-//! exists, in exactly the states the ribbon paints it.
+//! renders from. Zero drift by construction: a command becomes
+//! searchable the moment its button exists, in exactly the states
+//! the ribbon paints it.
 //!
 //! Result labels follow the DISPLAY language — [`ribbon::build`]
 //! reads the active catalog, so entries carry the same localized
 //! text their ribbon buttons paint (owner direction, 2026-11-27).
-//! Matching by English words under a non-English catalog is step
-//! 2's `anchor_labels`-style dual build, not this one.
+//! Each entry also carries its ENGLISH anchor label (the #257
+//! dual-build trick `anchor_labels` uses: the tree is rebuilt under
+//! `L10n::En` and flattened in the identical order — the builders
+//! are pure functions of the snapshot, so the two runs are
+//! structurally identical and the positional zip pairs each entry
+//! with its own English name). Step 2's matcher ranks over label +
+//! keywords + anchor, so a German or Persian chrome finds commands
+//! in either language in the same run.
 //!
 //! The tree is walked in its UNMIRRORED (LTR) order whatever the
 //! display language: a search index is not a painted surface, so
@@ -37,6 +42,11 @@ pub struct CommandEntry {
     /// its name in `alt` (#252). This is the text result rows show,
     /// in the display language.
     pub label: String,
+    /// The ENGLISH a11y label (the #257 anchor): the text a
+    /// non-English chrome matches by, so English words find
+    /// commands under any catalog. Equals `label` under an English
+    /// UI.
+    pub anchor: String,
     pub tip: String,
     /// Mirrors the button under the same `TabCtx` the ribbon renders
     /// from — the spec's unavailable state without a second context
@@ -53,38 +63,55 @@ pub struct CommandEntry {
 /// Flatten EVERY tab's tree — the fixed [`ribbon::TABS`] plus the
 /// contextual ContainerTools — into the searchable command list, in
 /// strip order. Pure function of the snapshot; callers rebuild per
-/// frame, never cache.
+/// frame, never cache. Each tab's tree is built twice, once under
+/// the active catalog (the display labels) and once under English
+/// (the anchors) — the `anchor_labels` cost class.
 pub fn registry(ctx: &TabCtx) -> Vec<CommandEntry> {
     let s = crate::i18n::strs();
+    let en = crate::i18n::strs_for(crate::l10n::L10n::En);
     let mut out = Vec::new();
     for tab in ribbon::TABS.iter().copied().chain([Tab::ContainerTools]) {
-        for g in ribbon::build(s, tab, ctx) {
-            for col in g.cols {
-                flatten_col(tab, col, &mut out);
+        let act = buttons(ribbon::build(s, tab, ctx));
+        let anchor = buttons(ribbon::build(en, tab, ctx));
+        // Pure functions of the same snapshot: the two builds are
+        // structurally identical (the #257 invariant anchor_labels
+        // already rides), so the positional zip pairs each entry
+        // with its OWN English name.
+        debug_assert_eq!(act.len(), anchor.len(), "dual builds must match");
+        for (b, eb) in act.into_iter().zip(anchor) {
+            out.push(entry(tab, b, eb));
+        }
+    }
+    out
+}
+
+/// Flatten a tab's group tree into its buttons, in content order
+/// (group → column → stack/grid row → button).
+fn buttons(groups: Vec<ribbon::Group>) -> Vec<RibbonButton> {
+    let mut out = Vec::new();
+    for g in groups {
+        for col in g.cols {
+            match col {
+                Col::Big(b) => out.push(b),
+                Col::Stack(v) => out.extend(v),
+                Col::Grid(rows) => {
+                    for row in rows {
+                        out.extend(row);
+                    }
+                }
             }
         }
     }
     out
 }
 
-fn flatten_col(tab: Tab, col: Col, out: &mut Vec<CommandEntry>) {
-    match col {
-        Col::Big(b) => out.push(entry(tab, b)),
-        Col::Stack(v) => out.extend(v.into_iter().map(|b| entry(tab, b))),
-        Col::Grid(rows) => {
-            for row in rows {
-                out.extend(row.into_iter().map(|b| entry(tab, b)));
-            }
-        }
-    }
-}
-
-fn entry(tab: Tab, b: RibbonButton) -> CommandEntry {
+fn entry(tab: Tab, b: RibbonButton, en: RibbonButton) -> CommandEntry {
     let (keywords, shortcut) = overlay(b.action);
     CommandEntry {
         tab,
         icon: b.icon,
         label: b.a11y_label().to_string(),
+        anchor: en.a11y_label().to_string(),
         tip: b.tip,
         enabled: b.enabled,
         action: b.action,
@@ -110,10 +137,19 @@ fn overlay(action: Action) -> (&'static [&'static str], Option<&'static str>) {
     const NONE: &[&str] = &[];
     match action {
         // The acceptance walk types "align": the six align commands
-        // must surface, but "Center", "Middle" and "To Page" don't
-        // contain the word.
-        Action::AlignHCenter | Action::AlignVCenter | Action::AlignToPage => (&["align"], None),
-        // "Dist H"/"Dist V" abbreviate Visio's "Distribute".
+        // are the bare direction words "Left", "Center", "Right",
+        // "Top", "Middle", "Bottom" (plus "To Page") — none contains
+        // the word "align".
+        Action::AlignLeft
+        | Action::AlignRight
+        | Action::AlignTop
+        | Action::AlignBottom
+        | Action::AlignHCenter
+        | Action::AlignVCenter
+        | Action::AlignToPage => (&["align"], None),
+        // "Dist H"/"Dist V" abbreviate Visio's "Distribute" — and
+        // nothing more (owner call, 2026-11-27: Distribute does not
+        // match "align").
         Action::DistributeH | Action::DistributeV => (&["distribute"], None),
         // The spec's §6 example: typing "link" surfaces the link
         // commands; the label is "Hyperlink".
@@ -127,6 +163,85 @@ fn overlay(action: Action) -> (&'static [&'static str], Option<&'static str>) {
         Action::SpellCheck => (NONE, Some("F7")),
         _ => (NONE, None),
     }
+}
+
+/// Match quality (#204 step 2): prefix beats word-start beats
+/// substring. Ordinal order IS the ranking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum MatchRank {
+    /// The string starts with the token.
+    Prefix,
+    /// Some word inside the string starts with the token.
+    WordStart,
+    /// The token appears anywhere in the string.
+    Substring,
+}
+
+/// Result-row cap (#204 step 2: "cap ~8").
+const RESULT_CAP: usize = 8;
+
+/// Search the registry (#204 step 2). Every whitespace token of the
+/// query must match — case-insensitively — somewhere in the entry's
+/// searchable text: the display-language label, the English anchor,
+/// or the overlay keywords; an entry's rank is its WEAKEST token,
+/// so a query whose words all prefix-match outranks one where a
+/// word only substring-matches. Within a rank, enabled commands
+/// come before disabled ones (the spec's own captures, §4.2/§4.4,
+/// paint the faded unavailable rows after the actionable ones) and
+/// ties then keep registry order (stable). Empty/whitespace queries
+/// match nothing — the idle "Try" list (step 6) is the caller's to
+/// show.
+pub fn search<'a>(reg: &'a [CommandEntry], query: &str) -> Vec<&'a CommandEntry> {
+    let tokens: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+    let mut hits: Vec<(MatchRank, bool, &CommandEntry)> = reg
+        .iter()
+        .filter_map(|e| {
+            let mut rank = MatchRank::Prefix;
+            for t in &tokens {
+                rank = rank.max(token_rank(e, t)?);
+            }
+            Some((rank, !e.enabled, e))
+        })
+        .collect();
+    // Stable sort: equal (rank, availability) keeps registry order.
+    hits.sort_by_key(|&(rank, disabled, _)| (rank, disabled));
+    hits.into_iter().map(|(_, _, e)| e).take(RESULT_CAP).collect()
+}
+
+/// The best rank one token achieves against an entry's searchable
+/// strings; `None` when the token matches none of them.
+fn token_rank(e: &CommandEntry, token: &str) -> Option<MatchRank> {
+    let strings = std::iter::once(e.label.as_str())
+        .chain(std::iter::once(e.anchor.as_str()))
+        .chain(e.keywords.iter().copied());
+    let mut best = None;
+    for s in strings {
+        let l = s.to_lowercase();
+        let r = if l.starts_with(token) {
+            MatchRank::Prefix
+        } else if words(&l).any(|w| w.starts_with(token)) {
+            MatchRank::WordStart
+        } else if l.contains(token) {
+            MatchRank::Substring
+        } else {
+            continue;
+        };
+        if best.is_none_or(|b| r < b) {
+            best = Some(r);
+        }
+    }
+    best
+}
+
+/// The words of a (lowercased) string: runs of alphanumerics, so
+/// "Dist H" and Persian space/ZWNJ-separated text both split right.
+fn words(lowercased: &str) -> impl Iterator<Item = &str> {
+    lowercased
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
 }
 
 #[cfg(test)]
@@ -172,6 +287,29 @@ mod tests {
             .expect("action lives in the ribbon tree")
     }
 
+    /// A hand-built entry — the matcher is pure text, so fixtures
+    /// prove two-language behavior without touching the
+    /// process-global language (that switch lives in tests/i18n.rs).
+    fn fixture(
+        action: Action,
+        label: &str,
+        anchor: &str,
+        keywords: &'static [&'static str],
+        enabled: bool,
+    ) -> CommandEntry {
+        CommandEntry {
+            tab: Tab::Home,
+            icon: Icon::Grid,
+            label: label.to_string(),
+            anchor: anchor.to_string(),
+            tip: String::new(),
+            enabled,
+            action,
+            keywords,
+            shortcut: None,
+        }
+    }
+
     /// Every tab's tree is flattened, the contextual ContainerTools
     /// included — its commands stay findable (unavailable) even with
     /// nothing selected, per the acceptance criteria.
@@ -191,11 +329,13 @@ mod tests {
 
     /// Entries carry the a11y label, not the painted one — the
     /// compact icon-only tier paints "" and keeps its name in `alt`
-    /// (#252); a registry row must never lose that name.
+    /// (#252); a registry row must never lose that name. The anchor
+    /// is the same tier's English name.
     #[test]
     fn entries_carry_a11y_labels() {
         let reg = registry(&ctx());
         assert!(reg.iter().all(|e| !e.label.is_empty()));
+        assert!(reg.iter().all(|e| !e.anchor.is_empty()));
         // An icon-only command: Home's Lasso paints no label.
         assert!(!find(&reg, Action::LassoTool).label.is_empty());
     }
@@ -211,6 +351,7 @@ mod tests {
             has_doc: true,
             has_sel: true,
             multi_sel: true,
+            tri_sel: true,
             sel_container: true,
             ..ctx()
         });
@@ -228,6 +369,8 @@ mod tests {
         assert!(find(&reg, Action::AlignVCenter).keywords.contains(&"align"));
         assert!(find(&reg, Action::AlignToPage).keywords.contains(&"align"));
         assert!(find(&reg, Action::DistributeH).keywords.contains(&"distribute"));
+        // Owner call, 2026-11-27: Distribute does NOT match "align".
+        assert!(!find(&reg, Action::DistributeH).keywords.contains(&"align"));
         assert!(find(&reg, Action::Hyperlink).keywords.contains(&"link"));
         assert!(find(&reg, Action::FitPage).keywords.contains(&"zoom"));
         assert!(find(&reg, Action::Zoom100).keywords.contains(&"zoom"));
@@ -252,5 +395,153 @@ mod tests {
         assert!(a.iter().zip(&b).all(|(x, y)| x.action == y.action));
         assert_eq!(a.first().map(|e| e.tab), Some(Tab::Home)); // File has no tree
         assert_eq!(a.last().map(|e| e.tab), Some(Tab::ContainerTools));
+    }
+
+    /// Prefix > word-start > substring, case-insensitively — and the
+    /// rank beats registry order (the fixtures are inserted worst
+    /// first).
+    #[test]
+    fn ranks_prefix_word_start_substring() {
+        let reg = vec![
+            fixture(Action::Macros, "Separate", "Separate", &[], true), // substring
+            fixture(Action::Macros, "Format Painter", "Format Painter", &[], true), // word-start
+            fixture(Action::Macros, "Paste", "Paste", &[], true),     // prefix
+        ];
+        let out = search(&reg, "pA");
+        assert_eq!(
+            out.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(),
+            ["Paste", "Format Painter", "Separate"]
+        );
+    }
+
+    /// Two-language matching in one run: the display label, the
+    /// English anchor, and the keywords are all searchable — a
+    /// German chrome finds its command by any of the three.
+    #[test]
+    fn matches_in_both_languages_and_keywords() {
+        let reg = vec![fixture(
+            Action::Hyperlink,
+            "Verknüpfung",
+            "Verweis",
+            &["link"],
+            true,
+        )];
+        assert_eq!(search(&reg, "verkn").len(), 1); // display label
+        assert_eq!(search(&reg, "verw").len(), 1); // English anchor
+        assert_eq!(search(&reg, "link").len(), 1); // keyword
+        assert_eq!(search(&reg, "LINK").len(), 1); // case-insensitive
+        assert!(search(&reg, "hyperlink").is_empty()); // in neither string here
+    }
+
+    /// Every token must match, and the WEAKEST token governs the
+    /// rank: "align le" puts a keyword-prefix pair above an earlier
+    /// entry whose second token only word-starts.
+    #[test]
+    fn every_token_must_match_and_weakest_governs() {
+        let reg = vec![
+            fixture(Action::AlignLeft, "Align Left", "Align Left", &[], true),
+            fixture(Action::Macros, "Align", "Align", &["left"], true),
+        ];
+        let out = search(&reg, "align le");
+        assert_eq!(
+            out.iter().map(|e| e.action).collect::<Vec<_>>(),
+            [Action::Macros, Action::AlignLeft]
+        );
+        // A token nothing matches excludes the entry outright.
+        assert!(search(&reg, "align zzz").is_empty());
+    }
+
+    /// Within a rank, enabled commands come before disabled ones
+    /// (spec §4.2/§4.4 paint the faded rows after the actionable
+    /// ones) — but a prefix match on a disabled command still beats
+    /// a substring match on an enabled one (relevance first).
+    #[test]
+    fn enabled_ranks_above_disabled_within_a_tier() {
+        let reg = vec![
+            fixture(Action::Macros, "Paste", "Paste", &[], false), // disabled prefix
+            fixture(Action::Macros, "Paste Special", "Paste Special", &[], true),
+            fixture(Action::Macros, "Separate", "Separate", &[], true), // substring
+        ];
+        let out = search(&reg, "pa");
+        assert_eq!(
+            out.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(),
+            ["Paste Special", "Paste", "Separate"]
+        );
+    }
+
+    /// The cap: at most RESULT_CAP rows, stable registry order
+    /// among ties.
+    #[test]
+    fn caps_results_and_keeps_stable_order() {
+        let reg: Vec<CommandEntry> = ["za", "zb", "zc", "zd", "ze", "zf", "zg", "zh", "zi", "zj"]
+            .iter()
+            .map(|l| fixture(Action::Macros, l, l, &[], true))
+            .collect();
+        let out = search(&reg, "z");
+        assert_eq!(out.len(), RESULT_CAP);
+        assert_eq!(
+            out.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(),
+            ["za", "zb", "zc", "zd", "ze", "zf", "zg", "zh"]
+        );
+    }
+
+    /// Empty and whitespace-only queries match nothing — the idle
+    /// "Try" list is the caller's (step 6).
+    #[test]
+    fn empty_queries_match_nothing() {
+        let reg = registry(&ctx());
+        assert!(search(&reg, "").is_empty());
+        assert!(search(&reg, "   ").is_empty());
+    }
+
+    /// The acceptance walk against the real tree: typing "align"
+    /// (with a multi-selection live, so the commands are usable)
+    /// surfaces To Page and the six align commands — the bare
+    /// direction-word labels match via their keyword — with the
+    /// first disabled Home text-align stub taking the last row
+    /// under the cap. Distribute does not match "align" (owner
+    /// call, 2026-11-27); "distribute" is its query.
+    #[test]
+    fn align_walk_surfaces_the_align_commands() {
+        let working = TabCtx {
+            has_doc: true,
+            has_sel: true,
+            multi_sel: true,
+            tri_sel: true,
+            ..ctx()
+        };
+        let reg = registry(&working);
+        let out = search(&reg, "align");
+        assert_eq!(
+            out.iter().map(|e| e.action).collect::<Vec<_>>(),
+            [
+                Action::AlignToPage,   // "To Page" via keyword
+                Action::AlignLeft,     // "Left" via keyword
+                Action::AlignHCenter,  // "Center" via keyword
+                Action::AlignRight,    // "Right" via keyword
+                Action::AlignTop,      // "Top" via keyword
+                Action::AlignVCenter,  // "Middle" via keyword
+                Action::AlignBottom,   // "Bottom" via keyword
+                Action::Macros,        // the disabled "Align Left" text stub
+            ]
+        );
+        assert!(!out[7].enabled); // the stub renders faded
+        let dist = search(&reg, "distribute");
+        assert_eq!(
+            dist.iter().map(|e| e.action).collect::<Vec<_>>(),
+            [Action::DistributeH, Action::DistributeV]
+        );
+    }
+
+    /// The contextual-only acceptance: Container Tools commands are
+    /// findable while nothing selects a container — rendered
+    /// unavailable, still returned.
+    #[test]
+    fn container_tools_findable_while_unselected() {
+        let reg = registry(&ctx()); // nothing selected
+        let out = search(&reg, "disband");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].action, Action::ContainerDisband);
+        assert!(!out[0].enabled);
     }
 }
