@@ -619,7 +619,8 @@ impl App {
                                     resp.widget_info(|| {
                                         egui::WidgetInfo::labeled(
                                             egui::Role::Button,
-                                            matches!(row, crate::tellme::PanelRow::Result(e) if e.enabled),
+                                            matches!(row, crate::tellme::PanelRow::Try { .. })
+                                                || matches!(row, crate::tellme::PanelRow::Result(e) if e.enabled),
                                             row_label(row),
                                         )
                                     });
@@ -724,6 +725,15 @@ impl App {
                                     }
                                 }
                             });
+                            // A caret-positioning click in the query is
+                            // NOT a dismissal (CodeRabbit review): the
+                            // field is part of the panel, so a click
+                            // egui counted as "outside the popup body"
+                            // keeps it open — only clicks outside BOTH
+                            // close it.
+                            if !open && fresp.clicked() {
+                                open = true;
+                            }
                             self.tellme_open = open;
                             if let Some(i) = hover {
                                 self.tellme_sel = i;

@@ -28,6 +28,7 @@ impl App {
             let mut run: Option<Action> = None;
             let mut drill: Option<&'static str> = None;
             let mut close = false;
+            let mut enter_handled = false;
             ctx.input(|i| {
                 if n > 0 {
                     if i.key_pressed(egui::Key::ArrowDown) {
@@ -37,6 +38,7 @@ impl App {
                         self.tellme_sel = (self.tellme_sel + n - 1) % n;
                     }
                     if i.key_pressed(egui::Key::Enter) {
+                        enter_handled = true;
                         match &rows[self.tellme_sel] {
                             crate::tellme::PanelRow::Result(e) if e.enabled => {
                                 run = Some(e.action);
@@ -55,6 +57,16 @@ impl App {
                     close = true;
                 }
             });
+            if enter_handled {
+                // Consume the Enter this machine handled (CodeRabbit
+                // review): the query field's own singleline Enter
+                // handler surrenders focus, which would dead-end the
+                // drill-down's refinement and the faded-row no-op.
+                ctx.input_mut(|i| {
+                    i.events
+                        .retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Enter, .. }))
+                });
+            }
             if let Some(q) = drill {
                 self.tellme_query = q.to_string();
                 self.tellme_sel = 0;
