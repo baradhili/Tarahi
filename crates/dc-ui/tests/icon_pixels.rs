@@ -123,3 +123,68 @@ fn icon_paints_in_full_shell() {
         "full-shell ribbon band has only {n} ink px — icons missing"
     );
 }
+
+/// #130: the Slide Show button's MDI play asset rasterizes — a broken
+/// or unparseable vendored SVG would fall to the gray square glyph
+/// (the `translate` gap this suite exists for).
+#[test]
+fn play_icon_rasterizes_green() {
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(200.0, 120.0))
+        .build_ui(|ui| {
+            dc_ui::theme::install(ui.ctx());
+            Icon::Play.paint(
+                ui,
+                egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(80.0, 80.0)),
+                true,
+            );
+        });
+    h.run();
+    h.run();
+    let img = h.render().unwrap();
+    let (w, h) = img.dims();
+    let mut green = 0;
+    for x in 0..w {
+        for y in 0..h {
+            let p = img.px(x, y);
+            // the Office green family the icon tints with (0x2e,0x8b,0x57)
+            if p[0] < 0x70 && p[1] > 0x70 && p[1] < 0xa0 && p[2] > 0x40 && p[2] < 0x70 {
+                green += 1;
+            }
+        }
+    }
+    assert!(green > 300, "standalone 80px play icon: {green} green px");
+}
+
+/// #130: the same play icon inside the full shell's View tab (the
+/// exact `run_shell` recipe) — the standalone case above cannot catch
+/// a shell-only fallback.
+#[test]
+fn play_icon_rasterizes_in_full_shell_view_tab() {
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut app = dc_ui::app::App::with_blank();
+    app.set_tab_for_test(dc_ui::ribbon::Tab::View);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_ui(move |ui| {
+            dc_ui::theme::install_for(ui.ctx(), egui::ThemePreference::Light);
+            app.draw(ui);
+        });
+    h.run();
+    h.run();
+    let img = h.render().unwrap();
+    let (w, h) = img.dims();
+    let mut green = 0;
+    for x in 0..w {
+        for y in 0..h {
+            let p = img.px(x, y);
+            if p[0] < 0x70 && p[1] > 0x70 && p[1] < 0xa0 && p[2] > 0x40 && p[2] < 0x70 {
+                green += 1;
+            }
+        }
+    }
+    // The hero slot is 32×32 and the MDI play triangle covers under
+    // half of its viewBox — ~130 saturated pixels is a full triangle.
+    assert!(green > 100, "shell View tab play icon: {green} green px");
+}

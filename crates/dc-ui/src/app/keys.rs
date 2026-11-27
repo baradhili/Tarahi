@@ -5,6 +5,15 @@ use super::*;
 
 impl App {
     pub(super) fn handle_shortcuts(&mut self, ctx: &Context) {
+        // #130: the Slide Show owns the keyboard at the modal tier —
+        // the same precedence the Options dialog has (#304): while
+        // the show runs, keytips and the application shortcuts stand
+        // down and the show's own map decides everything.
+        if self.slideshow.is_some() {
+            self.keytips.disarm();
+            self.slideshow_keys(ctx);
+            return;
+        }
         // #304: the Options dialog is MODAL — while it is up the
         // application shortcuts (Ctrl+Z/N/S…) never fire and keytips
         // stand down; the dialog's own fields own the keyboard (a
@@ -69,9 +78,12 @@ impl App {
             }
             // #209 step 7: Presentation Mode owns Esc outright — the
             // chrome is hidden, so restoring it is the only Esc action
-            // (nothing else is reachable anyway).
+            // (nothing else is reachable anyway). #130: restoring the
+            // chrome restores the windowed shell — the fullscreen
+            // command leaves with it.
             if self.chrome_hidden && i.key_pressed(egui::Key::Escape) {
                 self.chrome_hidden = false;
+                self.fullscreen_pending = Some(false);
                 esc_dialog = true;
             } else
             // Esc closes the frontmost open dialog first (#110
@@ -157,6 +169,22 @@ impl App {
             // dead-ended the advertised flow).
             if i.key_pressed(egui::Key::F7) && (!kb_owned || self.text_edit.is_some()) {
                 self.dispatch(Action::SpellCheck);
+            }
+            // #130: F5 starts the Slide Show from the first page,
+            // Shift+F5 from the current one (PowerPoint muscle
+            // memory) — only with a document open. The in-canvas text
+            // editor still lets it through (the F7 rule); dialog
+            // fields keep their focus.
+            if i.key_pressed(egui::Key::F5)
+                && self.ed.is_some()
+                && (!kb_owned || self.text_edit.is_some())
+            {
+                let from = if i.modifiers.shift {
+                    ShowFrom::Current
+                } else {
+                    ShowFrom::First
+                };
+                self.dispatch(Action::Slideshow(from));
             }
             // Shape clipboard / duplicate / text edit (Visio keys). Not
             // while a text field owns the keyboard.

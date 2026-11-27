@@ -5770,6 +5770,20 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "slide-show",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "slide-show-f5",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "small-arrow",
         attribute: None,
         vars: &[],
@@ -7366,13 +7380,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..51679,
-            Self::En => 51679..101397,
-            Self::Es => 101397..156172,
-            Self::Fa => 156172..221361,
-            Self::Ja => 221361..276712,
-            Self::Ko => 276712..327676,
-            Self::ZhHans => 327676..372316,
+            Self::De => 0..51729,
+            Self::En => 51729..101503,
+            Self::Es => 101503..156374,
+            Self::Fa => 156374..221645,
+            Self::Ja => 221645..277076,
+            Self::Ko => 277076..328108,
+            Self::ZhHans => 328108..372814,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -10569,6 +10583,12 @@ impl L10nLanguage {
     }
     pub fn msg_slanted_tick(&self) -> String {
         self.0.msg("slanted-tick", None).unwrap()
+    }
+    pub fn msg_slide_show(&self) -> String {
+        self.0.msg("slide-show", None).unwrap()
+    }
+    pub fn msg_slide_show_f5(&self) -> String {
+        self.0.msg("slide-show-f5", None).unwrap()
     }
     pub fn msg_small_arrow(&self) -> String {
         self.0.msg("small-arrow", None).unwrap()

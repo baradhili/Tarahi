@@ -25,7 +25,7 @@ use vsdx::model::{Document, Shape};
 use crate::canvas::{self, Handle, HandleId, PageGeom, View};
 use crate::cmd::MoveShape;
 use crate::recent::RecentFiles;
-use crate::ribbon::{Action, Icon, Tab, TABS};
+use crate::ribbon::{Action, Icon, ShowFrom, Tab, TABS};
 use crate::stencil::{MasterKey, Stencil, StencilId, StencilSet};
 use crate::svgimg::TextureCache;
 use crate::theme;
@@ -267,7 +267,21 @@ pub struct App {
     zoom_pick: dialogs::ZoomPick,
     /// #209 step 7: Presentation Mode — ribbon, tab strip, panes and
     /// backstage chrome hidden; Esc or the status-bar button restores.
+    /// #130: it is full screen now — the toggle and its Esc restore
+    /// drive the viewport command too.
     chrome_hidden: bool,
+    /// #130: the active Slide Show — the read-only, page-at-a-time
+    /// presentation. While set, `draw` paints the show instead of the
+    /// shell; Esc restores the entry page and the windowed shell.
+    slideshow: Option<slideshow::SlideShow>,
+    /// A Fullscreen(on) viewport command waiting for the frame's
+    /// Context (#130) — the dispatch paths that decide it run without
+    /// one (the `os_clipboard_text` pattern).
+    fullscreen_pending: Option<bool>,
+    /// Test observability (#130): the last Fullscreen(on) command
+    /// sent (None when none was) — kittest cannot read viewport
+    /// output after a pass.
+    debug_fullscreen: Option<bool>,
     /// #246: the Language dialog is open.
     /// #218 review: the Jump-size drag's draft — a DragValue commit
     /// per frame flooded history; the draft edits locally and commits
@@ -1244,6 +1258,7 @@ mod pointer;
 mod selection;
 mod shell;
 mod sizepos;
+mod slideshow;
 mod snap;
 mod spell;
 

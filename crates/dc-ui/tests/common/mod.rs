@@ -268,6 +268,60 @@ pub fn no_pages_package(dir: &std::path::Path, file_name: &str) -> std::path::Pa
 /// The shell fixture with N named pages (#54): identical page bodies,
 /// sequential rIds and parts, all through the same zip layout.
 pub fn shell_fixture_pages(dir: &std::path::Path, names: &[&str]) -> std::path::PathBuf {
+    shell_fixture_pages_bodies(dir, names, None)
+}
+
+/// The #130 Slide Show fixture: `shell_fixture_pages` with a custom
+/// FIRST page — shape 1 (page center) carries a SubAddress GOTOPAGE
+/// hyperlink to the LAST page; shape 2 (lower left) carries an
+/// address-only URL row. The remaining pages keep the plain body.
+pub fn shell_fixture_pages_hyperlink(
+    dir: &std::path::Path,
+    names: &[&str],
+) -> std::path::PathBuf {
+    let shape = |id: usize, pin_x: f64, pin_y: f64, link: &str| {
+        format!(
+            "<Shape ID='{id}' Type='Shape' LineStyle='0' FillStyle='0' TextStyle='0'>\n\
+<Cell N='PinX' V='{pin_x}'/><Cell N='PinY' V='{pin_y}'/>\n\
+<Cell N='Width' V='2'/><Cell N='Height' V='1'/>\n\
+<Cell N='LocPinX' V='1'/><Cell N='LocPinY' V='0.5'/>\n\
+<Section N='Geometry' IX='0'>\n\
+<Row T='MoveTo' IX='1'><Cell N='X' V='0'/><Cell N='Y' V='0'/></Row>\n\
+<Row T='LineTo' IX='2'><Cell N='X' V='2'/><Cell N='Y' V='0'/></Row>\n\
+<Row T='LineTo' IX='3'><Cell N='X' V='2'/><Cell N='Y' V='1'/></Row>\n\
+<Row T='LineTo' IX='4'><Cell N='X' V='0'/><Cell N='Y' V='1'/></Row>\n\
+<Row T='LineTo' IX='5'><Cell N='X' V='0'/><Cell N='Y' V='0'/></Row>\n\
+</Section>\n\
+<Text>shape {id}</Text>\n\
+{link}</Shape>\n"
+        )
+    };
+    let link = |addr: &str, sub: &str| {
+        format!(
+            "<Section N='Hyperlink' IX='0'>\n\
+<Row IX='1'><Cell N='Address' V='{addr}'/><Cell N='SubAddress' V='{sub}'/></Row>\n\
+</Section>\n"
+        )
+    };
+    let last = names.last().copied().unwrap_or("Page-1");
+    let page1 = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+<PageContents xmlns='http://schemas.microsoft.com/office/visio/2012/main' xmlns:r='http://schemas.openxmlformats.org/officeDocument/2006/relationships'>\n\
+<Shapes>\n{}{}\n</Shapes>\n\
+</PageContents>\n",
+        shape(1, 4.25, 8.0, &link("", last)),
+        shape(2, 2.0, 2.0, &link("https://example.com/elsewhere", "")),
+    );
+    shell_fixture_pages_bodies(dir, names, Some(page1))
+}
+
+/// The `shell_fixture_pages` package with an optional custom FIRST
+/// page body (the #130 hyperlink fixture's seam).
+fn shell_fixture_pages_bodies(
+    dir: &std::path::Path,
+    names: &[&str],
+    first_page: Option<String>,
+) -> std::path::PathBuf {
     let document = r#"<?xml version="1.0" encoding="utf-8"?>
 <VisioDocument xmlns='http://schemas.microsoft.com/office/visio/2012/main' xmlns:r='http://schemas.openxmlformats.org/officeDocument/2006/relationships'>
 <StyleSheets><StyleSheet ID='0' NameU='No Style'>
@@ -410,10 +464,11 @@ pub fn shell_fixture_pages(dir: &std::path::Path, names: &[&str]) -> std::path::
     .into_iter()
     .collect();
     for i in 0..names.len() {
-        parts.insert(
-            6 + i,
-            (format!("visio/pages/page{}.xml", i + 1), page1.to_string()),
-        );
+        let body = match (&first_page, i) {
+            (Some(custom), 0) => custom.clone(),
+            _ => page1.to_string(),
+        };
+        parts.insert(6 + i, (format!("visio/pages/page{}.xml", i + 1), body));
     }
     for (name, data) in &parts {
         w.start_file(name.as_str(), opts).unwrap();

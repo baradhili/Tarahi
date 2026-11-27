@@ -866,6 +866,27 @@ impl App {
         self.chrome_hidden
     }
 
+    /// #130: whether the Slide Show is running.
+    #[doc(hidden)]
+    pub fn debug_slideshow_for_test(&self) -> bool {
+        self.slideshow.is_some()
+    }
+
+    /// #130: the last Fullscreen(on) viewport command sent (None
+    /// when none was) — kittest cannot read viewport output after a
+    /// pass, so the close path's debug-counter pattern carries it.
+    #[doc(hidden)]
+    pub fn debug_fullscreen_for_test(&self) -> Option<bool> {
+        self.debug_fullscreen
+    }
+
+    /// #130: the active page index in document order — kittest
+    /// observability for the show's navigation and restore.
+    #[doc(hidden)]
+    pub fn debug_page_idx_for_test(&self) -> usize {
+        self.page_idx
+    }
+
     /// #242: a pointer click at the screen center, for the splash-skip
     /// test (the splash reads raw input, not widgets).
     #[doc(hidden)]

@@ -83,6 +83,7 @@ File names map 1:1 to the `Icon` enum asset stems in
 | lock | lock-outline (#252, 2026-11-09) |
 | flip-vertical | flip-vertical (#149 mini-toolbar Flip flyout, 2026-11-14) |
 | projector | projector (Presentation Mode, #209 2026-11-27) |
+| play | play (Slide Show, #130 2026-11-27) |
 | cog | cog (Options ▸ General header, #396 2026-11-27) |
 | tune | tune (Options ▸ Advanced header, #396 2026-11-27) |
 | tab | tab (Options ▸ Customize Ribbon header, #396 2026-11-27) |

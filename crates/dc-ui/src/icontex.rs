@@ -75,6 +75,8 @@ fn svg(name: &str) -> Option<&'static str> {
         "lightbulb" => include_str!("../assets/icons/lightbulb.svg"),
         "flip-vertical" => include_str!("../assets/icons/flip-vertical.svg"),
         "projector" => include_str!("../assets/icons/projector.svg"),
+        // #130: the Slide Show button's play triangle.
+        "play" => include_str!("../assets/icons/play.svg"),
         // #396: the Options dialog's page-header glyphs.
         "cog" => include_str!("../assets/icons/cog.svg"),
         "tune" => include_str!("../assets/icons/tune.svg"),
