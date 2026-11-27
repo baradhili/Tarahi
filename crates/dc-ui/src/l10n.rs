@@ -6799,6 +6799,41 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "try-header",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "try-page-orientation",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "try-grid",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "try-whole-page",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "try-connectors",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "underline",
         attribute: None,
         vars: &[],
@@ -7373,13 +7408,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..51581,
-            Self::En => 51581..101227,
-            Self::Es => 101227..155962,
-            Self::Fa => 155962..221045,
-            Self::Ja => 221045..276320,
-            Self::Ko => 276320..327204,
-            Self::ZhHans => 327204..371778,
+            Self::De => 0..51799,
+            Self::En => 51799..101636,
+            Self::Es => 101636..156588,
+            Self::Fa => 156588..221975,
+            Self::Ja => 221975..277489,
+            Self::Ko => 277489..328593,
+            Self::ZhHans => 328593..373343,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -11087,6 +11122,21 @@ impl L10nLanguage {
     }
     pub fn msg_triple_tick_ring(&self) -> String {
         self.0.msg("triple-tick-ring", None).unwrap()
+    }
+    pub fn msg_try_header(&self) -> String {
+        self.0.msg("try-header", None).unwrap()
+    }
+    pub fn msg_try_page_orientation(&self) -> String {
+        self.0.msg("try-page-orientation", None).unwrap()
+    }
+    pub fn msg_try_grid(&self) -> String {
+        self.0.msg("try-grid", None).unwrap()
+    }
+    pub fn msg_try_whole_page(&self) -> String {
+        self.0.msg("try-whole-page", None).unwrap()
+    }
+    pub fn msg_try_connectors(&self) -> String {
+        self.0.msg("try-connectors", None).unwrap()
     }
     pub fn msg_underline(&self) -> String {
         self.0.msg("underline", None).unwrap()

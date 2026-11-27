@@ -552,22 +552,63 @@ impl App {
                         // the row layout mirrors under RTL like the
                         // box's own inner layout does.
                         if self.tellme_open {
-                            let results = self.tellme_results();
-                            self.tellme_sel = self.tellme_sel.min(results.len().saturating_sub(1));
+                            let rows = self.tellme_rows();
+                            let idle = self.tellme_query.trim().is_empty();
+                            self.tellme_sel = self.tellme_sel.min(rows.len().saturating_sub(1));
                             let sel = self.tellme_sel;
                             let rtl = crate::i18n::rtl();
                             let mut run: Option<Action> = None;
+                            let mut drill: Option<&'static str> = None;
                             let mut close = false;
                             let mut hover: Option<usize> = None;
                             // `open_bool` drives egui's popup memory
                             // from OUR flag (the field, not a button,
                             // anchors the panel) and writes egui's
-                            // outside-click close back into it.
+                            // outside-click close back into it. The
+                            // close behavior is OUTSIDE-clicks only:
+                            // a menu's default closes on ANY click,
+                            // which would kill the Try drill-down
+                            // (result rows close themselves on run).
                             let mut open = self.tellme_open;
-                            egui::Popup::menu(&fresp).open_bool(&mut open).show(|ui| {
+                            egui::Popup::menu(&fresp)
+                                .open_bool(&mut open)
+                                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                .show(|ui| {
                                 ui.set_min_width(240.0);
                                 let t = theme::menu_tokens(ui.visuals());
-                                for (i, e) in results.iter().enumerate() {
+                                if idle {
+                                    // The idle category header (spec
+                                    // 3.1's styled "Try" header) — a
+                                    // painted label, so name it (#56).
+                                    let (hr, hresp) = ui.allocate_exact_size(
+                                        Vec2::new(ui.available_width(), 18.0),
+                                        Sense::hover(),
+                                    );
+                                    hresp.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::Role::Label,
+                                            true,
+                                            crate::i18n::strs().msg_try_header(),
+                                        )
+                                    });
+                                    let hx = if rtl {
+                                        hr.left() + 4.0
+                                    } else {
+                                        hr.right() - 4.0
+                                    };
+                                    ui.painter().text(
+                                        Pos2::new(hx, hr.center().y),
+                                        if rtl {
+                                            egui::Align2::LEFT_CENTER
+                                        } else {
+                                            egui::Align2::RIGHT_CENTER
+                                        },
+                                        crate::i18n::strs().msg_try_header(),
+                                        egui::FontId::proportional(10.0),
+                                        t.hint,
+                                    );
+                                }
+                                for (i, row) in rows.iter().enumerate() {
                                     let (r, resp) = ui.allocate_exact_size(
                                         Vec2::new(ui.available_width(), 22.0),
                                         Sense::click(),
@@ -578,79 +619,121 @@ impl App {
                                     resp.widget_info(|| {
                                         egui::WidgetInfo::labeled(
                                             egui::Role::Button,
-                                            e.enabled,
-                                            e.label.as_str(),
+                                            matches!(row, crate::tellme::PanelRow::Result(e) if e.enabled),
+                                            row_label(row),
                                         )
                                     });
                                     if resp.hovered() {
                                         hover = Some(i);
                                     }
-                                    if i == sel || resp.hovered() {
+                                    let selected = i == sel || resp.hovered();
+                                    if selected {
                                         ui.painter().rect_filled(r, 2.0, t.hover_fill);
                                     }
-                                    // The mirrored row: icon at the
-                                    // reading start, shortcut hint at
-                                    // the reading end.
-                                    let icon_r = Rect::from_min_size(
-                                        if rtl {
-                                            r.right_top() + Vec2::new(-20.0, 2.0)
-                                        } else {
-                                            r.left_top() + Vec2::new(2.0, 2.0)
-                                        },
-                                        Vec2::splat(18.0),
-                                    );
-                                    e.icon.paint(ui, icon_r, e.enabled);
-                                    let (tx, ta) = if rtl {
-                                        (
-                                            Pos2::new(icon_r.left() - 4.0, r.center().y),
-                                            egui::Align2::RIGHT_CENTER,
-                                        )
-                                    } else {
-                                        (
-                                            Pos2::new(icon_r.right() + 4.0, r.center().y),
-                                            egui::Align2::LEFT_CENTER,
-                                        )
+                                    let label_color = match row {
+                                        crate::tellme::PanelRow::Result(e) if e.enabled => t.label,
+                                        crate::tellme::PanelRow::Result(_) => t.label_disabled,
+                                        // Try rows are plain prompts —
+                                        // always actionable.
+                                        crate::tellme::PanelRow::Try { .. } => t.label,
                                     };
-                                    ui.painter().text(
-                                        tx,
-                                        ta,
-                                        &e.label,
-                                        egui::FontId::proportional(11.5),
-                                        if e.enabled {
-                                            t.label
-                                        } else {
-                                            t.label_disabled
-                                        },
-                                    );
-                                    if let Some(sc) = e.shortcut {
-                                        let (hx, ha) = if rtl {
-                                            (
-                                                Pos2::new(r.left() + 4.0, r.center().y),
-                                                egui::Align2::LEFT_CENTER,
-                                            )
-                                        } else {
-                                            (
-                                                Pos2::new(r.right() - 4.0, r.center().y),
-                                                egui::Align2::RIGHT_CENTER,
-                                            )
-                                        };
-                                        ui.painter().text(
-                                            hx,
-                                            ha,
-                                            sc,
-                                            egui::FontId::proportional(10.0),
-                                            t.hint,
-                                        );
-                                    }
-                                    if resp.clicked() && e.enabled {
-                                        run = Some(e.action);
-                                        close = true;
+                                    match row {
+                                        crate::tellme::PanelRow::Result(e) => {
+                                            // The mirrored row: icon at
+                                            // the reading start,
+                                            // shortcut hint at the
+                                            // reading end.
+                                            let icon_r = Rect::from_min_size(
+                                                if rtl {
+                                                    r.right_top() + Vec2::new(-20.0, 2.0)
+                                                } else {
+                                                    r.left_top() + Vec2::new(2.0, 2.0)
+                                                },
+                                                Vec2::splat(18.0),
+                                            );
+                                            e.icon.paint(ui, icon_r, e.enabled);
+                                            let (tx, ta) = if rtl {
+                                                (
+                                                    Pos2::new(icon_r.left() - 4.0, r.center().y),
+                                                    egui::Align2::RIGHT_CENTER,
+                                                )
+                                            } else {
+                                                (
+                                                    Pos2::new(icon_r.right() + 4.0, r.center().y),
+                                                    egui::Align2::LEFT_CENTER,
+                                                )
+                                            };
+                                            ui.painter().text(
+                                                tx,
+                                                ta,
+                                                &e.label,
+                                                egui::FontId::proportional(11.5),
+                                                label_color,
+                                            );
+                                            if let Some(sc) = e.shortcut {
+                                                let (hx, ha) = if rtl {
+                                                    (
+                                                        Pos2::new(r.left() + 4.0, r.center().y),
+                                                        egui::Align2::LEFT_CENTER,
+                                                    )
+                                                } else {
+                                                    (
+                                                        Pos2::new(r.right() - 4.0, r.center().y),
+                                                        egui::Align2::RIGHT_CENTER,
+                                                    )
+                                                };
+                                                ui.painter().text(
+                                                    hx,
+                                                    ha,
+                                                    sc,
+                                                    egui::FontId::proportional(10.0),
+                                                    t.hint,
+                                                );
+                                            }
+                                            if resp.clicked() && e.enabled {
+                                                run = Some(e.action);
+                                                close = true;
+                                            }
+                                        }
+                                        crate::tellme::PanelRow::Try { label, query } => {
+                                            // A plain prompt row: text at
+                                            // the reading start, no icon
+                                            // (Office's Try items).
+                                            let (tx, ta) = if rtl {
+                                                (
+                                                    Pos2::new(r.right() - 6.0, r.center().y),
+                                                    egui::Align2::RIGHT_CENTER,
+                                                )
+                                            } else {
+                                                (
+                                                    Pos2::new(r.left() + 6.0, r.center().y),
+                                                    egui::Align2::LEFT_CENTER,
+                                                )
+                                            };
+                                            ui.painter().text(
+                                                tx,
+                                                ta,
+                                                label,
+                                                egui::FontId::proportional(11.5),
+                                                label_color,
+                                            );
+                                            if resp.clicked() {
+                                                drill = Some(query);
+                                            }
+                                        }
                                     }
                                 }
                             });
                             self.tellme_open = open;
                             if let Some(i) = hover {
                                 self.tellme_sel = i;
+                            }
+                            if let Some(q) = drill {
+                                // A Try pick drills down: the query
+                                // populates and the results show (#204
+                                // step 6, spec 3.1).
+                                self.tellme_query = q.to_string();
+                                self.tellme_sel = 0;
                             }
                             if close || !open {
                                 self.tellme_open = false;
@@ -782,18 +865,13 @@ impl App {
         ui.add_space(2.0);
     }
 
-    /// #204 step 3: the Tell Me panel's result rows — the flattened
-    /// registry searched with the live query. Rebuilt per frame while
-    /// the panel is open (the same snapshot cost class as the keytips
-    /// path), never cached.
-    pub(super) fn tellme_results(&self) -> Vec<crate::tellme::CommandEntry> {
-        crate::tellme::search(
-            &crate::tellme::registry(&self.ribbon_ctx()),
-            &self.tellme_query,
-        )
-        .into_iter()
-        .cloned()
-        .collect()
+    /// #204 step 3: the Tell Me panel's rows — the flattened registry
+    /// searched with the live query, or the idle Try list while the
+    /// query is empty (step 6). Rebuilt per frame while the panel is
+    /// open (the same snapshot cost class as the keytips path), never
+    /// cached.
+    pub(super) fn tellme_rows(&self) -> Vec<crate::tellme::PanelRow> {
+        crate::tellme::rows(&self.ribbon_ctx(), &self.tellme_query)
     }
 
     /// The per-frame ribbon snapshot (#252): every fact a tab's group
@@ -1206,4 +1284,13 @@ fn status_chip(
     }
     icon.paint(ui, r.shrink(2.0), enabled);
     enabled && resp.clicked()
+}
+
+/// The a11y label of a Tell Me panel row (#204 step 6): a result
+/// carries its command's name, a Try row its intent text.
+fn row_label(row: &crate::tellme::PanelRow) -> &str {
+    match row {
+        crate::tellme::PanelRow::Result(e) => e.label.as_str(),
+        crate::tellme::PanelRow::Try { label, .. } => label,
+    }
 }

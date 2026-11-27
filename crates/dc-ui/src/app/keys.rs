@@ -23,9 +23,10 @@ impl App {
         // (Keeping the focus in the query field while the arrows
         // drive the panel is step 4's wiring, when the field lands.)
         if self.tellme_open {
-            let results = self.tellme_results();
-            let n = results.len();
+            let rows = self.tellme_rows();
+            let n = rows.len();
             let mut run: Option<Action> = None;
+            let mut drill: Option<&'static str> = None;
             let mut close = false;
             ctx.input(|i| {
                 if n > 0 {
@@ -35,15 +36,29 @@ impl App {
                     if i.key_pressed(egui::Key::ArrowUp) {
                         self.tellme_sel = (self.tellme_sel + n - 1) % n;
                     }
-                    if i.key_pressed(egui::Key::Enter) && results[self.tellme_sel].enabled {
-                        run = Some(results[self.tellme_sel].action);
-                        close = true;
+                    if i.key_pressed(egui::Key::Enter) {
+                        match &rows[self.tellme_sel] {
+                            crate::tellme::PanelRow::Result(e) if e.enabled => {
+                                run = Some(e.action);
+                                close = true;
+                            }
+                            // A Try pick drills down: the query
+                            // populates, the results show (#204 step
+                            // 6). A faded row does nothing (the
+                            // acceptance rule).
+                            crate::tellme::PanelRow::Try { query, .. } => drill = Some(query),
+                            crate::tellme::PanelRow::Result(_) => {}
+                        }
                     }
                 }
                 if i.key_pressed(egui::Key::Escape) {
                     close = true;
                 }
             });
+            if let Some(q) = drill {
+                self.tellme_query = q.to_string();
+                self.tellme_sel = 0;
+            }
             if close {
                 self.tellme_open = false;
                 self.tellme_query.clear();

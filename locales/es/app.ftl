@@ -1149,6 +1149,11 @@ transparent-background = Fondo transparente
 triple-tick = Marca triple
 triple-tick-dot = Marca triple + punto
 triple-tick-ring = Marca triple + anillo
+try-header = Prueba
+try-page-orientation = Cambia la orientación de la página
+try-grid = Activa o desactiva la cuadrícula
+try-whole-page = Zoom a la página completa
+try-connectors = Dibuja conectores entre formas
 underline = Subrayado
 underline-planned = Subrayado — planeado
 # $name - nombre de la propiedad

@@ -1080,6 +1080,11 @@ transparent-background = پس‌زمینهٔ شفاف
 triple-tick = تیک سه‌گانه
 triple-tick-dot = تیک سه‌گانه + نقطه
 triple-tick-ring = تیک سه‌گانه + حلقه
+try-header = امتحان کنید
+try-page-orientation = جهت‌گیری صفحه را تغییر دهید
+try-grid = شبکه را روشن یا خاموش کنید
+try-whole-page = بزرگ‌نمایی به تمام صفحه
+try-connectors = کشیدن اتصال‌دهنده بین شکل‌ها
 underline = زیرخط
 underline-planned = زیرخط — برنامه‌ریزی شده
 # $name - نام ویژگی

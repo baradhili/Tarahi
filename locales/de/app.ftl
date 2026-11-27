@@ -1080,6 +1080,11 @@ transparent-background = Transparenter Hintergrund
 triple-tick = Dreifacher Tick
 triple-tick-dot = Dreifacher Tick + Punkt
 triple-tick-ring = Dreifacher Tick + Ring
+try-header = Ausprobieren
+try-page-orientation = Die Seitenausrichtung ändern
+try-grid = Das Raster ein- oder ausblenden
+try-whole-page = Auf die ganze Seite zoomen
+try-connectors = Verbinder zwischen Formen zeichnen
 underline = Unterstrichen
 underline-planned = Unterstrichen — geplant
 # $name - Eigenschaftsname

@@ -1154,6 +1154,11 @@ transparent-background = Transparent background
 triple-tick = Triple Tick
 triple-tick-dot = Triple Tick + Dot
 triple-tick-ring = Triple Tick + Ring
+try-header = Try
+try-page-orientation = Change the page orientation
+try-grid = Turn the grid on or off
+try-whole-page = Zoom to the whole page
+try-connectors = Draw connectors between shapes
 underline = Underline
 underline-planned = Underline — planned
 # $name (String) - property name

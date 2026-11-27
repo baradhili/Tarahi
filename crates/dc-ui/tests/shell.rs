@@ -808,3 +808,69 @@ fn tellme_type_arrow_enter_dispatches() {
         "Enter on a faded row dispatched nothing"
     );
 }
+
+/// #204 step 6: the idle panel opens with the "Try" list (spec 3.1) —
+/// curated from real delivered commands only. Enter (and a click)
+/// drills an intent into the query and its results show; picking the
+/// grid intent all the way through dispatches the Grid command.
+#[test]
+fn tellme_try_list_drills_down() {
+    use egui_kittest::kittest::Queryable;
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(
+            |ui, app: &mut App| {
+                dc_ui::theme::install(ui.ctx());
+                app.draw(ui);
+            },
+            App::with_blank(),
+        );
+    harness.run();
+    assert!(harness.state().debug_show_grid());
+
+    // The empty-query panel is the Try list, under its header.
+    harness.get_by_label("Tell Me").click();
+    harness.run();
+    assert!(
+        harness.state().debug_tellme_open(),
+        "focusing the field opened the panel"
+    );
+    assert!(
+        harness.query_by_label("Try").is_some(),
+        "the Try header is labeled"
+    );
+
+    // Enter on the first Try intent (page orientation) drills the
+    // query; the command's result row shows.
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(
+        harness.query_by_label("Orientation").is_some(),
+        "the intent drilled into its results"
+    );
+
+    // The click path: back to the Try list, click the grid intent,
+    // run the result — the Grid command dispatches through Action.
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    harness.get_by_label("Tell Me").click();
+    harness.run();
+    harness.get_by_label("Turn the grid on or off").click();
+    harness.run();
+    assert!(
+        harness.query_by_label("Grid").is_some(),
+        "the grid intent drilled into its results"
+    );
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(
+        !harness.state().debug_show_grid(),
+        "the drilled result dispatched the Grid command"
+    );
+    assert!(
+        !harness.state().debug_tellme_open(),
+        "the panel closed after the run"
+    );
+}
