@@ -936,6 +936,7 @@ impl App {
                     crate::ribbon::Icon::Magnet,
                     crate::i18n::strs().msg_snap_glue_chip_tip(),
                     both,
+                    true,
                 ) {
                     let on = !both;
                     self.snap.snap_active = on;
@@ -949,9 +950,21 @@ impl App {
                     crate::ribbon::Icon::Connector,
                     crate::i18n::strs().msg_autoconnect_chip_tip(),
                     self.snap.autoconnect,
+                    true,
                 ) {
                     self.dispatch(Action::ToggleAutoConnect);
                 }
+                // #209 step 6 (spec §3.3): the macro-record chip in its
+                // resting state — disabled, the spec's tooltip. No macro
+                // engine exists yet (M7); the active-recording visual
+                // waits for that feature's own issue.
+                status_chip(
+                    ui,
+                    crate::ribbon::Icon::Macro,
+                    crate::i18n::strs().msg_macro_record_tip(),
+                    false,
+                    false,
+                );
             }
             ui.with_layout(rev, |ui| {
                 // Visio status bar right end: − [zoom slider] + N%
@@ -964,6 +977,7 @@ impl App {
                         crate::ribbon::Icon::Fit,
                         crate::i18n::strs().msg_fit_page_window_tip(),
                         self.view.fit_mode,
+                        true,
                     ) {
                         self.dispatch(Action::FitPage);
                     }
@@ -1018,19 +1032,21 @@ impl App {
 
 /// A status-bar toggle chip (#209): the MDI icon in a compact hit box,
 /// Visio's chip treatment — a selected fill when on, the hover fill
-/// otherwise — and one tooltip carrying the accessible name. Returns
-/// whether it was clicked.
+/// otherwise — and one tooltip carrying the accessible name. A
+/// disabled chip (the macro placeholder) paints the muted icon and
+/// never clicks. Returns whether it was clicked.
 fn status_chip(
     ui: &mut Ui,
     icon: crate::ribbon::Icon,
     tip: String,
     selected: bool,
+    enabled: bool,
 ) -> bool {
     let t = theme::shell_tokens(ui.visuals());
     let (r, resp) = ui.allocate_exact_size(egui::vec2(20.0, 16.0), egui::Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &tip));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, &tip));
     let resp = resp.on_hover_text(tip);
-    if selected || resp.hovered() {
+    if enabled && (selected || resp.hovered()) {
         let (fill, edge) = if selected {
             (t.ribbon_selected, t.ribbon_selected_edge)
         } else {
@@ -1040,6 +1056,6 @@ fn status_chip(
         ui.painter()
             .rect_stroke(r, 2.0, Stroke::new(1.0, edge), egui::StrokeKind::Middle);
     }
-    icon.paint(ui, r.shrink(2.0), true);
-    resp.clicked()
+    icon.paint(ui, r.shrink(2.0), enabled);
+    enabled && resp.clicked()
 }

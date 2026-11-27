@@ -610,6 +610,7 @@ lock-is-set-protection-section = { $lock } está establecido (sección Protectio
 lock-the-container-against-membe = Bloquear el contenedor contra ediciones de miembros — planeado
 long-arrow = Flecha larga
 long-dash = Guion largo
+macro-record-tip = No hay macros grabándose actualmente. Haga clic para comenzar a grabar una nueva macro.
 macro-security = Seguridad de macros
 macro-security-m7 = Seguridad de macros — M7
 macros = Macros

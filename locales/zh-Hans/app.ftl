@@ -542,6 +542,7 @@ lock-is-set-protection-section = 已设置 { $lock }（“保护”节）
 lock-the-container-against-membe = 锁定容器以禁止成员编辑 — 计划中
 long-arrow = 长箭头
 long-dash = 长虚线
+macro-record-tip = 当前没有正在录制的宏。单击可开始录制新宏。
 macro-security = 宏安全性
 macro-security-m7 = 宏安全性 — M7
 macros = 宏

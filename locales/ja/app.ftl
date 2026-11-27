@@ -542,6 +542,7 @@ lock-is-set-protection-section = { $lock } が設定されています（Protect
 lock-the-container-against-membe = コンテナーのメンバーシップ編集を禁止 — 予定
 long-arrow = 長い矢印
 long-dash = 長い破線
+macro-record-tip = 現在記録中のマクロはありません。クリックすると新しいマクロの記録を開始します。
 macro-security = マクロ セキュリティ
 macro-security-m7 = マクロ セキュリティ — M7
 macros = マクロ

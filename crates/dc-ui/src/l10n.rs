@@ -3509,6 +3509,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "macro-record-tip",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "macro-security",
         attribute: None,
         vars: &[],
@@ -7296,13 +7303,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..50959,
-            Self::En => 50959..100074,
-            Self::Es => 100074..154187,
-            Self::Fa => 154187..218570,
-            Self::Ja => 218570..273190,
-            Self::Ko => 273190..323460,
-            Self::ZhHans => 323460..367551,
+            Self::De => 0..51082,
+            Self::En => 51082..100289,
+            Self::Es => 100289..154510,
+            Self::Fa => 154510..219055,
+            Self::Ja => 219055..273812,
+            Self::Ko => 273812..324203,
+            Self::ZhHans => 324203..368377,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -9233,6 +9240,9 @@ impl L10nLanguage {
     }
     pub fn msg_long_dash(&self) -> String {
         self.0.msg("long-dash", None).unwrap()
+    }
+    pub fn msg_macro_record_tip(&self) -> String {
+        self.0.msg("macro-record-tip", None).unwrap()
     }
     pub fn msg_macro_security(&self) -> String {
         self.0.msg("macro-security", None).unwrap()
