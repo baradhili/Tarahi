@@ -53,6 +53,11 @@ assets = [
 ]
 
 [package.metadata.generate-rpm]
+# The package is `tarahi`, as for the deb; without a name the rpm takes the
+# crate's (`dc-ui`), which `rpm -q tarahi` and the ArtCraft Launcher don't
+# find. Earlier rpms were `dc-ui`: obsoleting it lets an upgrade replace
+# that package instead of colliding on /usr/bin/tarahi.
+name = "tarahi"
 assets = [
     { source = "../../target/release/tarahi", dest = "/usr/bin/tarahi", mode = "755" },
     { source = "../../packaging/tarahi.desktop", dest = "/usr/share/applications/tarahi.desktop", mode = "644" },
@@ -77,6 +82,9 @@ assets = [
     { source = "../../crates/dc/assets/dictionaries/fa_IR/LICENSE", dest = "/usr/share/licenses/tarahi/LICENSE-dict-fa-IR", mode = "644" },
 ]
 
+[package.metadata.generate-rpm.obsoletes]
+dc-ui = "*"
+
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 craft-ui = { path = "../../third_party/craft-ui" }
@@ -100,6 +108,12 @@ fluent-typed = "0.10"
 
 [build-dependencies]
 fluent-typed = { version = "0.10", features = ["build"] }
+
+# Windows: a VERSIONINFO resource on tarahi.exe, so installers and the
+# ArtCraft Launcher can read the installed version (build.rs). Host-gated:
+# only a Windows build compiles it.
+[target.'cfg(windows)'.build-dependencies]
+winresource = { version = "0.1", default-features = false }
 
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["snapshot", "wgpu"] }
