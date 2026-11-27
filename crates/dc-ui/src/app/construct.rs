@@ -38,6 +38,13 @@ impl App {
         // #268: the persisted options (user name/initials, the Save
         // page's AutoRecover settings) — headless ctors stay ephemeral.
         app.options_store = crate::options::Options::open();
+        // #300: a persisted manual theme choice overrides the detected
+        // mode BEFORE the first frame — both slots are installed above,
+        // so selecting is the whole override (no light flash at boot
+        // for a dark user). Follow-OS keeps the #52 startup exactly.
+        if let Some(pref) = app.options_store.theme.startup_pref() {
+            cc.egui_ctx.set_theme(pref);
+        }
         dc::spellcheck::enable_local_discovery();
         dc::spellcheck::register_local_dirs(
             crate::recent::config_base()

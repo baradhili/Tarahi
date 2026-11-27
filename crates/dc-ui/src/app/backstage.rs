@@ -78,7 +78,7 @@ impl App {
         match outcome {
             crate::options::Outcome::None => {}
             crate::options::Outcome::Ok => {
-                self.commit_options();
+                self.commit_options(ctx);
                 // PR #305 review: a FAILED save (language OR
                 // options.json) keeps the dialog open — closing here
                 // would hide the in-dialog warning (the File screen
@@ -90,7 +90,7 @@ impl App {
                     self.options_draft = None;
                 }
             }
-            crate::options::Outcome::Apply => self.commit_options(),
+            crate::options::Outcome::Apply => self.commit_options(ctx),
             crate::options::Outcome::Cancel => {
                 self.options_open = false;
                 self.options_draft = None;
@@ -102,12 +102,14 @@ impl App {
     /// store is not ephemeral) and the Language page's choice (the
     /// Options dialog is the ONLY language surface since #304 retired
     /// the View ▸ Window dialog; the headless pinning rule picks the
-    /// ephemeral twins when the store is in-memory).
-    pub(super) fn commit_options(&mut self) {
+    /// ephemeral twins when the store is in-memory). The #300 theme
+    /// choice applies to the live context in the same commit.
+    pub(super) fn commit_options(&mut self, ctx: &egui::Context) {
         let Some(d) = self.options_draft.as_ref() else {
             return;
         };
         let lang = d.lang;
+        let theme_change = d.theme != self.options_store.theme;
         let lang_change = match lang {
             crate::options::LangChoice::System => !crate::i18n::is_system_match(),
             crate::options::LangChoice::Concrete(l) => {
@@ -131,6 +133,16 @@ impl App {
         // interval or trimmed name corrects visibly on the next paint).
         if let Some(d) = self.options_draft.as_mut() {
             d.sync_committed(&self.options_store);
+        }
+        // #300: a changed theme choice flips the shell on the very
+        // next frame — the same single `set_theme` the OS watcher
+        // makes, and Follow-OS re-arms by re-detecting NOW (the
+        // watcher only reports changes, so an OS flip that happened
+        // while a manual choice was active must not wait for the next
+        // one). An unchanged choice applies nothing, so the Follow-OS
+        // default never probes on a commit.
+        if theme_change {
+            self.apply_theme_choice(ctx);
         }
         // #304: retry a FAILED persistence even when the in-memory
         // language already matches the draft — swallowing the write
@@ -166,6 +178,27 @@ impl App {
                         crate::i18n::strs().msg_options_language_save_failed()
                     );
                 }
+            }
+        }
+    }
+
+    /// #300: apply the committed theme choice to the live context.
+    /// Forced Light/Dark is the same single `set_theme` the OS watcher
+    /// makes (both style slots are installed, so selecting restyles
+    /// every shell surface next frame); Follow-OS re-detects — on
+    /// Linux that is the concrete gsettings/portal probe, elsewhere
+    /// `System` hands tracking back to eframe, both exactly the #52
+    /// startup behavior.
+    pub(super) fn apply_theme_choice(&self, ctx: &egui::Context) {
+        match self.options_store.theme {
+            crate::options::ThemeChoice::FollowOs => {
+                ctx.set_theme(crate::os_theme::detect())
+            }
+            crate::options::ThemeChoice::Light => {
+                ctx.set_theme(egui::ThemePreference::Light)
+            }
+            crate::options::ThemeChoice::Dark => {
+                ctx.set_theme(egui::ThemePreference::Dark)
             }
         }
     }

@@ -1,11 +1,13 @@
 //! File ▸ Options (GitHub #268) — the Visio-2016-style Options dialog
 //! behind the backstage rail's Options entry, with **General** (user
-//! name/initials — the Comments author field), **Save** (AutoRecover
-//! interval + location) and **Language** (the display-language choice,
-//! including the "match system locale" entry mirroring first-run
-//! detection) as first-class pages; Proofing and Advanced stay grayed
-//! "planned" rows until their waves land (each grayed row keeps its
-//! Visio name — never invented sections).
+//! name/initials — the Comments author field — plus the #300 theme
+//! choice, the in-app analogue of Visio's General-page "Office Theme"
+//! picker), **Save** (AutoRecover interval + location) and
+//! **Language** (the display-language choice, including the "match
+//! system locale" entry mirroring first-run detection) as first-class
+//! pages; Proofing and Advanced stay grayed "planned" rows until
+//! their waves land (each grayed row keeps its Visio name — never
+//! invented sections).
 //!
 //! This module owns the domain (the app.rs decomposition direction):
 //! the app-level options store (`options.json` in the user-config dir,
@@ -50,6 +52,9 @@ pub struct Options {
     pub autorecover_minutes: u32,
     /// The AutoRecover file location; empty = the app default.
     pub autorecover_dir: String,
+    /// The #300 shell-appearance choice: follow the OS (#52) or force
+    /// light/dark in-app (Visio's General-page "Office Theme" slot).
+    pub theme: ThemeChoice,
     /// Where the options persist; `None` = in-memory (ephemeral
     /// constructors — headless tests never touch the user's config).
     store: Option<PathBuf>,
@@ -63,6 +68,7 @@ impl Default for Options {
             autorecover: true,
             autorecover_minutes: 10,
             autorecover_dir: String::new(),
+            theme: ThemeChoice::FollowOs,
             store: None,
         }
     }
@@ -114,6 +120,10 @@ impl Options {
                 .map(|m| m.clamp(1, 120) as u32)
                 .unwrap_or(10),
             autorecover_dir: get_str("autorecover_dir"),
+            // #300: additive key — a file from before the choice (or
+            // from a build that spells a value this one does not know)
+            // reads as Follow-OS, the pre-#300 behavior.
+            theme: ThemeChoice::from_persisted(&get_str("theme")),
             store: None,
         })
     }
@@ -151,6 +161,7 @@ impl Options {
             self.autorecover_minutes = m.clamp(1, 120);
         }
         self.autorecover_dir = d.autorecover_dir.clone();
+        self.theme = d.theme;
         self.persist()
     }
 
@@ -167,6 +178,7 @@ impl Options {
             "autorecover": self.autorecover,
             "autorecover_minutes": self.autorecover_minutes,
             "autorecover_dir": self.autorecover_dir,
+            "theme": self.theme.as_persisted(),
         })
         .to_string();
         std::fs::write(path, text)
@@ -205,6 +217,55 @@ pub enum LangChoice {
     Concrete(L10n),
 }
 
+/// The #300 shell-appearance choice: follow the OS light/dark
+/// preference (#52 — the shipped default, so the option changes
+/// nothing until the user picks), or force Light/Dark in-app (the
+/// analogue of Visio's General-page "Office Theme" setting). Forcing
+/// is also the unblock for desktops the OS detection cannot reach
+/// (the Mint Cinnamon report on #300).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeChoice {
+    FollowOs,
+    Light,
+    Dark,
+}
+
+impl ThemeChoice {
+    /// The `options.json` spelling (additive key, `version` stays 1).
+    pub(crate) fn as_persisted(self) -> &'static str {
+        match self {
+            ThemeChoice::FollowOs => "follow-os",
+            ThemeChoice::Light => "light",
+            ThemeChoice::Dark => "dark",
+        }
+    }
+
+    /// Parse the persisted spelling; anything unknown (a missing key
+    /// reads as "", a future value as its own string) is Follow-OS —
+    /// the pre-#300 behavior, never a forced mode the user never
+    /// picked.
+    pub(crate) fn from_persisted(s: &str) -> ThemeChoice {
+        match s {
+            "light" => ThemeChoice::Light,
+            "dark" => ThemeChoice::Dark,
+            _ => ThemeChoice::FollowOs,
+        }
+    }
+
+    /// The startup selection for a persisted choice: `None` keeps the
+    /// #52 behavior exactly (detected mode + live watcher), a forced
+    /// choice selects its slot — `theme::install_for` filled both, so
+    /// selecting is the whole override and a dark user never sees a
+    /// light flash at boot.
+    pub fn startup_pref(self) -> Option<egui::ThemePreference> {
+        match self {
+            ThemeChoice::FollowOs => None,
+            ThemeChoice::Light => Some(egui::ThemePreference::Light),
+            ThemeChoice::Dark => Some(egui::ThemePreference::Dark),
+        }
+    }
+}
+
 /// The first-class left-nav pages. Proofing and Advanced are grayed
 /// rows in the nav, not pages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,6 +301,9 @@ pub struct Draft {
     pub autorecover_minutes: String,
     pub autorecover_dir: String,
     pub lang: LangChoice,
+    /// The #300 General-page theme choice (the commit applies it to
+    /// the live context; Follow-OS re-arms the #52 watcher).
+    pub theme: ThemeChoice,
     /// #304: the LAST commit's language persistence failed — the
     /// window paints a warning and the next Apply retries (app.rs
     /// syncs this from its own flag each frame; not captured).
@@ -263,6 +327,7 @@ impl Draft {
             autorecover_minutes: o.autorecover_minutes.to_string(),
             autorecover_dir: o.autorecover_dir.clone(),
             lang,
+            theme: o.theme,
             lang_persist_failed: false,
             settings_persist_failed: false,
         }
@@ -278,6 +343,7 @@ impl Draft {
         self.autorecover = o.autorecover;
         self.autorecover_minutes = o.autorecover_minutes.to_string();
         self.autorecover_dir = o.autorecover_dir.clone();
+        self.theme = o.theme;
     }
 }
 
@@ -447,7 +513,9 @@ fn nav(ui: &mut egui::Ui, draft: &mut Draft) {
 
 /// The General page: user name + initials — the Comments author field
 /// (the name feeds `User.AnnotationAuthor`; the initials the comment
-/// avatar).
+/// avatar) — and the #300 theme choice, Visio's General-page "Office
+/// Theme" slot: Follow-OS keeps the #52 behavior, Light/Dark force the
+/// shell in-app.
 fn general_page(ui: &mut egui::Ui, draft: &mut Draft) {
     let name_label = i18n::strs().msg_options_user_name();
     ui.label(&name_label);
@@ -464,6 +532,17 @@ fn general_page(ui: &mut egui::Ui, draft: &mut Draft) {
     r.widget_info(|| {
         egui::WidgetInfo::labeled(egui::Role::TextInput, true, &initials_label)
     });
+    ui.add_space(10.0);
+    ui.strong(i18n::strs().msg_options_theme());
+    for (choice, label) in [
+        (ThemeChoice::FollowOs, i18n::strs().msg_options_theme_follow_os()),
+        (ThemeChoice::Light, i18n::strs().msg_options_theme_light()),
+        (ThemeChoice::Dark, i18n::strs().msg_options_theme_dark()),
+    ] {
+        if ui.radio(draft.theme == choice, label).clicked() {
+            draft.theme = choice;
+        }
+    }
 }
 
 /// The Save page: AutoRecover interval + location (the settings the
@@ -544,6 +623,7 @@ mod tests {
         assert!(o.user_name.is_empty());
         assert!(o.user_initials.is_empty());
         assert!(o.autorecover_dir.is_empty());
+        assert_eq!(o.theme, ThemeChoice::FollowOs, "#300 default");
         assert!(!o.persists());
     }
 
@@ -557,6 +637,7 @@ mod tests {
         o.autorecover = false;
         o.autorecover_minutes = 15;
         o.autorecover_dir = "/tmp/autorecover".into();
+        o.theme = ThemeChoice::Dark;
         assert!(o.persist_to_for_test(&path));
         let loaded =
             Options::parse_for_test(&std::fs::read_to_string(&path).unwrap())
@@ -566,6 +647,43 @@ mod tests {
         assert!(!loaded.autorecover);
         assert_eq!(loaded.autorecover_minutes, 15);
         assert_eq!(loaded.autorecover_dir, "/tmp/autorecover");
+        assert_eq!(loaded.theme, ThemeChoice::Dark);
+    }
+
+    #[test]
+    fn theme_persists_additively_and_unknown_values_follow_the_os() {
+        // A pre-#300 file (no key) and a future value both read as
+        // Follow-OS — never a forced mode the user never picked.
+        assert_eq!(ThemeChoice::from_persisted(""), ThemeChoice::FollowOs);
+        assert_eq!(
+            ThemeChoice::from_persisted("colorful"),
+            ThemeChoice::FollowOs
+        );
+        assert_eq!(ThemeChoice::from_persisted("light"), ThemeChoice::Light);
+        assert_eq!(ThemeChoice::from_persisted("dark"), ThemeChoice::Dark);
+        let pre = Options::parse_for_test(r#"{"version":1,"user_name":"x"}"#)
+            .expect("old file parses");
+        assert_eq!(pre.theme, ThemeChoice::FollowOs);
+        let future = Options::parse_for_test(
+            r#"{"version":1,"theme":"solarized"}"#,
+        )
+        .expect("future file parses");
+        assert_eq!(future.theme, ThemeChoice::FollowOs);
+    }
+
+    #[test]
+    fn theme_startup_pref_selects_only_a_forced_choice() {
+        // Follow-OS keeps the #52 startup exactly (detected mode +
+        // live watcher); a forced choice selects its slot.
+        assert_eq!(ThemeChoice::FollowOs.startup_pref(), None);
+        assert_eq!(
+            ThemeChoice::Light.startup_pref(),
+            Some(egui::ThemePreference::Light)
+        );
+        assert_eq!(
+            ThemeChoice::Dark.startup_pref(),
+            Some(egui::ThemePreference::Dark)
+        );
     }
 
     #[test]
@@ -599,6 +717,7 @@ mod tests {
             autorecover_minutes: "0".into(),
             autorecover_dir: String::new(),
             lang: LangChoice::Concrete(L10n::En),
+            theme: ThemeChoice::FollowOs,
             lang_persist_failed: false,
             settings_persist_failed: false,
         };
@@ -620,6 +739,7 @@ mod tests {
             autorecover_minutes: "abc".into(),
             autorecover_dir: String::new(),
             lang: LangChoice::Concrete(L10n::En),
+            theme: ThemeChoice::FollowOs,
             lang_persist_failed: false,
             settings_persist_failed: false,
         };
@@ -631,10 +751,12 @@ mod tests {
     fn capture_reflects_the_store_and_the_passed_choice() {
         let mut o = Options::ephemeral();
         o.autorecover_minutes = 12;
+        o.theme = ThemeChoice::Dark;
         let d = Draft::capture(&o, LangChoice::Concrete(L10n::De));
         assert_eq!(d.page, Page::General);
         assert_eq!(d.autorecover_minutes, "12");
         assert_eq!(d.lang, LangChoice::Concrete(L10n::De));
+        assert_eq!(d.theme, ThemeChoice::Dark);
         let d = Draft::capture(&o, LangChoice::System);
         assert_eq!(d.lang, LangChoice::System);
     }
