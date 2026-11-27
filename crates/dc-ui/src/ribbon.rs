@@ -22,9 +22,10 @@ pub mod view;
 
 /// Everything a tab's group builder needs from the app — one snapshot
 /// computed per frame in `app.rs`, so the per-tab modules never borrow
-/// the app and stay pure layout.
+/// the app and stay pure layout. `pub` since #204 step 1: the Tell Me
+/// registry takes the same snapshot as its input.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct TabCtx {
+pub struct TabCtx {
     pub has_doc: bool,
     pub has_sel: bool,
     /// 2+ shapes selected on the current page (aligns arm).
@@ -95,8 +96,11 @@ pub(crate) fn groups(tab: Tab, ctx: &TabCtx) -> Vec<Group> {
 /// dispatcher reads the current language through it; `anchor_labels`
 /// rebuilds the same tree under ENGLISH so a non-Latin chrome keys its
 /// keytip letters off the English command names (the RTL Office
-/// scheme) instead of collapsing to the digit fallback.
-fn build(s: &'static crate::l10n::L10nLanguage, tab: Tab, ctx: &TabCtx) -> Vec<Group> {
+/// scheme) instead of collapsing to the digit fallback. `pub(crate)`
+/// since #204 step 1: the Tell Me registry flattens this UNMIRRORED
+/// tree — search order is direction-independent; the RTL mirror in
+/// [`groups`] is a paint-time concern only.
+pub(crate) fn build(s: &'static crate::l10n::L10nLanguage, tab: Tab, ctx: &TabCtx) -> Vec<Group> {
     match tab {
         Tab::File => Vec::new(),
         Tab::Home => home::groups(s, ctx),

@@ -38,6 +38,9 @@ pub mod snap;
 pub mod spellcheck;
 pub mod stencil;
 pub mod svgimg;
+/// #204: the Tell Me command search — the flattened-ribbon registry
+/// (step 1) and, in later steps, matching and the results popup.
+pub mod tellme;
 pub mod textedit;
 pub mod theme;
 pub mod units;

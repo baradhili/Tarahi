@@ -152,6 +152,9 @@ impl App {
             docs: Vec::new(),
             winmenu_open: false,
             pending_activate: None,
+            tellme_open: false,
+            tellme_query: String::new(),
+            tellme_sel: 0,
             snap: crate::snap::SnapSettings::default(),
             snap_dlg_open: false,
             zoom_dlg_open: false,
@@ -304,6 +307,12 @@ impl App {
     #[doc(hidden)]
     pub fn debug_show_rulers(&self) -> bool {
         self.view.show_rulers
+    }
+    /// #204 tests: whether the Tell Me results panel is open (the
+    /// click-to-open / Esc wiring; the typed query path is step 4).
+    #[doc(hidden)]
+    pub fn debug_tellme_open(&self) -> bool {
+        self.tellme_open
     }
     /// #192 4a tests: File > Open ADDS a document — parse the file
     /// and activate it, stashing the current one (the real load()
