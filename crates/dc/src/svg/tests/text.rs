@@ -2435,3 +2435,34 @@ fn multi_root_master_label_renders_once() {
     let svg = render_page(&doc, &doc.pages[0]).unwrap();
     assert_eq!(svg.matches("FIRSTROOT").count(), 1, "{svg}");
 }
+
+/// #397 (CodeRabbit on PR #400): a shape's OWN `HideText` formula may
+/// read its own Prop/User rows. It evaluates with those rows bound, so
+/// switching the row shows or hides the label; the cached `V` only
+/// steps in when the formula cannot be evaluated.
+#[test]
+fn local_hide_text_formula_reads_the_shapes_own_rows() {
+    let hidden = |label_off: &str| {
+        let mut s = shape_at(1, (4.0, 5.0), 2.0, 1.0, 0.0);
+        s.sheet.children.push(SheetChild::Section(Section {
+            name: "Prop".into(),
+            rows: vec![Row {
+                n: Some("HideLabel".into()),
+                cells: vec![("Value".into(), Cell::value(label_off))],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+        let mut hide = Cell::value("1");
+        hide.f = Some("Prop.HideLabel".into());
+        s.sheet.set_cell("HideText", hide);
+        let (doc, page) = page_fixture(vec![s]);
+        let s = &page.shapes[0];
+        super::super::text::text_hidden(&doc, s, &[s])
+    };
+    assert!(
+        !hidden("0"),
+        "the row says show: the stale cache must not hide it"
+    );
+    assert!(hidden("1"), "the row says hide");
+}

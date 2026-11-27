@@ -605,6 +605,15 @@ fn field_row<'a>(
         .and_then(|sec| sec.row_by_ix(ix))
 }
 
+/// The page-side scope for a formula the shape authors itself: its own
+/// User/Prop rows over its master's, bare and `Sheet.ID!`-qualified
+/// (`HideText = Prop.HideLabel`, CodeRabbit on PR #400).
+pub(crate) fn local_scope(doc: &Document, s: &Shape, chain: &[&Shape]) -> formula::StrEnv {
+    let mut env = formula::StrEnv::new();
+    seed_sheet_strings(doc, s, chain, &mut env);
+    env
+}
+
 /// Seed the string/numeric environments from the shape's own sheet
 /// and its master chain (the `resolve_cell` layering for rows).
 fn seed_sheet_strings(doc: &Document, s: &Shape, chain: &[&Shape], strs: &mut formula::StrEnv) {

@@ -1041,7 +1041,8 @@ pub(crate) fn wrap_block_text_scaled(
 /// a fresh cache. A formula the instance inherits names its MASTER's
 /// shape IDs (the box masters' panel reads `Sheet.5!User.ShapeLayout>1`,
 /// 5 being the master root) and evaluates in the master-local scope the
-/// fields use (#378). Without a usable formula the instance's OWN cache
+/// fields use (#378); the shape's own formula reads its own User/Prop
+/// rows. Without a usable formula the instance's OWN cache
 /// comes before the master's: Visio stores the value it computed for the
 /// instance as `V` under `F='Inh'`, while the master's cache holds its
 /// own layout's 0.
@@ -1059,15 +1060,14 @@ pub(crate) fn text_hidden(doc: &Document, s: &Shape, chain: &[&Shape]) -> bool {
         .and_then(|f| {
             let env = shape_env(doc, s, chain);
             let inherited = own.is_none_or(|c| c.f.as_deref() == Some("Inh"));
-            let scope = if inherited {
-                crate::fields::master_scope(doc, s, chain)
-            } else {
-                None
-            };
-            match &scope {
-                Some(scope) => vsdx::formula::eval_field(f, &env, scope, None).ok(),
-                None => vsdx::formula::eval(f, &env).ok(),
-            }
+            // An inherited formula names its master's shape IDs; the
+            // shape's own formula reads its own rows (CodeRabbit on PR
+            // #400: `Prop.HideLabel` failed and the stale cache held).
+            let scope = inherited
+                .then(|| crate::fields::master_scope(doc, s, chain))
+                .flatten()
+                .unwrap_or_else(|| crate::fields::local_scope(doc, s, chain));
+            vsdx::formula::eval_field(f, &env, &scope, None).ok()
         })
         .and_then(|v| v.as_f64())
         .filter(|v| v.is_finite());
