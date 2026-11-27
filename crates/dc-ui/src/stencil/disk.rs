@@ -255,17 +255,28 @@ impl ExtractionHandle {
 }
 
 /// [`extract_catalog_with`] on a background thread with progress
-/// messages. `None` when there is no My Shapes directory to extract
+/// messages; each send asks `ctx` for a repaint so an idle window
+/// still picks the boot feedback up (`App::draw` is the only
+/// poller). `None` when there is no My Shapes directory to extract
 /// into. Partial files are safe: `open_from_disk` falls back to the
 /// embedded bytes whenever a file fails to read or parse.
-pub fn extract_catalog_async(my_shapes: Option<PathBuf>) -> Option<ExtractionHandle> {
+pub fn extract_catalog_async(
+    my_shapes: Option<PathBuf>,
+    ctx: egui::Context,
+) -> Option<ExtractionHandle> {
     let dir = my_shapes?;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let out = extract_catalog_with(Some(&dir), |done, total| {
             let _ = tx.send(ExtractionMsg::Progress { done, total });
+            ctx.request_repaint();
         });
         let _ = tx.send(ExtractionMsg::Done(out));
+        // Wake the UI: the boot note and the stencil pane only pick
+        // the messages up from `App::draw`, and an idle window runs
+        // no frames (#399 review — same contract as the export
+        // worker's completion repaint).
+        ctx.request_repaint();
     });
     Some(ExtractionHandle { rx })
 }
@@ -384,7 +395,8 @@ mod tests {
     #[test]
     fn extraction_reports_progress() {
         let tmp = tempfile::tempdir().unwrap();
-        let h = extract_catalog_async(Some(tmp.path().to_path_buf())).expect("handle");
+        let h = extract_catalog_async(Some(tmp.path().to_path_buf()), egui::Context::default())
+            .expect("handle");
         let done = loop {
             match h.poll() {
                 Some(ExtractionMsg::Done(e)) => break e,

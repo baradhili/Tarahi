@@ -950,7 +950,8 @@ impl App {
                             crate::export::PaneAction::Export => {
                                 let dir = self.path.parent().map(PathBuf::from);
                                 if let Some(ed) = self.ed.as_ref() {
-                                    self.export_pane.launch(&ed.doc, self.page_idx, dir);
+                                    self.export_pane
+                                        .launch(ui.ctx(), &ed.doc, self.page_idx, dir);
                                 }
                             }
                         }

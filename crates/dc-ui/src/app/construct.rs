@@ -68,7 +68,10 @@ impl App {
         // like any stencil without the first run blocking or going
         // silent (owner report 2026-10-30). Best-effort: an
         // unwritable My Shapes degrades to the embedded bytes.
-        app.stencil_extract = crate::stencil::disk::extract_catalog_async(Self::my_shapes_dir());
+        app.stencil_extract = crate::stencil::disk::extract_catalog_async(
+            Self::my_shapes_dir(),
+            cc.egui_ctx.clone(),
+        );
         if let Some(p) = path {
             // #242: the CLI entry's open rides the async flight like
             // every interactive open — the splash covers the boot and
