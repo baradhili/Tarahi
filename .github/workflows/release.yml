@@ -96,14 +96,19 @@ jobs:
           VER="${GITHUB_REF_NAME#v}"
           case "$VER" in [0-9]*) ;; *) VER="0.1.0" ;; esac
           echo "version=$VER" >> "$GITHUB_OUTPUT"
+          # Package version: a prerelease tag vX.Y.Z.<letter> becomes
+          # X.Y.Z~<letter>, which dpkg and rpm sort before X.Y.Z, so the
+          # stable release upgrades an installed prerelease.
+          PKG="$(printf '%s' "$VER" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+)\.([A-Za-z0-9]+)$/\1~\2/')"
+          echo "package=$PKG" >> "$GITHUB_OUTPUT"
       - name: deb
         # The workspace version stays 0.1.0; the package carries the
         # release version, which dpkg and the ArtCraft Launcher read.
-        run: cargo deb -p dc-ui --no-build --deb-version "${{ steps.ver.outputs.version }}"
+        run: cargo deb -p dc-ui --no-build --deb-version "${{ steps.ver.outputs.package }}"
       - name: rpm
         working-directory: crates/dc-ui
         run: |
-          cargo generate-rpm --set-metadata "version = \"${{ steps.ver.outputs.version }}\""
+          cargo generate-rpm --set-metadata "version = \"${{ steps.ver.outputs.package }}\""
           mv target/generate-rpm/*.rpm "${GITHUB_WORKSPACE}/Tarahi_${{ steps.ver.outputs.version }}_${{ matrix.rpm_arch }}.rpm"
       - name: AppImage
         env:
