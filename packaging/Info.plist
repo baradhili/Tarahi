@@ -5,7 +5,7 @@
     <key>CFBundleName</key>              <string>Tarahi</string>
     <key>CFBundleDisplayName</key>       <string>Tarahi</string>
     <key>CFBundleExecutable</key>        <string>Tarahi</string>
-    <key>CFBundleIdentifier</key>        <string>com.diagramcraft.app</string>
+    <key>CFBundleIdentifier</key>        <string>io.github.baradhili.tarahi</string>
     <key>CFBundlePackageType</key>       <string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key>           <string>0.1.0</string>
