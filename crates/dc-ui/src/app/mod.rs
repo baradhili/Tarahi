@@ -242,6 +242,15 @@ pub struct App {
     last_drag_ghost_rect: Option<egui::Rect>,
     mouse_page: Option<(f64, f64)>,
     status: String,
+    /// #204: the Tell Me results panel is open under the tab-strip
+    /// box (step 3's popup; the real query field that feeds it lands
+    /// with step 4).
+    tellme_open: bool,
+    /// #204: the live Tell Me query.
+    tellme_query: String,
+    /// #204: the keyboard-selected result row — hover moves it too,
+    /// Office-style.
+    tellme_sel: usize,
     /// #192 spec: the open ShapeSheet windows, one per target (each
     /// its own child window; a target appears at most once). #272: a
     /// target is a shape, a page's PageSheet or the DocumentSheet.

@@ -521,9 +521,13 @@ impl App {
                         let presp = presp.on_hover_text(
                             crate::i18n::strs().msg_tell_me_planned_for_a_later_mile(),
                         );
+                        // #204 step 3: clicking the box opens the
+                        // results panel (spec 3.1 — the dropdown opens
+                        // on interaction; the real query field that
+                        // feeds it lands with step 4).
                         if presp.clicked() {
-                            self.status =
-                                crate::i18n::strs().msg_tell_me_search_arrives_with_a_la();
+                            self.tellme_open = true;
+                            self.tellme_sel = 0;
                         }
                         // #184: Tell Me badges Q (Office's Alt+Q).
                         self.keytips.badges.push(crate::keytips::Badge {
@@ -532,6 +536,116 @@ impl App {
                             hit: crate::keytips::Hit::TellMe,
                             anchor: None,
                         });
+                        // #204 step 3: the results panel — a menu
+                        // popup anchored under the box, rebuilt per
+                        // frame from the same snapshot the ribbon
+                        // renders from. Rows carry the button's own
+                        // icon + label in the display language;
+                        // disabled commands render faded and never
+                        // dispatch. The keyboard machine (arrows /
+                        // Enter / Esc) lives in `handle_shortcuts`;
+                        // the row layout mirrors under RTL like the
+                        // box's own inner layout does.
+                        if self.tellme_open {
+                            let results = self.tellme_results();
+                            self.tellme_sel = self.tellme_sel.min(results.len().saturating_sub(1));
+                            let sel = self.tellme_sel;
+                            let rtl = crate::i18n::rtl();
+                            let mut run: Option<Action> = None;
+                            let mut close = false;
+                            egui::Popup::menu(&presp).show(|ui| {
+                                ui.set_min_width(240.0);
+                                let t = theme::menu_tokens(ui.visuals());
+                                for (i, e) in results.iter().enumerate() {
+                                    let (r, resp) = ui.allocate_exact_size(
+                                        Vec2::new(ui.available_width(), 22.0),
+                                        Sense::click(),
+                                    );
+                                    // Painted galley rows — name each
+                                    // for screen readers (#56; the
+                                    // issue's step-9 a11y walk).
+                                    resp.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::Role::Button,
+                                            e.enabled,
+                                            e.label.as_str(),
+                                        )
+                                    });
+                                    if resp.hovered() {
+                                        self.tellme_sel = i;
+                                    }
+                                    if i == sel || resp.hovered() {
+                                        ui.painter().rect_filled(r, 2.0, t.hover_fill);
+                                    }
+                                    // The mirrored row: icon at the
+                                    // reading start, shortcut hint at
+                                    // the reading end.
+                                    let icon_r = Rect::from_min_size(
+                                        if rtl {
+                                            r.right_top() + Vec2::new(-20.0, 2.0)
+                                        } else {
+                                            r.left_top() + Vec2::new(2.0, 2.0)
+                                        },
+                                        Vec2::splat(18.0),
+                                    );
+                                    e.icon.paint(ui, icon_r, e.enabled);
+                                    let (tx, ta) = if rtl {
+                                        (
+                                            Pos2::new(icon_r.left() - 4.0, r.center().y),
+                                            egui::Align2::RIGHT_CENTER,
+                                        )
+                                    } else {
+                                        (
+                                            Pos2::new(icon_r.right() + 4.0, r.center().y),
+                                            egui::Align2::LEFT_CENTER,
+                                        )
+                                    };
+                                    ui.painter().text(
+                                        tx,
+                                        ta,
+                                        &e.label,
+                                        egui::FontId::proportional(11.5),
+                                        if e.enabled {
+                                            t.label
+                                        } else {
+                                            t.label_disabled
+                                        },
+                                    );
+                                    if let Some(sc) = e.shortcut {
+                                        let (hx, ha) = if rtl {
+                                            (
+                                                Pos2::new(r.left() + 4.0, r.center().y),
+                                                egui::Align2::LEFT_CENTER,
+                                            )
+                                        } else {
+                                            (
+                                                Pos2::new(r.right() - 4.0, r.center().y),
+                                                egui::Align2::RIGHT_CENTER,
+                                            )
+                                        };
+                                        ui.painter().text(
+                                            hx,
+                                            ha,
+                                            sc,
+                                            egui::FontId::proportional(10.0),
+                                            t.hint,
+                                        );
+                                    }
+                                    if resp.clicked() && e.enabled {
+                                        run = Some(e.action);
+                                        close = true;
+                                    }
+                                }
+                            });
+                            if close {
+                                self.tellme_open = false;
+                                self.tellme_query.clear();
+                                self.tellme_sel = 0;
+                            }
+                            if let Some(a) = run {
+                                self.dispatch(a);
+                            }
+                        }
                         // The QAT cluster lands LEFT of Tell Me (this is
                         // a right-to-left layout): Save/Undo/Redo as
                         // window-level document controls on the menu
@@ -645,6 +759,20 @@ impl App {
             self.dispatch(a);
         }
         ui.add_space(2.0);
+    }
+
+    /// #204 step 3: the Tell Me panel's result rows — the flattened
+    /// registry searched with the live query. Rebuilt per frame while
+    /// the panel is open (the same snapshot cost class as the keytips
+    /// path), never cached.
+    pub(super) fn tellme_results(&self) -> Vec<crate::tellme::CommandEntry> {
+        crate::tellme::search(
+            &crate::tellme::registry(&self.ribbon_ctx()),
+            &self.tellme_query,
+        )
+        .into_iter()
+        .cloned()
+        .collect()
     }
 
     /// The per-frame ribbon snapshot (#252): every fact a tab's group

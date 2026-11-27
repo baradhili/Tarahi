@@ -31,7 +31,8 @@ use crate::ribbon::{self, Action, Col, Icon, RibbonButton, Tab, TabCtx};
 
 /// One searchable command: a ribbon button flattened out of its tab's
 /// group tree, plus the overlay data the tree can't derive (#204
-/// step 1).
+/// step 1). `Clone` since step 3: the panel owns its per-frame rows.
+#[derive(Clone)]
 pub struct CommandEntry {
     /// The tab the button lives on — ContainerTools included: the
     /// spec's contextual-only commands stay findable while nothing

@@ -14,6 +14,46 @@ impl App {
             self.slideshow_keys(ctx);
             return;
         }
+        // #204 step 3: while the Tell Me panel is open it owns the
+        // keyboard — arrows walk the results (wrapping), Enter runs
+        // the selected command (a faded row does nothing, per the
+        // acceptance), Esc closes the panel and returns the keys to
+        // the canvas. It stands BEFORE the keytip mode and the
+        // dialog/tool Esc paths so one press cannot do two things.
+        // (Keeping the focus in the query field while the arrows
+        // drive the panel is step 4's wiring, when the field lands.)
+        if self.tellme_open {
+            let results = self.tellme_results();
+            let n = results.len();
+            let mut run: Option<Action> = None;
+            let mut close = false;
+            ctx.input(|i| {
+                if n > 0 {
+                    if i.key_pressed(egui::Key::ArrowDown) {
+                        self.tellme_sel = (self.tellme_sel + 1) % n;
+                    }
+                    if i.key_pressed(egui::Key::ArrowUp) {
+                        self.tellme_sel = (self.tellme_sel + n - 1) % n;
+                    }
+                    if i.key_pressed(egui::Key::Enter) && results[self.tellme_sel].enabled {
+                        run = Some(results[self.tellme_sel].action);
+                        close = true;
+                    }
+                }
+                if i.key_pressed(egui::Key::Escape) {
+                    close = true;
+                }
+            });
+            if close {
+                self.tellme_open = false;
+                self.tellme_query.clear();
+                self.tellme_sel = 0;
+            }
+            if let Some(a) = run {
+                self.dispatch(a);
+            }
+            return;
+        }
         // #304: the Options dialog is MODAL — while it is up the
         // application shortcuts (Ctrl+Z/N/S…) never fire and keytips
         // stand down; the dialog's own fields own the keyboard (a

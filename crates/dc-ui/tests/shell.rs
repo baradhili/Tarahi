@@ -369,6 +369,43 @@ fn painted_shell_controls_carry_accessible_labels() {
     );
 }
 
+/// #204 step 3: clicking the Tell Me box opens the results panel
+/// (spec 3.1); Esc closes it and returns the keys to the canvas.
+/// (The typed-query walk — type, arrows, Enter dispatch — rides step
+/// 4's real input field; this pins the open/close wiring.)
+#[test]
+fn tellme_click_opens_panel_esc_closes() {
+    use egui_kittest::kittest::Queryable;
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(
+            |ui, app: &mut App| {
+                dc_ui::theme::install(ui.ctx());
+                app.draw(ui);
+            },
+            App::with_blank(),
+        );
+    harness.run();
+    assert!(
+        !harness.state().debug_tellme_open(),
+        "the panel starts closed"
+    );
+    harness.get_by_label("Tell Me").click();
+    harness.run();
+    assert!(
+        harness.state().debug_tellme_open(),
+        "clicking the box opened the panel"
+    );
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(
+        !harness.state().debug_tellme_open(),
+        "Esc closed the panel"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Multi-page tabs (GitHub #54)
 // ---------------------------------------------------------------------------
