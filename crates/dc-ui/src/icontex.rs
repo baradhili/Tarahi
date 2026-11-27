@@ -81,6 +81,10 @@ fn svg(name: &str) -> Option<&'static str> {
         "tab" => include_str!("../assets/icons/tab.svg"),
         "dock-top" => include_str!("../assets/icons/dock-top.svg"),
         "puzzle" => include_str!("../assets/icons/puzzle.svg"),
+        // The Language header's glyph (vendored since #246; the
+        // mapping was missing, so the header fell to the gray glyph
+        // fallback — review round).
+        "translate" => include_str!("../assets/icons/translate.svg"),
         _ => return None,
     })
 }

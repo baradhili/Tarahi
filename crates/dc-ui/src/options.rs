@@ -517,10 +517,10 @@ pub(crate) fn window(
     if freshly_opened {
         return outcome;
     }
-    // #304: a modal ABOVE this dialog (the close/new confirmation,
-    // or an About window left open behind it) owns Escape for the
-    // frame — letting the draft discard here too would drop the edits
-    // AND cancel the other modal, the worst of both.
+    // #304: a confirm modal ABOVE this dialog (the close/new
+    // confirmation) owns Escape for the frame — letting the draft
+    // discard here too would drop the edits AND cancel the close,
+    // the worst of both.
     if !esc_blocked && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         outcome = Outcome::Cancel;
     } else if !esc_blocked

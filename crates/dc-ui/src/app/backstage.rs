@@ -64,11 +64,13 @@ impl App {
             return;
         }
         let freshly_opened = std::mem::take(&mut self.options_opened_this_frame);
-        // #304: a modal ABOVE the dialog (the close/new confirmation,
-        // or an About window left open behind it) owns Escape while
-        // it is up.
-        let esc_blocked =
-            self.confirm_close.is_some() || self.confirm_new || self.about_open;
+        // #304: a confirm modal ABOVE the dialog (the close/new
+        // confirmation) owns Escape while it is up. An About window
+        // left open from the shell does NOT count: the backstage
+        // branch returns before About paints, so over this dialog it
+        // is invisible — and blocking Escape on it would strand the
+        // key (review round).
+        let esc_blocked = self.confirm_close.is_some() || self.confirm_new;
         let outcome = match self.options_draft.as_mut() {
             Some(draft) => {
                 draft.lang_persist_failed = self.lang_write_failed;
