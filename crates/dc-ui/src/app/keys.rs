@@ -25,63 +25,55 @@ impl App {
         if self.tellme_open {
             let rows = self.tellme_rows();
             let n = rows.len();
-            let mut run: Option<Action> = None;
-            let mut drill: Option<&'static str> = None;
             let mut close = false;
-            let mut enter_handled = false;
+            let mut arrows = false;
             ctx.input(|i| {
                 if n > 0 {
                     if i.key_pressed(egui::Key::ArrowDown) {
                         self.tellme_sel = (self.tellme_sel + 1) % n;
+                        arrows = true;
                     }
                     if i.key_pressed(egui::Key::ArrowUp) {
                         self.tellme_sel = (self.tellme_sel + n - 1) % n;
-                    }
-                    if i.key_pressed(egui::Key::Enter) {
-                        enter_handled = true;
-                        match &rows[self.tellme_sel] {
-                            crate::tellme::PanelRow::Result(e) if e.enabled => {
-                                run = Some(e.action);
-                                close = true;
-                            }
-                            // A Try pick drills down: the query
-                            // populates, the results show (#204 step
-                            // 6). A faded row does nothing (the
-                            // acceptance rule).
-                            crate::tellme::PanelRow::Try { query, .. } => drill = Some(query),
-                            crate::tellme::PanelRow::Result(_) => {}
-                        }
+                        arrows = true;
                     }
                 }
                 if i.key_pressed(egui::Key::Escape) {
                     close = true;
                 }
             });
-            if enter_handled {
-                // Consume the Enter this machine handled (CodeRabbit
-                // review): the query field's own singleline Enter
-                // handler surrenders focus, which would dead-end the
-                // drill-down's refinement and the faded-row no-op.
-                ctx.input_mut(|i| {
-                    i.events
-                        .retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Enter, .. }))
+            // #204 (CodeRabbit PR review): the panel owns the keyboard
+            // while open, so the keys it acts on never reach the query
+            // field — Enter (whose singleline handler surrenders
+            // focus, dead-ending drill refinement and the faded-row
+            // no-op; captured here, RESOLVED after the field applies
+            // this frame's typing, see `tab_strip`) and the arrows the
+            // selection walk uses (they would move the field's caret).
+            // ArrowLeft/Right stay the field's (query editing).
+            let mut consumed = vec![egui::Key::Enter];
+            if arrows {
+                consumed.push(egui::Key::ArrowDown);
+                consumed.push(egui::Key::ArrowUp);
+            }
+            ctx.input(|i| {
+                if i.key_pressed(egui::Key::Enter) {
+                    self.tellme_enter = true;
+                }
+            });
+            ctx.input_mut(|i| {
+                i.events.retain(|e| {
+                    !matches!(e, egui::Event::Key { key, .. } if consumed.contains(key))
                 });
-            }
-            if let Some(q) = drill {
-                self.tellme_query = q.to_string();
-                self.tellme_sel = 0;
-            }
+            });
             if close {
                 self.tellme_open = false;
                 self.tellme_query.clear();
                 self.tellme_sel = 0;
+                self.tellme_enter = false;
                 // #204 steps 3–4: closing restores focus to the
                 // canvas — surrender the field so the keyboard goes
                 // back to the app.
                 ctx.memory_mut(|m| m.surrender_focus(crate::tellme::field_id()));
-            }
-            if let Some(a) = run {
-                self.dispatch(a);
             }
             return;
         }

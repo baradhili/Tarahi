@@ -502,11 +502,62 @@ impl App {
                             ),
                             true,
                         );
+                        // The QAT cluster lands LEFT of Tell Me (this is
+                        // a right-to-left layout): Save/Undo/Redo as
+                        // window-level document controls on the menu
+                        // strip's right (#67 option D — with no menu
+                        // bar they are the only always-visible command
+                        // surface; the customize chevron is dropped
+                        // with the old title band).
+                        ui.add_space(10.0);
+                        // #184: the digit badges ride the QAT buttons
+                        // themselves (1..=9 by position, Office's
+                        // rule).
+                        qat_button(
+                            ui,
+                            Icon::Save,
+                            &crate::i18n::strs().msg_save_ctrl_s(),
+                            || Action::Save,
+                            self,
+                            1,
+                        );
+                        qat_button(
+                            ui,
+                            Icon::Undo,
+                            &crate::i18n::strs().msg_undo_ctrl_z(),
+                            || Action::Undo,
+                            self,
+                            2,
+                        );
+                        qat_button(
+                            ui,
+                            Icon::Redo,
+                            &crate::i18n::strs().msg_redo_ctrl_y(),
+                            || Action::Redo,
+                            self,
+                            3,
+                        );
+                        // #242: Help lives in the QAT (the owner's
+                        // placement) — opens the About window.
+                        qat_button(
+                            ui,
+                            Icon::Help,
+                            &crate::i18n::strs().msg_help_about(),
+                            || Action::About,
+                            self,
+                            4,
+                        );
                         // #204 step 4: a REAL query field in the same
-                        // chrome — the painted placeholder is gone.
-                        // Typing feeds the live search, gaining focus
-                        // opens the panel, and Alt+Q / the Q keytip
-                        // land here from the input path.
+                        // chrome — typing feeds the live search,
+                        // gaining focus opens the panel, and Alt+Q /
+                        // the Q keytip land here from the input path.
+                        // The placeholder stays PAINTED (not the
+                        // TextEdit's own hint): egui's hint-text
+                        // rendering varies per OS at the anti-alias
+                        // level, and the exact-match i18n goldens
+                        // would not survive it (the macOS CI round of
+                        // PR #409); the painter galley is the
+                        // deterministic path the old box used.
                         let field_r = Rect::from_min_max(
                             Pos2::new(pr.left() + 22.0, pr.top()),
                             Pos2::new(pr.right() - 4.0, pr.bottom()),
@@ -515,9 +566,23 @@ impl App {
                             .id(crate::tellme::field_id())
                             .frame(egui::Frame::NONE)
                             .font(egui::FontId::proportional(11.0))
-                            .desired_width(field_r.width())
-                            .hint_text(crate::i18n::strs().msg_tell_me_what_you_want_to_do());
+                            .desired_width(field_r.width());
+                        // `put` advances the mirrored layout's cursor
+                        // past the field rect — the field therefore
+                        // lives at the END of this closure, after the
+                        // QAT, so that advance has nothing left to
+                        // crowd (the QAT shift it caused was caught by
+                        // the macOS CI golden round of PR #409).
                         let fresp = ui.put(field_r, editor);
+                        if self.tellme_query.is_empty() {
+                            ui.painter().text(
+                                Pos2::new(pr.left() + 24.0, pr.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                crate::i18n::strs().msg_tell_me_what_you_want_to_do(),
+                                egui::FontId::proportional(11.0),
+                                tk.hint_text,
+                            );
+                        }
                         // Name the field for screen readers — a real
                         // TextEdit keeps its own role; the label keeps
                         // the a11y lookups (#56) keying on it.
@@ -533,6 +598,38 @@ impl App {
                         if fresp.gained_focus() {
                             self.tellme_open = true;
                             self.tellme_sel = 0;
+                        }
+                        // #204 (CodeRabbit PR review): an Enter seen by
+                        // the input path is CAPTURED there (before this
+                        // field updates the query) and resolved HERE,
+                        // against the query this frame's typing just
+                        // produced — replace-text-and-Enter in one
+                        // frame must run the NEW query's top hit, not
+                        // the stale one.
+                        if self.tellme_enter {
+                            self.tellme_enter = false;
+                            let rows = self.tellme_rows();
+                            self.tellme_sel = self.tellme_sel.min(rows.len().saturating_sub(1));
+                            if let Some(row) = rows.get(self.tellme_sel) {
+                                match row {
+                                    crate::tellme::PanelRow::Result(e) if e.enabled => {
+                                        self.tellme_open = false;
+                                        self.tellme_query.clear();
+                                        self.tellme_sel = 0;
+                                        ui.ctx().memory_mut(|m| {
+                                            m.surrender_focus(crate::tellme::field_id())
+                                        });
+                                        self.dispatch(e.action);
+                                    }
+                                    crate::tellme::PanelRow::Try { query, .. } => {
+                                        self.tellme_query = query.to_string();
+                                        self.tellme_sel = 0;
+                                    }
+                                    // A faded row does nothing (the
+                                    // acceptance rule).
+                                    crate::tellme::PanelRow::Result(_) => {}
+                                }
+                            }
                         }
                         // #184: Tell Me badges Q (Office's Alt+Q).
                         self.keytips.badges.push(crate::keytips::Badge {
@@ -741,9 +838,16 @@ impl App {
                             if let Some(q) = drill {
                                 // A Try pick drills down: the query
                                 // populates and the results show (#204
-                                // step 6, spec 3.1).
+                                // step 6, spec 3.1). Re-focus the
+                                // field (CodeRabbit PR review): egui
+                                // surrenders focus on a pointer click
+                                // outside the focused widget, and the
+                                // populated query must stay editable.
                                 self.tellme_query = q.to_string();
                                 self.tellme_sel = 0;
+                                ui.ctx().memory_mut(|m| {
+                                    m.request_focus(crate::tellme::field_id())
+                                });
                             }
                             if close || !open {
                                 self.tellme_open = false;
@@ -760,51 +864,7 @@ impl App {
                                 self.dispatch(a);
                             }
                         }
-                        // The QAT cluster lands LEFT of Tell Me (this is
-                        // a right-to-left layout): Save/Undo/Redo as
-                        // window-level document controls on the menu
-                        // strip's right (#67 option D — with no menu
-                        // bar they are the only always-visible command
-                        // surface; the customize chevron is dropped
-                        // with the old title band).
-                        ui.add_space(10.0);
-                        // #184: the digit badges ride the QAT buttons
-                        // themselves (1..=9 by position, Office's
-                        // rule).
-                        qat_button(
-                            ui,
-                            Icon::Save,
-                            &crate::i18n::strs().msg_save_ctrl_s(),
-                            || Action::Save,
-                            self,
-                            1,
-                        );
-                        qat_button(
-                            ui,
-                            Icon::Undo,
-                            &crate::i18n::strs().msg_undo_ctrl_z(),
-                            || Action::Undo,
-                            self,
-                            2,
-                        );
-                        qat_button(
-                            ui,
-                            Icon::Redo,
-                            &crate::i18n::strs().msg_redo_ctrl_y(),
-                            || Action::Redo,
-                            self,
-                            3,
-                        );
-                        // #242: Help lives in the QAT (the owner's
-                        // placement) — opens the About window.
-                        qat_button(
-                            ui,
-                            Icon::Help,
-                            &crate::i18n::strs().msg_help_about(),
-                            || Action::About,
-                            self,
-                            4,
-                        );
+
                     });
                 });
                 // #184: the armed veil covers the strip's rect

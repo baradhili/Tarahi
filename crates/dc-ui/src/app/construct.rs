@@ -155,6 +155,7 @@ impl App {
             tellme_open: false,
             tellme_query: String::new(),
             tellme_sel: 0,
+            tellme_enter: false,
             snap: crate::snap::SnapSettings::default(),
             snap_dlg_open: false,
             zoom_dlg_open: false,
