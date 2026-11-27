@@ -1,13 +1,25 @@
-//! File ▸ Options (GitHub #268) — the Visio-2016-style Options dialog
-//! behind the backstage rail's Options entry, with **General** (user
-//! name/initials — the Comments author field — plus the #300 theme
-//! choice, the in-app analogue of Visio's General-page "Office Theme"
-//! picker), **Save** (AutoRecover interval + location) and
-//! **Language** (the display-language choice, including the "match
-//! system locale" entry mirroring first-run detection) as first-class
-//! pages; Proofing and Advanced stay grayed "planned" rows until
-//! their waves land (each grayed row keeps its Visio name — never
-//! invented sections).
+//! File ▸ Options — the Visio-2016-style Options dialog behind the
+//! backstage rail's Options entry. #396 functional spec 1 rebuilt the
+//! WINDOW FRAMEWORK: a title bar (the "Options" title, a Help (?)
+//! button — disabled until a help mechanism exists — and the standard
+//! Close (✕), right-aligned beside it), a split-pane body (a
+//! text-only left category list — the active row carries the
+//! selection background — and a scrollable right pane that opens with
+//! a generic-icon + description header for the selected category),
+//! and a persistent footer bar whose only actions are OK and Cancel
+//! (Visio's Options footer has no Apply; the #304/#305 retry flow
+//! rides OK). The eight spec-1 categories are all live rows:
+//! General, Proofing, Save, Language, Advanced, Customize Ribbon,
+//! Quick Access Toolbar, Add-ins.
+//!
+//! Spec 1 owns the dialog's function and look only — NO pane
+//! functionality ships with it. The General (user name/initials, the
+//! Comments author field, plus the #300 theme choice), Save
+//! (AutoRecover interval + location) and Language (the
+//! display-language choice) controls are the pre-existing #268/#300
+//! mechanisms, kept exactly as they were; the other five categories'
+//! pages carry just the header until their spec-2..5 waves land
+//! (nothing is invented ahead of those specs).
 //!
 //! This module owns the domain (the app.rs decomposition direction):
 //! the app-level options store (`options.json` in the user-config dir,
@@ -16,12 +28,13 @@
 //! and the outcome forwarding. Everything the dialog edits is
 //! app-level — nothing here writes into the `.vsdx`.
 //!
-//! The dialog contract is the Hyperlinks dialog's (#71): Enter = OK,
-//! Apply commits without closing, Cancel / Esc discard the draft and
-//! close. It is a true MODAL (the #166 `egui::Modal` pattern) — the
-//! backdrop blocks the backstage behind it, and a backdrop click is
-//! ignored (it never discards edits). The dialog manages its own Esc
-//! (#110 audit) — the backstage's Esc guard skips while it is up.
+//! The dialog contract (#71, minus the retired Apply): Enter = OK,
+//! Cancel / Esc / ✕ discard the draft and close; OK commits every
+//! pending change across the pages and closes. It is a true MODAL
+//! (the #166 `egui::Modal` pattern) — the backdrop blocks the
+//! backstage behind it, and a backdrop click is ignored (it never
+//! discards edits). The dialog manages its own Esc (#110 audit) —
+//! the backstage's Esc guard skips while it is up.
 
 use std::path::{Path, PathBuf};
 
@@ -266,30 +279,74 @@ impl ThemeChoice {
     }
 }
 
-/// The first-class left-nav pages. Proofing and Advanced are grayed
-/// rows in the nav, not pages.
+/// The left-nav categories — #396 spec 1's eight, in Visio's order.
+/// Every variant is a live page: the three pre-existing mechanisms
+/// (#268/#300) render their controls; the rest show the framework
+/// header only until their spec-2..5 waves land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     General,
+    Proofing,
     Save,
     Language,
+    Advanced,
+    CustomizeRibbon,
+    QuickAccessToolbar,
+    AddIns,
 }
 
 impl Page {
-    /// kittest: a page by name ("general" | "save" | "language").
+    /// kittest: a page by name.
     pub(crate) fn from_test_name(name: &str) -> Option<Page> {
         match name {
             "general" => Some(Page::General),
+            "proofing" => Some(Page::Proofing),
             "save" => Some(Page::Save),
             "language" => Some(Page::Language),
+            "advanced" => Some(Page::Advanced),
+            "customize-ribbon" => Some(Page::CustomizeRibbon),
+            "quick-access-toolbar" => Some(Page::QuickAccessToolbar),
+            "addins" => Some(Page::AddIns),
             _ => None,
+        }
+    }
+
+    /// The generic header glyph (the clean-room rule: open-source MDI
+    /// icons, never traced Microsoft artwork).
+    fn icon(self) -> crate::ribbon::Icon {
+        match self {
+            Page::General => crate::ribbon::Icon::Cog,
+            Page::Proofing => crate::ribbon::Icon::Spell,
+            Page::Save => crate::ribbon::Icon::Save,
+            Page::Language => crate::ribbon::Icon::Translate,
+            Page::Advanced => crate::ribbon::Icon::Tune,
+            Page::CustomizeRibbon => crate::ribbon::Icon::Tab,
+            Page::QuickAccessToolbar => crate::ribbon::Icon::DockTop,
+            Page::AddIns => crate::ribbon::Icon::Puzzle,
+        }
+    }
+
+    /// The header's one-line summary of the category's purpose.
+    fn desc(self) -> String {
+        match self {
+            Page::General => i18n::strs().msg_options_page_desc_general(),
+            Page::Proofing => i18n::strs().msg_options_page_desc_proofing(),
+            Page::Save => i18n::strs().msg_options_page_desc_save(),
+            Page::Language => i18n::strs().msg_options_page_desc_language(),
+            Page::Advanced => i18n::strs().msg_options_page_desc_advanced(),
+            Page::CustomizeRibbon => i18n::strs().msg_options_page_desc_customize_ribbon(),
+            Page::QuickAccessToolbar => {
+                i18n::strs().msg_options_page_desc_quick_access_toolbar()
+            }
+            Page::AddIns => i18n::strs().msg_options_page_desc_addins(),
         }
     }
 }
 
 /// The dialog's edit buffer: captured when the dialog opens, mutated
-/// freely per page, committed by OK/Apply, discarded by Cancel/Esc/✕
-/// (the #71 contract).
+/// freely per page, committed by OK, discarded by Cancel/Esc/✕ (the
+/// #71 contract; #396 retired the mid-dialog Apply — Visio's Options
+/// footer is OK + Cancel only).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Draft {
     pub page: Page,
@@ -347,13 +404,13 @@ impl Draft {
     }
 }
 
-/// The dialog's terminal result for this frame (#71 contract). `app.rs`
-/// commits on `Ok`/`Apply` and discards on `Cancel`.
+/// The dialog's terminal result for this frame (#71 contract, the
+/// #396 spec-1 footer). `app.rs` commits on `Ok` and discards on
+/// `Cancel`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Outcome {
     None,
     Ok,
-    Apply,
     Cancel,
 }
 
@@ -376,29 +433,52 @@ pub(crate) fn window(
     // MODAL (#166 precedent; the CodeRabbit round): the backdrop
     // blocks input to the backstage behind the dialog — a Back/rail/
     // page-content click behind it must never strand the draft (the
-    // dialog renders only in the backstage branch). The title rides
-    // inside the frame (a modal has no title bar); Windows-dialog
-    // semantics: a backdrop click is IGNORED — it never discards
-    // edits — and Esc cancels.
+    // dialog renders only in the backstage branch). A modal has no OS
+    // title bar, so #396's title-bar zone rides inside the frame;
+    // Windows-dialog semantics: a backdrop click is IGNORED — it
+    // never discards edits — and Esc cancels. The id is the
+    // deterministic `Id::unique` hash of its source string (stable
+    // frame to frame, so the page pane's scroll state survives).
     egui::Modal::new(egui::Id::unique("dc-options")).show(ctx, |ui| {
         ui.with_layout(crate::app::dialog_dir(), |ui| {
-            ui.strong(i18n::strs().msg_options());
+            title_bar(ui, &mut outcome);
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
+            crate::app::row(ui, |ui| {
                 nav(ui, draft);
                 ui.separator();
                 ui.vertical(|ui| {
-                    ui.set_min_width(400.0);
-                    match draft.page {
-                        Page::General => general_page(ui, draft),
-                        Page::Save => save_page(ui, draft),
-                        Page::Language => language_page(ui, draft),
-                    }
+                    ui.set_min_width(430.0);
+                    // Reserve the pane's height so the split row is
+                    // as tall as the page pane (the nav alone is
+                    // ~170px; without this the scroll viewport
+                    // clamps to the nav's height and the page
+                    // content below that fold clips — and clicks on
+                    // the clipped widgets never land).
+                    ui.set_min_height(430.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("dc-options-page")
+                        .show(ui, |ui| {
+                            page_header(ui, draft.page);
+                            ui.add_space(8.0);
+                            match draft.page {
+                                Page::General => general_page(ui, draft),
+                                Page::Save => save_page(ui, draft),
+                                Page::Language => language_page(ui, draft),
+                                // Spec 1 ships the framework only —
+                                // these pages carry nothing beyond
+                                // their header until their waves land.
+                                Page::Proofing
+                                | Page::Advanced
+                                | Page::CustomizeRibbon
+                                | Page::QuickAccessToolbar
+                                | Page::AddIns => {}
+                            }
+                        });
                 });
             });
             // #304: the last language commit could not persist —
             // say so IN the dialog (a status note behind the modal is
-            // invisible); the next Apply retries.
+            // invisible); the next OK retries.
             for (failed, text) in [
                 (draft.lang_persist_failed, i18n::strs().msg_options_language_save_failed()),
                 (
@@ -416,15 +496,16 @@ pub(crate) fn window(
                 }
             }
             ui.add_space(10.0);
+            // #396 spec 1: the footer's only actions are OK and
+            // Cancel, right-aligned with OK primary — listed Cancel
+            // first because `row_rev` places the FIRST item at the
+            // trailing edge (Windows order: OK left of Cancel).
             crate::app::row_rev(ui, |ui| {
-                if ui.button(i18n::strs().msg_ok()).clicked() {
-                    outcome = Outcome::Ok;
-                }
-                if ui.button(i18n::strs().msg_apply()).clicked() {
-                    outcome = Outcome::Apply;
-                }
                 if ui.button(i18n::strs().msg_cancel()).clicked() {
                     outcome = Outcome::Cancel;
+                }
+                if ui.button(i18n::strs().msg_ok()).clicked() {
+                    outcome = Outcome::Ok;
                 }
             });
         });
@@ -447,43 +528,110 @@ pub(crate) fn window(
         && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)
     {
         // Only when no button handler already claimed the frame: a
-        // KEYBOARD-ACTIVATED Cancel/Apply fires the same Enter press,
-        // and overwriting its outcome here would turn a focused
-        // Cancel into a commit (review on the #268 dialog keys).
+        // KEYBOARD-ACTIVATED Cancel fires the same Enter press, and
+        // overwriting its outcome here would turn a focused Cancel
+        // into a commit (review on the #268 dialog keys).
         outcome = Outcome::Ok;
     }
     outcome
 }
 
-/// The left category list (Visio's nav): the first-class pages pick
-/// the draft's page; Proofing and Advanced are grayed planned rows
-/// that keep their Visio names.
+/// The #396 spec-1 title bar: the "Options" title at the leading
+/// edge; at the trailing edge the Help (?) button — DISABLED: no
+/// help mechanism ships yet (the issue's rule — a control without a
+/// mechanism is disabled, not hidden) — beside the standard Close
+/// (✕), which discards the draft and closes like Cancel.
+fn title_bar(ui: &mut egui::Ui, outcome: &mut Outcome) {
+    // End-pinned buttons: `row` keeps the title leading in both
+    // directions and the nested flipped scope pins the buttons at
+    // the trailing edge (the mirrored-row discipline; the ✕ stays
+    // the outermost corner button either way).
+    let end_dir = if i18n::rtl() {
+        egui::Layout::left_to_right(egui::Align::Center)
+    } else {
+        egui::Layout::right_to_left(egui::Align::Center)
+    };
+    crate::app::row(ui, |ui| {
+        ui.strong(i18n::strs().msg_options());
+        ui.with_layout(end_dir, |ui| {
+            let close_tip = i18n::strs().msg_close();
+            // The close glyph is the same × the shell's close-chrome
+            // strings use (U+00D7 — U+2715 has no glyph in the
+            // installed faces); the 22×22 min size matches the Help
+            // button so the corner pair aligns.
+            let r = ui.add(
+                egui::Button::new(egui::RichText::new("×").size(12.0))
+                    .min_size(egui::vec2(22.0, 22.0)),
+            );
+            let close_clicked = r.clicked();
+            // The glyph is the button's face; "Close" is its name
+            // (screen readers and kittest read the label, not the ✕).
+            r.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::Button, true, &close_tip)
+            });
+            r.on_hover_text(close_tip);
+            if close_clicked {
+                *outcome = Outcome::Cancel;
+            }
+            let help_tip = i18n::strs().msg_help_about();
+            let r = ui.add_enabled(
+                false,
+                egui::Button::new(egui::RichText::new("").size(12.0))
+                    .min_size(egui::vec2(22.0, 22.0)),
+            );
+            let help_rect = r.rect;
+            // The painted glyph carries no text of its own — the
+            // accessible name is the command's (#252's icon-only
+            // rule); the disabled tint rides the paint call.
+            r.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::Button, false, &help_tip)
+            });
+            r.on_disabled_hover_text(help_tip);
+            crate::ribbon::Icon::Help.paint(ui, help_rect, false);
+        });
+    });
+}
+
+/// The right pane's page header (#396 spec 1): the category's generic
+/// icon and the one-line description of its purpose, above the page
+/// body.
+fn page_header(ui: &mut egui::Ui, page: Page) {
+    crate::app::row(ui, |ui| {
+        let desc = page.desc();
+        let (r, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
+        page.icon().paint(ui, r, true);
+        ui.label(desc);
+    });
+}
+
+/// The left category list (#396 spec 1): text-only rows (Visio's
+/// sidebar carries no icons — the glyphs live in the page headers),
+/// every category live — a click loads that page instantly without
+/// closing the dialog — and the active row highlighted with the
+/// selection background.
 fn nav(ui: &mut egui::Ui, draft: &mut Draft) {
     let visuals = ui.visuals().clone();
     let mut pick = None;
     ui.vertical(|ui| {
         ui.set_min_width(150.0);
-        let rows: [(Option<Page>, String, Option<String>); 5] = [
+        let rows: [(Page, String); 8] = [
+            (Page::General, i18n::strs().msg_options_general()),
+            (Page::Proofing, i18n::strs().msg_options_proofing()),
+            (Page::Save, i18n::strs().msg_save()),
+            (Page::Language, i18n::strs().msg_language()),
+            (Page::Advanced, i18n::strs().msg_options_advanced()),
             (
-                Some(Page::General),
-                i18n::strs().msg_options_general(),
-                None,
+                Page::CustomizeRibbon,
+                i18n::strs().msg_options_customize_ribbon(),
             ),
             (
-                None,
-                i18n::strs().msg_options_proofing(),
-                Some(i18n::strs().msg_options_proofing_planned()),
+                Page::QuickAccessToolbar,
+                i18n::strs().msg_options_quick_access_toolbar(),
             ),
-            (Some(Page::Save), i18n::strs().msg_save(), None),
-            (Some(Page::Language), i18n::strs().msg_language(), None),
-            (
-                None,
-                i18n::strs().msg_options_advanced(),
-                Some(i18n::strs().msg_options_advanced_planned()),
-            ),
+            (Page::AddIns, i18n::strs().msg_add_ins()),
         ];
-        for (page, label, tip) in rows {
-            let selected = page == Some(draft.page);
+        for (page, label) in rows {
+            let selected = draft.page == page;
             let mut text = egui::RichText::new(label).size(13.0);
             if selected {
                 text = text.strong();
@@ -492,17 +640,8 @@ fn nav(ui: &mut egui::Ui, draft: &mut Draft) {
             if selected {
                 b = b.fill(visuals.selection.bg_fill);
             }
-            let resp = match (page, tip) {
-                (Some(_), _) => ui.add(b),
-                // A grayed row keeps its Visio name; the planned note
-                // rides the disabled hover tip.
-                (None, Some(tip)) => ui
-                    .add_enabled(false, b)
-                    .on_disabled_hover_text(tip),
-                (None, None) => ui.add_enabled(false, b),
-            };
-            if let (Some(p), true) = (page, resp.clicked()) {
-                pick = Some(p);
+            if ui.add(b).clicked() {
+                pick = Some(page);
             }
         }
     });

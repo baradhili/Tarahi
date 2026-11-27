@@ -385,6 +385,20 @@ pub enum Icon {
     Hand,
     /// #209 step 7: Presentation Mode (MDI projector).
     Presentation,
+    /// #396: the Options dialog's page headers — General (MDI cog).
+    Cog,
+    /// #396: Options ▸ Advanced (MDI tune, the sliders idiom).
+    Tune,
+    /// #396: Options ▸ Customize Ribbon (MDI tab).
+    Tab,
+    /// #396: Options ▸ Quick Access Toolbar (MDI dock-top, the
+    /// toolbar strip pinned above the ribbon).
+    DockTop,
+    /// #396: Options ▸ Add-ins (MDI puzzle, the plug-in idiom).
+    Puzzle,
+    /// #396: the Options ▸ Language page header (MDI translate; the
+    /// asset has been vendored since #246, now mapped).
+    Translate,
 }
 
 impl Icon {
@@ -482,6 +496,12 @@ impl Icon {
             Icon::AlignBottom => "format-vertical-align-bottom",
             Icon::DistH => "arrow-expand-horizontal",
             Icon::DistV => "arrow-expand-vertical",
+            Icon::Cog => "cog",
+            Icon::Tune => "tune",
+            Icon::Tab => "tab",
+            Icon::DockTop => "dock-top",
+            Icon::Puzzle => "puzzle",
+            Icon::Translate => "translate",
         };
         Some(a)
     }
@@ -521,6 +541,12 @@ impl Icon {
                 Color32::from_rgb(0x2e, 0x8b, 0x57)
             }
             Icon::TellMe => Color32::from_rgb(0x82, 0x82, 0x82),
+            // #396: the Options page headers share the data-blue
+            // family, except the add-ins puzzle in the warm tone.
+            Icon::Cog | Icon::Tune | Icon::Tab | Icon::DockTop | Icon::Translate => {
+                Color32::from_rgb(0x2e, 0x74, 0xb5)
+            }
+            Icon::Puzzle => Color32::from_rgb(0xe0, 0x7b, 0x1f),
             Icon::Magnet => Color32::from_rgb(0x2e, 0x75, 0xb6),
             Icon::Connector => Color32::from_rgb(0x2e, 0x75, 0xb6),
             Icon::AlignTop | Icon::AlignMiddle | Icon::AlignBottom | Icon::DistH | Icon::DistV => {
@@ -1572,6 +1598,7 @@ impl Icon {
             }
             // #252 wave additions all carry MDI assets; this glyph
             // fallback only draws if an asset ever fails to load.
+            // #396 Options headers ride the same contract.
             Icon::Justify
             | Icon::TextTool
             | Icon::RectTool
@@ -1586,7 +1613,13 @@ impl Icon {
             | Icon::Title
             | Icon::Eye
             | Icon::Lock
-            | Icon::Presentation => {
+            | Icon::Presentation
+            | Icon::Cog
+            | Icon::Tune
+            | Icon::Tab
+            | Icon::DockTop
+            | Icon::Puzzle
+            | Icon::Translate => {
                 p.rect_filled(r.shrink(6.0), 2.0, gray);
             }
         }

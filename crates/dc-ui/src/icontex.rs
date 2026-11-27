@@ -75,6 +75,16 @@ fn svg(name: &str) -> Option<&'static str> {
         "lightbulb" => include_str!("../assets/icons/lightbulb.svg"),
         "flip-vertical" => include_str!("../assets/icons/flip-vertical.svg"),
         "projector" => include_str!("../assets/icons/projector.svg"),
+        // #396: the Options dialog's page-header glyphs.
+        "cog" => include_str!("../assets/icons/cog.svg"),
+        "tune" => include_str!("../assets/icons/tune.svg"),
+        "tab" => include_str!("../assets/icons/tab.svg"),
+        "dock-top" => include_str!("../assets/icons/dock-top.svg"),
+        "puzzle" => include_str!("../assets/icons/puzzle.svg"),
+        // The Language header's glyph (vendored since #246; the
+        // mapping was missing, so the header fell to the gray glyph
+        // fallback — review round).
+        "translate" => include_str!("../assets/icons/translate.svg"),
         _ => return None,
     })
 }

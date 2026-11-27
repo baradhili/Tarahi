@@ -10125,27 +10125,94 @@ fn options_dialog_general_round_trips_through_ok() {
     );
 }
 
+/// #396 spec 1: every category is a LIVE nav row — clicking loads
+/// that page's header in the right pane without closing the dialog —
+/// and the pages whose waves haven't landed carry the framework
+/// header only (no controls invented ahead of their specs).
 #[test]
-fn options_dialog_apply_commits_without_closing() {
+fn options_dialog_categories_load_without_closing() {
     let mut h = harness_with_blank();
     open_options(&mut h);
-    h.get_by_role_and_label(egui::Role::TextInput, "User name:")
-        .set_text_value_accesskit("Bret");
+    // The five framework-only pages: the nav row loads, the header's
+    // description renders, and no General controls leak in.
+    for (nav, header_contains) in [
+        ("Proofing", "corrected as you work"),
+        ("Advanced", "editing, drawing, and display"),
+        ("Customize Ribbon", "tabs and commands"),
+        ("Quick Access Toolbar", "commands on the Quick Access Toolbar"),
+        ("Add-ins", "installed add-ins"),
+    ] {
+        options_nav(&mut h, nav);
+        h.run();
+        assert!(
+            h.state().debug_options_open(),
+            "{nav} keeps the dialog open"
+        );
+        assert!(
+            h.query_by_label_contains(header_contains).is_some(),
+            "the {nav} page header renders"
+        );
+        assert!(
+            h.query_by_role_and_label(egui::Role::TextInput, "User name:")
+                .is_none(),
+            "{nav} shows no controls (spec 1 is the framework only)"
+        );
+    }
+    // Back to General: its pre-existing controls reload — the page
+    // switch kept the dialog and its draft alive.
+    options_nav(&mut h, "General");
     h.run();
-    h.get_by_label("Apply").click();
+    assert!(
+        h.query_by_role_and_label(egui::Role::TextInput, "User name:")
+            .is_some(),
+        "General reloads its controls"
+    );
+    // The #396 footer: OK and Cancel only — the mid-dialog Apply is
+    // retired (Visio's Options footer).
+    assert!(h.query_by_label("OK").is_some());
+    assert!(h.query_by_label("Cancel").is_some());
+    assert!(
+        h.query_by_label("Apply").is_none(),
+        "the footer has no Apply"
+    );
+}
+
+/// #396: the title-bar Help (?) stays DISABLED until a help
+/// mechanism exists — a click on it changes nothing.
+#[test]
+fn options_dialog_title_bar_help_is_disabled() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
+    h.get_by_label("Help / About").click();
     h.run();
     assert!(
         h.state().debug_options_open(),
-        "Apply commits without closing"
+        "the disabled ? leaves the dialog open"
     );
-    assert_eq!(h.state().debug_options().user_name, "Bret");
-    // Further edits stay draft-only: Esc after the Apply discards the
-    // uncommitted value, never the committed one.
+    assert!(
+        !h.state().debug_about_open_for_test(),
+        "the disabled ? opens nothing"
+    );
+}
+
+/// #396: the title-bar ✕ closes the dialog and discards the draft —
+/// the standard Windows-modal Close, same semantics as Cancel.
+#[test]
+fn options_dialog_title_bar_close_discards() {
+    let mut h = harness_with_blank();
+    open_options(&mut h);
     h.get_by_role_and_label(egui::Role::TextInput, "User name:")
-        .set_text_value_accesskit("Bret Two");
-    h.key_press(egui::Key::Escape);
+        .set_text_value_accesskit("Nobody");
     h.run();
-    assert_eq!(h.state().debug_options().user_name, "Bret");
+    // The rail's own Close entry sits far left; the dialog's ✕ rides
+    // the centered title bar (the options_nav x>300 rule).
+    h.get_all_by_label("Close")
+        .find(|n| n.rect().center().x > 300.0)
+        .expect("the title-bar ✕")
+        .click();
+    h.run();
+    assert!(!h.state().debug_options_open(), "✕ closes the dialog");
+    assert_eq!(h.state().debug_options().user_name, "", "✕ discards");
 }
 
 #[test]

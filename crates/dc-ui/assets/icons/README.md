@@ -10,7 +10,6 @@ File names map 1:1 to the `Icon` enum asset stems in
 | file | MDI icon |
 |---|---|
 | save | content-save |
-| translate | translate |
 | undo | undo |
 | redo | redo |
 | open | folder-open-outline |
@@ -84,6 +83,12 @@ File names map 1:1 to the `Icon` enum asset stems in
 | lock | lock-outline (#252, 2026-11-09) |
 | flip-vertical | flip-vertical (#149 mini-toolbar Flip flyout, 2026-11-14) |
 | projector | projector (Presentation Mode, #209 2026-11-27) |
+| cog | cog (Options ▸ General header, #396 2026-11-27) |
+| tune | tune (Options ▸ Advanced header, #396 2026-11-27) |
+| tab | tab (Options ▸ Customize Ribbon header, #396 2026-11-27) |
+| dock-top | dock-top (Options ▸ Quick Access Toolbar header, #396 2026-11-27) |
+| puzzle | puzzle (Options ▸ Add-ins header, #396 2026-11-27) |
+| translate | translate (vendored since #246; mapped for the Options ▸ Language header, #396 2026-11-27) |
 
 Posters note: MDI is an open-source set, not Microsoft artwork; the
 cleanroom rule (no Microsoft assets) still holds. Fluent UI icons were
