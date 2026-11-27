@@ -178,8 +178,12 @@ impl App {
     /// #108 AutoConnect: an arrow click duplicates the selected shape
     /// one spacing unit in the arrow's direction and connects the pair
     /// (dynamic glue both ends) — one undo Macro, Visio's
-    /// click-the-blue-arrow flow.
+    /// click-the-blue-arrow flow. #209 step 2: gated by the document's
+    /// AutoConnect toggle (status-bar Connect chip / View ribbon).
     pub(super) fn autoconnect(&mut self, dir: (f64, f64)) {
+        if !self.snap.autoconnect {
+            return;
+        }
         use crate::connectors::{
             attach_point, bake_end, bake_trigger, connector_shape, glue_connect,
             rewrite_route_rows, route, route_rows, walkglue_formula, End, GlueKind, GlueTarget,

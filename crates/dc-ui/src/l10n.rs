@@ -443,7 +443,7 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "autoconnect-arrows-the-108-remai",
+        message: "autoconnect-chip-tip",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -451,6 +451,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "autoconnect-needs-a-2d-shape",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "autoconnect-tip",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -7275,13 +7282,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..50695,
-            Self::En => 50695..99591,
-            Self::Es => 99591..153422,
-            Self::Fa => 153422..217442,
-            Self::Ja => 217442..271679,
-            Self::Ko => 271679..321649,
-            Self::ZhHans => 321649..365518,
+            Self::De => 0..50851,
+            Self::En => 50851..99866,
+            Self::Es => 99866..153862,
+            Self::Fa => 153862..218119,
+            Self::Ja => 218119..272562,
+            Self::Ko => 272562..322699,
+            Self::ZhHans => 322699..366685,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -7560,13 +7567,14 @@ impl L10nLanguage {
     pub fn msg_autoconnect(&self) -> String {
         self.0.msg("autoconnect", None).unwrap()
     }
-    pub fn msg_autoconnect_arrows_the_108_remai(&self) -> String {
-        self.0
-            .msg("autoconnect-arrows-the-108-remai", None)
-            .unwrap()
+    pub fn msg_autoconnect_chip_tip(&self) -> String {
+        self.0.msg("autoconnect-chip-tip", None).unwrap()
     }
     pub fn msg_autoconnect_needs_a_2d_shape(&self) -> String {
         self.0.msg("autoconnect-needs-a-2d-shape", None).unwrap()
+    }
+    pub fn msg_autoconnect_tip(&self) -> String {
+        self.0.msg("autoconnect-tip", None).unwrap()
     }
     pub fn msg_autocorrect_options(&self) -> String {
         self.0.msg("autocorrect-options", None).unwrap()

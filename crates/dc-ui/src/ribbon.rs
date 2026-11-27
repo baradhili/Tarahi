@@ -44,6 +44,8 @@ pub(crate) struct TabCtx {
     pub size_pos_open: bool,
     pub dynamic_grid: bool,
     pub snap_dlg_open: bool,
+    /// #209 step 2: the document's AutoConnect toggle.
+    pub autoconnect: bool,
     /// A shapesheet window is open for the selection.
     pub shapesheet_open: bool,
     /// #272: the current page's PageSheet window is open.
@@ -166,6 +168,9 @@ pub enum Action {
     ToggleUnits,
     ToggleDynamicGrid,
     SnapGlue,
+    /// #209 step 2: the document's AutoConnect toggle (View ▸ Visual
+    /// Aids button and the status-bar Connect chip).
+    ToggleAutoConnect,
     PointerTool,
     ConnectorTool,
     /// #283: the Pan tool (Home ▸ Tools) — a plain drag moves the view.

@@ -13,11 +13,17 @@ use super::raw::RawEl;
 /// defaults are SnapSettings 295 (grid, ruler subdivisions, guides,
 /// connection points, shape extensions), GlueSettings 9 (guides,
 /// connection points), DynamicGridEnabled 1.
+///
+/// `autoconnect` (#209 step 2) has no Visio document element — the
+/// shipped app keeps that setting application-level (registry) — so the
+/// corpus never carries an `<AutoConnect>` child and a missing child
+/// reads as ON. The child is written only when the value is toggled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DocSnapGlue {
     pub snap: u32,
     pub glue: u32,
     pub dynamic_grid: bool,
+    pub autoconnect: bool,
 }
 
 impl DocSnapGlue {
@@ -26,6 +32,7 @@ impl DocSnapGlue {
         snap: 295,
         glue: 9,
         dynamic_grid: true,
+        autoconnect: true,
     };
 }
 
@@ -61,6 +68,7 @@ const SETTINGS_CHILD_ORDER: &[&str] = &[
     "SnapExtensions",
     "SnapAngles",
     "DynamicGridEnabled",
+    "AutoConnect",
     "ProtectStyles",
     "ProtectShapes",
     "ProtectMasters",
@@ -136,16 +144,20 @@ impl Document {
             dynamic_grid: read_settings_child(&raw.inner, "DynamicGridEnabled")
                 .map(|v| v != 0)
                 .unwrap_or(d.dynamic_grid),
+            autoconnect: read_settings_child(&raw.inner, "AutoConnect")
+                .map(|v| v != 0)
+                .unwrap_or(d.autoconnect),
         })
     }
 
     /// Write the snap & glue cells into `<DocumentSettings>`, creating
     /// the element (first child of `VisioDocument`, corpus order) when
-    /// the document has none. Only the three modeled children are
+    /// the document has none. Only the four modeled children are
     /// touched; attributes and every other child — `SnapExtensions`,
     /// `SnapAngles`, `Protect*` — stay verbatim.
     pub fn set_doc_snap_glue(&mut self, s: DocSnapGlue) {
         let dg = if s.dynamic_grid { "1" } else { "0" };
+        let ac = if s.autoconnect { "1" } else { "0" };
         if let Some(ix) = self
             .items
             .iter()
@@ -155,6 +167,7 @@ impl Document {
                 r.inner = set_settings_child(&r.inner, "GlueSettings", &s.glue.to_string());
                 r.inner = set_settings_child(&r.inner, "SnapSettings", &s.snap.to_string());
                 r.inner = set_settings_child(&r.inner, "DynamicGridEnabled", dg);
+                r.inner = set_settings_child(&r.inner, "AutoConnect", ac);
             }
             return;
         }
@@ -167,6 +180,7 @@ impl Document {
         inner = set_settings_child(&inner, "SnapExtensions", "34");
         inner.push_str("<SnapAngles/>");
         inner = set_settings_child(&inner, "DynamicGridEnabled", dg);
+        inner = set_settings_child(&inner, "AutoConnect", ac);
         self.items.insert(
             0,
             DocItem::Raw(RawEl {

@@ -81,9 +81,13 @@ fn visual_aids_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<
             RibbonButton::new(Icon::Magnet, s.msg_snap_glue(), Action::SnapGlue)
                 .selected(ctx.snap_dlg_open)
                 .tip(s.msg_configure_snap_and_glue_targets()),
-            RibbonButton::new(Icon::Connector, s.msg_autoconnect(), Action::Macros)
-                .enabled(false)
-                .tip(s.msg_autoconnect_arrows_the_108_remai()),
+            // #209 step 2: the AutoConnect toggle is real — the same
+            // document bit the status-bar Connect chip drives (the
+            // stale "planned" tip retires with the feature).
+            RibbonButton::new(Icon::Connector, s.msg_autoconnect(), Action::ToggleAutoConnect)
+                .enabled(ctx.has_doc)
+                .selected(ctx.autoconnect)
+                .tip(s.msg_autoconnect_tip()),
         ]),
     ]
 }

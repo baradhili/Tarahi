@@ -390,6 +390,9 @@ fn reads_corpus_defaults() {
     assert_eq!(s.snap, 295);
     assert_eq!(s.glue, 9);
     assert!(s.dynamic_grid);
+    // No corpus element carries <AutoConnect> — the missing child
+    // reads as ON (#209 step 2).
+    assert!(s.autoconnect);
 }
 
 #[test]
@@ -399,7 +402,7 @@ fn missing_element_reads_none() {
 }
 
 #[test]
-fn setting_patches_only_the_three_children() {
+fn setting_patches_only_the_four_children() {
     let mut doc = doc_with_settings(vec![("TopPage".to_string(), "0".to_string())], CORPUS_INNER);
     let before = doc
         .items
@@ -413,6 +416,7 @@ fn setting_patches_only_the_three_children() {
         snap: 65847,
         glue: 0,
         dynamic_grid: false,
+        autoconnect: false,
     });
     let after = doc
         .items
@@ -427,22 +431,25 @@ fn setting_patches_only_the_three_children() {
     assert!(after.inner.contains("<SnapExtensions>34</SnapExtensions>"));
     assert!(after.inner.contains("<SnapAngles/>"));
     assert!(after.inner.contains("<ProtectStyles>0</ProtectStyles>"));
-    // The three modeled children carry the new values, in corpus
-    // child order.
+    // The four modeled children carry the new values, in canonical
+    // child order (AutoConnect follows DynamicGridEnabled).
     let g = after.inner.find("<GlueSettings>").unwrap();
     let s = after.inner.find("<SnapSettings>").unwrap();
     let d = after.inner.find("<DynamicGridEnabled>").unwrap();
-    assert!(g < s && s < d, "corpus child order: {}", after.inner);
+    let a = after.inner.find("<AutoConnect>").unwrap();
+    assert!(g < s && s < d && d < a, "canonical child order: {}", after.inner);
     assert!(after.inner.contains("<GlueSettings>0</GlueSettings>"));
     assert!(after.inner.contains("<SnapSettings>65847</SnapSettings>"));
     assert!(after
         .inner
         .contains("<DynamicGridEnabled>0</DynamicGridEnabled>"));
+    assert!(after.inner.contains("<AutoConnect>0</AutoConnect>"));
     // And reading back yields exactly what was written.
     let read = doc.doc_snap_glue().unwrap();
     assert_eq!(read.snap, 65847);
     assert_eq!(read.glue, 0);
     assert!(!read.dynamic_grid);
+    assert!(!read.autoconnect);
 }
 
 #[test]
@@ -460,7 +467,8 @@ fn setting_creates_a_missing_element_in_corpus_shape() {
         inner,
         "<GlueSettings>9</GlueSettings><SnapSettings>295</SnapSettings>\
          <SnapExtensions>34</SnapExtensions><SnapAngles/>\
-         <DynamicGridEnabled>1</DynamicGridEnabled>"
+         <DynamicGridEnabled>1</DynamicGridEnabled>\
+         <AutoConnect>1</AutoConnect>"
     );
     assert_eq!(doc.doc_snap_glue(), Some(DocSnapGlue::CORPUS_DEFAULT));
 }

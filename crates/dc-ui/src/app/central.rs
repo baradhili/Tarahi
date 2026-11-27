@@ -718,6 +718,7 @@ impl App {
             &jump_fx,
             &underlays,
             self.tool == Tool::Connector,
+            self.snap.autoconnect,
             self.tool == Tool::Lasso,
             self.tool == Tool::Freeform,
             self.tool == Tool::Pan,

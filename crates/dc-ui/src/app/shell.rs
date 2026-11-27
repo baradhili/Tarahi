@@ -59,6 +59,12 @@ impl App {
                 self.apply_snap_settings();
             }
             Action::SnapGlue => self.snap_dlg_open = !self.snap_dlg_open,
+            // #209 step 2: AutoConnect is document state like Snap &
+            // Glue — the toggle writes through, never into undo history.
+            Action::ToggleAutoConnect => {
+                self.snap.autoconnect = !self.snap.autoconnect;
+                self.apply_snap_settings();
+            }
             Action::SpellCheck => self.start_spellcheck(),
             Action::PointerTool => {
                 self.tool = Tool::Pointer;
@@ -626,6 +632,7 @@ impl App {
             size_pos_open: self.size_pos_open,
             dynamic_grid: self.snap.dynamic_grid,
             snap_dlg_open: self.snap_dlg_open,
+            autoconnect: self.snap.autoconnect,
             shapesheet_open: self.sel.is_some_and(|(_, sid)| {
                 self.shapesheets
                     .contains(&crate::shapesheet::SheetTarget::Shape(sid))
@@ -902,6 +909,16 @@ impl App {
                     self.snap.snap_active = on;
                     self.snap.glue_active = on;
                     self.apply_snap_settings();
+                }
+                // #209 step 2: the Connect chip — the same document
+                // AutoConnect bit the View ribbon's toggle drives.
+                if status_chip(
+                    ui,
+                    crate::ribbon::Icon::Connector,
+                    crate::i18n::strs().msg_autoconnect_chip_tip(),
+                    self.snap.autoconnect,
+                ) {
+                    self.dispatch(Action::ToggleAutoConnect);
                 }
             }
             ui.with_layout(rev, |ui| {

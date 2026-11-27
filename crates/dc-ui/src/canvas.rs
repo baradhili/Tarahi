@@ -754,8 +754,11 @@ pub fn show(
     guides: &[GuideFx],       // #113: guide overlay, above ink
     jumps: &[JumpFx],         // #108: line-jump hops, above ink
     underlays: &[crate::layers::ShapeQuad], // #113: background pages, beneath ink
-    connector_tool: bool,     // #108: the Connector Tool is active
-    lasso_tool: bool,         // #110: the Lasso Select tool is active
+    connector_tool: bool, // #108: the Connector Tool is active
+    // #209 step 2: the document's AutoConnect toggle — off hides the
+    // selection's AutoConnect arrows entirely (Visio hides the tags).
+    autoconnect: bool,
+    lasso_tool: bool, // #110: the Lasso Select tool is active
     freeform_tool: bool,      // #132: the Freeform tool is active
     pan_tool: bool,           // #283: the Pan tool is active (hand cursor, drag pans)
     stencil_hover: bool,
@@ -941,18 +944,22 @@ pub fn show(
             ),
         )
     });
-    let autoc_arrows: Option<Vec<(Rect, (f64, f64))>> = sel_screen.map(|sr| {
-        let c = sr.center();
-        [
-            (Pos2::new(sr.right() + 9.0, c.y), (1.0, 0.0)),
-            (Pos2::new(sr.left() - 9.0, c.y), (-1.0, 0.0)),
-            (Pos2::new(c.x, sr.top() - 9.0), (0.0, 1.0)),
-            (Pos2::new(c.x, sr.bottom() + 9.0), (0.0, -1.0)),
-        ]
-        .into_iter()
-        .map(|(pos, dir)| (Rect::from_center_size(pos, Vec2::splat(18.0)), dir))
-        .collect()
-    });
+    let autoc_arrows: Option<Vec<(Rect, (f64, f64))>> = if autoconnect {
+        sel_screen.map(|sr| {
+            let c = sr.center();
+            [
+                (Pos2::new(sr.right() + 9.0, c.y), (1.0, 0.0)),
+                (Pos2::new(sr.left() - 9.0, c.y), (-1.0, 0.0)),
+                (Pos2::new(c.x, sr.top() - 9.0), (0.0, 1.0)),
+                (Pos2::new(c.x, sr.bottom() + 9.0), (0.0, -1.0)),
+            ]
+            .into_iter()
+            .map(|(pos, dir)| (Rect::from_center_size(pos, Vec2::splat(18.0)), dir))
+            .collect()
+        })
+    } else {
+        None
+    };
     let arrow_at = |pos: Pos2| -> Option<(f64, f64)> {
         autoc_arrows
             .as_ref()?
