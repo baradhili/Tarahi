@@ -158,9 +158,15 @@ impl App {
     /// (GOTOPAGE); any other click advances.
     pub(super) fn slideshow_view(&mut self, ui: &mut Ui) {
         // The show cannot outlive its document (a close approved
-        // behind a confirm mid-show) — drop it without the restore.
+        // behind a confirm mid-show) — drop it without the PAGE
+        // restore (the document is gone) but with the windowed shell
+        // back: the exit rule is unconditional, and nothing else
+        // would send the un-fullscreen (Esc no longer runs the
+        // show's exit path).
         if self.ed.is_none() {
             self.slideshow = None;
+            self.chrome_hidden = false;
+            self.fullscreen_pending = Some(false);
             return;
         }
         let screen = ui.max_rect();
@@ -174,8 +180,11 @@ impl App {
         let size = egui::vec2((geom.w_in * scale) as f32, (geom.h_in * scale) as f32);
         let rect = Rect::from_center_size(screen.center(), size);
         let ppi = (rect.width() / geom.w_in as f32).max(1.0);
-        // The placeholder while a raster is in flight: the page's
-        // natural white paper (the canvas `show` None path's rule).
+        // The sheet's white paper — the permanent backdrop the page
+        // layers compose over (they render INK ONLY, transparent, so
+        // background ink shows beneath the foreground page; review
+        // round 1) and the placeholder while a raster is in flight
+        // (the canvas `show` None path's rule).
         ui.painter().rect_filled(rect, 0.0, Color32::WHITE);
 
         // The background chain, deepest first — the #113 walk the
@@ -214,15 +223,16 @@ impl App {
                     .and_then(|c| c.numeric())
                     .unwrap_or(11.0),
             );
-            // Origin-aligned at natural size — the canvas underlay
-            // mapping (identical pixels when the pages share size,
-            // the norm).
+            // Natural size, origin at the sheet's BOTTOM-LEFT — the
+            // canvas underlay mapping (identical pixels when the
+            // pages share size, the norm; an oversized background
+            // extends up and right past the sheet, clipped to it).
             let brect = Rect::from_min_size(
-                rect.left_top(),
+                egui::pos2(rect.left(), rect.bottom() - bh as f32 * ppi),
                 egui::vec2(bw as f32 * ppi, bh as f32 * ppi),
             );
             let (part, pid) = (bg.part.clone(), bg.id);
-            self.slideshow_page_texture(ui, &part, Some(pid), bw, ppi, brect);
+            self.slideshow_page_texture(ui, &part, Some(pid), bw, ppi, brect, rect);
         }
         let part = self.ed.as_ref().map(|ed| {
             ed.doc.pages[self
@@ -232,7 +242,7 @@ impl App {
             .clone()
         });
         if let Some(part) = part {
-            self.slideshow_page_texture(ui, &part, None, geom.w_in, ppi, rect);
+            self.slideshow_page_texture(ui, &part, None, geom.w_in, ppi, rect, rect);
         }
 
         // Input: one click surface over the whole screen. A hit on a
@@ -273,11 +283,16 @@ impl App {
     }
 
     /// One page raster through the TextureCache page path (#130):
-    /// the export render (chrome-free slide, white paper) keyed
-    /// `show-<part>` at the show's ppi, painted into `r`. The
-    /// placeholder underneath shows until the texture lands.
+    /// the export render in its TRANSPARENT flavor (chrome-free,
+    /// ink-only — the sheet's white paper is painted once beneath
+    /// the layers so background ink composes under the foreground
+    /// page; review round 1) keyed `show-<part>` at the show's ppi,
+    /// painted into `r` clipped to the fitted page `clip` (an
+    /// oversized background page must not ink the letterbox).
     /// `page_id` names the page to render (None = the current one —
     /// the background underlays name their own).
+    /// (8 placement args, like `TextureCache::get`'s raster contract.)
+    #[allow(clippy::too_many_arguments)]
     fn slideshow_page_texture(
         &mut self,
         ui: &mut Ui,
@@ -286,6 +301,7 @@ impl App {
         w_in: f64,
         ppi: f32,
         r: Rect,
+        clip: Rect,
     ) {
         let key = format!("show-{}", part.replace('/', "_"));
         let version = self.version;
@@ -310,12 +326,14 @@ impl App {
                     None => &ed.doc.pages
                         [page_idx.min(ed.doc.pages.len().saturating_sub(1))],
                 };
-                dc::svg::render_page_export(&ed.doc, page, false)
+                dc::svg::render_page_export(&ed.doc, page, true)
             },
         );
         if let Ok(Some(tex)) = got {
             let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-            ui.painter().image(tex.id(), r, uv, Color32::WHITE);
+            ui.painter()
+                .with_clip_rect(clip)
+                .image(tex.id(), r, uv, Color32::WHITE);
         }
     }
 }
