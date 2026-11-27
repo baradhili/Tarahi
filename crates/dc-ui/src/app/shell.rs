@@ -558,7 +558,13 @@ impl App {
                             let rtl = crate::i18n::rtl();
                             let mut run: Option<Action> = None;
                             let mut close = false;
-                            egui::Popup::menu(&presp).show(|ui| {
+                            let mut hover: Option<usize> = None;
+                            // `open_bool` drives egui's popup memory
+                            // from OUR flag (the field, not a button,
+                            // anchors the panel) and writes egui's
+                            // outside-click close back into it.
+                            let mut open = self.tellme_open;
+                            egui::Popup::menu(&fresp).open_bool(&mut open).show(|ui| {
                                 ui.set_min_width(240.0);
                                 let t = theme::menu_tokens(ui.visuals());
                                 for (i, e) in results.iter().enumerate() {
@@ -577,7 +583,7 @@ impl App {
                                         )
                                     });
                                     if resp.hovered() {
-                                        self.tellme_sel = i;
+                                        hover = Some(i);
                                     }
                                     if i == sel || resp.hovered() {
                                         ui.painter().rect_filled(r, 2.0, t.hover_fill);
@@ -642,12 +648,17 @@ impl App {
                                     }
                                 }
                             });
-                            if close {
+                            self.tellme_open = open;
+                            if let Some(i) = hover {
+                                self.tellme_sel = i;
+                            }
+                            if close || !open {
                                 self.tellme_open = false;
                                 self.tellme_query.clear();
                                 self.tellme_sel = 0;
-                                // Running a command returns focus to
-                                // the canvas (#204 steps 3–4).
+                                // Running a command (or clicking away)
+                                // returns focus to the canvas (#204
+                                // steps 3–4).
                                 ui.ctx().memory_mut(|m| {
                                     m.surrender_focus(crate::tellme::field_id())
                                 });
