@@ -857,6 +857,7 @@ snap = スナップ
 snap-conn-points = 接続点
 snap-dynamic-grid = 動的グリッド
 snap-glue = スナップと接着
+snap-glue-chip-tip = スナップと接着。クリックするとスナップと接着のオン/オフを切り替えます。
 snap-to = スナップ先:
 snapglue-note = 設定は図面に保存されます。ガイド対象は #113 で、コネクタの接着は #108 で提供されます。
 solid = 実線

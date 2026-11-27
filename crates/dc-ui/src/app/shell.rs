@@ -885,6 +885,25 @@ impl App {
                 left = "no document".into();
             }
             ui.label(egui::RichText::new(left).color(t.status_text).size(11.0));
+            // #209 step 1: Visio's Snap & Glue status-bar chip — one
+            // click toggles both masters on or off together (the
+            // per-target dialog stays on the View ribbon's magnet
+            // button). It rides the left cluster, so the RTL mirror
+            // carries it.
+            if self.ed.is_some() {
+                let both = self.snap.snap_active && self.snap.glue_active;
+                if status_chip(
+                    ui,
+                    crate::ribbon::Icon::Magnet,
+                    crate::i18n::strs().msg_snap_glue_chip_tip(),
+                    both,
+                ) {
+                    let on = !both;
+                    self.snap.snap_active = on;
+                    self.snap.glue_active = on;
+                    self.apply_snap_settings();
+                }
+            }
             ui.with_layout(rev, |ui| {
                 // Visio status bar right end: − [zoom slider] + N%
                 if self.ed.is_some() {
@@ -932,4 +951,32 @@ impl App {
             });
         });
     }
+}
+
+/// A status-bar toggle chip (#209): the MDI icon in a compact hit box,
+/// Visio's chip treatment — a selected fill when on, the hover fill
+/// otherwise — and one tooltip carrying the accessible name. Returns
+/// whether it was clicked.
+fn status_chip(
+    ui: &mut Ui,
+    icon: crate::ribbon::Icon,
+    tip: String,
+    selected: bool,
+) -> bool {
+    let t = theme::shell_tokens(ui.visuals());
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(20.0, 16.0), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &tip));
+    let resp = resp.on_hover_text(tip);
+    if selected || resp.hovered() {
+        let (fill, edge) = if selected {
+            (t.ribbon_selected, t.ribbon_selected_edge)
+        } else {
+            (t.ribbon_hover, t.ribbon_hover_edge)
+        };
+        ui.painter().rect_filled(r, 2.0, fill);
+        ui.painter()
+            .rect_stroke(r, 2.0, Stroke::new(1.0, edge), egui::StrokeKind::Middle);
+    }
+    icon.paint(ui, r.shrink(2.0), true);
+    resp.clicked()
 }

@@ -858,6 +858,7 @@ snap = 스냅
 snap-conn-points = 연결 지점
 snap-dynamic-grid = 동적 눈금선
 snap-glue = 스냅 및 붙이기
+snap-glue-chip-tip = 스냅 및 붙이기. 클릭하면 스냅 및 붙이기를 켜거나 끕니다.
 snap-to = 스냅 대상:
 snapglue-note = 설정은 드로잉에 저장됩니다. 안내선 대상은 #113에서, 커넥터 붙이기는 #108에서 제공됩니다.
 solid = 실선

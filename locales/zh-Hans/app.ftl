@@ -862,6 +862,7 @@ snap = 对齐
 snap-conn-points = 连接点
 snap-dynamic-grid = 动态网格
 snap-glue = 对齐和粘附
+snap-glue-chip-tip = 对齐和粘附。单击可打开或关闭对齐和粘附。
 snap-to = 对齐到：
 snapglue-note = 设置存储在绘图中。参考线目标随 #113 提供；连接符粘附随 #108 提供。
 solid = 实线
