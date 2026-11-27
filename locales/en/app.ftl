@@ -802,7 +802,6 @@ pointer-tool = Pointer Tool
 pointer-tool-select-and-drag-esc = Pointer tool — select and drag (Esc from the Connector Tool)
 portrait = Portrait
 presentation-mode = Presentation Mode
-presentation-mode-planned = Presentation mode — planned
 preset-sizes = Preset sizes
 previous-comment = Previous Comment
 previous-comment-planned = Previous comment — planned

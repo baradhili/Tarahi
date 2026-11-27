@@ -265,6 +265,9 @@ pub struct App {
     /// The Zoom dialog's chosen option (#209 step 3); the dialog opens
     /// with the current zoom preselected.
     zoom_pick: dialogs::ZoomPick,
+    /// #209 step 7: Presentation Mode — ribbon, tab strip, panes and
+    /// backstage chrome hidden; Esc or the status-bar button restores.
+    chrome_hidden: bool,
     /// #246: the Language dialog is open.
     /// #218 review: the Jump-size drag's draft — a DragValue commit
     /// per frame flooded history; the draft edits locally and commits

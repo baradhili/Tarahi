@@ -62,6 +62,12 @@ impl App {
                     self.delete_selection();
                 }
             }
+            // #209 step 7: Presentation Mode owns Esc outright — the
+            // chrome is hidden, so restoring it is the only Esc action
+            // (nothing else is reachable anyway).
+            if self.chrome_hidden && i.key_pressed(egui::Key::Escape) {
+                self.chrome_hidden = false;
+            } else
             // Esc closes the frontmost open dialog first (#110
             // tab-order audit: Visio dismisses a dialog on Esc);
             // only with none open do the tool/painter shortcuts run.

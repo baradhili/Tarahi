@@ -146,6 +146,7 @@ impl App {
             snap_dlg_open: false,
             zoom_dlg_open: false,
             zoom_pick: dialogs::ZoomPick::Preset(100),
+            chrome_hidden: false,
             line_jump_draft: None,
             line_jump_draft_y: None,
             snap_live: Vec::new(),
@@ -446,5 +447,11 @@ impl App {
     #[doc(hidden)]
     pub fn set_tab_for_test(&mut self, tab: crate::ribbon::Tab) {
         self.tab = tab;
+    }
+    /// Test hook: Presentation Mode (#209 step 7) — the state the
+    /// status-bar button / Esc toggles.
+    #[doc(hidden)]
+    pub fn set_chrome_hidden_for_test(&mut self, on: bool) {
+        self.chrome_hidden = on;
     }
 }

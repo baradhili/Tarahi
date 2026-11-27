@@ -694,7 +694,6 @@ pointer-tool = 포인터 도구
 pointer-tool-select-and-drag-esc = 포인터 도구 — 선택하고 끌기(커넥터 도구에서는 Esc)
 portrait = 세로
 presentation-mode = 프레젠테이션 모드
-presentation-mode-planned = 프레젠테이션 모드 — 예정
 preset-sizes = 표준 크기
 previous-comment = 이전 메모
 previous-comment-planned = 이전 메모 — 예정

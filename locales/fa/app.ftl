@@ -747,7 +747,6 @@ pointer-tool = ابزار اشاره‌گر
 pointer-tool-select-and-drag-esc = ابزار اشاره‌گر — گزینش و کشیدن (از ابزار اتصال‌دهنده با Esc)
 portrait = عمودی
 presentation-mode = حالت ارائه
-presentation-mode-planned = حالت ارائه — برنامه‌ریزی شده
 preset-sizes = اندازه‌های پیش‌تنظیم
 previous-comment = نظر قبلی
 previous-comment-planned = نظر قبلی — برنامه‌ریزی شده

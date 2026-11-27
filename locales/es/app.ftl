@@ -799,7 +799,6 @@ pointer-tool = Herramienta Puntero
 pointer-tool-select-and-drag-esc = Herramienta Puntero — seleccione y arrastre (Esc desde la herramienta Conector)
 portrait = Vertical
 presentation-mode = Modo presentación
-presentation-mode-planned = Modo presentación — planeado
 preset-sizes = Tamaños preestablecidos
 previous-comment = Comentario anterior
 previous-comment-planned = Comentario anterior — planeado

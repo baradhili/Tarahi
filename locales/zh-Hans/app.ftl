@@ -693,7 +693,6 @@ pointer-tool = 指针工具
 pointer-tool-select-and-drag-esc = 指针工具——选择并拖动（从连接符工具按 Esc 返回）
 portrait = 纵向
 presentation-mode = 演示模式
-presentation-mode-planned = 演示模式 — 计划中
 preset-sizes = 预设大小
 previous-comment = 上一条批注
 previous-comment-planned = 上一条批注 — 计划中

@@ -83,6 +83,7 @@ File names map 1:1 to the `Icon` enum asset stems in
 | eye | eye (#252, 2026-11-09) |
 | lock | lock-outline (#252, 2026-11-09) |
 | flip-vertical | flip-vertical (#149 mini-toolbar Flip flyout, 2026-11-14) |
+| projector | projector (Presentation Mode, #209 2026-11-27) |
 
 Posters note: MDI is an open-source set, not Microsoft artwork; the
 cleanroom rule (no Microsoft assets) still holds. Fluent UI icons were

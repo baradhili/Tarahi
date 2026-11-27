@@ -693,7 +693,6 @@ pointer-tool = ポインター ツール
 pointer-tool-select-and-drag-esc = ポインター ツール — 選択とドラッグ（コネクタ ツールからは Esc）
 portrait = 縦向き
 presentation-mode = プレゼンテーション モード
-presentation-mode-planned = プレゼンテーション モード — 予定
 preset-sizes = 定型サイズ
 previous-comment = 前のコメント
 previous-comment-planned = 前のコメント — 予定

@@ -747,7 +747,6 @@ pointer-tool = Zeigerwerkzeug
 pointer-tool-select-and-drag-esc = Zeiger — auswählen und ziehen (Esc vom Verbindertool)
 portrait = Hochformat
 presentation-mode = Präsentationsmodus
-presentation-mode-planned = Präsentationsmodus — geplant
 preset-sizes = Voreingestellte Größen
 previous-comment = Vorheriger Kommentar
 previous-comment-planned = Vorheriger Kommentar — geplant

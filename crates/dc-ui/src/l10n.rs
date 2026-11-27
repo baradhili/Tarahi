@@ -4566,13 +4566,6 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "presentation-mode-planned",
-        attribute: None,
-        vars: &[],
-        bool_vars: &[],
-        elements: &[],
-    },
-    MessageContract {
         message: "preset-sizes",
         attribute: None,
         vars: &[],
@@ -7303,13 +7296,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..51082,
-            Self::En => 51082..100289,
-            Self::Es => 100289..154510,
-            Self::Fa => 154510..219055,
-            Self::Ja => 219055..273812,
-            Self::Ko => 273812..324203,
-            Self::ZhHans => 324203..368377,
+            Self::De => 0..51022,
+            Self::En => 51022..100171,
+            Self::Es => 100171..154332,
+            Self::Fa => 154332..218794,
+            Self::Ja => 218794..273474,
+            Self::Ko => 273474..323800,
+            Self::ZhHans => 323800..367919,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -9871,9 +9864,6 @@ impl L10nLanguage {
     }
     pub fn msg_presentation_mode(&self) -> String {
         self.0.msg("presentation-mode", None).unwrap()
-    }
-    pub fn msg_presentation_mode_planned(&self) -> String {
-        self.0.msg("presentation-mode-planned", None).unwrap()
     }
     pub fn msg_preset_sizes(&self) -> String {
         self.0.msg("preset-sizes", None).unwrap()
