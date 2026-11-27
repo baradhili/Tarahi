@@ -48,6 +48,10 @@ impl App {
                 self.tellme_open = false;
                 self.tellme_query.clear();
                 self.tellme_sel = 0;
+                // #204 steps 3–4: closing restores focus to the
+                // canvas — surrender the field so the keyboard goes
+                // back to the app.
+                ctx.memory_mut(|m| m.surrender_focus(crate::tellme::field_id()));
             }
             if let Some(a) = run {
                 self.dispatch(a);
@@ -429,7 +433,7 @@ impl App {
     /// Resolve one armed letter against the current badge set (the
     /// last-painted frame's assignments — the shell is layout-stable,
     /// so the rects and letters are fresh).
-    pub(super) fn keytip_resolve(&mut self, c: char) {
+    pub(super) fn keytip_resolve(&mut self, ctx: &Context, c: char) {
         let key = c.to_string();
         // Letters are LEVEL-SCOPED (Office: the tab letters vanish at
         // control level): controls match first there, with the QAT
@@ -460,7 +464,13 @@ impl App {
                 self.keytips.disarm();
             }
             Some(crate::keytips::Hit::TellMe) => {
-                self.status = crate::i18n::strs().msg_tell_me_search_arrives_with_a_la();
+                // #204 step 4: Alt+Q / the Q keytip focus the query
+                // field — the panel opens with it. (The status-note
+                // placeholder is gone with the real field; so are its
+                // catalog messages.)
+                self.tellme_open = true;
+                self.tellme_sel = 0;
+                ctx.memory_mut(|m| m.request_focus(crate::tellme::field_id()));
                 self.keytips.disarm();
             }
             Some(crate::keytips::Hit::Action {
@@ -533,7 +543,7 @@ impl App {
     pub(super) fn paint_keytips(&mut self, ctx: &Context) {
         crate::keytips::assign_badge_letters(&mut self.keytips.badges);
         if let Some(c) = self.keytips.pending.take() {
-            self.keytip_resolve(c);
+            self.keytip_resolve(ctx, c);
         }
         crate::keytips::paint(ctx, &self.keytips);
     }

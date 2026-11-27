@@ -181,6 +181,13 @@ enum MatchRank {
 /// Result-row cap (#204 step 2: "cap ~8").
 const RESULT_CAP: usize = 8;
 
+/// The query field's stable egui id (#204 step 4): the shell lays the
+/// field out in the Tell Me box; Alt+Q and the Q keytip request focus
+/// on it from the input path.
+pub fn field_id() -> egui::Id {
+    egui::Id::unique("tellme-field")
+}
+
 /// Search the registry (#204 step 2). Every whitespace token of the
 /// query must match — case-insensitively — somewhere in the entry's
 /// searchable text: the display-language label, the English anchor,

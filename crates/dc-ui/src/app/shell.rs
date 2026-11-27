@@ -485,16 +485,7 @@ impl App {
                     ui.with_layout(tellme_dir, |ui| {
                         ui.add_space(6.0);
                         let (pr, presp) =
-                            ui.allocate_exact_size(Vec2::new(196.0, 20.0), Sense::click());
-                        // Painted placeholder, so name the control for
-                        // screen readers (GitHub #56).
-                        presp.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::Role::Button,
-                                true,
-                                crate::i18n::strs().msg_tell_me(),
-                            )
-                        });
+                            ui.allocate_exact_size(Vec2::new(196.0, 20.0), Sense::hover());
                         let hot = presp.hovered();
                         ui.painter().rect_filled(pr, 2, tk.tellme_bg);
                         ui.painter().rect_stroke(
@@ -511,21 +502,35 @@ impl App {
                             ),
                             true,
                         );
-                        ui.painter().text(
-                            Pos2::new(pr.left() + 24.0, pr.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            crate::i18n::strs().msg_tell_me_what_you_want_to_do(),
-                            egui::FontId::proportional(11.0),
-                            tk.hint_text,
+                        // #204 step 4: a REAL query field in the same
+                        // chrome — the painted placeholder is gone.
+                        // Typing feeds the live search, gaining focus
+                        // opens the panel, and Alt+Q / the Q keytip
+                        // land here from the input path.
+                        let field_r = Rect::from_min_max(
+                            Pos2::new(pr.left() + 22.0, pr.top()),
+                            Pos2::new(pr.right() - 4.0, pr.bottom()),
                         );
-                        let presp = presp.on_hover_text(
-                            crate::i18n::strs().msg_tell_me_planned_for_a_later_mile(),
-                        );
-                        // #204 step 3: clicking the box opens the
-                        // results panel (spec 3.1 — the dropdown opens
-                        // on interaction; the real query field that
-                        // feeds it lands with step 4).
-                        if presp.clicked() {
+                        let editor = egui::TextEdit::singleline(&mut self.tellme_query)
+                            .id(crate::tellme::field_id())
+                            .frame(egui::Frame::NONE)
+                            .font(egui::FontId::proportional(11.0))
+                            .desired_width(field_r.width())
+                            .hint_text(crate::i18n::strs().msg_tell_me_what_you_want_to_do());
+                        let fresp = ui.put(field_r, editor);
+                        // Name the field for screen readers — a real
+                        // TextEdit keeps its own role; the label keeps
+                        // the a11y lookups (#56) keying on it.
+                        fresp.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::Role::TextInput,
+                                true,
+                                crate::i18n::strs().msg_tell_me(),
+                            )
+                        });
+                        let fresp =
+                            fresp.on_hover_text(crate::i18n::strs().msg_tell_me_tip());
+                        if fresp.gained_focus() {
                             self.tellme_open = true;
                             self.tellme_sel = 0;
                         }
@@ -641,6 +646,11 @@ impl App {
                                 self.tellme_open = false;
                                 self.tellme_query.clear();
                                 self.tellme_sel = 0;
+                                // Running a command returns focus to
+                                // the canvas (#204 steps 3–4).
+                                ui.ctx().memory_mut(|m| {
+                                    m.surrender_focus(crate::tellme::field_id())
+                                });
                             }
                             if let Some(a) = run {
                                 self.dispatch(a);

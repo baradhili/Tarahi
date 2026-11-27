@@ -6463,14 +6463,7 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "tell-me-planned-for-a-later-mile",
-        attribute: None,
-        vars: &[],
-        bool_vars: &[],
-        elements: &[],
-    },
-    MessageContract {
-        message: "tell-me-search-arrives-with-a-la",
+        message: "tell-me-tip",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -7380,13 +7373,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..51729,
-            Self::En => 51729..101503,
-            Self::Es => 101503..156374,
-            Self::Fa => 156374..221645,
-            Self::Ja => 221645..277076,
-            Self::Ko => 277076..328108,
-            Self::ZhHans => 328108..372814,
+            Self::De => 0..51581,
+            Self::En => 51581..101227,
+            Self::Es => 101227..155962,
+            Self::Fa => 155962..221045,
+            Self::Ja => 221045..276320,
+            Self::Ko => 276320..327204,
+            Self::ZhHans => 327204..371778,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -10931,15 +10924,8 @@ impl L10nLanguage {
     pub fn msg_tell_me(&self) -> String {
         self.0.msg("tell-me", None).unwrap()
     }
-    pub fn msg_tell_me_planned_for_a_later_mile(&self) -> String {
-        self.0
-            .msg("tell-me-planned-for-a-later-mile", None)
-            .unwrap()
-    }
-    pub fn msg_tell_me_search_arrives_with_a_la(&self) -> String {
-        self.0
-            .msg("tell-me-search-arrives-with-a-la", None)
-            .unwrap()
+    pub fn msg_tell_me_tip(&self) -> String {
+        self.0.msg("tell-me-tip", None).unwrap()
     }
     pub fn msg_tell_me_what_you_want_to_do(&self) -> String {
         self.0.msg("tell-me-what-you-want-to-do", None).unwrap()
