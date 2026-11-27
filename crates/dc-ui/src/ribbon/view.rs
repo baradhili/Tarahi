@@ -12,7 +12,7 @@ pub(crate) fn groups(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec
         Group::new(s.msg_views(), views_cols(s, )),
         Group::new(s.msg_show(), show_grid(s, ctx)),
         Group::new(s.msg_visual_aids(), visual_aids_cols(s, ctx)),
-        Group::new(s.msg_zoom(), zoom_cols(s, )),
+        Group::new(s.msg_zoom(), zoom_cols(s, ctx)),
         Group::new(s.msg_window(), window_cols(s, )),
         Group::new(
             s.msg_macros(),
@@ -92,7 +92,7 @@ fn visual_aids_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<
     ]
 }
 
-fn zoom_cols(s: &'static crate::l10n::L10nLanguage) -> Vec<super::Col> {
+fn zoom_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<super::Col> {
     vec![
         stack(vec![
             RibbonButton::new(Icon::ZoomIn, "", Action::ZoomIn)
@@ -110,12 +110,16 @@ fn zoom_cols(s: &'static crate::l10n::L10nLanguage) -> Vec<super::Col> {
                     .tip(s.msg_fit_the_whole_page_in_the_window()),
             ],
             vec![
-                RibbonButton::new(Icon::Fit, s.msg_page_width(), Action::Macros)
-                    .enabled(false)
-                    .tip(s.msg_fit_the_page_width_planned()),
-                RibbonButton::new(Icon::Shapes, s.msg_zoom_menu(), Action::Macros)
-                    .enabled(false)
-                    .tip(s.msg_zoom_dialog_planned()),
+                // #209 step 3: Page Width is real — a width fit, not
+                // a mode.
+                RibbonButton::new(Icon::Fit, s.msg_page_width(), Action::FitPageWidth)
+                    .enabled(ctx.has_doc)
+                    .tip(s.msg_fit_the_page_width_in_the_window()),
+                // #209 step 3: the Zoom dialog (the stale "planned"
+                // tip retires with the feature).
+                RibbonButton::new(Icon::Shapes, s.msg_zoom_menu(), Action::ZoomDialog)
+                    .enabled(ctx.has_doc)
+                    .tip(s.msg_zoom_level_tip()),
             ],
         ]),
         stack(vec![

@@ -144,6 +144,8 @@ impl App {
             pending_activate: None,
             snap: crate::snap::SnapSettings::default(),
             snap_dlg_open: false,
+            zoom_dlg_open: false,
+            zoom_pick: dialogs::ZoomPick::Preset(100),
             line_jump_draft: None,
             line_jump_draft_y: None,
             snap_live: Vec::new(),

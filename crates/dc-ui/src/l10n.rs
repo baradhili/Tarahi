@@ -2606,7 +2606,7 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "fit-the-page-width-planned",
+        message: "fit-the-page-width-in-the-window",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -7135,13 +7135,6 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "zoom-dialog-planned",
-        attribute: None,
-        vars: &[],
-        bool_vars: &[],
-        elements: &[],
-    },
-    MessageContract {
         message: "zoom-in",
         attribute: None,
         vars: &[],
@@ -7150,6 +7143,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "zoom-in-tip",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "zoom-level-tip",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -7171,6 +7171,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "zoom-out-tip",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "zoom-percent",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -7282,13 +7289,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..50851,
-            Self::En => 50851..99866,
-            Self::Es => 99866..153862,
-            Self::Fa => 153862..218119,
-            Self::Ja => 218119..272562,
-            Self::Ko => 272562..322699,
-            Self::ZhHans => 322699..366685,
+            Self::De => 0..50897,
+            Self::En => 50897..99962,
+            Self::Es => 99962..154013,
+            Self::Fa => 154013..218315,
+            Self::Ja => 218315..272855,
+            Self::Ko => 272855..323062,
+            Self::ZhHans => 323062..367100,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -8723,8 +8730,10 @@ impl L10nLanguage {
     pub fn msg_first_page(&self) -> String {
         self.0.msg("first-page", None).unwrap()
     }
-    pub fn msg_fit_the_page_width_planned(&self) -> String {
-        self.0.msg("fit-the-page-width-planned", None).unwrap()
+    pub fn msg_fit_the_page_width_in_the_window(&self) -> String {
+        self.0
+            .msg("fit-the-page-width-in-the-window", None)
+            .unwrap()
     }
     pub fn msg_fit_the_whole_page_in_the_window(&self) -> String {
         self.0
@@ -11243,14 +11252,14 @@ impl L10nLanguage {
     pub fn msg_zoom(&self) -> String {
         self.0.msg("zoom", None).unwrap()
     }
-    pub fn msg_zoom_dialog_planned(&self) -> String {
-        self.0.msg("zoom-dialog-planned", None).unwrap()
-    }
     pub fn msg_zoom_in(&self) -> String {
         self.0.msg("zoom-in", None).unwrap()
     }
     pub fn msg_zoom_in_tip(&self) -> String {
         self.0.msg("zoom-in-tip", None).unwrap()
+    }
+    pub fn msg_zoom_level_tip(&self) -> String {
+        self.0.msg("zoom-level-tip", None).unwrap()
     }
     pub fn msg_zoom_menu(&self) -> String {
         self.0.msg("zoom-menu", None).unwrap()
@@ -11260,6 +11269,9 @@ impl L10nLanguage {
     }
     pub fn msg_zoom_out_tip(&self) -> String {
         self.0.msg("zoom-out-tip", None).unwrap()
+    }
+    pub fn msg_zoom_percent(&self) -> String {
+        self.0.msg("zoom-percent", None).unwrap()
     }
     pub fn msg_zoom_to_selection_shift_z(&self) -> String {
         self.0.msg("zoom-to-selection-shift-z", None).unwrap()

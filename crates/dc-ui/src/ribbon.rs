@@ -158,6 +158,13 @@ pub enum Action {
     ZoomOut,
     Zoom100,
     FitPage,
+    /// #209 step 3: Visio's Page Width — zoom to the page's width.
+    FitPageWidth,
+    /// #209 step 3: the Zoom dialog (the status-bar % button and the
+    /// View ▸ Zoom… button).
+    ZoomDialog,
+    /// #209 step 3: a zoom percentage (0–800) from the Zoom dialog.
+    ZoomSet(u32),
     ZoomSelection,
     About,
     ToggleGrid,

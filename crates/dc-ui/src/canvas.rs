@@ -82,6 +82,23 @@ impl View {
         self.last_origin = origin;
     }
 
+    /// Zoom so the page's WIDTH fills the content area (Visio's
+    /// Page Width, #209 step 3): the width-derived zoom bucket-floors
+    /// like [`Self::apply_fit`], the page centers horizontally, and the
+    /// vertical position centers with the same margin clamp. Not fit
+    /// mode — the command is a zoom, not a mode, so a later manual
+    /// zoom or a window resize never re-fits.
+    pub fn apply_fit_width(&mut self, content: Vec2, origin: Vec2, page: &PageGeom) {
+        let zx = content.x / (page.w_in as f32 * 96.0);
+        self.zoom = ((zx * 384.0).floor() / 384.0).clamp(0.1, 8.0);
+        let pw = page.w_in as f32 * self.px_per_in();
+        let ph = page.h_in as f32 * self.px_per_in();
+        self.pan = origin
+            + Vec2::new((content.x - pw) / 2.0, (content.y - ph) / 2.0).max(Vec2::new(12.0, 12.0));
+        self.fit_mode = false;
+        self.fit_pending = false;
+    }
+
     /// Whether a newly laid-out content area should trigger a re-fit:
     /// only in fit mode, and only beyond sub-pixel layout jitter — a
     /// change in either the content SIZE or its ORIGIN (the RTL ruler

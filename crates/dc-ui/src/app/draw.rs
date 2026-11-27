@@ -199,6 +199,7 @@ impl App {
         self.backgrounds_window(&ctx);
         self.select_by_type_window(&ctx);
         self.snap_glue_window(&ctx);
+        self.zoom_window(&ctx);
         self.hyperlink_window(&ctx);
         self.fields_insert_window(&ctx);
         self.spell_window(&ctx);

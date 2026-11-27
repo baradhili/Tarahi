@@ -46,6 +46,21 @@ impl App {
                 self.view.fit_mode = false;
             }
             Action::FitPage => self.view.fit_pending = true,
+            // #209 step 3: Page Width — the width fit is a zoom, not a
+            // mode (a later manual zoom or a resize never re-fits).
+            Action::FitPageWidth => self.apply_page_width_fit(),
+            // The Zoom dialog opens with the current zoom preselected.
+            Action::ZoomDialog => {
+                self.zoom_dlg_open = !self.zoom_dlg_open;
+                if self.zoom_dlg_open {
+                    self.zoom_pick =
+                        dialogs::ZoomPick::Preset((self.view.zoom * 100.0).round() as u32);
+                }
+            }
+            Action::ZoomSet(pct) => {
+                self.view.zoom = (pct as f32 / 100.0).clamp(0.1, 8.0);
+                self.view.fit_mode = false;
+            }
             Action::About => self.about_open = !self.about_open,
             // #237: zoom-to-selection defers to the canvas frame — it
             // needs the content area + selection rects the frame owns.
@@ -238,6 +253,18 @@ impl App {
                 }
             }
         }
+    }
+
+    /// #209 step 3: Visio's Page Width — zoom to the page's width
+    /// against the current content area (the last canvas frame's
+    /// layout; a no-op before the first frame or without a document).
+    pub(super) fn apply_page_width_fit(&mut self) {
+        if self.ed.is_none() || self.canvas_rect.width() <= 0.0 {
+            return;
+        }
+        let (origin, content) = canvas::content_area(self.canvas_rect, self.view.show_rulers);
+        let geom = self.page_geom();
+        self.view.apply_fit_width(content, origin.to_vec2(), &geom);
     }
 
     // -- shell panels -----------------------------------------------------
@@ -925,12 +952,15 @@ impl App {
                 // Visio status bar right end: − [zoom slider] + N%
                 if self.ed.is_some() {
                     let pct = (self.view.zoom * 100.0).round() as u32;
-                    ui.label(
-                        egui::RichText::new(format!("{pct}%"))
-                            .color(t.status_text)
-                            .size(11.0)
-                            .strong(),
-                    );
+                    // #209 step 3: the % is a button opening the Zoom
+                    // dialog (Visio's status-bar zoom level).
+                    if ui
+                        .button(format!("{pct}%"))
+                        .on_hover_text(crate::i18n::strs().msg_zoom_level_tip())
+                        .clicked()
+                    {
+                        self.dispatch(Action::ZoomDialog);
+                    }
                     let mut z = self.view.zoom;
                     let slider = egui::Slider::new(&mut z, 0.1..=8.0).show_value(false);
                     let sresp = ui
