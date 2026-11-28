@@ -235,6 +235,12 @@ impl App {
         self.confirm_new = false;
         self.new_after_save = false;
         self.close_after_save = None;
+        // #213: the outgoing document is abandoned here (or was clean)
+        // — its recovery copy goes with it.
+        let old = self.path.clone();
+        if !old.as_os_str().is_empty() {
+            self.clear_recovery_copy_for(&old);
+        }
         self.ed = Some(Editor::new_blank());
         self.reload_snap_settings();
         self.path = PathBuf::new();
@@ -453,10 +459,163 @@ impl App {
             Ok(()) => {
                 self.status = crate::i18n::strs().msg_saved_path(path.display().to_string());
                 self.dirty = false;
+                // #213: saving cleanly removes the recovery copies —
+                // the document's pre-save stem (a Save As moved it)
+                // and the saved name's.
+                let old = self.path.clone();
+                if !old.as_os_str().is_empty() {
+                    self.clear_recovery_copy_for(&old);
+                }
                 self.path = path.to_path_buf();
+                self.clear_recovery_copy_for(path);
                 self.recent.record(path);
             }
             Err(e) => self.status = crate::i18n::strs().msg_save_failed_e(format!("{e:#}")),
+        }
+    }
+
+    // -- AutoRecover (#213) -------------------------------------------------
+
+    /// #213: clear one document's recovery snapshot from EVERY
+    /// recognized recovery dir (the custom Save-page location and the
+    /// app default can each hold a pair written while it was the
+    /// write dir), invalidating any in-flight snapshot worker — and
+    /// delete the exact files a completed RESTORE left on disk (they
+    /// outlive the restore until this decision; the identity clear
+    /// alone can miss a snapshot from a since-unconfigured dir,
+    /// PR #419 review round 2). Untitled documents have no copy — no
+    /// original, never autosaved (owner decision 2026-11-28).
+    pub(super) fn clear_recovery_copy_for(&mut self, path: &Path) {
+        let dirs = crate::autorecover::recovery_dirs(
+            crate::recent::config_base().as_deref(),
+            &self.options_store.autorecover_dir,
+        );
+        crate::autorecover::clear_original(path, &dirs);
+        if let Some(r) = self.restored.take() {
+            crate::autorecover::clear_restored(&r);
+        }
+    }
+
+    /// Every open document — the active one first, then the inactive
+    /// sessions (the Window switcher's order): (editor, path, dirty).
+    fn each_document(&self) -> impl Iterator<Item = (&Editor, &Path, bool)> {
+        let active = self
+            .ed
+            .as_ref()
+            .map(|ed| (ed, self.path.as_path(), self.dirty));
+        let sessions = self
+            .docs
+            .iter()
+            .map(|d| (&d.ed, d.path.as_path(), d.dirty));
+        active.into_iter().chain(sessions)
+    }
+
+    fn any_dirty_pathed_document(&self) -> bool {
+        self.each_document()
+            .any(|(_, path, dirty)| dirty && !path.as_os_str().is_empty())
+    }
+
+    /// #213: the autosave tick — a per-frame deadline check; when the
+    /// interval elapses, every dirty PATHED document (active +
+    /// inactive sessions) snapshots to the recovery dir. The snapshot
+    /// clones at this frame boundary — a consistent read, never
+    /// mid-command — and the write runs on the worker thread (the
+    /// stencil-extractor discipline: the UI never blocks on disk).
+    /// The tick runs only for a persisting options store (production,
+    /// or a test's `persisting_for_test` seam): the ephemeral headless
+    /// stores keep kittest inert, and an untitled document never
+    /// autosaves (owner decision 2026-11-28).
+    pub(super) fn poll_autosave(&mut self, ctx: &Context) {
+        if self.closing || !self.options_store.persists() {
+            return;
+        }
+        let dirs = crate::autorecover::recovery_dirs(
+            crate::recent::config_base().as_deref(),
+            &self.options_store.autorecover_dir,
+        );
+        let Some(dir) = dirs.into_iter().next() else {
+            return; // no config base and no custom location: nowhere to write
+        };
+        let Some(interval) = crate::autorecover::interval(
+            self.options_store.autorecover_minutes,
+            self.options_store.autorecover,
+        ) else {
+            return; // off (the Save page checkbox, or the 0 knob)
+        };
+        if self.autosave_last.elapsed() >= interval {
+            self.autosave_last = std::time::Instant::now();
+            for (ed, path, dirty) in self.each_document() {
+                if !dirty || path.as_os_str().is_empty() {
+                    continue;
+                }
+                // dispatch_snapshot bumps the document's generation
+                // (its publish is generation-checked, so a clear that
+                // races this worker wins) and writes on the worker.
+                crate::autorecover::dispatch_snapshot(
+                    ed.doc.clone(),
+                    path.to_path_buf(),
+                    dir.clone(),
+                );
+            }
+        }
+        // Idle wake-up: an egui app gets no frames while idle, so the
+        // deadline check needs the repaint that runs it (the stencil
+        // heartbeat rule) — only while there is something to save.
+        if self.any_dirty_pathed_document() {
+            let remaining = interval
+                .saturating_sub(self.autosave_last.elapsed())
+                .max(Duration::from_millis(100));
+            ctx.request_repaint_after(remaining);
+        }
+    }
+
+    /// #213: the Document Recovery pane's glue — draw it (it self-
+    /// gates on the startup scan's entries), then apply the frame's
+    /// outcomes: Discard deletes the recovery files; Restore removes
+    /// the entry, arms the landing, and opens the snapshot through
+    /// the normal load path. Esc dismisses the pane for this session
+    /// (the files stay; the next start offers them again).
+    pub(super) fn poll_recovery(&mut self, ctx: &Context) {
+        if self.recovery_dismissed || self.recoveries.is_empty() {
+            return;
+        }
+        let esc_blocked = self.confirm_close.is_some() || self.confirm_new;
+        let result =
+            crate::autorecover::recovery_window(ctx, &self.recoveries, esc_blocked);
+        if result.dismissed {
+            self.recovery_dismissed = true;
+            return;
+        }
+        // Descending index order: removals don't shift the pending
+        // ones (one action per entry even if a row was double-clicked
+        // within the frame).
+        let mut actions = result.actions;
+        actions.sort_by_key(|(ix, _)| std::cmp::Reverse(*ix));
+        actions.dedup_by_key(|(ix, _)| *ix);
+        for (ix, action) in actions {
+            let Some(entry) = self.recoveries.get(ix).cloned() else {
+                continue;
+            };
+            match action {
+                crate::autorecover::EntryAction::Discard => {
+                    crate::autorecover::clear_files(&crate::autorecover::entry_files(&entry));
+                    self.recoveries.remove(ix);
+                }
+                crate::autorecover::EntryAction::Restore => {
+                    // One in-flight open at a time (the modal-flight
+                    // rule): the entry stays for a retry once it lands.
+                    if self.loading.is_some() {
+                        continue;
+                    }
+                    let path = entry.recovery_path.clone();
+                    self.restore_landing = Some(crate::autorecover::RestoreLanding {
+                        original: entry.original.clone(),
+                        entry,
+                    });
+                    self.recoveries.remove(ix);
+                    self.load(path);
+                }
+            }
         }
     }
 

@@ -253,6 +253,8 @@ document-closed = Dokument geschlossen
 document-inspection-arrives-with = Dokumentprüfung kommt in einem späteren Meilenstein
 document-masters = Dokument-Master
 document-protection-arrives-with = Dokumentschutz kommt in einem späteren Meilenstein
+document-recovery = Dokumentwiederherstellung
+
 document-shapesheet = Dokument-ShapeSheet
 document-sheet-name = Dokument
 document-stencil = Dokumentschablone
@@ -827,6 +829,11 @@ rail-new = Neu
 rail-print = Drucken
 re-layout-page = Seite neu anordnen
 recent = Zuletzt verwendet
+recovery-discard = Verwerfen
+recovery-description = Die folgenden Dokumente wurden wiederhergestellt. Stellen Sie eines wieder her, um daran weiterzuarbeiten, oder verwerfen Sie es, um die Wiederherstellungskopie zu löschen.
+recovery-recovered-at = Wiederhergestellt: { $ts }
+recovery-restore = Wiederherstellen
+
 rectangle-tool = Rechteckwerkzeug
 rectangle-tool-planned = Rechteckwerkzeug — geplant
 redo-ctrl-y = Wiederherstellen (Strg+Y)
@@ -1562,6 +1569,8 @@ document-closed = document closed
 document-inspection-arrives-with = Document inspection arrives with a later milestone
 document-masters = Document Masters
 document-protection-arrives-with = Document protection arrives with a later milestone
+document-recovery = Document Recovery
+
 document-shapesheet = Document ShapeSheet
 document-sheet-name = Document
 document-stencil = Document Stencil
@@ -2173,6 +2182,12 @@ rail-new = New
 rail-print = Print
 re-layout-page = Re-layout Page
 recent = Recent
+recovery-discard = Discard
+recovery-description = The following documents were recovered. Restore one to keep working on it, or discard it to delete the recovered copy.
+# $ts (String) - the snapshot's recovery timestamp (UTC, YYYY-MM-DD HH:MM)
+recovery-recovered-at = Recovered { $ts }
+recovery-restore = Restore
+
 rectangle-tool = Rectangle Tool
 rectangle-tool-planned = Rectangle tool — planned
 redo-ctrl-y = Redo (Ctrl+Y)
@@ -2929,6 +2944,8 @@ document-closed = documento cerrado
 document-inspection-arrives-with = La inspección de documentos llega con un hito posterior
 document-masters = Patrones del documento
 document-protection-arrives-with = La protección de documentos llega con un hito posterior
+document-recovery = Recuperación de documentos
+
 document-shapesheet = ShapeSheet del documento
 document-sheet-name = Documento
 document-stencil = Galería del documento
@@ -3535,6 +3552,11 @@ rail-new = Nuevo
 rail-print = Imprimir
 re-layout-page = Rediseñar página
 recent = Reciente
+recovery-discard = Descartar
+recovery-description = Se recuperaron los siguientes documentos. Restaure uno para seguir trabajando en él, o descártelo para eliminar la copia recuperada.
+recovery-recovered-at = Recuperado: { $ts }
+recovery-restore = Restaurar
+
 rectangle-tool = Herramienta Rectángulo
 rectangle-tool-planned = Herramienta Rectángulo — planeado
 redo-ctrl-y = Rehacer (Ctrl+Y)
@@ -4267,6 +4289,8 @@ document-closed = سند بسته شد
 document-inspection-arrives-with = بازرسی سند با نقطهٔ عطف بعدی عرضه می‌شود
 document-masters = استادهای سند
 document-protection-arrives-with = حفاظت سند با نقطهٔ عطف بعدی عرضه می‌شود
+document-recovery = بازیابی سند
+
 document-shapesheet = ShapeSheet سند
 document-sheet-name = سند
 document-stencil = شابلون سند
@@ -4841,6 +4865,11 @@ rail-new = جدید
 rail-print = چاپ
 re-layout-page = چیدمان دوبارهٔ صفحه
 recent = اخیر
+recovery-discard = نادیده‌گرفتن
+recovery-description = سندهای زیر بازیابی شدند. برای ادامهٔ کار روی یکی از آن‌ها آن را بازیابی کنید، یا برای حذف نسخهٔ بازیابی‌شده آن را نادیده بگیرید.
+recovery-recovered-at = بازیابی‌شده: { $ts }
+recovery-restore = بازیابی
+
 rectangle-tool = ابزار مستطیل
 rectangle-tool-planned = ابزار مستطیل — برنامه‌ریزی شده
 redo-ctrl-y = اجرای دوباره (Ctrl+Y)
@@ -5540,6 +5569,8 @@ document-closed = ドキュメントを閉じました
 document-inspection-arrives-with = ドキュメントの検査は後のマイルストーンで提供されます
 document-masters = ドキュメント マスター
 document-protection-arrives-with = ドキュメントの保護は後のマイルストーンで提供されます
+document-recovery = ドキュメントの回復
+
 document-shapesheet = ドキュメントの ShapeSheet
 document-sheet-name = ドキュメント
 document-stencil = ドキュメント ステンシル
@@ -6075,6 +6106,11 @@ rail-new = 新規
 rail-print = 印刷
 re-layout-page = ページの再レイアウト
 recent = 最近
+recovery-discard = 破棄
+recovery-description = 次のドキュメントが回復されました。作業を続けるにはドキュメントを回復し、回復したコピーを削除するには破棄してください。
+recovery-recovered-at = 回復日時: { $ts }
+recovery-restore = 回復
+
 rectangle-tool = 四角形ツール
 rectangle-tool-planned = 四角形ツール — 予定
 redo-ctrl-y = 繰り返し（Ctrl+Y）
@@ -6727,6 +6763,8 @@ document-closed = 문서를 닫았습니다
 document-inspection-arrives-with = 문서 검사는 이후 마일스톤에서 제공됩니다
 document-masters = 문서 마스터
 document-protection-arrives-with = 문서 보호는 이후 마일스톤에서 제공됩니다
+document-recovery = 문서 복구
+
 document-shapesheet = 문서 ShapeSheet
 document-sheet-name = 문서
 document-stencil = 문서 스텐실
@@ -7262,6 +7300,11 @@ rail-new = 새로 만들기
 rail-print = 인쇄
 re-layout-page = 페이지 다시 레이아웃
 recent = 최근
+recovery-discard = 버림
+recovery-description = 다음 문서가 복구되었습니다. 계속 작업하려면 복원하고, 복구된 복사본을 삭제하려면 버리십시오.
+recovery-recovered-at = 복구 시각: { $ts }
+recovery-restore = 복원
+
 rectangle-tool = 사각형 도구
 rectangle-tool-planned = 사각형 도구 — 예정
 redo-ctrl-y = 다시 실행(Ctrl+Y)
@@ -7912,6 +7955,8 @@ document-closed = 文档已关闭
 document-inspection-arrives-with = 文档检查将在后期里程碑提供
 document-masters = 文档主形状
 document-protection-arrives-with = 文档保护将在后期里程碑提供
+document-recovery = 文档恢复
+
 document-shapesheet = 文档 ShapeSheet
 document-sheet-name = 文档
 document-stencil = 文档模具
@@ -8448,6 +8493,11 @@ rail-new = 新建
 rail-print = 打印
 re-layout-page = 重新布局页面
 recent = 最近
+recovery-discard = 放弃
+recovery-description = 已恢复以下文档。若要继续处理，请将其还原；若要删除恢复的副本，请将其放弃。
+recovery-recovered-at = 恢复时间：{ $ts }
+recovery-restore = 还原
+
 rectangle-tool = 矩形工具
 rectangle-tool-planned = 矩形工具 — 计划中
 redo-ctrl-y = 恢复 (Ctrl+Y)

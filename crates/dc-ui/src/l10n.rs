@@ -1598,6 +1598,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "document-recovery",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "document-shapesheet",
         attribute: None,
         vars: &[],
@@ -4944,6 +4951,34 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "recovery-discard",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "recovery-description",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "recovery-recovered-at",
+        attribute: None,
+        vars: &["ts"],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "recovery-restore",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "rectangle-tool",
         attribute: None,
         vars: &[],
@@ -7667,13 +7702,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..53209,
-            Self::En => 53209..104533,
-            Self::Es => 104533..160999,
-            Self::Fa => 160999..228189,
-            Self::Ja => 228189..285239,
-            Self::Ko => 285239..337818,
-            Self::ZhHans => 337818..383841,
+            Self::De => 0..53570,
+            Self::En => 53570..105247,
+            Self::Es => 105247..162023,
+            Self::Fa => 162023..229650,
+            Self::Ja => 229650..287049,
+            Self::Ko => 287049..339919,
+            Self::ZhHans => 339919..386211,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -8617,6 +8652,9 @@ impl L10nLanguage {
         self.0
             .msg("document-protection-arrives-with", None)
             .unwrap()
+    }
+    pub fn msg_document_recovery(&self) -> String {
+        self.0.msg("document-recovery", None).unwrap()
     }
     pub fn msg_document_shapesheet(&self) -> String {
         self.0.msg("document-shapesheet", None).unwrap()
@@ -10409,6 +10447,21 @@ impl L10nLanguage {
     }
     pub fn msg_recent(&self) -> String {
         self.0.msg("recent", None).unwrap()
+    }
+    pub fn msg_recovery_discard(&self) -> String {
+        self.0.msg("recovery-discard", None).unwrap()
+    }
+    pub fn msg_recovery_description(&self) -> String {
+        self.0.msg("recovery-description", None).unwrap()
+    }
+    /// $ts (String) - the snapshot's recovery timestamp (UTC, YYYY-MM-DD HH:MM)
+    pub fn msg_recovery_recovered_at<F0: AsRef<str>>(&self, ts: F0) -> String {
+        let mut _args = FluentArgs::new();
+        _args.set("ts", ts.as_ref());
+        self.0.msg("recovery-recovered-at", Some(_args)).unwrap()
+    }
+    pub fn msg_recovery_restore(&self) -> String {
+        self.0.msg("recovery-restore", None).unwrap()
     }
     pub fn msg_rectangle_tool(&self) -> String {
         self.0.msg("rectangle-tool", None).unwrap()

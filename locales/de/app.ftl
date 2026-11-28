@@ -250,6 +250,8 @@ document-closed = Dokument geschlossen
 document-inspection-arrives-with = Dokumentprüfung kommt in einem späteren Meilenstein
 document-masters = Dokument-Master
 document-protection-arrives-with = Dokumentschutz kommt in einem späteren Meilenstein
+document-recovery = Dokumentwiederherstellung
+
 document-shapesheet = Dokument-ShapeSheet
 document-sheet-name = Dokument
 document-stencil = Dokumentschablone
@@ -824,6 +826,11 @@ rail-new = Neu
 rail-print = Drucken
 re-layout-page = Seite neu anordnen
 recent = Zuletzt verwendet
+recovery-discard = Verwerfen
+recovery-description = Die folgenden Dokumente wurden wiederhergestellt. Stellen Sie eines wieder her, um daran weiterzuarbeiten, oder verwerfen Sie es, um die Wiederherstellungskopie zu löschen.
+recovery-recovered-at = Wiederhergestellt: { $ts }
+recovery-restore = Wiederherstellen
+
 rectangle-tool = Rechteckwerkzeug
 rectangle-tool-planned = Rechteckwerkzeug — geplant
 redo-ctrl-y = Wiederherstellen (Strg+Y)

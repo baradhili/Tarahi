@@ -270,6 +270,8 @@ document-closed = documento cerrado
 document-inspection-arrives-with = La inspección de documentos llega con un hito posterior
 document-masters = Patrones del documento
 document-protection-arrives-with = La protección de documentos llega con un hito posterior
+document-recovery = Recuperación de documentos
+
 document-shapesheet = ShapeSheet del documento
 document-sheet-name = Documento
 document-stencil = Galería del documento
@@ -876,6 +878,11 @@ rail-new = Nuevo
 rail-print = Imprimir
 re-layout-page = Rediseñar página
 recent = Reciente
+recovery-discard = Descartar
+recovery-description = Se recuperaron los siguientes documentos. Restaure uno para seguir trabajando en él, o descártelo para eliminar la copia recuperada.
+recovery-recovered-at = Recuperado: { $ts }
+recovery-restore = Restaurar
+
 rectangle-tool = Herramienta Rectángulo
 rectangle-tool-planned = Herramienta Rectángulo — planeado
 redo-ctrl-y = Rehacer (Ctrl+Y)

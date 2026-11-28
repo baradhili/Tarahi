@@ -328,6 +328,15 @@ impl App {
     /// `ViewportCommand::Close` as next frame's close-requested
     /// input — passes through instead of being re-prompted (#65).
     pub(super) fn issue_close(&mut self, ctx: &Context) {
+        // #213: the app closes — the ACTIVE document's recovery copy
+        // is removed (it closed cleanly: saved, or explicitly
+        // discarded by the close prompt). Inactive sessions keep
+        // theirs: their unsaved changes were never decided, and the
+        // next start offers them.
+        let old = self.path.clone();
+        if !old.as_os_str().is_empty() {
+            self.clear_recovery_copy_for(&old);
+        }
         self.closing = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         self.debug_close_issued += 1;
@@ -430,6 +439,13 @@ impl App {
         if self.text_edit.is_some() {
             self.end_text_edit(true);
         }
+        // #213: the document closed (saved or explicitly discarded) —
+        // its recovery copy goes with it; the next start must not
+        // resurrect it.
+        let old = self.path.clone();
+        if !old.as_os_str().is_empty() {
+            self.clear_recovery_copy_for(&old);
+        }
         self.ed = None;
         self.path = PathBuf::new();
         self.dirty = false;
@@ -518,7 +534,15 @@ impl App {
                         } else {
                             let p = self.path.clone();
                             self.save_to(&p);
-                            self.start_new();
+                            // Only a SUCCESSFUL save starts the new
+                            // document (the cleared dirty flag says
+                            // so — the same guard the close prompt's
+                            // Save path uses): a failed save keeps
+                            // the document and its recovery copy
+                            // (PR #419 review).
+                            if !self.dirty {
+                                self.start_new();
+                            }
                         }
                     }
                     if ui.button(crate::i18n::strs().msg_discard_new()).clicked() {
