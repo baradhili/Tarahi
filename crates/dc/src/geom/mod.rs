@@ -649,6 +649,36 @@ mod tests {
             1,
             "a short departure does not hide the pierce either"
         );
+        // …and classification is independent of collinear SUBDIVISION
+        // (CodeRabbit round 4): a straight run split into several
+        // collinear segments answers exactly as the single segment
+        // does — the both-turn guards see maximal runs, not the
+        // immediate subdivided windows. The subdivided pierce hops…
+        assert_eq!(
+            line_jumps(
+                &[
+                    jline(1, 0, &[(-1.0, 0.0), (0.0, 0.0), (0.001, 0.0), (1.0, 0.0)]),
+                    jline(2, 1, &[(0.0, 1.0), (0.0, 0.0), (0.001, -5e-13)]),
+                ],
+                r
+            )
+            .len(),
+            1,
+            "a subdivided straight run does not hide the pierce"
+        );
+        // …and the subdivided exact merge stays rejected.
+        assert_eq!(
+            line_jumps(
+                &[
+                    jline(1, 0, &[(-1.0, 0.0), (0.0, 0.0), (0.001, 0.0), (1.0, 0.0)]),
+                    jline(2, 1, &[(0.0, 1.0), (0.0, 0.0), (1.0, 0.0)]),
+                ],
+                r
+            )
+            .len(),
+            0,
+            "a subdivided straight run keeps rejecting the exact merge"
+        );
         // Controls: a line genuinely leaving keeps its verdicts —
         // upward is a touch, downward a crossing.
         assert_eq!(

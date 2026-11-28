@@ -670,7 +670,35 @@ pub fn line_jumps_with(
                     v.push(*p);
                 }
             }
-            v
+            // …and a straight run's collinear SUBDIVISION goes too
+            // (#334 round 4, CodeRabbit): the both-turn guards compare
+            // IMMEDIATE neighbor runs, so a short subdivided run could
+            // pass the shared-run test where the full run fails —
+            // while the one-turn branch, which sees whole windows,
+            // answered differently. Collapsed here, every window IS a
+            // maximal straight run and both branches classify the
+            // same geometry the same way. A vertex stays only where
+            // the route actually turns (a reversal included); the
+            // endpoints always stay.
+            let mut w: Vec<(f64, f64)> = Vec::with_capacity(v.len());
+            for p in v {
+                while w.len() >= 2 {
+                    let (a, b) = (w[w.len() - 2], w[w.len() - 1]);
+                    let (d1, d2) = ((b.0 - a.0, b.1 - a.1), (p.0 - b.0, p.1 - b.1));
+                    let (l1, l2) = (d1.0.hypot(d1.1), d2.0.hypot(d2.1));
+                    if l1 > 1e-12
+                        && l2 > 1e-12
+                        && ((d1.0 * d2.1 - d1.1 * d2.0) / (l1 * l2)).abs() < SHARED_RUN_SIN
+                        && d1.0 * d2.0 + d1.1 * d2.1 > 0.0
+                    {
+                        w.pop();
+                    } else {
+                        break;
+                    }
+                }
+                w.push(p);
+            }
+            w
         })
         .collect();
     let mut out = Vec::new();
