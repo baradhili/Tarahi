@@ -518,6 +518,181 @@ mod tests {
         assert_eq!(js.len(), 1, "interleaved corner runs cross: {js:?}");
     }
 
+    /// #334: a connector MERGING onto another's run — a ray the two
+    /// routes share — is not a crossing, in both contact branches: the
+    /// both-turn `alternating` sort (where the coincident pair's tie
+    /// read as alternation by sort luck — the join heading east
+    /// hopped, its mirror heading west did not) and the one-route-turn
+    /// touch test (where the run along the other segment sidestepped
+    /// the same-side sign test). The offset gate keeps the PIERCE that
+    /// runs 5e-10 in beside the line a crossing; a line genuinely
+    /// leaving keeps its touch/cross verdicts.
+    #[test]
+    fn shared_runs_merge_without_a_hop() {
+        let r = (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS);
+        let both_turn = |b: &[(f64, f64)]| {
+            line_jumps(
+                &[
+                    jline(1, 0, &[(-1.0, 0.0), (0.0, 0.0), (1.0, 0.0)]),
+                    jline(2, 1, b),
+                ],
+                r,
+            )
+        };
+        // B reaches A's interior vertex and leaves along A's own run —
+        // east (the reported false hop), west (the mirror that passed
+        // by tie-order luck), and floating-point skew on both sides of
+        // the shared line.
+        assert_eq!(
+            both_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, 0.0)]).len(),
+            0,
+            "a join heading east merges, not crosses"
+        );
+        assert_eq!(
+            both_turn(&[(0.0, 1.0), (0.0, 0.0), (-1.0, 0.0)]).len(),
+            0,
+            "a join heading west merges too — no east/west asymmetry"
+        );
+        assert_eq!(
+            both_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, 1e-13)]).len(),
+            0,
+            "skew above the shared line still merges"
+        );
+        assert_eq!(
+            both_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, -1e-13)]).len(),
+            0,
+            "skew below the shared line still merges"
+        );
+        // The same merge rotated onto a vertical run.
+        assert_eq!(
+            line_jumps(
+                &[
+                    jline(1, 0, &[(0.0, -1.0), (0.0, 0.0), (0.0, 1.0)]),
+                    jline(2, 1, &[(1.0, 0.0), (0.0, 0.0), (0.0, 1.0)]),
+                ],
+                r
+            )
+            .len(),
+            0,
+            "a join heading north on a vertical run merges"
+        );
+        // One-turn merges: the other route runs straight through (a
+        // single segment), B merges at an interior vertex of its own.
+        let one_turn = |b: &[(f64, f64)]| {
+            line_jumps(
+                &[jline(1, 0, &[(-1.0, 0.0), (1.0, 0.0)]), jline(2, 1, b)],
+                r,
+            )
+        };
+        assert_eq!(
+            one_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, 0.0)]).len(),
+            0,
+            "a one-turn join heading east merges"
+        );
+        assert_eq!(
+            one_turn(&[(0.0, 1.0), (0.0, 0.0), (-1.0, 0.0)]).len(),
+            0,
+            "a one-turn join heading west merges"
+        );
+        // Near-misses stay crossings: the route PIERCES the line and
+        // runs 5e-10 in beside it — beyond the 1e-11 shared-run offset.
+        assert_eq!(
+            both_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, -5e-10)]).len(),
+            1,
+            "a both-turn pierce beside the line still hops"
+        );
+        assert_eq!(
+            one_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, -5e-10)]).len(),
+            1,
+            "a one-turn pierce beside the line still hops"
+        );
+        // The offset is measured against the other route's OWN line,
+        // never a ray fabricated from the contact vertex: a vertex
+        // 5e-10 ABOVE the line whose departure merely AIMS along it
+        // still crosses (CodeRabbit, on the re-land) — in both
+        // contact branches.
+        let aim_along = &[(0.0, -1.0), (0.0, 5e-10), (0.5, 2.5e-10)];
+        assert_eq!(
+            one_turn(aim_along).len(),
+            1,
+            "a vertex off the line aiming along it still crosses"
+        );
+        assert_eq!(
+            both_turn(aim_along).len(),
+            1,
+            "the both-turn aim-along contact still crosses"
+        );
+        // The shared-run rejection is RECIPROCAL: both runs must
+        // agree they lie on one line. A short run otherwise hides a
+        // long one's divergence — A's 0.001-in run stays within
+        // 5e-13 of B's piercing line while B's own endpoint is 5e-10
+        // out, and that pair still crosses (CodeRabbit round 2).
+        assert_eq!(
+            line_jumps(
+                &[
+                    jline(1, 0, &[(-0.001, 0.0), (0.0, 0.0), (0.001, 0.0)]),
+                    jline(2, 1, &[(0.0, 1.0), (0.0, 0.0), (1.0, -5e-10)]),
+                ],
+                r
+            )
+            .len(),
+            1,
+            "a short run does not hide the pierce"
+        );
+        // …and the reciprocal check holds in the ONE-TURN branch too:
+        // a SHORT departure (0.001 in, ending 5e-13 below) must not
+        // hide the other side's divergence — the same geometry hops
+        // whether the other route carries a redundant vertex or not
+        // (CodeRabbit round 3).
+        assert_eq!(
+            one_turn(&[(0.0, 1.0), (0.0, 0.0), (0.001, -5e-13)]).len(),
+            1,
+            "a short departure does not hide the pierce either"
+        );
+        // …and classification is independent of collinear SUBDIVISION
+        // (CodeRabbit round 4): a straight run split into several
+        // collinear segments answers exactly as the single segment
+        // does — the both-turn guards see maximal runs, not the
+        // immediate subdivided windows. The subdivided pierce hops…
+        assert_eq!(
+            line_jumps(
+                &[
+                    jline(1, 0, &[(-1.0, 0.0), (0.0, 0.0), (0.001, 0.0), (1.0, 0.0)]),
+                    jline(2, 1, &[(0.0, 1.0), (0.0, 0.0), (0.001, -5e-13)]),
+                ],
+                r
+            )
+            .len(),
+            1,
+            "a subdivided straight run does not hide the pierce"
+        );
+        // …and the subdivided exact merge stays rejected.
+        assert_eq!(
+            line_jumps(
+                &[
+                    jline(1, 0, &[(-1.0, 0.0), (0.0, 0.0), (0.001, 0.0), (1.0, 0.0)]),
+                    jline(2, 1, &[(0.0, 1.0), (0.0, 0.0), (1.0, 0.0)]),
+                ],
+                r
+            )
+            .len(),
+            0,
+            "a subdivided straight run keeps rejecting the exact merge"
+        );
+        // Controls: a line genuinely leaving keeps its verdicts —
+        // upward is a touch, downward a crossing.
+        assert_eq!(
+            one_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, 0.01)]).len(),
+            0,
+            "leaving upward: a touch"
+        );
+        assert_eq!(
+            one_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, -0.01)]).len(),
+            1,
+            "leaving downward: a crossing"
+        );
+    }
+
     /// A hit segment: start and end in page space.
     type Seg = ((f64, f64), (f64, f64));
 
@@ -1348,6 +1523,78 @@ mod tests {
             "other line: the vertical hops"
         );
         assert_eq!(on_h(4).len(), 0, "neither");
+    }
+
+    /// #336: the shared builder resolves jump colors like the
+    /// renderer — a legacy palette-index `LineColor` (value `2` = red,
+    /// the [MS-VSDX] color table; the #218 review's common case) paints
+    /// its hop red, not the hex-fallback gray — and a hidden-layer
+    /// member leaves the crossing set entirely. The canvas overlay and
+    /// the stored-jump reconciliation consume this same set, so this is
+    /// their contract too.
+    #[test]
+    fn page_jumps_resolves_palette_colors_and_skips_hidden_layers() {
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        // The horizontal jumper carries the palette-index LineColor.
+        let a = straight_connector(1, (1.0, 1.0), (5.0, 1.0), Some("2"));
+        let mut b = straight_connector(2, (3.0, 0.0), (3.0, 2.0), None);
+        page.shapes.push(a);
+        page.shapes.push(b.clone());
+        let doc = vsdx::Document::default();
+        let js = page_jumps(&doc, &page, &[]);
+        assert_eq!(js.len(), 1, "the crossing hops once: {js:?}");
+        assert_eq!(js[0].jumper, 1, "the flatter line hops: {js:?}");
+        assert_eq!(
+            js[0].color,
+            (255, 0, 0),
+            "palette index 2 is red, not the #424242 fallback: {js:?}"
+        );
+        // A hidden-layer member leaves the crossing set: the visible
+        // connector no longer hops over it.
+        b.sheet.set_cell("LayerMember", Cell::value("2"));
+        page.shapes[1] = b;
+        let js = page_jumps(&doc, &page, &[2]);
+        assert!(js.is_empty(), "a hidden under-line crosses nothing: {js:?}");
+        // Re-showing the layer restores the hop.
+        let js = page_jumps(&doc, &page, &[]);
+        assert_eq!(js.len(), 1, "visible again: {js:?}");
+    }
+
+    /// #333: a malformed non-ASCII `LineColor` (`#aé000` — six BYTES,
+    /// a multi-byte character inside the fixed byte slices) degrades
+    /// to the gray fallback instead of panicking the crossing walk —
+    /// every consumer of the shared set (export overlay, canvas,
+    /// `ReconcileLineJumps` on every edit) runs through here. The
+    /// healthy side of the hop keeps its own color.
+    #[test]
+    fn page_jumps_degrades_malformed_line_color() {
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        let a = straight_connector(1, (1.0, 1.0), (5.0, 1.0), Some("#00ff00"));
+        let b = straight_connector(2, (3.0, 0.0), (3.0, 2.0), Some("#aé000"));
+        page.shapes.push(a);
+        page.shapes.push(b);
+        let doc = vsdx::Document::default();
+        let js = page_jumps(&doc, &page, &[]);
+        assert_eq!(js.len(), 1, "the crossing still hops: {js:?}");
+        assert_eq!(js[0].jumper, 1, "the flatter line hops: {js:?}");
+        assert_eq!(
+            js[0].color,
+            (0, 255, 0),
+            "the healthy jumper keeps its green: {js:?}"
+        );
+        assert_eq!(
+            js[0].under_color,
+            (0x42, 0x42, 0x42),
+            "the malformed under line takes the gray fallback: {js:?}"
+        );
     }
 
     /// `page_jump_style` reads the page's `LineJumpStyle` through the
