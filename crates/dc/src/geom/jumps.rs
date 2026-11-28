@@ -480,11 +480,17 @@ fn merely_touches(vx: usize, pts: &[(f64, f64)], other: &[(f64, f64)]) -> bool {
     // A run lying along the OTHER SEGMENT's line — the one-route-turn
     // half of the shared-run merge, measured against the segment's
     // own line, either heading (the segment is crossed at its
-    // interior, so it extends both ways from the contact).
+    // interior, so it extends both ways from the contact). RECIPROCALLY,
+    // as in `alternating`: both runs must agree they lie on one line,
+    // or a SHORT departure hides the other side's divergence — the
+    // same geometry would otherwise answer differently depending on
+    // whether the other route carries a redundant vertex (CodeRabbit
+    // round 3).
     let v = pts[vx];
-    [pts[vx - 1], pts[vx + 1]]
-        .iter()
-        .any(|&p| run_lies_along(v, p, other[0], other[1], false))
+    [pts[vx - 1], pts[vx + 1]].iter().any(|&p| {
+        run_lies_along(v, p, other[0], other[1], false)
+            && run_lies_along(other[0], other[1], v, p, false)
+    })
 }
 
 /// The polyline index a crossing hugs, when it hugs a segment

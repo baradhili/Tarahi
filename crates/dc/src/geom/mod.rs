@@ -639,6 +639,16 @@ mod tests {
             1,
             "a short run does not hide the pierce"
         );
+        // …and the reciprocal check holds in the ONE-TURN branch too:
+        // a SHORT departure (0.001 in, ending 5e-13 below) must not
+        // hide the other side's divergence — the same geometry hops
+        // whether the other route carries a redundant vertex or not
+        // (CodeRabbit round 3).
+        assert_eq!(
+            one_turn(&[(0.0, 1.0), (0.0, 0.0), (0.001, -5e-13)]).len(),
+            1,
+            "a short departure does not hide the pierce either"
+        );
         // Controls: a line genuinely leaving keeps its verdicts —
         // upward is a touch, downward a crossing.
         assert_eq!(
