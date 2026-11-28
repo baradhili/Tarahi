@@ -177,7 +177,11 @@ impl App {
 
     /// #113 (URS-1158): the background chain's underlay quads —
     /// deepest background first, each rasterized on demand at the
-    /// current zoom (cache keyed page/version/ppi-bucket).
+    /// current zoom (cache keyed page/version/ppi-bucket). #414: the
+    /// raster density folds the device scale factor, and the chain
+    /// shares the JOINT texture budget with the foreground layers
+    /// (PR #415 review) — degrading against what the store holds and
+    /// reserving what it retains in return.
     pub(super) fn build_bg_underlays(
         &mut self,
         ctx: &egui::Context,
@@ -201,7 +205,46 @@ impl App {
                     .and_then(|(_, v)| v.parse::<i64>().ok())
             });
         }
-        let bucket = (self.view.px_per_in() * 4.0).round().max(4.0) as u32;
+        // #414: underlays are canvas layers — the raster density (and
+        // its bucket key) folds the device scale factor like the layer
+        // store's, so background-page ink stays as sharp as the ink
+        // above it on a HiDPI display.
+        let mut raster_ppi = self.view.raster_px_per_in(ctx.pixels_per_point());
+        // PR #415 review: the chain shares the JOINT texture budget
+        // with the foreground layers. The old 2048 texture cap
+        // incidentally bounded eight Letter backgrounds at 128 MiB;
+        // under the device-derived ceiling, zoom 8 on a 2× display
+        // would otherwise retain up to 8 × 8192² RGBA ≈ 2 GiB with no
+        // bound at all. The chain's page rects degrade against what is
+        // LEFT of the budget after the layer store's live bytes (soft
+        // before clipped, never content loss), and the store reserves
+        // the chain's live bytes in return, so neither path can spend
+        // the budget independently.
+        let rects: Vec<(i64, crate::layers::Rect)> = chain
+            .iter()
+            .filter_map(|id| {
+                let bg = self
+                    .ed
+                    .as_ref()?
+                    .doc
+                    .pages
+                    .iter()
+                    .find(|p| p.id == *id)?;
+                let w = bg
+                    .sheet()
+                    .and_then(|s| s.cell("PageWidth"))
+                    .and_then(|c| c.numeric())
+                    .unwrap_or(8.5);
+                let h = bg
+                    .sheet()
+                    .and_then(|s| s.cell("PageHeight"))
+                    .and_then(|c| c.numeric())
+                    .unwrap_or(11.0);
+                Some((0, (0.0, 0.0, w, h)))
+            })
+            .collect();
+        raster_ppi = underlay_ppi(raster_ppi, &rects, self.layers.texture_bytes());
+        let bucket = (raster_ppi * 4.0).round().max(4.0) as u32;
         let version = self.layer_base_version();
         // Drop stale entries — page switch, version bump, zoom bucket
         // (CodeRabbit: keeping version-stale handles leaked a texture
@@ -247,7 +290,7 @@ impl App {
             };
             let Ok(img) = crate::svgimg::render_tree(
                 &tree,
-                w as f32 * self.view.px_per_in(),
+                w as f32 * raster_ppi,
                 crate::perf::Kind::Thumb,
             ) else {
                 continue;
@@ -260,6 +303,21 @@ impl App {
             });
             self.bg_underlays.push((*id, version, bucket, tex));
         }
+        // Reserve the chain's live bytes (the retained handles' own
+        // sizes — the landed truth, degraded or not) against the
+        // store's budget for the next frame's composite. Recomputed
+        // every build pass, and composite only ever runs in frames
+        // whose canvas pass also ran this builder, so the value is
+        // always fresh where it is read.
+        let held: u64 = self
+            .bg_underlays
+            .iter()
+            .map(|(_, _, _, t)| {
+                let [w, h] = t.size();
+                (w * h * 4) as u64
+            })
+            .sum();
+        self.layers.reserve_budget(held);
         out
     }
 
@@ -887,5 +945,54 @@ impl App {
         } else {
             crate::i18n::strs().msg_page_name_marked_as_a_background(name)
         };
+    }
+}
+
+/// PR #415 review: the underlay chain's effective raster density —
+/// the device-folded density degraded against the texture budget
+/// MINUS the foreground layers' live bytes. The chain's page rects
+/// enter as the "visible set" of `layers::degrade_to_budget` (the
+/// store's own rule: soft before clipped, never content loss), so
+/// the two canvas texture paths share ONE budget and neither can
+/// spend it independently.
+fn underlay_ppi(raster_ppi: f32, rects: &[(i64, crate::layers::Rect)], fg_bytes: u64) -> f32 {
+    let avail = crate::layers::TEXTURE_BUDGET_BYTES.saturating_sub(fg_bytes);
+    crate::layers::degrade_to_budget(raster_ppi, rects, avail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PR #415 review (the CodeRabbit scenario): a healthy budget
+    /// keeps the chain's density BIT-IDENTICAL, and a starved one
+    /// degrades it instead of allocating past the budget — the old
+    /// 2048 texture cap incidentally bounded eight Letter backgrounds
+    /// at 128 MiB; the device-derived ceiling alone would let zoom 8
+    /// × 2× retain 8 × 8192² RGBA ≈ 2 GiB.
+    #[test]
+    fn underlay_chain_ppi_shares_the_joint_budget() {
+        let letter = (0i64, (0.0, 0.0, 8.5, 11.0));
+        // Healthy (nothing held by the foreground): full density,
+        // bit-identical — the early return never touches the ppi.
+        assert_eq!(underlay_ppi(96.0, &[letter], 0), 96.0);
+        // The chain scenario under the HEADLESS 2048 ceiling: eight
+        // Letter pages at zoom 8 clamp to 2048² each (16 MiB, 134 MiB
+        // total) — still fits, still full density.
+        let eight: Vec<(i64, crate::layers::Rect)> = (0..8).map(|_| letter).collect();
+        assert_eq!(underlay_ppi(768.0, &eight, 0), 768.0);
+        // Starved — the foreground holds all but 8 KiB: the chain
+        // degrades to a couple of ppi (soft, content preserved).
+        let starved = underlay_ppi(
+            768.0,
+            &eight,
+            crate::layers::TEXTURE_BUDGET_BYTES - 8 * 1024,
+        );
+        assert!(starved < 20.0, "the starved chain degrades: {starved}");
+        assert!(starved >= 1.0, "content is never lost, however soft");
+        // And a single page starved the same way also stays alive.
+        let one = underlay_ppi(96.0, &[letter], crate::layers::TEXTURE_BUDGET_BYTES - 8 * 1024);
+        assert!(one < 20.0, "one starved page degrades: {one}");
+        assert!(one >= 1.0, "one starved page keeps its content");
     }
 }

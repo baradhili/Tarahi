@@ -43,7 +43,18 @@
 //!   not by page size (a 2000-shape page at 800% zoom keeps ~a screen
 //!   of layers) — and since #124 item 4 also by a byte budget: once
 //!   cached textures exceed it, the least-recently-shown ones release
-//!   their GPU memory (SVG/tree retained) until it fits.
+//!   their GPU memory (SVG/tree retained) until it fits;
+//! - **device density** (#414): `composite`'s `ppi` argument is the
+//!   DEVICE raster density (`View::raster_px_per_in` — 96 × zoom ×
+//!   pixels-per-point), so a HiDPI display's layers rasterize at
+//!   double density and the compositor upscales nothing. A scale
+//!   change (window dragged between mixed-DPI monitors, OS setting
+//!   flipped) is just another bucket change: settle debounce, pool
+//!   cap, and re-render-the-tree all handle it exactly as a zoom step
+//!   always has. The byte budget answers the 4×-bytes-per-texture
+//!   cost the same way — [`degrade_to_budget`] lowers the request
+//!   density when a visible set would bust it (soft before clipped,
+//!   never content loss).
 //!
 //! The whole-page `render_page_with` path stays as the export/print
 //! consumer and the Info thumbnail; group-edit mode (#78) composites
@@ -86,8 +97,15 @@ const SETTLE_FRAMES: u32 = 3;
 /// 4, DesignCraft's 768 MB decoded-image budget analogue). Off-screen
 /// eviction (EVICT_MARGIN) is spatial; this one is volumetric — a
 /// huge page at high zoom keeps a screen's worth of layers, never a
-/// page's worth.
-const TEXTURE_BUDGET_BYTES: u64 = 768 * 1024 * 1024;
+/// page's worth. Since #414 it guards the REQUEST side too: a 2×
+/// device scale pays 4× bytes per texture, and
+/// [`degrade_to_budget`] lowers the effective ppi of a visible set
+/// whose full-density textures would bust this — the budget, not the
+/// texture-dimension ceiling, is the real memory guardrail. The
+/// budget is JOINT with the other on-canvas texture path: the
+/// background-page underlays reserve their live bytes against it
+/// (PR #415 review), so neither path can spend it independently.
+pub(crate) const TEXTURE_BUDGET_BYTES: u64 = 768 * 1024 * 1024;
 
 /// The pixel rect a patch job will replace inside its entry's existing
 /// texture (#219) — texture coordinates, computed when the job is
@@ -191,6 +209,15 @@ pub struct ShapeLayers {
     stamp: u64,
     tex_bytes: u64,
     budget_bytes: u64,
+    /// Canvas texture bytes held OUTSIDE this store (the background
+    /// underlays, PR #415 review): subtracted from the budget before
+    /// both the request-density degradation and the landed eviction,
+    /// so the underlay path and the layer path share ONE budget and
+    /// can never spend it independently. Written by
+    /// [`ShapeLayers::reserve_budget`] at the end of each
+    /// `build_bg_underlays` pass — the same frame sequence that runs
+    /// `composite` — so it is always fresh whenever it is read.
+    reserved_bytes: u64,
     /// Shapes drawn THIS frame — the budget never evicts a texture
     /// the current frame is about to show (the just-landed one
     /// included; they are re-bumped next frame anyway).
@@ -239,6 +266,7 @@ impl Default for ShapeLayers {
             stamp: 0,
             tex_bytes: 0,
             budget_bytes: TEXTURE_BUDGET_BYTES,
+            reserved_bytes: 0,
             drawn: Default::default(),
             pending_damage: HashMap::new(),
             pending_full: Default::default(),
@@ -713,7 +741,7 @@ impl ShapeLayers {
     /// released entries keep their SVG/tree, so re-showing them is a
     /// re-render, not a re-raster from scratch.
     fn enforce_budget(&mut self, just_landed: i64) {
-        if self.tex_bytes <= self.budget_bytes {
+        if self.tex_bytes <= self.effective_budget() {
             return;
         }
         let drawn = &self.drawn;
@@ -725,7 +753,7 @@ impl ShapeLayers {
             .collect();
         order.sort_unstable();
         for (_, id) in order {
-            if self.tex_bytes <= self.budget_bytes {
+            if self.tex_bytes <= self.effective_budget() {
                 break;
             }
             let Some(entry) = self.entries.get_mut(&id) else {
@@ -760,11 +788,52 @@ impl ShapeLayers {
             .and_then(|e| e.tex.as_ref().map(|t| t.id()))
     }
 
+    /// kittest (#414): a landed layer texture's pixel dimensions —
+    /// the device-density probe (a 2× scale factor must double them).
+    #[doc(hidden)]
+    pub fn tex_size_for_test(&self, id: i64) -> Option<[usize; 2]> {
+        self.entries
+            .get(&id)
+            .and_then(|e| e.tex.as_ref().map(|t| t.size()))
+    }
+
     /// kittest (#124 item 4): total RGBA bytes of the cached textures —
     /// the LRU budget's volume probe.
     #[doc(hidden)]
     pub fn tex_bytes_for_test(&self) -> u64 {
+        self.texture_bytes()
+    }
+
+    /// Live RGBA bytes of the cached layer textures (#414/PR #415
+    /// review) — the foreground's share of the JOINT texture budget,
+    /// read by the background-underlay path before it sizes its own
+    /// rasters.
+    pub fn texture_bytes(&self) -> u64 {
         self.tex_bytes
+    }
+
+    /// Canvas texture bytes held outside this store (the background
+    /// underlays), subtracted from the budget before both the
+    /// request-density degradation and the landed eviction (PR #415
+    /// review): the underlay path calls this with its retained
+    /// handles' own sizes at the end of each build pass.
+    pub fn reserve_budget(&mut self, bytes: u64) {
+        self.reserved_bytes = bytes;
+    }
+
+    /// The budget this store may spend on ITS textures: the pinned
+    /// budget minus the reserved external bytes (saturating — a
+    /// pathological reservation never yields an invalid budget).
+    fn effective_budget(&self) -> u64 {
+        self.budget_bytes.saturating_sub(self.reserved_bytes)
+    }
+
+    /// kittest (PR #415 review): the bytes currently reserved for
+    /// canvas textures outside this store (the underlay chain).
+    #[doc(hidden)]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn reserved_bytes_for_test(&self) -> u64 {
+        self.reserved_bytes
     }
 
     /// kittest (#124 item 4): pin the texture byte budget for an
@@ -853,38 +922,19 @@ impl ShapeLayers {
             self.text_skip = skip_text;
         }
         self.set_page(page.id);
-        let bucket = (ppi * 4.0).round().max(4.0) as u32; // ±0.25 ppi
-                                                          // Bucket-settle state (#124 item 6.2): how many consecutive
-                                                          // frames this exact bucket has held. First fills and content
-                                                          // edits never wait for it; only pure re-buckets do.
-        if self.last_bucket != Some(bucket) {
-            self.settle = 0;
-        } else {
-            self.settle = self.settle.saturating_add(1);
-        }
-        self.last_bucket = Some(bucket);
-        let bucket_settled = self.settle >= SETTLE_FRAMES;
-        let bucket_ppi = bucket as f32 / 4.0;
-        // Budget enforcement runs after the loop (a method call would
-        // conflict with the iteration's entry borrow); remember what
-        // landed inline this frame so the LRU never evicts it.
-        let mut just_landed: Option<i64> = None;
-        self.drawn.clear();
-        self.composited = true;
-        self.deferred = false;
-        let mut quads = Vec::new();
-        let mut status = None;
         let hidden_member = |s: &vsdx::Shape| -> bool {
             s.sheet
                 .cell("LayerMember")
                 .and_then(|c| c.numeric())
                 .is_some_and(|m| hidden.contains(&(m as i64)))
         };
-        // ONE field context for the whole repaint (CodeRabbit agent
-        // review): the shared `Sheet.N!` layer caches per context, so
-        // a per-root context rebuilt the page tree for every
-        // field-bearing shape.
-        let fields = dc::fields::FieldsCtx::for_page(doc, page);
+        // ---- pass 1 (#414): filter, refresh bounds, cull/evict ----
+        // The single loop's head, unchanged in semantics — but the
+        // visible set is COLLECTED before any texture request posts,
+        // so the density decision below sees the whole frame at once.
+        // (All eviction work now precedes all posting; the accounting
+        // sums are order-independent.)
+        let mut vis: Vec<(i64, Rect)> = Vec::new();
         for shape in &page.shapes {
             if hidden_member(shape) {
                 continue;
@@ -993,9 +1043,55 @@ impl ShapeLayers {
                 }
                 continue;
             }
+            // #414: the visible set — input to the density decision.
+            vis.push((shape.id, bbox));
+        }
+        // ---- #414: the effective raster density ----
+        // The byte budget is the real memory guardrail now that the
+        // device-derived texture ceiling (svgimg's `MAX_TEX`) admits
+        // 4K/5K-width rasters: when the VISIBLE set's textures at the
+        // requested density would bust it, the request density
+        // degrades until the projection fits. Every layer still
+        // rasterizes and its quad still covers its bounds — softer,
+        // never missing or clipped (content is never lost). Bytes
+        // scale with the SQUARE of density, so the squeeze is gentle;
+        // typical pages never trip it and keep their ppi exactly.
+        let ppi = degrade_to_budget(ppi, &vis, self.effective_budget());
+        let bucket = (ppi * 4.0).round().max(4.0) as u32; // ±0.25 ppi
+                                                          // Bucket-settle state (#124 item 6.2): how many consecutive
+                                                          // frames this exact bucket has held. First fills and content
+                                                          // edits never wait for it; only pure re-buckets do.
+        if self.last_bucket != Some(bucket) {
+            self.settle = 0;
+        } else {
+            self.settle = self.settle.saturating_add(1);
+        }
+        self.last_bucket = Some(bucket);
+        let bucket_settled = self.settle >= SETTLE_FRAMES;
+        let bucket_ppi = bucket as f32 / 4.0;
+        // Budget enforcement runs after the loop (a method call would
+        // conflict with the iteration's entry borrow); remember what
+        // landed inline this frame so the LRU never evicts it.
+        let mut just_landed: Option<i64> = None;
+        self.drawn.clear();
+        self.composited = true;
+        self.deferred = false;
+        let mut quads = Vec::new();
+        let mut status = None;
+        // ONE field context for the whole repaint (CodeRabbit agent
+        // review): the shared `Sheet.N!` layer caches per context, so
+        // a per-root context rebuilt the page tree for every
+        // field-bearing shape.
+        let fields = dc::fields::FieldsCtx::for_page(doc, page);
+        // ---- pass 2: request, land, draw ----
+        // The loop body is the single loop's second half verbatim;
+        // every raster decision below (bucket, greeking, request
+        // width) keys on the degraded ppi, so a density change rides
+        // the same settle/re-render path a zoom step always has.
+        for (shape_id, bbox) in vis {
             let version = self
                 .versions
-                .get(&shape.id)
+                .get(&shape_id)
                 .copied()
                 .unwrap_or(self.base_version);
             // Pending damage state, read before the entry borrow: the
@@ -1003,9 +1099,9 @@ impl ShapeLayers {
             // Mutable snapshots: the failed-render retry below
             // forces a full and must be able to refresh them (#218
             // review) — the patch decision reads these, not the maps.
-            let mut pending_damage = self.pending_damage.get(&shape.id).copied();
-            let mut damage_unbounded = self.pending_full.contains(&shape.id);
-            let entry = self.entries.entry(shape.id).or_insert_with(|| Entry {
+            let mut pending_damage = self.pending_damage.get(&shape_id).copied();
+            let mut damage_unbounded = self.pending_full.contains(&shape_id);
+            let entry = self.entries.entry(shape_id).or_insert_with(|| Entry {
                 version: u64::MAX, // never matches a real version
                 bucket,
                 tex: None,
@@ -1039,8 +1135,8 @@ impl ShapeLayers {
                     // below predate this branch, so the patch planner
                     // would still see bounded damage and mark the
                     // texture current over the failed region.
-                    self.pending_damage.remove(&shape.id);
-                    self.pending_full.insert(shape.id);
+                    self.pending_damage.remove(&shape_id);
+                    self.pending_full.insert(shape_id);
                     pending_damage = None;
                     damage_unbounded = true;
                 }
@@ -1113,7 +1209,7 @@ impl ShapeLayers {
                         match dc::svg::render_shape_layer_opts_culled(
                             doc,
                             page,
-                            shape.id,
+                            shape_id,
                             hidden,
                             bbox,
                             skip_text,
@@ -1131,12 +1227,12 @@ impl ShapeLayers {
                                     patch_w: plan.size[0] as u32,
                                     patch_h: plan.size[1] as u32,
                                 };
-                                self.pending_damage.remove(&shape.id);
+                                self.pending_damage.remove(&shape_id);
                                 self.patch_posts += 1;
                                 match pool.post(
                                     RasterKey::Shape {
                                         page: page.id,
-                                        id: shape.id,
+                                        id: shape_id,
                                         version,
                                         bucket: entry.bucket,
                                     },
@@ -1177,7 +1273,7 @@ impl ShapeLayers {
                                             Err(e) => {
                                                 entry.failed = Some((version, format!("{e:#}")));
                                                 status = Some(crate::i18n::strs().msg_layer_composite_failed(
-                    shape.id,
+                    shape_id,
                     format!("{e:#}"),
                 ));
                                             }
@@ -1193,7 +1289,7 @@ impl ShapeLayers {
                                     // Cap deferral: retried next frame.
                                     Posted::Capped => {
                                         self.pending_damage.insert(
-                                            shape.id,
+                                            shape_id,
                                             pending_damage.expect("plan implies damage"),
                                         );
                                         self.patch_posts -= 1;
@@ -1203,15 +1299,15 @@ impl ShapeLayers {
                             Err(e) => {
                                 entry.failed = Some((version, format!("{e:#}")));
                                 status = Some(crate::i18n::strs().msg_layer_composite_failed(
-                    shape.id,
+                    shape_id,
                     format!("{e:#}"),
                 ));
                             }
                         }
                     } else {
                         // A full re-render covers every pending damage.
-                        self.pending_damage.remove(&shape.id);
-                        self.pending_full.remove(&shape.id);
+                        self.pending_damage.remove(&shape_id);
+                        self.pending_full.remove(&shape_id);
                         self.full_posts += 1;
                         // Tree reuse (#124 item 6.3): a bucket change with
                         // a live tree for THIS content version and an
@@ -1230,7 +1326,7 @@ impl ShapeLayers {
                             match dc::svg::render_shape_layer_opts(
                                 doc,
                                 page,
-                                shape.id,
+                                shape_id,
                                 hidden,
                                 bbox,
                                 skip_text,
@@ -1250,14 +1346,14 @@ impl ShapeLayers {
                                 Err(e) => {
                                     entry.failed = Some((version, format!("{e:#}")));
                                     status = Some(crate::i18n::strs().msg_layer_composite_failed(
-                    shape.id,
+                    shape_id,
                     format!("{e:#}"),
                 ));
                                     continue;
                                 }
                             }
                         }
-                        let width = (bbox.2 as f32 * ppi).clamp(1.0, 2048.0);
+                        let width = (bbox.2 as f32 * ppi).clamp(1.0, crate::svgimg::max_texture_dimension() as f32);
                         let job = if use_tree {
                             RasterJob::Render {
                                 tree: entry.tree.clone().expect("use_tree implies a tree"),
@@ -1272,7 +1368,7 @@ impl ShapeLayers {
                         match pool.post(
                             RasterKey::Shape {
                                 page: page.id,
-                                id: shape.id,
+                                id: shape_id,
                                 version,
                                 bucket,
                             },
@@ -1290,7 +1386,7 @@ impl ShapeLayers {
                                                 crate::perf::Kind::Page,
                                             ));
                                             ctx.load_texture(
-                                                format!("layer-{}-{}", page.id, shape.id),
+                                                format!("layer-{}-{}", page.id, shape_id),
                                                 image,
                                                 TextureOptions::LINEAR,
                                             )
@@ -1307,12 +1403,12 @@ impl ShapeLayers {
                                         entry.bucket = bucket;
                                         self.stamp += 1;
                                         entry.last_used = self.stamp;
-                                        just_landed = Some(shape.id);
+                                        just_landed = Some(shape_id);
                                     }
                                     Err(e) => {
                                         entry.failed = Some((version, format!("{e:#}")));
                                         status = Some(crate::i18n::strs().msg_layer_composite_failed(
-                    shape.id,
+                    shape_id,
                     format!("{e:#}"),
                 ));
                                     }
@@ -1338,11 +1434,11 @@ impl ShapeLayers {
             // the old texture across a bounds-changing edit until the
             // next full render.
             if let Some(tex) = entry.tex.as_ref() {
-                self.drawn.insert(shape.id);
+                self.drawn.insert(shape_id);
                 self.stamp += 1;
                 entry.last_used = self.stamp;
                 quads.push(ShapeQuad {
-                    id: shape.id,
+                    id: shape_id,
                     tex: tex.id(),
                     bbox: entry.tex_bounds.unwrap_or(bbox),
                 });
@@ -1355,6 +1451,54 @@ impl ShapeLayers {
         }
         (quads, status)
     }
+}
+
+/// The RGBA bytes the visible set's textures would occupy at raster
+/// density `d` (#414) — mirroring `svgimg::render_tree`'s own
+/// allocation math (ceil, 1-px minimums, the device texture ceiling
+/// per side) so the projection matches what actually lands.
+fn projected_bytes(vis: &[(i64, Rect)], d: f32) -> u64 {
+    let max_tex = crate::svgimg::max_texture_dimension() as f64;
+    vis.iter()
+        .map(|&(_, b)| {
+            let w = (b.2 * d as f64).clamp(1.0, max_tex).ceil() as u64;
+            let h = (b.3 * d as f64).ceil().max(1.0).min(max_tex) as u64;
+            w * h * 4
+        })
+        .sum()
+}
+
+/// The frame's EFFECTIVE raster density (#414): the requested `ppi`
+/// (96 × zoom × device scale) unless the visible set's textures at
+/// that density would bust `budget` — then the largest density whose
+/// projection fits, snapped DOWN onto the 0.25-ppi bucket grid (a
+/// boundary-straddling estimate must not oscillate re-buckets, the
+/// same rule `View::apply_fit` floors with) and floored at 1 ppi (the
+/// store's own bucket minimum — content always rasterizes, however
+/// soft). Soft before clipped, never content loss: every layer still
+/// gets its texture and its quad still covers its bounds. The
+/// early return keeps the common case's ppi bit-identical, so pages
+/// that fit the budget (all of them, at sane zooms) never see a byte
+/// of difference. Shared with the background-underlay path (PR #415
+/// review): its page rects enter as the "visible set" against
+/// `TEXTURE_BUDGET_BYTES` minus the foreground's live bytes.
+pub(crate) fn degrade_to_budget(ppi: f32, vis: &[(i64, Rect)], budget: u64) -> f32 {
+    if projected_bytes(vis, ppi) <= budget {
+        return ppi;
+    }
+    // Bytes are monotone in density: bisect the largest fitting one
+    // (32 halvings bound f32 precision long before they matter).
+    let mut lo = 0.0f32; // fits (the empty limit)
+    let mut hi = ppi; // busts
+    for _ in 0..32 {
+        let mid = (lo + hi) * 0.5;
+        if projected_bytes(vis, mid) <= budget {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    ((lo * 4.0).floor() / 4.0).max(1.0)
 }
 
 /// The #219 patch plan for a localized edit against an entry's
@@ -1565,6 +1709,135 @@ mod tests {
         );
     }
 
+    /// #414: when the visible set's full-density textures would bust
+    /// the byte budget, the REQUEST density degrades until the
+    /// projection fits — every layer still rasterizes (softer, never
+    /// missing: content is never lost) and the settled volume stays
+    /// within the pinned budget. Under the default budget the same
+    /// fill keeps full density bit-identically (the control half).
+    #[test]
+    fn budget_degrades_density_instead_of_dropping_layers() {
+        let doc = plain_group_doc();
+        let mut layers = ShapeLayers::default();
+        layers.set_page(0);
+        let ctx = egui::Context::default();
+        // Control: the default budget never trips — the 192-ppi fill
+        // lands at full density.
+        fill_ppi(&doc, &mut layers, &ctx, 192.0);
+        let [w_full, _] = layers.tex_size_for_test(1).expect("the group layer landed");
+        // Pin a budget the 192-ppi projection busts (the two tops'
+        // ink areas project to ~100 KB at 192 ppi): the density must
+        // come down, not the layers.
+        layers.set_texture_budget_for_test(64 * 1024);
+        let posts = layers.full_posts_for_test();
+        // The re-bucket rides the settle debounce like a zoom step —
+        // pump frames until the degraded bucket has held long enough.
+        for _ in 0..(SETTLE_FRAMES + 2) {
+            fill_ppi(&doc, &mut layers, &ctx, 192.0);
+        }
+        assert_eq!(
+            layers.full_posts_for_test(),
+            posts + 2,
+            "one re-render per visible layer at the degraded density"
+        );
+        assert_eq!(
+            layers.landed_count_for_test(),
+            2,
+            "both layers still hold textures — the squeeze is soft, not a drop"
+        );
+        let [w_deg, _] = layers.tex_size_for_test(1).expect("the group layer re-landed");
+        assert!(
+            w_deg < w_full,
+            "the degraded texture is softer ({w_deg} vs {w_full} px)"
+        );
+        assert!(
+            w_deg as f32 > w_full as f32 * 0.5,
+            "the squeeze is gentle — bytes scale with density squared ({w_deg} vs {w_full})"
+        );
+        assert!(
+            layers.tex_bytes_for_test() <= 64 * 1024 + 4096,
+            "the settled volume is within the budget (+ ceil slack): {}",
+            layers.tex_bytes_for_test()
+        );
+    }
+
+    /// PR #415 review: bytes held outside the store (the background
+    /// underlay chain) come off the budget before BOTH the density
+    /// decision and the landed eviction — the two canvas texture
+    /// paths share ONE budget and can never spend it independently.
+    #[test]
+    fn reserved_bytes_tighten_the_degradation() {
+        let doc = plain_group_doc();
+        let mut layers = ShapeLayers::default();
+        layers.set_page(0);
+        let ctx = egui::Context::default();
+        fill_ppi(&doc, &mut layers, &ctx, 192.0);
+        let [w_full, _] = layers.tex_size_for_test(1).expect("the group layer landed");
+        // Reserve all but 32 KiB for the underlay path: the visible
+        // set (~100 KB at 192 ppi) must degrade to fit what is LEFT.
+        layers.reserve_budget(TEXTURE_BUDGET_BYTES - 32 * 1024);
+        for _ in 0..(SETTLE_FRAMES + 2) {
+            fill_ppi(&doc, &mut layers, &ctx, 192.0);
+        }
+        assert_eq!(
+            layers.landed_count_for_test(),
+            2,
+            "the squeeze stays soft — no layer is dropped"
+        );
+        let [w_deg, _] = layers.tex_size_for_test(1).expect("the group layer re-landed");
+        assert!(
+            w_deg < w_full,
+            "the reservation degrades the density ({w_deg} vs {w_full})"
+        );
+        assert!(
+            layers.tex_bytes_for_test() <= 32 * 1024 + 4096,
+            "the settled volume respects the reserved share (+ ceil slack): {}",
+            layers.tex_bytes_for_test()
+        );
+    }
+
+    /// #414: a device-scale flip is just another bucket change — the
+    /// settle debounce (not the pool) absorbs repeated flips, so a
+    /// window hopping between mixed-DPI monitors never thrashes the
+    /// raster pool: while the bucket alternates every frame not one
+    /// re-bucket posts, and a density that finally holds posts each
+    /// visible layer exactly once — at the doubled width.
+    #[test]
+    fn ppi_flaps_wait_for_the_bucket_to_settle() {
+        let doc = plain_group_doc();
+        let mut layers = ShapeLayers::default();
+        layers.set_page(0);
+        let ctx = egui::Context::default();
+        fill(&doc, &mut layers, &ctx); // 96 ppi
+        let [w_lo, _] = layers.tex_size_for_test(1).expect("the group layer landed");
+        let posts = layers.full_posts_for_test();
+        // Alternate densities every frame — the bucket never holds, so
+        // the debounce never releases a post.
+        for i in 0..10 {
+            fill_ppi(&doc, &mut layers, &ctx, if i % 2 == 0 { 192.0 } else { 96.0 });
+        }
+        assert_eq!(
+            layers.full_posts_for_test(),
+            posts,
+            "a flapping bucket must not re-raster anything"
+        );
+        // Hold the doubled density: after the debounce each visible
+        // layer re-renders exactly once, at double width.
+        for _ in 0..(SETTLE_FRAMES + 2) {
+            fill_ppi(&doc, &mut layers, &ctx, 192.0);
+        }
+        assert_eq!(
+            layers.full_posts_for_test(),
+            posts + 2,
+            "one re-render per visible layer after the settle"
+        );
+        let [w_hi, _] = layers.tex_size_for_test(1).expect("the group layer re-landed");
+        assert!(
+            w_hi as f32 > w_lo as f32 * 1.9,
+            "the settled re-render is at the doubled density ({w_hi} vs {w_lo})"
+        );
+    }
+
     fn entry_inflight(version: u64, bucket: u32) -> Entry {
         Entry {
             version: u64::MAX,
@@ -1731,6 +2004,12 @@ mod tests {
     /// context per frame would make `tex_id_for_test` comparisons
     /// meaningless.
     fn fill(doc: &vsdx::Document, layers: &mut ShapeLayers, ctx: &egui::Context) {
+        fill_ppi(doc, layers, ctx, 96.0);
+    }
+
+    /// `fill` at an explicit raster ppi (#414 — a device scale factor
+    /// arrives here exactly as a zoom does).
+    fn fill_ppi(doc: &vsdx::Document, layers: &mut ShapeLayers, ctx: &egui::Context, ppi: f32) {
         let mut pool = RasterPool::new(0);
         let page = &doc.pages[0];
         let (quads, status) = layers.composite(
@@ -1738,7 +2017,7 @@ mod tests {
             &mut pool,
             doc,
             page,
-            96.0,
+            ppi,
             (0.0, 0.0, 8.5, 11.0),
             None,
             &[],
@@ -2080,7 +2359,7 @@ mod tests {
         let doc = &ed.doc;
         let page = &doc.pages[page_i];
         let bounds = dc::svg::shape_ink_bounds(doc, page, root).unwrap();
-        let width = (bounds.2 as f32 * 96.0).clamp(1.0, 2048.0);
+        let width = (bounds.2 as f32 * 96.0).clamp(1.0, crate::svgimg::max_texture_dimension() as f32);
         let (_, svg) =
             dc::svg::render_shape_layer_opts(doc, page, root, &[], bounds, None, Some(96.0), None)
                 .unwrap();
@@ -2157,7 +2436,7 @@ mod tests {
         }
         let page_ref = &doc.pages[0];
         let bounds = dc::svg::shape_ink_bounds(&doc, page_ref, 1).unwrap();
-        let width = (bounds.2 as f32 * 96.0).clamp(1.0, 2048.0);
+        let width = (bounds.2 as f32 * 96.0).clamp(1.0, crate::svgimg::max_texture_dimension() as f32);
         let kind = crate::perf::Kind::Page;
         let (_, full_svg) =
             dc::svg::render_shape_layer_opts(&doc, page_ref, 1, &[], bounds, None, Some(96.0), None)

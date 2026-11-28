@@ -1011,7 +1011,12 @@ impl App {
         let page2 = ep.doc.pages.iter().find(|p| p.id == page_id)?;
         let bounds = dc::svg::shape_ink_bounds(&ep.doc, page2, sid)?;
         let svg = dc::svg::render_shape_layer(&ep.doc, page2, sid, &[], bounds).ok()?;
-        let w_px = (bounds.2 * f64::from(self.view.px_per_in())).clamp(16.0, 2048.0);
+        // #414: device raster density and the device-derived texture
+        // ceiling — the preview must land at the same sharpness the
+        // committed layer will, or the drop visibly shifts.
+        let raster_ppi = f64::from(self.view.raster_px_per_in(ctx.pixels_per_point()));
+        let w_px =
+            (bounds.2 * raster_ppi).clamp(16.0, f64::from(crate::svgimg::max_texture_dimension()));
         let tree = crate::svgimg::parse_svg(&svg, crate::perf::Kind::Page).ok()?;
         let img = crate::svgimg::render_tree(&tree, w_px as f32, crate::perf::Kind::Page).ok()?;
         ep.tex = Some(ctx.load_texture("endpoint-drag-preview", img, egui::TextureOptions::LINEAR));

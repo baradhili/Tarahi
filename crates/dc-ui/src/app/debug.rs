@@ -604,6 +604,12 @@ impl App {
     pub fn debug_sel_set(&self) -> Vec<(i64, i64)> {
         self.sel_set.clone()
     }
+    /// #414: a landed layer texture's pixel dimensions — the HiDPI
+    /// density probe (a 2× device scale must double them).
+    #[doc(hidden)]
+    pub fn debug_layer_tex_size_for_test(&self, id: i64) -> Option<[usize; 2]> {
+        self.layers.tex_size_for_test(id)
+    }
     /// Selection rect in SCREEN coords (for corner-handle tests).
     #[doc(hidden)]
     pub fn debug_sel_br_corner(&self) -> Option<egui::Pos2> {
