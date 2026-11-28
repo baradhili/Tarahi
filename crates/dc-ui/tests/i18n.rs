@@ -1024,8 +1024,19 @@ fn tellme_popup_mirrors_under_persian() {
         "the English query found the command under the Persian catalog"
     );
     // The mirrored geometry (icon at the reading start, RTL rows)
-    // rides the golden — READ it (the step-9 fa audit).
-    harness.snapshot("i18n_persian_tellme");
+    // rides the golden — READ it (the step-9 fa audit). Unlike the
+    // idle localized shells (exact match), this golden carries the
+    // shell.rs AA tolerances: the panel contains the field's TYPED
+    // text, and egui's TextEdit rendering varies per OS at the
+    // anti-alias level (the PR #411 macOS/Windows rounds: 473
+    // sub-threshold pixels, none above 0.4) — a real mirroring break
+    // would fail by whole-glyph deltas, not tenths.
+    harness.snapshot_options(
+        "i18n_persian_tellme",
+        &egui_kittest::SnapshotOptions::new()
+            .threshold(3.0)
+            .max_failed_pixels(10_000),
+    );
 }
 
 /// #204 step 9 (the acceptance's German walk): under the German
