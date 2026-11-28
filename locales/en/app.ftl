@@ -893,9 +893,20 @@ rename-page = Rename Page
 rendering-scrim = Rendering…
 reorder-pages = Reorder Pages
 reorder-pages-menu = Reorder Pages…
+replace = Replace
+
+replace-all = Replace All
+
 replace-ellipsis = Replace…
 
-replace-planned-later-milestone = Replace — planned (later milestone)
+replace-with = Replace with:
+
+# $count (Number) - how many replacements the sweep made
+replacements-made = { $count ->
+  [1] Made 1 replacement
+ *[other] Made { $count } replacements
+}
+
 reply = Reply
 report-definitions-planned = Report definitions — planned
 reports = Reports
@@ -937,6 +948,8 @@ save-the-stencil-planned = Save the stencil — planned
 saved-path = saved { $path }
 scale = Scale
 screen-96-dpi = Screen (96 dpi)
+search = Search
+
 search-in = Search in
 
 search-results = Search Results

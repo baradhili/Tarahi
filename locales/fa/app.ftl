@@ -833,9 +833,19 @@ rename-page = تغییر نام صفحه
 rendering-scrim = در حال رندر…
 reorder-pages = بازچینی صفحه‌ها
 reorder-pages-menu = بازچینی صفحه‌ها…
+replace = جایگزینی
+
+replace-all = جایگزینی همه
+
 replace-ellipsis = جایگزینی…
 
-replace-planned-later-milestone = جایگزینی — برنامه‌ریزی‌شده (نقطهٔ عطف بعدی)
+replace-with = جایگزینی با:
+
+replacements-made = { $count ->
+  [1] 1 جایگزینی انجام شد
+ *[other] { $count } جایگزینی انجام شد
+}
+
 reply = پاسخ
 report-definitions-planned = تعاریف گزارش — برنامه‌ریزی شده
 reports = گزارش‌ها
@@ -876,6 +886,8 @@ save-the-stencil-planned = ذخیرهٔ شابلون — برنامه‌ریزی
 saved-path = { $path } ذخیره شد
 scale = مقیاس
 screen-96-dpi = نمایشگر (۹۶ dpi)
+search = جستجو
+
 search-in = جستجو در
 
 search-results = نتایج جستجو

@@ -149,6 +149,10 @@ impl App {
             Action::FindDialog => {
                 self.find.open = true;
             }
+            // #115 phase 3: the Replace dialog (modeless, spec 3).
+            Action::ReplaceDialog => {
+                self.repl.open = true;
+            }
             Action::FormatPainter => self.arm_format_painter(false),
             Action::FormatPainterSticky => self.arm_format_painter(true),
             Action::PageOrientation => self.toggle_page_orientation(),

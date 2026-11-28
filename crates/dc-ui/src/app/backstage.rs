@@ -398,10 +398,10 @@ impl App {
 
         // #115: the Find session's cached match list neither (its
         // key cannot see the swap).
-        self.find.matches.clear();
-        self.find.key = None;
-        self.find.nav_sel = None;
-        self.find.cursor = 0;
+        self.find.session.matches.clear();
+        self.find.session.key = None;
+        self.find.session.nav_sel = None;
+        self.find.session.cursor = 0;
         self.find.status = crate::find_dlg::FindStatus::Idle;
         self.tex.clear();
         self.layers.clear();
@@ -459,10 +459,10 @@ impl App {
 
         // #115: the Find session's cached match list neither (its
         // key cannot see the swap).
-        self.find.matches.clear();
-        self.find.key = None;
-        self.find.nav_sel = None;
-        self.find.cursor = 0;
+        self.find.session.matches.clear();
+        self.find.session.key = None;
+        self.find.session.nav_sel = None;
+        self.find.session.cursor = 0;
         self.find.status = crate::find_dlg::FindStatus::Idle;
         // #192 4a: another open document promotes to active.
         if !self.docs.is_empty() {

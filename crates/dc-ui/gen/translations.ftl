@@ -836,9 +836,19 @@ rename-page = Seite umbenennen
 rendering-scrim = Rendern …
 reorder-pages = Seiten neu anordnen
 reorder-pages-menu = Seiten neu anordnen …
+replace = Ersetzen
+
+replace-all = Alle ersetzen
+
 replace-ellipsis = Ersetzen…
 
-replace-planned-later-milestone = Ersetzen — geplant (späterer Meilenstein)
+replace-with = Ersetzen durch:
+
+replacements-made = { $count ->
+  [1] 1 Ersetzung durchgeführt
+ *[other] { $count } Ersetzungen durchgeführt
+}
+
 reply = Antworten
 report-definitions-planned = Berichtsdefinitionen — geplant
 reports = Berichte
@@ -879,6 +889,8 @@ save-the-stencil-planned = Die Schablone speichern — geplant
 saved-path = { $path } gespeichert
 scale = Skalieren
 screen-96-dpi = Bildschirm (96 dpi)
+search = Suchen
+
 search-in = Suchen in
 
 search-results = Suchergebnisse
@@ -2154,9 +2166,20 @@ rename-page = Rename Page
 rendering-scrim = Rendering…
 reorder-pages = Reorder Pages
 reorder-pages-menu = Reorder Pages…
+replace = Replace
+
+replace-all = Replace All
+
 replace-ellipsis = Replace…
 
-replace-planned-later-milestone = Replace — planned (later milestone)
+replace-with = Replace with:
+
+# $count (Number) - how many replacements the sweep made
+replacements-made = { $count ->
+  [1] Made 1 replacement
+ *[other] Made { $count } replacements
+}
+
 reply = Reply
 report-definitions-planned = Report definitions — planned
 reports = Reports
@@ -2198,6 +2221,8 @@ save-the-stencil-planned = Save the stencil — planned
 saved-path = saved { $path }
 scale = Scale
 screen-96-dpi = Screen (96 dpi)
+search = Search
+
 search-in = Search in
 
 search-results = Search Results
@@ -3485,9 +3510,19 @@ rename-page = Cambiar el nombre de la página
 rendering-scrim = Renderizando…
 reorder-pages = Reordenar páginas
 reorder-pages-menu = Reordenar páginas…
+replace = Reemplazar
+
+replace-all = Reemplazar todo
+
 replace-ellipsis = Reemplazar…
 
-replace-planned-later-milestone = Reemplazar — planeado (hito posterior)
+replace-with = Reemplazar con:
+
+replacements-made = { $count ->
+  [1] Se hizo 1 reemplazo
+ *[other] Se hicieron { $count } reemplazos
+}
+
 reply = Responder
 report-definitions-planned = Definiciones de informes — planeado
 reports = Informes
@@ -3529,6 +3564,8 @@ save-the-stencil-planned = Guardar la galería — planeado
 saved-path = se guardó { $path }
 scale = Escala
 screen-96-dpi = Pantalla (96 ppp)
+search = Buscar
+
 search-in = Buscar en
 
 search-results = Resultados de búsqueda
@@ -4759,9 +4796,19 @@ rename-page = تغییر نام صفحه
 rendering-scrim = در حال رندر…
 reorder-pages = بازچینی صفحه‌ها
 reorder-pages-menu = بازچینی صفحه‌ها…
+replace = جایگزینی
+
+replace-all = جایگزینی همه
+
 replace-ellipsis = جایگزینی…
 
-replace-planned-later-milestone = جایگزینی — برنامه‌ریزی‌شده (نقطهٔ عطف بعدی)
+replace-with = جایگزینی با:
+
+replacements-made = { $count ->
+  [1] 1 جایگزینی انجام شد
+ *[other] { $count } جایگزینی انجام شد
+}
+
 reply = پاسخ
 report-definitions-planned = تعاریف گزارش — برنامه‌ریزی شده
 reports = گزارش‌ها
@@ -4802,6 +4849,8 @@ save-the-stencil-planned = ذخیرهٔ شابلون — برنامه‌ریزی
 saved-path = { $path } ذخیره شد
 scale = مقیاس
 screen-96-dpi = نمایشگر (۹۶ dpi)
+search = جستجو
+
 search-in = جستجو در
 
 search-results = نتایج جستجو
@@ -5963,9 +6012,19 @@ rename-page = ページ名の変更
 rendering-scrim = 描画中…
 reorder-pages = ページの並べ替え
 reorder-pages-menu = ページの並べ替え…
+replace = 置換
+
+replace-all = すべて置換
+
 replace-ellipsis = 置換…
 
-replace-planned-later-milestone = 置換 — 予定（後のマイルストーン）
+replace-with = 置換後の文字列:
+
+replacements-made = { $count ->
+  [1] 1 件置換しました
+ *[other] { $count } 件置換しました
+}
+
 reply = 返信
 report-definitions-planned = レポート定義 — 予定
 reports = レポート
@@ -6004,6 +6063,8 @@ save-the-stencil-planned = ステンシルの保存 — 予定
 saved-path = { $path } を保存しました
 scale = 縮尺
 screen-96-dpi = 画面（96 dpi）
+search = 検索
+
 search-in = 検索場所
 
 search-results = 検索結果
@@ -7120,9 +7181,19 @@ rename-page = 페이지 이름 바꾸기
 rendering-scrim = 렌더링 중…
 reorder-pages = 페이지 다시 정렬
 reorder-pages-menu = 페이지 다시 정렬…
+replace = 바꾸기
+
+replace-all = 모두 바꾸기
+
 replace-ellipsis = 바꾸기…
 
-replace-planned-later-milestone = 바꾸기 — 예정(이후 마일스톤)
+replace-with = 바꿀 내용:
+
+replacements-made = { $count ->
+  [1] 1개를 바꾸었습니다
+ *[other] { $count }개를 바꾸었습니다
+}
+
 reply = 회신
 report-definitions-planned = 보고서 정의 — 예정
 reports = 보고서
@@ -7161,6 +7232,8 @@ save-the-stencil-planned = 스텐실 저장 — 예정
 saved-path = { $path }을(를) 저장했습니다
 scale = 배율
 screen-96-dpi = 화면(96dpi)
+search = 검색
+
 search-in = 검색 위치
 
 search-results = 검색 결과
@@ -8276,9 +8349,19 @@ rename-page = 重命名页面
 rendering-scrim = 正在渲染…
 reorder-pages = 重新排序页面
 reorder-pages-menu = 重新排序页面…
+replace = 替换
+
+replace-all = 全部替换
+
 replace-ellipsis = 替换…
 
-replace-planned-later-milestone = 替换 — 计划中（后期里程碑）
+replace-with = 替换为：
+
+replacements-made = { $count ->
+  [1] 已替换 1 处
+ *[other] 已替换 { $count } 处
+}
+
 reply = 答复
 report-definitions-planned = 报表定义 — 计划中
 reports = 报表
@@ -8317,6 +8400,8 @@ save-the-stencil-planned = 保存模具 — 计划中
 saved-path = 已保存 { $path }
 scale = 比例
 screen-96-dpi = 屏幕（96 dpi）
+search = 搜索
+
 search-in = 搜索范围
 
 search-results = 搜索结果

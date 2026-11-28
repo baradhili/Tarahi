@@ -230,6 +230,7 @@ impl App {
         self.fields_insert_window(&ctx);
         self.spell_window(&ctx);
         self.find_window(&ctx);
+        self.replace_window(&ctx);
         self.comment_window(&ctx);
         self.shape_data_window(&ctx);
         self.size_pos_window(&ctx);

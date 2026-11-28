@@ -58,24 +58,22 @@ pub(crate) struct FindKey {
     pub rev: u64,
 }
 
-/// The Find window's session state. History is session-lifetime (the
-/// implementation-time decision recorded on #115: it never outlives
-/// the app, nothing persisted into settings).
+/// The search session shared by the Find and Replace windows: the
+/// query and modifiers, the cached match list with its key and
+/// Find-Next cursor, and the navigation bookkeeping. The Replace
+/// window fixes `targets` to every class (spec 3 carries no target
+/// checkboxes; the decision is recorded on #115).
 #[derive(Debug, Clone)]
-pub(crate) struct FindState {
-    pub open: bool,
+pub(crate) struct FindSession {
     pub query: String,
-    /// The Find-what caret (CHAR index) the Special menu inserts at,
-    /// captured from the edit's cursor; `None` appends at the end.
-    caret: Option<usize>,
-    /// Previous search strings, most recent first, bounded.
+    /// Previous Find-what strings, most recent first, bounded — the
+    /// session's own history (session lifetime, the #115 decision).
     pub history: Vec<String>,
     pub scope: FindScopeKind,
     pub targets: dc_core::FindTargets,
     pub match_case: bool,
     pub match_width: bool,
     pub whole_words: bool,
-    pub status: FindStatus,
     /// The session's match list, the Find-Next cursor (the index of
     /// the NEXT match to show, wrapping past the last), and the key
     /// the list was computed under.
@@ -87,35 +85,63 @@ pub(crate) struct FindState {
     /// key keeps the selection the search STARTED from (the user
     /// changing the selection re-scopes; the search itself must not).
     pub nav_sel: Option<Vec<(i64, i64)>>,
+    /// The match the last Find Next highlighted — Replace's gate
+    /// (spec 3: enabled "only when a match is highlighted by Find
+    /// Next"). Cleared whenever the key changes (stale coordinates).
+    pub current: Option<dc_core::FindMatch>,
+}
+
+impl Default for FindSession {
+    fn default() -> Self {
+        FindSession {
+            query: String::new(),
+            history: Vec::new(),
+            // Spec 2: "Current page (Default selected state)" — and
+            // spec 3's default for the Replace dialog too.
+            scope: FindScopeKind::CurrentPage,
+            // Spec 2: "Shape text (Default checked)" — the engine's
+            // `FindTargets::default` is exactly that set. The Replace
+            // window overrides to `FindTargets::all()` (fixed).
+            targets: dc_core::FindTargets::default(),
+            match_case: false,
+            match_width: false,
+            whole_words: false,
+            matches: Vec::new(),
+            cursor: 0,
+            key: None,
+            nav_sel: None,
+            current: None,
+        }
+    }
+}
+
+/// The Find window's session state. History is session-lifetime (the
+/// implementation-time decision recorded on #115: it never outlives
+/// the app, nothing persisted into settings).
+#[derive(Debug, Clone)]
+pub(crate) struct FindState {
+    pub open: bool,
+    /// The Find-what caret (CHAR index) the Special menu inserts at,
+    /// captured from the edit's cursor; `None` appends at the end.
+    caret: Option<usize>,
+    pub status: FindStatus,
+    pub session: FindSession,
 }
 
 impl Default for FindState {
     fn default() -> Self {
         FindState {
             open: false,
-            query: String::new(),
             caret: None,
-            history: Vec::new(),
-            // Spec 2: "Current page (Default selected state)".
-            scope: FindScopeKind::CurrentPage,
-            // Spec 2: "Shape text (Default checked)" — the engine's
-            // `FindTargets::default` is exactly that set.
-            targets: dc_core::FindTargets::default(),
-            match_case: false,
-            match_width: false,
-            whole_words: false,
             status: FindStatus::Idle,
-            matches: Vec::new(),
-            cursor: 0,
-            key: None,
-            nav_sel: None,
+            session: FindSession::default(),
         }
     }
 }
 
 /// Insert `code` into the query at the captured caret (CHAR index),
 /// appending at the end when the edit never reported one.
-fn insert_code(query: &mut String, caret: Option<usize>, code: &str) {
+pub(crate) fn insert_code(query: &mut String, caret: Option<usize>, code: &str) {
     let at = caret.unwrap_or_else(|| query.chars().count());
     let byte = query
         .char_indices()
@@ -126,7 +152,7 @@ fn insert_code(query: &mut String, caret: Option<usize>, code: &str) {
 }
 
 /// The Special menu's caret codes, in spec 2's order.
-const SPECIAL_CODES: &[&str] = &["^t", "^p", "^-", "^^", "^?"];
+pub(crate) const SPECIAL_CODES: &[&str] = &["^t", "^p", "^-", "^^", "^?"];
 
 /// Draw the Find window. Enter runs Find Next when the Find-what edit
 /// holds focus (the default-button behavior of a modeless window).
@@ -146,7 +172,7 @@ pub(crate) fn window(ctx: &Context, state: &mut FindState) -> FindOutcome {
                 row(ui, |ui| {
                     let what = s.msg_find_what();
                     ui.label(what.clone());
-                    let out = egui::TextEdit::singleline(&mut state.query)
+                    let out = egui::TextEdit::singleline(&mut state.session.query)
                         .desired_width(ui.available_width() - 28.0)
                         .show(ui);
                     let re = out.response.response;
@@ -161,12 +187,14 @@ pub(crate) fn window(ctx: &Context, state: &mut FindState) -> FindOutcome {
                     edit_focused = re.has_focus();
                     // The history dropdown arrow (the spell dialog's
                     // language-dropdown pattern).
-                    let hist =
-                        ui.add_enabled(!state.history.is_empty(), egui::Button::new("›").small());
+                    let hist = ui.add_enabled(
+                        !state.session.history.is_empty(),
+                        egui::Button::new("›").small(),
+                    );
                     hist.widget_info(|| {
                         egui::WidgetInfo::labeled(
                             egui::Role::ComboBox,
-                            !state.history.is_empty(),
+                            !state.session.history.is_empty(),
                             s.msg_find_what().as_str(),
                         )
                     });
@@ -174,10 +202,10 @@ pub(crate) fn window(ctx: &Context, state: &mut FindState) -> FindOutcome {
                         .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
                         .show(|ui| {
                             ui.set_min_width(150.0);
-                            let entries = state.history.clone();
+                            let entries = state.session.history.clone();
                             for e in entries {
                                 if ui.selectable_label(false, e.clone()).clicked() {
-                                    state.query = e;
+                                    state.session.query = e;
                                 }
                             }
                         });
@@ -197,7 +225,7 @@ pub(crate) fn window(ctx: &Context, state: &mut FindState) -> FindOutcome {
                         ];
                         for (code, label) in SPECIAL_CODES.iter().zip(labels) {
                             if ui.add(egui::Button::new(label).small()).clicked() {
-                                insert_code(&mut state.query, state.caret, code);
+                                insert_code(&mut state.session.query, state.caret, code);
                             }
                         }
                     });
@@ -208,26 +236,35 @@ pub(crate) fn window(ctx: &Context, state: &mut FindState) -> FindOutcome {
                 row(ui, |ui| {
                     ui.vertical(|ui| {
                         ui.radio_value(
-                            &mut state.scope,
+                            &mut state.session.scope,
                             FindScopeKind::Selection,
                             s.msg_selection(),
                         );
                         ui.radio_value(
-                            &mut state.scope,
+                            &mut state.session.scope,
                             FindScopeKind::CurrentPage,
                             s.msg_current_page(),
                         );
                         ui.radio_value(
-                            &mut state.scope,
+                            &mut state.session.scope,
                             FindScopeKind::AllPages,
                             s.msg_all_pages(),
                         );
                     });
                     ui.vertical(|ui| {
-                        ui.checkbox(&mut state.targets.text, s.msg_find_shape_text());
-                        ui.checkbox(&mut state.targets.shape_data, s.msg_find_shape_data());
-                        ui.checkbox(&mut state.targets.shape_name, s.msg_find_shape_name());
-                        ui.checkbox(&mut state.targets.user_cell, s.msg_find_user_defined_cell());
+                        ui.checkbox(&mut state.session.targets.text, s.msg_find_shape_text());
+                        ui.checkbox(
+                            &mut state.session.targets.shape_data,
+                            s.msg_find_shape_data(),
+                        );
+                        ui.checkbox(
+                            &mut state.session.targets.shape_name,
+                            s.msg_find_shape_name(),
+                        );
+                        ui.checkbox(
+                            &mut state.session.targets.user_cell,
+                            s.msg_find_user_defined_cell(),
+                        );
                     });
                 });
                 ui.add_space(6.0);
@@ -235,11 +272,17 @@ pub(crate) fn window(ctx: &Context, state: &mut FindState) -> FindOutcome {
                 ui.strong(s.msg_options());
                 row(ui, |ui| {
                     ui.vertical(|ui| {
-                        ui.checkbox(&mut state.match_case, s.msg_match_case());
-                        ui.checkbox(&mut state.whole_words, s.msg_find_whole_words_only());
+                        ui.checkbox(&mut state.session.match_case, s.msg_match_case());
+                        ui.checkbox(
+                            &mut state.session.whole_words,
+                            s.msg_find_whole_words_only(),
+                        );
                     });
                     ui.vertical(|ui| {
-                        ui.checkbox(&mut state.match_width, s.msg_match_character_width());
+                        ui.checkbox(
+                            &mut state.session.match_width,
+                            s.msg_match_character_width(),
+                        );
                     });
                 });
                 ui.separator();

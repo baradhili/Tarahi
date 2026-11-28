@@ -11183,3 +11183,133 @@ fn find_dialog_selection_scope_cycles_all_selected_shapes() {
         "the cycle reaches the second SELECTED shape despite the first Find Next selecting only the first"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Replace (#115 phase 3): the dialog flow through the real ribbon
+// menu, one undo per Replace, one undo per Replace All sweep.
+// ---------------------------------------------------------------------------
+
+/// Open the Replace dialog through the Editing group's Find dropdown
+/// (FS 1 §3.2's Replace… entry).
+fn open_replace_dialog(h: &mut Harness<'_, App>) {
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label("Find").click();
+    h.run();
+    h.get_by_label("Replace…").click();
+    h.run();
+}
+
+fn fill_replace_fields(h: &mut Harness<'_, App>, find: &str, with: &str) {
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("Find what:"),
+    )
+    .set_text_value_accesskit(find);
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("Replace with:"),
+    )
+    .set_text_value_accesskit(with);
+    h.run();
+}
+
+#[test]
+fn replace_dialog_replaces_the_current_match_then_advances() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness_with_blank();
+    let first = place_shape_with_text(&mut h, "alpha token");
+    let second = place_shape_with_text(&mut h, "beta token");
+
+    open_replace_dialog(&mut h);
+    fill_replace_fields(&mut h, "token", "mark");
+
+    // Find Next highlights the first match; Replace then replaces it
+    // and automatically finds the next (the selection advances).
+    h.get_by_label("Find Next").click();
+    h.run();
+    assert_eq!(h.state().debug_sel().map(|(_, s)| s), Some(first));
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::Button)
+            .label("Replace"),
+    )
+    .click();
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(first).as_deref(),
+        Some("alpha mark"),
+        "the current match was replaced"
+    );
+    assert_eq!(
+        h.state().debug_sel().map(|(_, s)| s),
+        Some(second),
+        "Replace advanced to the next match"
+    );
+    // Replacing the last match reports no further match (spec 3 has
+    // no status area; the status bar carries it).
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::Button)
+            .label("Replace"),
+    )
+    .click();
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(second).as_deref(),
+        Some("beta mark")
+    );
+
+    // One undo per Replace: two undos restore both texts exactly.
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(second).as_deref(),
+        Some("beta token")
+    );
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(first).as_deref(),
+        Some("alpha token")
+    );
+}
+
+#[test]
+fn replace_all_sweeps_every_match_in_one_undo_step() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness_with_blank();
+    let first = place_shape_with_text(&mut h, "token one token");
+    let second = place_shape_with_text(&mut h, "token two");
+
+    open_replace_dialog(&mut h);
+    fill_replace_fields(&mut h, "token", "mark");
+    h.get_by_label("Replace All").click();
+    h.run();
+
+    assert_eq!(
+        h.state().debug_shape_plain_text(first).as_deref(),
+        Some("mark one mark"),
+        "both spans inside one text replace"
+    );
+    assert_eq!(
+        h.state().debug_shape_plain_text(second).as_deref(),
+        Some("mark two")
+    );
+    // The sweep's count reports on the status bar (spec 3 has no
+    // dialog status area).
+    assert!(h.state().debug_status().contains("3"), "{}", h.state().debug_status());
+
+    // ONE undo restores the exact prior state of every shape.
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(first).as_deref(),
+        Some("token one token")
+    );
+    assert_eq!(
+        h.state().debug_shape_plain_text(second).as_deref(),
+        Some("token two")
+    );
+}

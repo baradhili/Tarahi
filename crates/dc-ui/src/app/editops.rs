@@ -158,6 +158,11 @@ impl App {
             self.find.open = false;
             return true;
         }
+        // #115 phase 3: the modeless Replace dialog.
+        if self.repl.open {
+            self.repl.open = false;
+            return true;
+        }
         if self.snap_dlg_open {
             self.snap_dlg_open = false;
             return true;

@@ -779,9 +779,19 @@ rename-page = ページ名の変更
 rendering-scrim = 描画中…
 reorder-pages = ページの並べ替え
 reorder-pages-menu = ページの並べ替え…
+replace = 置換
+
+replace-all = すべて置換
+
 replace-ellipsis = 置換…
 
-replace-planned-later-milestone = 置換 — 予定（後のマイルストーン）
+replace-with = 置換後の文字列:
+
+replacements-made = { $count ->
+  [1] 1 件置換しました
+ *[other] { $count } 件置換しました
+}
+
 reply = 返信
 report-definitions-planned = レポート定義 — 予定
 reports = レポート
@@ -820,6 +830,8 @@ save-the-stencil-planned = ステンシルの保存 — 予定
 saved-path = { $path } を保存しました
 scale = 縮尺
 screen-96-dpi = 画面（96 dpi）
+search = 検索
+
 search-in = 検索場所
 
 search-results = 検索結果

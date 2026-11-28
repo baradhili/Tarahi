@@ -108,6 +108,7 @@ impl App {
             hyperlink_open: None,
             spell: crate::spellcheck::SpellState::headless(),
             find: crate::find_dlg::FindState::default(),
+            repl: crate::replace_dlg::ReplaceState::default(),
             find_menu: None,
             find_menu_fresh: false,
             options_open: false,

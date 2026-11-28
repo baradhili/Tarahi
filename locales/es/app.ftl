@@ -887,9 +887,19 @@ rename-page = Cambiar el nombre de la página
 rendering-scrim = Renderizando…
 reorder-pages = Reordenar páginas
 reorder-pages-menu = Reordenar páginas…
+replace = Reemplazar
+
+replace-all = Reemplazar todo
+
 replace-ellipsis = Reemplazar…
 
-replace-planned-later-milestone = Reemplazar — planeado (hito posterior)
+replace-with = Reemplazar con:
+
+replacements-made = { $count ->
+  [1] Se hizo 1 reemplazo
+ *[other] Se hicieron { $count } reemplazos
+}
+
 reply = Responder
 report-definitions-planned = Definiciones de informes — planeado
 reports = Informes
@@ -931,6 +941,8 @@ save-the-stencil-planned = Guardar la galería — planeado
 saved-path = se guardó { $path }
 scale = Escala
 screen-96-dpi = Pantalla (96 ppp)
+search = Buscar
+
 search-in = Buscar en
 
 search-results = Resultados de búsqueda

@@ -5035,6 +5035,20 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "replace",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "replace-all",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "replace-ellipsis",
         attribute: None,
         vars: &[],
@@ -5042,9 +5056,16 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "replace-planned-later-milestone",
+        message: "replace-with",
         attribute: None,
         vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "replacements-made",
+        attribute: None,
+        vars: &["count"],
         bool_vars: &[],
         elements: &[],
     },
@@ -5309,6 +5330,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "screen-96-dpi",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "search",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -7583,13 +7611,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..52783,
-            Self::En => 52783..103661,
-            Self::Es => 103661..159665,
-            Self::Fa => 159665..226287,
-            Self::Ja => 226287..282892,
-            Self::Ko => 282892..335012,
-            Self::ZhHans => 335012..380652,
+            Self::De => 0..52916,
+            Self::En => 52916..103971,
+            Self::Es => 103971..160107,
+            Self::Fa => 160107..226869,
+            Self::Ja => 226869..283602,
+            Self::Ko => 283602..335861,
+            Self::ZhHans => 335861..381609,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -10375,11 +10403,23 @@ impl L10nLanguage {
     pub fn msg_reorder_pages_menu(&self) -> String {
         self.0.msg("reorder-pages-menu", None).unwrap()
     }
+    pub fn msg_replace(&self) -> String {
+        self.0.msg("replace", None).unwrap()
+    }
+    pub fn msg_replace_all(&self) -> String {
+        self.0.msg("replace-all", None).unwrap()
+    }
     pub fn msg_replace_ellipsis(&self) -> String {
         self.0.msg("replace-ellipsis", None).unwrap()
     }
-    pub fn msg_replace_planned_later_milestone(&self) -> String {
-        self.0.msg("replace-planned-later-milestone", None).unwrap()
+    pub fn msg_replace_with(&self) -> String {
+        self.0.msg("replace-with", None).unwrap()
+    }
+    /// $count (Number) - how many replacements the sweep made
+    pub fn msg_replacements_made<F0: Into<FluentNumber>>(&self, count: F0) -> String {
+        let mut _args = FluentArgs::new();
+        _args.set("count", count.into());
+        self.0.msg("replacements-made", Some(_args)).unwrap()
     }
     pub fn msg_reply(&self) -> String {
         self.0.msg("reply", None).unwrap()
@@ -10507,6 +10547,9 @@ impl L10nLanguage {
     }
     pub fn msg_screen_96_dpi(&self) -> String {
         self.0.msg("screen-96-dpi", None).unwrap()
+    }
+    pub fn msg_search(&self) -> String {
+        self.0.msg("search", None).unwrap()
     }
     pub fn msg_search_in(&self) -> String {
         self.0.msg("search-in", None).unwrap()

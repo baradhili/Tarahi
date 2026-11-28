@@ -779,9 +779,19 @@ rename-page = 重命名页面
 rendering-scrim = 正在渲染…
 reorder-pages = 重新排序页面
 reorder-pages-menu = 重新排序页面…
+replace = 替换
+
+replace-all = 全部替换
+
 replace-ellipsis = 替换…
 
-replace-planned-later-milestone = 替换 — 计划中（后期里程碑）
+replace-with = 替换为：
+
+replacements-made = { $count ->
+  [1] 已替换 1 处
+ *[other] 已替换 { $count } 处
+}
+
 reply = 答复
 report-definitions-planned = 报表定义 — 计划中
 reports = 报表
@@ -820,6 +830,8 @@ save-the-stencil-planned = 保存模具 — 计划中
 saved-path = 已保存 { $path }
 scale = 比例
 screen-96-dpi = 屏幕（96 dpi）
+search = 搜索
+
 search-in = 搜索范围
 
 search-results = 搜索结果

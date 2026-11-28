@@ -279,6 +279,8 @@ pub enum Action {
     FindMenu,
     /// #115 phase 2: open the Find dialog (spec 2).
     FindDialog,
+    /// #115 phase 3: open the Replace dialog (spec 3).
+    ReplaceDialog,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

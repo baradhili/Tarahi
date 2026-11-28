@@ -783,3 +783,176 @@ fn match_width_folds_fullwidth_forms() {
         1
     );
 }
+
+// -- replace (phase 3) -------------------------------------------------
+
+use dc_core::find::{decode_replacement, replace_all_command, replace_command};
+use dc_core::Editor;
+
+fn ed_with_shapes(shapes: Vec<Shape>) -> Editor {
+    Editor::new(doc(vec![page(0, shapes)]))
+}
+
+#[test]
+fn decode_replacement_expands_caret_codes() {
+    assert_eq!(decode_replacement("a^tb^pc^-d^^e"), "a\tb\nc\u{AD}d^e");
+    // `^?` is a search wildcard and stays literal; stray carets too.
+    assert_eq!(decode_replacement("^?x^"), "^?x^");
+}
+
+#[test]
+fn replace_command_splices_text_and_preserves_field_markers() {
+    // Field safety (#115 acceptance): replacing on a field-bearing
+    // shape goes through ReplaceTextRange — the `<fld>` marker
+    // survives byte-identical, never SetText's flattening store.
+    let raw = "Draft <fld IX='0'>1.5m</fld> tail";
+    let mut ed = ed_with_shapes(vec![text_shape(1, None, raw)]);
+    let m = find_matches(
+        &ed.doc,
+        "tail",
+        FindScope::AllPages,
+        &FindOptions::default(),
+    )
+    .pop()
+    .unwrap();
+    let cmd = replace_command(&ed.doc, &m, "end").expect("text command");
+    ed.history.apply(cmd, &mut ed.doc).unwrap();
+    let sh = vsdx::model::find_shape_by_id(&ed.doc.pages[0].shapes, 1).unwrap();
+    assert_eq!(
+        sh.sheet.text_raw.as_deref(),
+        Some("Draft <fld IX='0'>1.5m</fld> end")
+    );
+    // Replacing INSIDE the field's cached display splices the display
+    // with the markers intact.
+    let m = find_matches(
+        &ed.doc,
+        "1.5m",
+        FindScope::AllPages,
+        &FindOptions::default(),
+    )
+    .pop()
+    .unwrap();
+    let cmd = replace_command(&ed.doc, &m, "2.0m").expect("text command");
+    ed.history.apply(cmd, &mut ed.doc).unwrap();
+    let sh = vsdx::model::find_shape_by_id(&ed.doc.pages[0].shapes, 1).unwrap();
+    assert_eq!(
+        sh.sheet.text_raw.as_deref(),
+        Some("Draft <fld IX='0'>2.0m</fld> end")
+    );
+    // Undo restores the exact prior state each step.
+    ed.history.undo(&mut ed.doc).unwrap();
+    ed.history.undo(&mut ed.doc).unwrap();
+    let sh = vsdx::model::find_shape_by_id(&ed.doc.pages[0].shapes, 1).unwrap();
+    assert_eq!(sh.sheet.text_raw.as_deref(), Some(raw));
+}
+
+#[test]
+fn replace_command_writes_cell_values_through_set_row_cell() {
+    let mut ed = ed_with_shapes(vec![rich_shape(
+        1,
+        None,
+        None,
+        vec![value_row("Owner", "Ada hit")],
+        vec![value_row("Status", "hit ready")],
+    )]);
+    let opts = FindOptions {
+        targets: FindTargets::all(),
+        ..FindOptions::default()
+    };
+    let m = find_matches(&ed.doc, "hit", FindScope::AllPages, &opts)
+        .first()
+        .cloned()
+        .unwrap();
+    assert_eq!(m.target.class(), FindTargetClass::ShapeData);
+    let cmd = replace_command(&ed.doc, &m, "miss").expect("cell command");
+    ed.history.apply(cmd, &mut ed.doc).unwrap();
+    let sh = vsdx::model::find_shape_by_id(&ed.doc.pages[0].shapes, 1).unwrap();
+    assert_eq!(
+        sh.sheet.sections_named("Prop")[0]
+            .named_row("Owner")
+            .unwrap()
+            .cell("Value")
+            .unwrap()
+            .v,
+        Some("Ada miss".to_string())
+    );
+    ed.history.undo(&mut ed.doc).unwrap();
+    let sh = vsdx::model::find_shape_by_id(&ed.doc.pages[0].shapes, 1).unwrap();
+    assert_eq!(
+        sh.sheet.sections_named("Prop")[0]
+            .named_row("Owner")
+            .unwrap()
+            .cell("Value")
+            .unwrap()
+            .v,
+        Some("Ada hit".to_string())
+    );
+}
+
+#[test]
+fn replace_all_is_one_undo_across_shapes_and_spans() {
+    let mut ed = ed_with_shapes(vec![
+        text_shape(1, None, "hit one hit two"),
+        text_shape(2, None, "no match"),
+        text_shape(3, None, "hit three"),
+    ]);
+    let opts = FindOptions::default();
+    let matches = find_matches(&ed.doc, "hit", FindScope::AllPages, &opts);
+    assert_eq!(matches.len(), 3);
+    let (mac, count) = replace_all_command(&ed.doc, &matches, "HIT");
+    assert_eq!(count, 3);
+    ed.history
+        .apply(Box::new(mac.unwrap()), &mut ed.doc)
+        .unwrap();
+    let text = |ed: &Editor, id: i64| {
+        vsdx::model::find_shape_by_id(&ed.doc.pages[0].shapes, id)
+            .unwrap()
+            .sheet
+            .text
+            .clone()
+            .unwrap()
+    };
+    assert_eq!(text(&ed, 1), "HIT one HIT two");
+    assert_eq!(text(&ed, 2), "no match");
+    assert_eq!(text(&ed, 3), "HIT three");
+    // ONE undo restores the exact prior state of every shape.
+    ed.history.undo(&mut ed.doc).unwrap();
+    assert_eq!(text(&ed, 1), "hit one hit two");
+    assert_eq!(text(&ed, 3), "hit three");
+    assert!(ed.history.undo(&mut ed.doc).unwrap().is_none());
+}
+
+#[test]
+fn replace_all_skips_name_matches_and_splices_cell_rows_once() {
+    // A row with several matches becomes ONE full-value write; name
+    // matches are not replaceable and are skipped.
+    let mut ed = ed_with_shapes(vec![rich_shape(
+        1,
+        Some("hit name"),
+        None,
+        vec![value_row("Note", "hit and hit again")],
+        vec![],
+    )]);
+    let opts = FindOptions {
+        targets: FindTargets::all(),
+        ..FindOptions::default()
+    };
+    let matches = find_matches(&ed.doc, "hit", FindScope::AllPages, &opts);
+    assert_eq!(matches.len(), 3, "name + two cell spans: {matches:?}");
+    let (mac, count) = replace_all_command(&ed.doc, &matches, "HIT");
+    assert_eq!(count, 2, "only the cell spans replace");
+    ed.history
+        .apply(Box::new(mac.unwrap()), &mut ed.doc)
+        .unwrap();
+    let sh = vsdx::model::find_shape_by_id(&ed.doc.pages[0].shapes, 1).unwrap();
+    assert_eq!(
+        sh.sheet.sections_named("Prop")[0]
+            .named_row("Note")
+            .unwrap()
+            .cell("Value")
+            .unwrap()
+            .v,
+        Some("HIT and HIT again".to_string())
+    );
+    assert_eq!(sh.name_u.as_deref(), Some("hit name"), "NameU untouched");
+}

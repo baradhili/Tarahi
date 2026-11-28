@@ -780,9 +780,19 @@ rename-page = 페이지 이름 바꾸기
 rendering-scrim = 렌더링 중…
 reorder-pages = 페이지 다시 정렬
 reorder-pages-menu = 페이지 다시 정렬…
+replace = 바꾸기
+
+replace-all = 모두 바꾸기
+
 replace-ellipsis = 바꾸기…
 
-replace-planned-later-milestone = 바꾸기 — 예정(이후 마일스톤)
+replace-with = 바꿀 내용:
+
+replacements-made = { $count ->
+  [1] 1개를 바꾸었습니다
+ *[other] { $count }개를 바꾸었습니다
+}
+
 reply = 회신
 report-definitions-planned = 보고서 정의 — 예정
 reports = 보고서
@@ -821,6 +831,8 @@ save-the-stencil-planned = 스텐실 저장 — 예정
 saved-path = { $path }을(를) 저장했습니다
 scale = 배율
 screen-96-dpi = 화면(96dpi)
+search = 검색
+
 search-in = 검색 위치
 
 search-results = 검색 결과

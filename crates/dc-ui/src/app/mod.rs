@@ -149,6 +149,9 @@ pub struct App {
     /// domain lives in `find_dlg.rs`; the app shell keeps the state
     /// field + glue).
     find: crate::find_dlg::FindState,
+    /// #115 phase 3 (spec 3): the modeless Replace window's session
+    /// (the domain lives in `replace_dlg.rs`).
+    repl: crate::replace_dlg::ReplaceState,
     /// #115 phase 2 (FS 1 §3.2): the ribbon Find dropdown's anchor —
     /// `Some` while the menu is open (the Task Panes pattern).
     find_menu: Option<Pos2>,

@@ -122,10 +122,10 @@ impl App {
                 // see the swap (same query, same undo depth), so the
                 // list must not outlive its document. The window
                 // stays open — the next Find Next recomputes.
-                self.find.matches.clear();
-                self.find.key = None;
-                self.find.nav_sel = None;
-                self.find.cursor = 0;
+                self.find.session.matches.clear();
+                self.find.session.key = None;
+                self.find.session.nav_sel = None;
+                self.find.session.cursor = 0;
                 self.find.status = crate::find_dlg::FindStatus::Idle;
                 self.ed = Some(Editor::new(ed));
                 self.reload_snap_settings();

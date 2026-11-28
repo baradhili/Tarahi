@@ -519,6 +519,7 @@ impl App {
     pub(super) fn shell_surface_open(&self) -> bool {
         self.selby_open
             || self.find.open
+            || self.repl.open
             || self.find_menu.is_some()
             || self.snap_dlg_open
             || self.zoom_dlg_open
