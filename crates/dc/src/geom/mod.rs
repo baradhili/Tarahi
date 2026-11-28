@@ -518,6 +518,141 @@ mod tests {
         assert_eq!(js.len(), 1, "interleaved corner runs cross: {js:?}");
     }
 
+    /// #334: a connector MERGING onto another's run — a ray the two
+    /// routes share — is not a crossing, in both contact branches: the
+    /// both-turn `alternating` sort (where the coincident pair's tie
+    /// read as alternation by sort luck — the join heading east
+    /// hopped, its mirror heading west did not) and the one-route-turn
+    /// touch test (where the run along the other segment sidestepped
+    /// the same-side sign test). The offset gate keeps the PIERCE that
+    /// runs 5e-10 in beside the line a crossing; a line genuinely
+    /// leaving keeps its touch/cross verdicts.
+    #[test]
+    fn shared_runs_merge_without_a_hop() {
+        let r = (TEST_JUMP_RADIUS, TEST_JUMP_RADIUS);
+        let both_turn = |b: &[(f64, f64)]| {
+            line_jumps(
+                &[
+                    jline(1, 0, &[(-1.0, 0.0), (0.0, 0.0), (1.0, 0.0)]),
+                    jline(2, 1, b),
+                ],
+                r,
+            )
+        };
+        // B reaches A's interior vertex and leaves along A's own run —
+        // east (the reported false hop), west (the mirror that passed
+        // by tie-order luck), and floating-point skew on both sides of
+        // the shared line.
+        assert_eq!(
+            both_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, 0.0)]).len(),
+            0,
+            "a join heading east merges, not crosses"
+        );
+        assert_eq!(
+            both_turn(&[(0.0, 1.0), (0.0, 0.0), (-1.0, 0.0)]).len(),
+            0,
+            "a join heading west merges too — no east/west asymmetry"
+        );
+        assert_eq!(
+            both_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, 1e-13)]).len(),
+            0,
+            "skew above the shared line still merges"
+        );
+        assert_eq!(
+            both_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, -1e-13)]).len(),
+            0,
+            "skew below the shared line still merges"
+        );
+        // The same merge rotated onto a vertical run.
+        assert_eq!(
+            line_jumps(
+                &[
+                    jline(1, 0, &[(0.0, -1.0), (0.0, 0.0), (0.0, 1.0)]),
+                    jline(2, 1, &[(1.0, 0.0), (0.0, 0.0), (0.0, 1.0)]),
+                ],
+                r
+            )
+            .len(),
+            0,
+            "a join heading north on a vertical run merges"
+        );
+        // One-turn merges: the other route runs straight through (a
+        // single segment), B merges at an interior vertex of its own.
+        let one_turn = |b: &[(f64, f64)]| {
+            line_jumps(
+                &[jline(1, 0, &[(-1.0, 0.0), (1.0, 0.0)]), jline(2, 1, b)],
+                r,
+            )
+        };
+        assert_eq!(
+            one_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, 0.0)]).len(),
+            0,
+            "a one-turn join heading east merges"
+        );
+        assert_eq!(
+            one_turn(&[(0.0, 1.0), (0.0, 0.0), (-1.0, 0.0)]).len(),
+            0,
+            "a one-turn join heading west merges"
+        );
+        // Near-misses stay crossings: the route PIERCES the line and
+        // runs 5e-10 in beside it — beyond the 1e-11 shared-run offset.
+        assert_eq!(
+            both_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, -5e-10)]).len(),
+            1,
+            "a both-turn pierce beside the line still hops"
+        );
+        assert_eq!(
+            one_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, -5e-10)]).len(),
+            1,
+            "a one-turn pierce beside the line still hops"
+        );
+        // The offset is measured against the other route's OWN line,
+        // never a ray fabricated from the contact vertex: a vertex
+        // 5e-10 ABOVE the line whose departure merely AIMS along it
+        // still crosses (CodeRabbit, on the re-land) — in both
+        // contact branches.
+        let aim_along = &[(0.0, -1.0), (0.0, 5e-10), (0.5, 2.5e-10)];
+        assert_eq!(
+            one_turn(aim_along).len(),
+            1,
+            "a vertex off the line aiming along it still crosses"
+        );
+        assert_eq!(
+            both_turn(aim_along).len(),
+            1,
+            "the both-turn aim-along contact still crosses"
+        );
+        // The shared-run rejection is RECIPROCAL: both runs must
+        // agree they lie on one line. A short run otherwise hides a
+        // long one's divergence — A's 0.001-in run stays within
+        // 5e-13 of B's piercing line while B's own endpoint is 5e-10
+        // out, and that pair still crosses (CodeRabbit round 2).
+        assert_eq!(
+            line_jumps(
+                &[
+                    jline(1, 0, &[(-0.001, 0.0), (0.0, 0.0), (0.001, 0.0)]),
+                    jline(2, 1, &[(0.0, 1.0), (0.0, 0.0), (1.0, -5e-10)]),
+                ],
+                r
+            )
+            .len(),
+            1,
+            "a short run does not hide the pierce"
+        );
+        // Controls: a line genuinely leaving keeps its verdicts —
+        // upward is a touch, downward a crossing.
+        assert_eq!(
+            one_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, 0.01)]).len(),
+            0,
+            "leaving upward: a touch"
+        );
+        assert_eq!(
+            one_turn(&[(0.0, 1.0), (0.0, 0.0), (1.0, -0.01)]).len(),
+            1,
+            "leaving downward: a crossing"
+        );
+    }
+
     /// A hit segment: start and end in page space.
     type Seg = ((f64, f64), (f64, f64));
 

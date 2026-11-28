@@ -428,8 +428,28 @@ fn seg_cross_open(
 
 /// The two routes' runs at a SHARED contact vertex alternate around
 /// it (r1, r2, r1, r2 in angular order) — they cross; grouped-by-
-/// route rays mean the routes merely touch (#294 review).
+/// route rays mean the routes merely touch (#294 review). A run one
+/// route SHARES with the other's is a merge onto a shared run —
+/// reject it before the angle sort, where the coincident pair's tie
+/// reads as alternation by sort luck alone (#334: the join heading
+/// east hopped, its mirror heading west did not). Each of a's runs
+/// is tested against b's ACTUAL runs — not a ray fabricated from a's
+/// vertex: the two contact vertices need not coincide inside
+/// `hugged_vertex`'s window tolerances (CodeRabbit, on the re-land) —
+/// and RECIPROCALLY: both runs must agree they lie on one line, or a
+/// short run hides a long one's divergence (CodeRabbit round 2: a
+/// 0.001-in run sits within 5e-13 of a piercing line whose own
+/// endpoint is 5e-10 out — still a crossing).
 fn alternating(vi: usize, a: &[(f64, f64)], vj: usize, b: &[(f64, f64)]) -> bool {
+    for pa in [a[vi - 1], a[vi + 1]] {
+        for qb in [b[vj - 1], b[vj + 1]] {
+            if run_lies_along(a[vi], pa, b[vj], qb, true)
+                && run_lies_along(b[vj], qb, a[vi], pa, true)
+            {
+                return false;
+            }
+        }
+    }
     let (vx, vy) = a[vi];
     let ray = |p: (f64, f64)| (p.0 - vx).atan2(p.1 - vy);
     let mut angs = [
@@ -443,17 +463,28 @@ fn alternating(vi: usize, a: &[(f64, f64)], vj: usize, b: &[(f64, f64)]) -> bool
     seq.windows(2).all(|w| w[0] != w[1]) && seq[0] != seq[3]
 }
 
-/// The two runs at the INTERIOR vertex `vx` sit on the same side of
-/// the other segment's line — the polyline touches it and bounces
-/// back (a tangency), it does not cross (#294 review).
-fn same_side(vx: usize, pts: &[(f64, f64)], other: &[(f64, f64)]) -> bool {
+/// The turning route's two runs at the INTERIOR vertex `vx` merely
+/// touch the other segment — both sit on the same side of its line
+/// (a tangency that bounces back, #294 review), or one lies ALONG it
+/// (a merge onto the other's run, #334). Neither is a crossing.
+fn merely_touches(vx: usize, pts: &[(f64, f64)], other: &[(f64, f64)]) -> bool {
     let (a, b) = (other[0], other[1]);
     let dir = (b.0 - a.0, b.1 - a.1);
     let side = |p: (f64, f64)| dir.0 * (p.1 - a.1) - dir.1 * (p.0 - a.0);
     let (s1, s2) = (side(pts[vx - 1]), side(pts[vx + 1]));
     // Pure sign comparison — a magnitude cutoff would wave through
     // shallow same-side contacts on short segments (#294 review).
-    s1 * s2 > 0.0
+    if s1 * s2 > 0.0 {
+        return true;
+    }
+    // A run lying along the OTHER SEGMENT's line — the one-route-turn
+    // half of the shared-run merge, measured against the segment's
+    // own line, either heading (the segment is crossed at its
+    // interior, so it extends both ways from the contact).
+    let v = pts[vx];
+    [pts[vx - 1], pts[vx + 1]]
+        .iter()
+        .any(|&p| run_lies_along(v, p, other[0], other[1], false))
 }
 
 /// The polyline index a crossing hugs, when it hugs a segment
@@ -508,6 +539,53 @@ impl Default for JumpRules {
 /// (the mirrored pairs); the band width is a judgment call recorded
 /// in `Analysis/line-jump-selection-witnesses.md`.
 const STEEPNESS_TIE: f64 = 1e-3;
+
+/// A run counts as lying along another when it runs parallel within
+/// this |sin θ| (#334). The direction gate is deliberately loose —
+/// it only nominates; the offset gate below decides.
+const SHARED_RUN_SIN: f64 = 1e-9;
+/// …and sits on ONE line: BOTH of the run's endpoints within this
+/// many inches of the other line. The endpoint pair separates the
+/// genuine merge from its two near-misses — the route that PIERCES
+/// the line and runs on 5e-10 in behind it, and the vertex 5e-10
+/// ABOVE the line whose departure merely aims along it (CodeRabbit,
+/// on the re-land): each keeps an endpoint outside the offset. Only
+/// genuinely shared runs are merges.
+const SHARED_RUN_OFF_IN: f64 = 1e-11;
+
+/// Does the run `v → p` lie ALONG the line of `q0 → q1` — a
+/// shared-run merge contact (#334)? Parallel within
+/// [`SHARED_RUN_SIN`] and both endpoints within
+/// [`SHARED_RUN_OFF_IN`] of the other line. `same_heading` adds the
+/// half-ray overlap the both-turn branch needs: opposite half-rays
+/// meet only AT the vertex (the interleaved corner passes through),
+/// while a segment crossed at its interior extends both ways, so
+/// either heading overlaps it. The test is origin-independent — the
+/// run is measured against the OTHER line itself, never against a
+/// ray fabricated from a shared vertex the two routes may not
+/// actually share.
+fn run_lies_along(
+    v: (f64, f64),
+    p: (f64, f64),
+    q0: (f64, f64),
+    q1: (f64, f64),
+    same_heading: bool,
+) -> bool {
+    let (d, r) = ((q1.0 - q0.0, q1.1 - q0.1), (p.0 - v.0, p.1 - v.1));
+    let (ld, lr) = (d.0.hypot(d.1), r.0.hypot(r.1));
+    if ld < 1e-12 || lr < 1e-12 {
+        return false;
+    }
+    let cross = d.0 * r.1 - d.1 * r.0;
+    if (cross / (ld * lr)).abs() >= SHARED_RUN_SIN {
+        return false;
+    }
+    if same_heading && d.0 * r.0 + d.1 * r.1 <= 0.0 {
+        return false;
+    }
+    let off = |x: (f64, f64)| (d.0 * (x.1 - q0.1) - d.1 * (x.0 - q0.0)).abs() / ld;
+    off(v) < SHARED_RUN_OFF_IN && off(p) < SHARED_RUN_OFF_IN
+}
 
 impl JumpRules {
     /// `Some(true)` when line `a` (its crossing segment running `da`)
@@ -626,11 +704,13 @@ pub fn line_jumps_with(
                     // An interior-vertex contact is a crossing only
                     // when the vertex's two runs straddle the other
                     // segment's line — same-side runs TOUCH the line
-                    // and bounce back (a tangency), never a hop (#294
-                    // review). When BOTH routes turn at the contact,
-                    // the four incident runs must alternate by route
-                    // around the vertex; grouped-by-route rays mean
-                    // the routes merely touch.
+                    // and bounce back (a tangency), and a run ALONG
+                    // the other segment MERGES onto it; neither is a
+                    // hop (#294 review, #334). When BOTH routes turn
+                    // at the contact, the four incident runs must
+                    // alternate by route around the vertex; grouped-
+                    // by-route rays — or any ray the routes SHARE —
+                    // mean the routes merely touch.
                     let vi = hugged_vertex(t, k1).filter(|&ix| ix > 0 && ix + 1 < pts[i].len());
                     let vj = hugged_vertex(u, k2).filter(|&ix| ix > 0 && ix + 1 < pts[j].len());
                     match (vi, vj) {
@@ -640,12 +720,12 @@ pub fn line_jumps_with(
                             }
                         }
                         (Some(vi), None) => {
-                            if same_side(vi, &pts[i], w2) {
+                            if merely_touches(vi, &pts[i], w2) {
                                 continue;
                             }
                         }
                         (None, Some(vj)) => {
-                            if same_side(vj, &pts[j], w1) {
+                            if merely_touches(vj, &pts[j], w1) {
                                 continue;
                             }
                         }
