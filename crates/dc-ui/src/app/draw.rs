@@ -601,7 +601,12 @@ impl App {
         if self.about_open {
             // Esc closes the frontmost About (the #110 dialog
             // keyboard audit's rule — About slipped it; #218 review).
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // With the Tell Me help stub ALSO open, Help paints above
+            // About and owns the Esc; About takes the next press
+            // (CodeRabbit review).
+            if self.tellme_help.is_none()
+                && ui.input(|i| i.key_pressed(egui::Key::Escape))
+            {
                 self.about_open = false;
                 return;
             }
