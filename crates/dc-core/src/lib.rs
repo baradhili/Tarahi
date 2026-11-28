@@ -16,6 +16,7 @@
 
 pub mod commands;
 pub mod connects;
+pub mod find;
 pub mod layers;
 pub mod scope;
 
@@ -27,6 +28,9 @@ pub use commands::{
     ReplaceTextRange, SetCell, SetCellCache, SetGluedCell, SetRowCell, SetSectionRows, SetText,
 };
 pub use connects::{Connect, Connects, ConnectsOwner};
+pub use find::{
+    find_matches, FindMatch, FindOptions, FindScope, FindTarget, FindTargetClass, FindTargets,
+};
 pub use scope::{find_shape_mut, shape_chain, Scope};
 
 use anyhow::Result;
