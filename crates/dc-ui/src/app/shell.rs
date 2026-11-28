@@ -89,6 +89,16 @@ impl App {
             Action::ToggleRulers => self.view.show_rulers = !self.view.show_rulers,
             Action::ToggleComments => self.show_comments = !self.show_comments,
             Action::ToggleSizePosition => self.size_pos_open = !self.size_pos_open,
+            // #211 (URS-1051): the Pan & Zoom window and the Task
+            // Panes dropdown that opens it — anchored at the pointer's
+            // last position (the click sits on the ribbon button; a
+            // keytip or Tell Me pick falls back to wherever the
+            // pointer last was).
+            Action::TogglePanZoom => self.panzoom_open = !self.panzoom_open,
+            Action::TaskPanesMenu => {
+                self.task_panes_menu = Some(self.pointer_last);
+                self.task_panes_fresh = true;
+            }
             Action::ToggleDynamicGrid => {
                 self.snap.dynamic_grid = !self.snap.dynamic_grid;
                 self.apply_snap_settings();
@@ -1116,7 +1126,6 @@ impl App {
             show_rulers: self.view.show_rulers,
             show_grid: self.view.show_grid,
             show_comments: self.show_comments,
-            size_pos_open: self.size_pos_open,
             dynamic_grid: self.snap.dynamic_grid,
             snap_dlg_open: self.snap_dlg_open,
             autoconnect: self.snap.autoconnect,

@@ -4587,6 +4587,20 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "pan-zoom",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "pan-zoom-tip",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "paragraph",
         attribute: None,
         vars: &[],
@@ -6463,7 +6477,7 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "task-panes-shapes-pan-zoom-plann",
+        message: "task-panes-tip",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -7422,13 +7436,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..51890,
-            Self::En => 51890..101853,
-            Self::Es => 101853..156904,
-            Self::Fa => 156904..222433,
-            Self::Ja => 222433..278065,
-            Self::Ko => 278065..329282,
-            Self::ZhHans => 329282..374125,
+            Self::De => 0..52042,
+            Self::En => 52042..102109,
+            Self::Es => 102109..157319,
+            Self::Fa => 157319..223094,
+            Self::Ja => 223094..278915,
+            Self::Ko => 278915..330289,
+            Self::ZhHans => 330289..375240,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -9969,6 +9983,12 @@ impl L10nLanguage {
     pub fn msg_pan_tip(&self) -> String {
         self.0.msg("pan-tip", None).unwrap()
     }
+    pub fn msg_pan_zoom(&self) -> String {
+        self.0.msg("pan-zoom", None).unwrap()
+    }
+    pub fn msg_pan_zoom_tip(&self) -> String {
+        self.0.msg("pan-zoom-tip", None).unwrap()
+    }
     pub fn msg_paragraph(&self) -> String {
         self.0.msg("paragraph", None).unwrap()
     }
@@ -10974,10 +10994,8 @@ impl L10nLanguage {
     pub fn msg_task_panes(&self) -> String {
         self.0.msg("task-panes", None).unwrap()
     }
-    pub fn msg_task_panes_shapes_pan_zoom_plann(&self) -> String {
-        self.0
-            .msg("task-panes-shapes-pan-zoom-plann", None)
-            .unwrap()
+    pub fn msg_task_panes_tip(&self) -> String {
+        self.0.msg("task-panes-tip", None).unwrap()
     }
     pub fn msg_tell_me(&self) -> String {
         self.0.msg("tell-me", None).unwrap()

@@ -559,3 +559,230 @@ fn saturated_thumb_drag_moves_the_view_smoothly() {
         py0 - py1
     );
 }
+
+// #211 (URS-1051): the Pan & Zoom window — the floating overview with
+// the live viewport rectangle. Opened from View ▸ Task Panes ▸ Pan &
+// Zoom; every write it makes is view-only (never undo history).
+
+/// Open the Pan & Zoom window through the ribbon route and settle.
+fn open_pan_zoom(h: &mut Harness<'static, App>) {
+    h.get_by_label("View").click();
+    h.run();
+    h.get_by_label("Task Panes").click();
+    h.run();
+    h.get_by_label("Pan & Zoom").click();
+    h.run();
+    h.run();
+}
+
+/// Type a percent into the window's zoom entry and commit it with
+/// Enter (the Size & Position field-edit route).
+fn pan_zoom_enter_pct(h: &mut Harness<'static, App>, pct: &str) {
+    use egui_kittest::kittest::By;
+    let at = h
+        .get(By::default().role(egui::Role::TextInput).label("Zoom"))
+        .rect()
+        .center();
+    h.hover_at(at);
+    h.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    h.get(By::default().role(egui::Role::TextInput).label("Zoom"))
+        .set_text_value_accesskit(pct);
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    h.run();
+}
+
+/// A raw press-drag-release over the Pan & Zoom thumbnail.
+fn pan_zoom_drag(h: &mut Harness<'static, App>, from: egui::Pos2, by: egui::Vec2) {
+    h.hover_at(from);
+    h.event(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    for k in 1..=4 {
+        h.hover_at(from + by * (k as f32 / 4.0));
+        h.run();
+    }
+    h.event(egui::Event::PointerButton {
+        pos: from + by,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+}
+
+/// The blank fixture's page (inches) — the thumb↔page scale derives
+/// from it and the drawn paper width.
+const BLANK_PAGE_W: f32 = 8.5;
+
+/// Dragging the viewport rectangle pans the canvas 1:1 (page inches
+/// under the pointer follow the pointer exactly) with the zoom
+/// untouched — and nothing lands in undo history.
+#[test]
+fn pan_zoom_thumb_drag_pans_one_to_one_without_undo() {
+    let mut h = harness_with_blank();
+    h.run();
+    h.run();
+    open_pan_zoom(&mut h);
+    let thumb = h.state().debug_panzoom_thumb();
+    let vp = h.state().debug_panzoom_vp();
+    assert!(thumb.is_positive(), "the thumbnail paper paints");
+    assert!(vp.is_positive(), "the viewport rectangle paints");
+    let undo0 = h.state().debug_undo_len();
+    let (z0, px0, py0) = h.state().debug_view_for_test();
+
+    // Drag the rectangle by (−36, −24) THUMB px: the pan must move by
+    // the same page-inch displacement, opposite on screen (the page
+    // follows the pointer 1:1).
+    let by = egui::vec2(-36.0, -24.0);
+    pan_zoom_drag(&mut h, vp.center(), by);
+    let (z1, px1, py1) = h.state().debug_view_for_test();
+    assert!((z1 - z0).abs() < 1e-6, "a thumb drag never zooms");
+    let s = thumb.width() / BLANK_PAGE_W; // thumb px per page inch
+    let ppi = 96.0 * z0; // canvas px per page inch
+    let ex = px0 - by.x / s * ppi;
+    let ey = py0 - by.y / s * ppi;
+    assert!(
+        (px1 - ex).abs() < 1.5,
+        "the pan follows the drag 1:1 in x: {px1} vs {ex}"
+    );
+    assert!(
+        (py1 - ey).abs() < 1.5,
+        "the pan follows the drag 1:1 in y: {py1} vs {ey}"
+    );
+    assert_eq!(
+        h.state().debug_undo_len(),
+        undo0,
+        "the Pan & Zoom drag is view-only: no undo entries"
+    );
+}
+
+/// The rectangle tracks the live view: a zoom from the entry shrinks
+/// it proportionally, a canvas ctrl+wheel zoom shrinks it again, and
+/// Fit Page restores it to the whole paper.
+#[test]
+fn pan_zoom_rectangle_tracks_the_live_view() {
+    let mut h = harness_with_blank();
+    h.run();
+    h.run();
+    open_pan_zoom(&mut h);
+    // The fitted rect at open — the reference Whole Page must return
+    // to (the same clamped-to-paper computation both times).
+    let vp_fit = h.state().debug_panzoom_vp();
+    // Start from an UNCLAMPED rectangle: at 400 % the page overflows
+    // the view, so the drawn rect maps the viewport 1:1 (a fitted
+    // rect is clamped to the paper and carries no zoom information).
+    pan_zoom_enter_pct(&mut h, "400");
+    let vp0 = h.state().debug_panzoom_vp();
+    let (z0, _, _) = h.state().debug_view_for_test();
+
+    // A 200 % entry zoom halves the visible page fraction.
+    pan_zoom_enter_pct(&mut h, "200");
+    let vp1 = h.state().debug_panzoom_vp();
+    let (z1, _, _) = h.state().debug_view_for_test();
+    assert!((z1 - 2.0).abs() < 1e-6, "the entered percent applies: {z1}");
+    let expect = vp0.width() * z0 / z1;
+    assert!(
+        (vp1.width() - expect).abs() < 0.03 * expect + 2.0,
+        "the rectangle tracks the entry zoom: {} vs {expect}",
+        vp1.width()
+    );
+
+    // A canvas ctrl+wheel zoom (hovered clear of the floating window)
+    // shrinks it live.
+    let canvas = h.state().debug_canvas_rect();
+    let at = egui::pos2(canvas.left() + canvas.width() * 0.2, canvas.center().y);
+    wheel_at(&mut h, at, 0.0, 10.0, true);
+    wheel_at(&mut h, at, 0.0, 10.0, true);
+    h.run();
+    let vp2 = h.state().debug_panzoom_vp();
+    assert!(
+        vp2.width() < vp1.width() && vp2.height() < vp1.height(),
+        "the rectangle tracks the wheel zoom: {} then {}",
+        vp1.width(),
+        vp2.width()
+    );
+
+    // Fit Page (the ribbon button is on the already-active View tab)
+    // returns to the fitted overview rect.
+    h.get_by_label("Whole Page").click();
+    h.run();
+    h.run();
+    let vp3 = h.state().debug_panzoom_vp();
+    assert!(
+        (vp3.width() - vp_fit.width()).abs() < 1.0
+            && (vp3.height() - vp_fit.height()).abs() < 1.0,
+        "the rectangle tracks the fit: {vp3:?} vs {vp_fit:?}"
+    );
+}
+
+/// The entered percent FLOORS onto the raster bucket grid (#67/#141)
+/// and clamps to the 10–800 % window; a press OUTSIDE the rectangle
+/// recenters the view there.
+#[test]
+fn pan_zoom_percent_floors_and_outside_press_recenters() {
+    let mut h = harness_with_blank();
+    h.run();
+    h.run();
+    open_pan_zoom(&mut h);
+    // 33 % floors onto the 1/384 grid: floor(0.33·384) = 126.
+    pan_zoom_enter_pct(&mut h, "33");
+    assert_eq!(h.state().debug_view_for_test().0, 126.0 / 384.0);
+    // Out-of-range values clamp, not refuse.
+    pan_zoom_enter_pct(&mut h, "5000");
+    assert_eq!(h.state().debug_view_for_test().0, 8.0);
+
+    // At the 8.0 clamp the rectangle is a small centered box — a
+    // press on the paper OUTSIDE it recenters the view there (the new
+    // rectangle's center lands on the pressed point).
+    pan_zoom_enter_pct(&mut h, "800");
+    let thumb = h.state().debug_panzoom_thumb();
+    let vp = h.state().debug_panzoom_vp();
+    assert!(
+        vp.width() < thumb.width() * 0.5,
+        "zoomed in far enough that paper lies outside the rectangle"
+    );
+    let at = egui::pos2(thumb.left() + 8.0, thumb.top() + 8.0);
+    h.hover_at(at);
+    h.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    h.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    let vp2 = h.state().debug_panzoom_vp();
+    assert!(
+        vp2.center().distance(at) < 2.5,
+        "the press outside recenters the view there: {:?} vs {at:?}",
+        vp2.center()
+    );
+
+    // Out-of-range values clamp low as well as high.
+    pan_zoom_enter_pct(&mut h, "5");
+    assert_eq!(h.state().debug_view_for_test().0, 0.1);
+}

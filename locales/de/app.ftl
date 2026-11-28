@@ -742,6 +742,8 @@ painter-cells-sticky = { $n } Formatierungszellen an Form { $to } kopiert (weite
 pan = Verschieben
 pan-off = Verschiebetool aus
 pan-tip = Verschiebetool — die Seite ziehen, um die Ansicht zu bewegen (Esc kehrt zum Zeiger zurück)
+pan-zoom = Verschieben & Zoomen
+pan-zoom-tip = Seitenübersicht — das Ansichtsrechteck ziehen, um zu verschieben; anderswo klicken, um zu zentrieren
 
 paragraph = Absatz
 paste = Einfügen
@@ -1032,7 +1034,7 @@ symbol = Symbol
 symbol-planned = Symbol — geplant
 tarahi-v-cargo-pkg-version-clean = Tarahi v{ $version } — Visio-kompatibles Diagramming im Cleanroom-Verfahren
 task-panes = Aufgabenbereiche
-task-panes-shapes-pan-zoom-plann = Aufgabenbereiche (Formen, Verschieben & Zoomen …) — geplant
+task-panes-tip = Aufgabenbereiche ein- oder ausblenden (Verschieben & Zoomen, Grösse und Position)
 tell-me = Tell Me
 tell-me-tip = Tell Me (Alt+Q)
 tell-me-what-you-want-to-do = Tell me — gewünschte Aktion eingeben

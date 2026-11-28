@@ -10785,6 +10785,10 @@ fn size_position_window_edits_width_with_undo_and_guard() {
     let before = width_in(&h);
     h.get_by_label("View").click();
     h.run();
+    // #211: Visio lists Size & Position under Task Panes — the #210
+    // standalone button retired with the menu.
+    h.get_by_label("Task Panes").click();
+    h.run();
     h.get_by_label("Size & Position").click();
     h.run();
     let field = |h: &Harness<'_, App>| {
@@ -10856,6 +10860,10 @@ fn size_position_window_edits_a_line_length() {
     }
     h.run();
     h.get_by_label("View").click();
+    h.run();
+    // #211: Visio lists Size & Position under Task Panes — the #210
+    // standalone button retired with the menu.
+    h.get_by_label("Task Panes").click();
     h.run();
     h.get_by_label("Size & Position").click();
     h.run();

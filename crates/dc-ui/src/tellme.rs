@@ -342,7 +342,6 @@ mod tests {
             show_rulers: false,
             show_grid: false,
             show_comments: false,
-            size_pos_open: false,
             dynamic_grid: false,
             snap_dlg_open: false,
             autoconnect: false,

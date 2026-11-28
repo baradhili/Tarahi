@@ -798,6 +798,8 @@ painter-cells-sticky = { $n } formatting cells copied to shape { $to } (click mo
 pan = Pan
 pan-off = pan tool off
 pan-tip = Pan tool — drag the page to move the view (Esc returns to the pointer)
+pan-zoom = Pan & Zoom
+pan-zoom-tip = Page overview — drag the view rectangle to pan, click elsewhere to recenter
 
 paragraph = Paragraph
 paste = Paste
@@ -1107,7 +1109,7 @@ symbol-planned = Symbol — planned
 # $version (String) - argument
 tarahi-v-cargo-pkg-version-clean = Tarahi v{ $version } — cleanroom Visio-compatible diagramming
 task-panes = Task Panes
-task-panes-shapes-pan-zoom-plann = Task panes (Shapes, Pan & Zoom…) — planned
+task-panes-tip = Show or hide task panes (Pan & Zoom, Size & Position)
 tell-me = Tell Me
 tell-me-tip = Tell Me (Alt+Q)
 tell-me-what-you-want-to-do = Tell me what you want to do

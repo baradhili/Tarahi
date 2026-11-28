@@ -158,6 +158,12 @@ impl App {
             self.group_edit.truncate(ok);
         }
         let ctx = ui.ctx().clone();
+        // #211: the pointer's per-frame position — the anchor dispatch
+        // reads when the Task Panes menu opens (dispatch has no
+        // Context; `mouse_page` is the same capture pattern).
+        if let Some(p) = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos())) {
+            self.pointer_last = p;
+        }
         // #130: a fullscreen toggle decided without a Context (the
         // Presentation Mode dispatch / the Slide Show entry and exit)
         // rides the next frame, like `os_clipboard_text`.
@@ -219,6 +225,10 @@ impl App {
         self.comment_window(&ctx);
         self.shape_data_window(&ctx);
         self.size_pos_window(&ctx);
+        // #211: the Pan & Zoom window and the View ▸ Task Panes
+        // dropdown that opens it.
+        self.panzoom_window(&ctx);
+        self.task_panes_menu(&ctx);
         self.color_palette_window(&ctx);
 
         // The eframe root Ui paints no background and eframe's clear

@@ -185,6 +185,28 @@ pub struct App {
         Option<(i64, i64)>,
         std::collections::HashMap<sizepos::SizePosField, String>,
     ),
+    /// #211 (URS-1051): the Pan & Zoom window is open; the drag's
+    /// grab offset (viewport center − pointer, page inches y-down)
+    /// while its gesture runs; the zoom entry's text buffer.
+    panzoom_open: bool,
+    panzoom_grab: Option<(f64, f64)>,
+    panzoom_pct: String,
+    /// #211: the View ▸ Task Panes dropdown is open, anchored here
+    /// (the dispatch site's pointer position). `task_panes_fresh`
+    /// shields the menu's first painted frame from its own opening
+    /// click's release.
+    task_panes_menu: Option<Pos2>,
+    task_panes_fresh: bool,
+    /// The pointer's last position (updated once per frame in `draw`)
+    /// — the anchor dispatch reads when it opens the Task Panes menu
+    /// (dispatch has no Context; `mouse_page` is the same per-frame
+    /// capture pattern).
+    pointer_last: Pos2,
+    /// #211 test seam: the thumbnail paper and the drawn viewport
+    /// rectangle on screen while the Pan & Zoom window is open
+    /// (NOTHING otherwise).
+    panzoom_thumb: Rect,
+    panzoom_vp: Rect,
     /// The Format Shape pane is open (#31).
     format_pane_open: bool,
     /// #149 item 2: the pane section a mini-toolbar Format icon
@@ -1279,6 +1301,7 @@ mod files;
 mod format;
 mod keys;
 mod pages;
+mod panzoom;
 mod pictures;
 mod pointer;
 mod selection;
