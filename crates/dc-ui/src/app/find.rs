@@ -10,10 +10,17 @@ use super::*;
 /// How many queries each history dropdown keeps.
 const HISTORY_LIMIT: usize = 10;
 
-/// Where a replaced match's search resumes: the character position
-/// just past the replacement (matches inside the inserted text are
-/// skipped — replacing `a` with `aa` must not find the new `a`).
-type Resume = (i64, i64, usize);
+/// Where a replaced match's search resumes: the replaced TARGET (its
+/// span offsets are per-target — plain text, one value string per
+/// row) and the character position just past the replacement
+/// (matches inside the inserted text are skipped — replacing `a`
+/// with `aa` must not find the new `a`), plus the pre-replace match
+/// list for when the shape lost its last match.
+struct ResumePoint {
+    replaced: dc_core::FindMatch,
+    past: usize,
+    old_matches: Vec<dc_core::FindMatch>,
+}
 
 /// Push into a history list (deduplicated, most recent first,
 /// bounded — session lifetime, the #115 decision).
@@ -159,7 +166,7 @@ impl App {
     fn step_session(
         &mut self,
         sess: &mut crate::find_dlg::FindSession,
-        resume: Option<Resume>,
+        resume: Option<ResumePoint>,
     ) -> Option<(String, String)> {
         if self.text_edit.is_some() {
             self.end_text_edit(true);
@@ -171,11 +178,11 @@ impl App {
         if stale {
             self.refresh_session(sess);
             sess.cursor = match resume {
-                // Resume just past the replacement: the first match in
-                // the replaced shape at/after the replacement's end,
-                // else the first match of a later shape — wrapping to
-                // the first match when nothing follows.
-                Some((p, s, past)) => resume_index(&sess.matches, p, s, past),
+                // Resume just past the replacement — in the replaced
+                // TARGET's own offsets — else at the next match after
+                // it in walk order; wrapping to the first match when
+                // nothing follows.
+                Some(rp) => resume_index(&sess.matches, &rp),
                 None => 0,
             };
         }
@@ -251,6 +258,21 @@ impl App {
     /// replacement. A name match replaces nothing (NameU is
     /// authored, not replaceable text): the step still advances.
     fn do_replace(&mut self) {
+        // A stale CURRENT match must never splice: the modeless
+        // window sits over an editable canvas, so the document (or
+        // the query/options) may have moved since Find Next
+        // highlighted it — the stored span could overwrite the wrong
+        // characters (CodeRabbit round on phase 3). Stale → this
+        // click behaves as Find Next: recompute, highlight the fresh
+        // match, and let the next click replace it.
+        let stale = match &self.repl.session.key {
+            Some(have) => self.session_key(&self.repl.session) != have.clone(),
+            None => true,
+        };
+        if stale {
+            self.do_replace_find_next();
+            return;
+        }
         let Some(m) = self.repl.session.current.clone() else {
             return;
         };
@@ -276,7 +298,15 @@ impl App {
             | dc_core::FindTarget::ShapeName { start, .. } => start + decoded,
         };
         let mut sess = std::mem::take(&mut self.repl.session);
-        let found = self.step_session(&mut sess, Some((m.page, m.shape, past)));
+        let old_matches = sess.matches.clone();
+        let found = self.step_session(
+            &mut sess,
+            Some(ResumePoint {
+                replaced: m.clone(),
+                past,
+                old_matches,
+            }),
+        );
         self.repl.session = sess;
         self.status = match found {
             Some((page, shape)) => crate::i18n::strs().msg_found_in(page, shape),
@@ -293,7 +323,11 @@ impl App {
         let matches = sess.matches.clone();
         sess.cursor = 0;
         sess.current = None;
-        sess.nav_sel = None;
+        // nav_sel STAYS: with a Selection scope it is what keeps the
+        // search's starting selection ([A, B]) authoritative over the
+        // single shape the last navigation selected — clearing it
+        // would re-scope the next search to that one shape
+        // (CodeRabbit round on phase 3).
         self.repl.session = sess;
         let replacement = self.repl.replacement.clone();
         let built = self
@@ -374,40 +408,77 @@ impl App {
     }
 }
 
-/// The index in a FRESH match list to resume from: the first match in
-/// the replaced shape at/after `past`, else the first match of any
-/// later shape, wrapping to the first match when nothing follows.
-/// The list is in walk order, so one shape's matches are contiguous.
-fn resume_index(matches: &[dc_core::FindMatch], page: i64, shape: i64, past: usize) -> usize {
-    let span_start = |m: &dc_core::FindMatch| match &m.target {
+/// The index in a FRESH match list to resume from after a
+/// replacement. Within the replaced shape, only the replaced TARGET's
+/// own offsets matter — text, each cell row's value, and the name are
+/// separate character spaces, and the block's matches are ordered by
+/// class then span — so `past` filters only same-target matches
+/// (CodeRabbit round on phase 3). When the shape lost its last match,
+/// the search continues at the first match of the NEXT distinct shape
+/// after it in the old walk order (wrapping to the first match when
+/// nothing follows) — not back at the list's start.
+fn resume_index(matches: &[dc_core::FindMatch], rp: &ResumePoint) -> usize {
+    let m = &rp.replaced;
+    let span_start = |x: &dc_core::FindMatch| match &x.target {
         dc_core::FindTarget::Text { start, .. }
         | dc_core::FindTarget::ShapeData { start, .. }
         | dc_core::FindTarget::UserCell { start, .. }
         | dc_core::FindTarget::ShapeName { start, .. } => *start,
     };
-    let Some(block) = matches
+    // The emission order inside one shape's block: class first, then
+    // the cell row (text/name targets carry no row).
+    fn rank(x: &dc_core::FindMatch) -> (u8, Option<&str>) {
+        match &x.target {
+            dc_core::FindTarget::Text { .. } => (0, None),
+            dc_core::FindTarget::ShapeData { row, .. } => (1, Some(row.as_str())),
+            dc_core::FindTarget::ShapeName { .. } => (2, None),
+            dc_core::FindTarget::UserCell { row, .. } => (3, Some(row.as_str())),
+        }
+    }
+    let replaced_rank = rank(m);
+    if let Some(block) = matches
         .iter()
-        .position(|m| m.page == page && m.shape == shape)
-    else {
-        return 0;
-    };
-    let end = matches
-        .iter()
-        .rposition(|m| m.page == page && m.shape == shape)
-        .map(|e| e + 1)
-        .unwrap_or(matches.len());
-    // Inside the shape's block: the first span at/after `past`.
-    if let Some(i) = matches[block..end]
-        .iter()
-        .position(|m| span_start(m) >= past)
+        .position(|x| x.page == m.page && x.shape == m.shape)
     {
-        return block + i;
+        let end = matches
+            .iter()
+            .rposition(|x| x.page == m.page && x.shape == m.shape)
+            .map(|e| e + 1)
+            .unwrap_or(matches.len());
+        if let Some(hit) = matches[block..end]
+            .iter()
+            .enumerate()
+            .find(|(_, x)| {
+                let r = rank(x);
+                r > replaced_rank || (r == replaced_rank && span_start(x) >= rp.past)
+            })
+            .map(|(i, _)| block + i)
+        {
+            return hit;
+        }
+        if end < matches.len() {
+            return end;
+        }
+        return 0; // the shape's block was the tail — wrap
     }
-    // Past the shape's last match: the next shape's first match,
-    // wrapping to the list's start when the block was the tail.
-    if end < matches.len() {
-        end
-    } else {
-        0
+    // The shape left the list: the first distinct shape after the
+    // replaced match in the OLD walk order, looked up in the fresh
+    // one (its matches were not edited by this single Replace).
+    if let Some(from) = rp
+        .old_matches
+        .iter()
+        .position(|x| x.page == m.page && x.shape == m.shape)
+    {
+        for x in &rp.old_matches[from..] {
+            if x.page != m.page || x.shape != m.shape {
+                if let Some(i) = matches
+                    .iter()
+                    .position(|y| y.page == x.page && y.shape == x.shape)
+                {
+                    return i;
+                }
+            }
+        }
     }
+    0
 }

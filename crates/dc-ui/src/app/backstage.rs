@@ -402,6 +402,12 @@ impl App {
         self.find.session.key = None;
         self.find.session.nav_sel = None;
         self.find.session.cursor = 0;
+        self.find.session.current = None;
+        self.repl.session.matches.clear();
+        self.repl.session.key = None;
+        self.repl.session.nav_sel = None;
+        self.repl.session.cursor = 0;
+        self.repl.session.current = None;
         self.find.status = crate::find_dlg::FindStatus::Idle;
         self.tex.clear();
         self.layers.clear();
@@ -463,6 +469,12 @@ impl App {
         self.find.session.key = None;
         self.find.session.nav_sel = None;
         self.find.session.cursor = 0;
+        self.find.session.current = None;
+        self.repl.session.matches.clear();
+        self.repl.session.key = None;
+        self.repl.session.nav_sel = None;
+        self.repl.session.cursor = 0;
+        self.repl.session.current = None;
         self.find.status = crate::find_dlg::FindStatus::Idle;
         // #192 4a: another open document promotes to active.
         if !self.docs.is_empty() {

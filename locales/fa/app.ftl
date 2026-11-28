@@ -1105,9 +1105,9 @@ text = متن
 text-align-left = تراز چپ
 text-align-right = تراز راست
 text-box = جعبهٔ متن
-text-case = تغییر مورد
+text-case = تغییر بزرگی و کوچکی حروف
 
-text-case-planned = تغییر مورد — برنامه‌ریزی‌شده
+text-case-planned = تغییر بزرگی و کوچکی حروف — برنامه‌ریزی‌شده
 
 text-color = رنگ متن
 text-color-tip = رنگ متن انتخاب

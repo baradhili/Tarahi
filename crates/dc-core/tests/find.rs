@@ -788,6 +788,7 @@ fn match_width_folds_fullwidth_forms() {
 
 use dc_core::find::{decode_replacement, replace_all_command, replace_command};
 use dc_core::Editor;
+use dc_core::FindMatch;
 
 fn ed_with_shapes(shapes: Vec<Shape>) -> Editor {
     Editor::new(doc(vec![page(0, shapes)]))
@@ -955,4 +956,39 @@ fn replace_all_skips_name_matches_and_splices_cell_rows_once() {
         Some("HIT and HIT again".to_string())
     );
     assert_eq!(sh.name_u.as_deref(), Some("hit name"), "NameU untouched");
+}
+
+#[test]
+fn replace_command_refuses_a_tombstoned_row() {
+    // The resolver's contract (CodeRabbit round on phase 3): a local
+    // Del='1' row is TERMINAL — even a hand-fed stale match must not
+    // resurrect the master's value through a replace write.
+    let master_shape = rich_shape(1, None, None, vec![value_row("Owner", "beta")], vec![]);
+    let tombstone = Row {
+        n: Some("Owner".into()),
+        attrs: vec![("Del".into(), "1".into())],
+        ..Row::default()
+    };
+    let mut inst = rich_shape(9, None, None, vec![tombstone], vec![]);
+    inst.master = Some(5);
+    let d = Document {
+        pages: vec![page(0, vec![inst])],
+        masters: vec![Master {
+            id: 5,
+            name_u: Some("M".into()),
+            shapes: vec![master_shape],
+            ..Master::default()
+        }],
+        ..Document::default()
+    };
+    let m = FindMatch {
+        page: 0,
+        shape: 9,
+        target: FindTarget::ShapeData {
+            row: "Owner".into(),
+            start: 0,
+            len: 4,
+        },
+    };
+    assert!(replace_command(&d, &m, "gamma").is_none());
 }

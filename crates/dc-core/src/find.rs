@@ -596,6 +596,19 @@ fn resolve_cell(
         }
         None
     };
+    // A LOCAL TOMBSTONE is terminal (#293, the matcher's rule): the
+    // row is deleted in the effective view, and the inherited
+    // fallback must not resurrect it into a replace write
+    // (CodeRabbit round on phase 3). A non-deleted local row without
+    // a Value (F='Inh') still falls through to the master.
+    let tombstoned = sh.sheet.sections_named(section).iter().any(|sec| {
+        sec.rows
+            .iter()
+            .any(|r| r.n.as_deref() == Some(row) && r.is_deleted())
+    });
+    if tombstoned {
+        return None;
+    }
     hit(&sh.sheet).or_else(|| {
         let chain = crate::scope::shape_chain(doc, page, shape).ok()?;
         let ancestors: Vec<_> = chain.into_iter().filter(|c| c.id != shape).collect();

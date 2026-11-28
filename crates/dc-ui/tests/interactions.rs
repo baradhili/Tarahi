@@ -11324,3 +11324,90 @@ fn replace_all_sweeps_every_match_in_one_undo_step() {
         Some("token two")
     );
 }
+
+/// The review round's stale-current and resume regressions
+/// (CodeRabbit on phase 3): a query change never splices the old
+/// match's span, and replacing a shape's only match continues
+/// FORWARD to the next shape instead of wrapping to the first.
+#[test]
+fn replace_dialog_stale_current_and_forward_resume() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = find_harness();
+    let a = place_shape_with_text(&mut h, "alpha token");
+    // The second shape lands clear of the first (the helper drops at
+    // the canvas center, where it would cover shape one).
+    h.run();
+    let from = h.state().debug_master_cells()[0].1.center();
+    let to = h.state().debug_canvas_rect().center() + egui::vec2(150.0, 0.0);
+    click_at(&mut h, from, egui::PointerButton::Primary);
+    click_at(&mut h, to, egui::PointerButton::Primary);
+    let (_, b) = h.state().debug_sel().expect("placed shape selected");
+    h.state_mut().debug_set_shape_text_for_test(b, "beta token");
+    let to2 = h.state().debug_canvas_rect().center() + egui::vec2(-150.0, 60.0);
+    click_at(&mut h, from, egui::PointerButton::Primary);
+    click_at(&mut h, to2, egui::PointerButton::Primary);
+    let (_, c) = h.state().debug_sel().expect("placed shape selected");
+    h.state_mut().debug_set_shape_text_for_test(c, "gamma token");
+    h.run();
+
+    open_replace_dialog(&mut h);
+    fill_replace_fields(&mut h, "token", "mark");
+
+    // A: Find Next highlights, Replace rewrites and advances to B.
+    h.get_by_label("Find Next").click();
+    h.run();
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::Button)
+            .label("Replace"),
+    )
+    .click();
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(a).as_deref(),
+        Some("alpha mark")
+    );
+    assert_eq!(h.state().debug_sel().map(|(_, s)| s), Some(b));
+
+    // B: replacing its ONLY match must continue FORWARD to C — not
+    // wrap back to A's already-replaced text.
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::Button)
+            .label("Replace"),
+    )
+    .click();
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(b).as_deref(),
+        Some("beta mark")
+    );
+    assert_eq!(
+        h.state().debug_sel().map(|(_, s)| s),
+        Some(c),
+        "the resume continues to the next shape after the replaced one"
+    );
+
+    // Stale current: change the QUERY to something absent — the next
+    // Replace click may not splice the previous match's span; it
+    // behaves as Find Next and reports the miss.
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("Find what:"),
+    )
+    .set_text_value_accesskit("absent");
+    h.run();
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::Button)
+            .label("Replace"),
+    )
+    .click();
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(c).as_deref(),
+        Some("gamma token"),
+        "a stale current match never splices after a query change"
+    );
+}

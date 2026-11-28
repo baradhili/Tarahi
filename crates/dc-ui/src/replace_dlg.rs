@@ -109,6 +109,12 @@ pub(crate) fn window(ctx: &Context, state: &mut ReplaceState) -> ReplaceOutcome 
                             state.caret_in_replacement = is_repl;
                         }
                         edit_focused |= re.has_focus();
+                        // Editing the QUERY drops the current match
+                        // (Replace's gate): its span belongs to the
+                        // OLD search (CodeRabbit round on phase 3).
+                        if !is_repl && re.changed() {
+                            state.session.current = None;
+                        }
                         let hist =
                             ui.add_enabled(!history.is_empty(), egui::Button::new("›").small());
                         hist.widget_info(|| {
