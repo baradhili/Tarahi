@@ -631,6 +631,44 @@ fn deleted_rows_are_not_searched() {
     );
 }
 
+#[test]
+fn local_tombstone_deletes_the_master_row_too() {
+    // A local `Del='1'` row hides the master's same-named row (#293:
+    // Visio honors the tombstone on open) — the inherited pass must
+    // not resurrect it (CodeRabbit round on phase 1).
+    let master_shape = rich_shape(
+        1,
+        None,
+        None,
+        vec![value_row("Owner", "beta"), value_row("Note", "gamma")],
+        vec![],
+    );
+    let tombstone = Row {
+        n: Some("Owner".into()),
+        attrs: vec![("Del".into(), "1".into())],
+        ..Row::default()
+    };
+    let mut inst = rich_shape(9, None, None, vec![tombstone], vec![]);
+    inst.master = Some(5);
+    let d = Document {
+        pages: vec![page(0, vec![inst])],
+        masters: vec![Master {
+            id: 5,
+            name_u: Some("M".into()),
+            shapes: vec![master_shape],
+            ..Master::default()
+        }],
+        ..Document::default()
+    };
+    assert!(find_matches(&d, "beta", FindScope::AllPages, &all_targets()).is_empty());
+    // A master row the tombstone does not name still shows.
+    let got = find_matches(&d, "gamma", FindScope::AllPages, &all_targets());
+    assert_eq!(
+        brief(&got),
+        vec![(0, 9, FindTargetClass::ShapeData, Some("Note"))]
+    );
+}
+
 // -- matcher shape -----------------------------------------------------
 
 #[test]

@@ -373,10 +373,20 @@ fn scan_rows(
 ) {
     for sec in sheet.sections_named(section) {
         for row in &sec.rows {
+            let Some(name) = row.n.as_deref() else {
+                continue;
+            };
             if row.is_deleted() {
+                // A local tombstone deletes the master's row too
+                // (#293: Visio honors `Del` on open) — record the
+                // name so the inherited pass skips it. Only the local
+                // pass records; a deleted MASTER row is simply gone.
+                if shadow {
+                    shadowed.insert(name.to_string());
+                }
                 continue;
             }
-            let (Some(name), Some(value)) = (row.n.as_deref(), value_of(row)) else {
+            let Some(value) = value_of(row) else {
                 continue;
             };
             if shadow {
