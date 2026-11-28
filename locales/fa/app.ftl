@@ -325,6 +325,7 @@ field-preview = پیش‌نمایش:
 field-subject = موضوع
 field-title = عنوان
 field-width = عرض
+get-help-on = دریافت راهنما دربارهٔ "{ $query }"
 horizontal-size = اندازه افقی:
 
 insert-a-text-field = درج یک فیلد متنی
@@ -361,6 +362,7 @@ lj-style-gap = فاصله
 
 lj-style-square = مربع
 
+no-matching-commands = هیچ فرمان منطبقی وجود ندارد
 routing-appearance = نمود:
 
 routing-deferred = مسیریابی اتصال‌دهنده‌ها هنوز در دسترس نیست.

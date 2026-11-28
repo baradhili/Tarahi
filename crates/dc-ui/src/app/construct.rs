@@ -156,6 +156,10 @@ impl App {
             tellme_query: String::new(),
             tellme_sel: 0,
             tellme_enter: false,
+            tellme_help: None,
+            chrome_epoch: 0,
+            about_epoch: 0,
+            tellme_help_epoch: 0,
             snap: crate::snap::SnapSettings::default(),
             snap_dlg_open: false,
             zoom_dlg_open: false,
@@ -326,6 +330,25 @@ impl App {
     #[doc(hidden)]
     pub fn debug_dynamic_grid(&self) -> bool {
         self.snap.dynamic_grid
+    }
+    /// #204 tests: the help stub's pre-filled query, when open.
+    #[doc(hidden)]
+    pub fn debug_tellme_help_query(&self) -> Option<String> {
+        self.tellme_help.clone()
+    }
+    /// #204 tests: open the About window as if the QAT button had —
+    /// for the Esc-ordering walk (the chrome-epoch review round).
+    #[doc(hidden)]
+    pub fn debug_open_about_for_test(&mut self) {
+        self.about_open = true;
+        self.about_epoch = self.bump_chrome_epoch();
+    }
+    /// #204: hand out the next chrome-window generation — egui
+    /// raises a freshly-shown window to the top, so the most
+    /// recently OPENED window owns Esc (see `draw`).
+    pub(crate) fn bump_chrome_epoch(&mut self) -> u64 {
+        self.chrome_epoch += 1;
+        self.chrome_epoch
     }
     /// #192 4a tests: File > Open ADDS a document — parse the file
     /// and activate it, stashing the current one (the real load()

@@ -76,7 +76,12 @@ impl App {
                 self.view.zoom = (pct as f32 / 100.0).clamp(0.1, 8.0);
                 self.view.fit_mode = false;
             }
-            Action::About => self.about_open = !self.about_open,
+            Action::About => {
+                self.about_open = !self.about_open;
+                if self.about_open {
+                    self.about_epoch = self.bump_chrome_epoch();
+                }
+            }
             // #237: zoom-to-selection defers to the canvas frame — it
             // needs the content area + selection rects the frame owns.
             Action::ZoomSelection => self.zoom_selection_pending = true,
@@ -625,6 +630,20 @@ impl App {
                                         self.tellme_query = query.to_string();
                                         self.tellme_sel = 0;
                                     }
+                                    // The Get-Help footer: open the
+                                    // stub with the query (#204 step
+                                    // 7) and close the panel.
+                                    crate::tellme::PanelRow::Help { .. } => {
+                                        let q = self.tellme_query.clone();
+                                        self.tellme_help = Some(q);
+                                        self.tellme_help_epoch = self.bump_chrome_epoch();
+                                        self.tellme_open = false;
+                                        self.tellme_query.clear();
+                                        self.tellme_sel = 0;
+                                        ui.ctx().memory_mut(|m| {
+                                            m.surrender_focus(crate::tellme::field_id())
+                                        });
+                                    }
                                     // A faded row does nothing (the
                                     // acceptance rule).
                                     crate::tellme::PanelRow::Result(_) => {}
@@ -651,11 +670,21 @@ impl App {
                         if self.tellme_open {
                             let rows = self.tellme_rows();
                             let idle = self.tellme_query.trim().is_empty();
+                            // #204 step 7: an unmatched query keeps the
+                            // explicit "No matching commands" row above
+                            // the help footer (the acceptance's rule).
+                            let no_results = !idle
+                                && rows.iter().all(|r| {
+                                    !matches!(r, crate::tellme::PanelRow::Result(_))
+                                });
                             self.tellme_sel = self.tellme_sel.min(rows.len().saturating_sub(1));
                             let sel = self.tellme_sel;
                             let rtl = crate::i18n::rtl();
                             let mut run: Option<Action> = None;
                             let mut drill: Option<&'static str> = None;
+                            // #204 step 7: the Get-Help footer was
+                            // picked — open the stub with the query.
+                            let mut help = false;
                             let mut close = false;
                             let mut hover: Option<usize> = None;
                             // A click on a faded row keeps the session
@@ -711,7 +740,54 @@ impl App {
                                         t.hint,
                                     );
                                 }
+                                if no_results {
+                                    // The explicit empty state (spec
+                                    // 3.2's results view with nothing
+                                    // to show) — informational, not a
+                                    // pick; named for screen readers.
+                                    let (nr, nresp) = ui.allocate_exact_size(
+                                        Vec2::new(ui.available_width(), 20.0),
+                                        Sense::hover(),
+                                    );
+                                    nresp.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::Role::Label,
+                                            false,
+                                            crate::i18n::strs().msg_no_matching_commands(),
+                                        )
+                                    });
+                                    let nx = if rtl {
+                                        nr.right() - 6.0
+                                    } else {
+                                        nr.left() + 6.0
+                                    };
+                                    ui.painter().text(
+                                        Pos2::new(nx, nr.center().y),
+                                        if rtl {
+                                            egui::Align2::RIGHT_CENTER
+                                        } else {
+                                            egui::Align2::LEFT_CENTER
+                                        },
+                                        crate::i18n::strs().msg_no_matching_commands(),
+                                        egui::FontId::proportional(11.5),
+                                        t.label_disabled,
+                                    );
+                                }
                                 for (i, row) in rows.iter().enumerate() {
+                                    // Spec 4.2's divider: the help
+                                    // footer separates from the
+                                    // actionable commands above it.
+                                    if matches!(row, crate::tellme::PanelRow::Help { .. }) {
+                                        let (dr, _) = ui.allocate_exact_size(
+                                            Vec2::new(ui.available_width(), 1.0),
+                                            Sense::hover(),
+                                        );
+                                        ui.painter().hline(
+                                            dr.left() + 4.0..=dr.right() - 4.0,
+                                            dr.center().y,
+                                            Stroke::new(1.0, t.separator),
+                                        );
+                                    }
                                     let (r, resp) = ui.allocate_exact_size(
                                         Vec2::new(ui.available_width(), 22.0),
                                         Sense::click(),
@@ -723,6 +799,7 @@ impl App {
                                         egui::WidgetInfo::labeled(
                                             egui::Role::Button,
                                             matches!(row, crate::tellme::PanelRow::Try { .. })
+                                                || matches!(row, crate::tellme::PanelRow::Help { .. })
                                                 || matches!(row, crate::tellme::PanelRow::Result(e) if e.enabled),
                                             row_label(row),
                                         )
@@ -738,8 +815,11 @@ impl App {
                                         crate::tellme::PanelRow::Result(e) if e.enabled => t.label,
                                         crate::tellme::PanelRow::Result(_) => t.label_disabled,
                                         // Try rows are plain prompts —
-                                        // always actionable.
+                                        // always actionable — and the
+                                        // help footer always opens its
+                                        // stub.
                                         crate::tellme::PanelRow::Try { .. } => t.label,
+                                        crate::tellme::PanelRow::Help { .. } => t.label,
                                     };
                                     match row {
                                         crate::tellme::PanelRow::Result(e) => {
@@ -827,6 +907,43 @@ impl App {
                                                 drill = Some(query);
                                             }
                                         }
+                                        crate::tellme::PanelRow::Help { label } => {
+                                            // The footer row: our own
+                                            // help glyph + the
+                                            // localized "Get Help on
+                                            // '<query>'" text, laid out
+                                            // like a result row.
+                                            let icon_r = Rect::from_min_size(
+                                                if rtl {
+                                                    r.right_top() + Vec2::new(-20.0, 2.0)
+                                                } else {
+                                                    r.left_top() + Vec2::new(2.0, 2.0)
+                                                },
+                                                Vec2::splat(18.0),
+                                            );
+                                            Icon::Help.paint(ui, icon_r, true);
+                                            let (tx, ta) = if rtl {
+                                                (
+                                                    Pos2::new(icon_r.left() - 4.0, r.center().y),
+                                                    egui::Align2::RIGHT_CENTER,
+                                                )
+                                            } else {
+                                                (
+                                                    Pos2::new(icon_r.right() + 4.0, r.center().y),
+                                                    egui::Align2::LEFT_CENTER,
+                                                )
+                                            };
+                                            ui.painter().text(
+                                                tx,
+                                                ta,
+                                                label,
+                                                egui::FontId::proportional(11.5),
+                                                label_color,
+                                            );
+                                            if resp.clicked() {
+                                                help = true;
+                                            }
+                                        }
                                     }
                                 }
                             });
@@ -863,6 +980,21 @@ impl App {
                                 // keyboard back in the query.
                                 ui.ctx().memory_mut(|m| {
                                     m.request_focus(crate::tellme::field_id())
+                                });
+                            }
+                            if help {
+                                // The Get-Help footer was picked: the
+                                // panel closes and the stub window
+                                // opens pre-filled with the query
+                                // (#204 step 7, spec 3.3.3/5).
+                                let q = self.tellme_query.clone();
+                                        self.tellme_help = Some(q);
+                                        self.tellme_help_epoch = self.bump_chrome_epoch();
+                                self.tellme_open = false;
+                                self.tellme_query.clear();
+                                self.tellme_sel = 0;
+                                ui.ctx().memory_mut(|m| {
+                                    m.surrender_focus(crate::tellme::field_id())
                                 });
                             }
                             if close || !open {
@@ -1373,10 +1505,12 @@ fn status_chip(
 }
 
 /// The a11y label of a Tell Me panel row (#204 step 6): a result
-/// carries its command's name, a Try row its intent text.
+/// carries its command's name, a Try row its intent text, the help
+/// footer its "Get Help on '<query>'" text.
 fn row_label(row: &crate::tellme::PanelRow) -> &str {
     match row {
         crate::tellme::PanelRow::Result(e) => e.label.as_str(),
         crate::tellme::PanelRow::Try { label, .. } => label,
+        crate::tellme::PanelRow::Help { label } => label,
     }
 }

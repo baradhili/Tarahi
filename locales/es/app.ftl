@@ -348,6 +348,7 @@ field-preview = Vista previa:
 field-subject = Asunto
 field-title = Título
 field-width = Ancho
+get-help-on = Obtener ayuda sobre "{ $query }"
 horizontal-size = Tamaño horizontal:
 
 insert-a-text-field = Insertar un campo de texto
@@ -384,6 +385,7 @@ lj-style-gap = Separación
 
 lj-style-square = Cuadrado
 
+no-matching-commands = No hay comandos coincidentes
 routing-appearance = Apariencia:
 
 routing-deferred = El enrutamiento de conectores aún no está disponible.

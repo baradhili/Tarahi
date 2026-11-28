@@ -309,6 +309,7 @@ field-preview = 미리 보기:
 field-subject = 제목(주제)
 field-title = 제목
 field-width = 너비
+get-help-on = "{ $query }"에 대한 도움말 보기
 horizontal-size = 가로 크기:
 
 insert-a-text-field = 텍스트 필드를 삽입합니다
@@ -345,6 +346,7 @@ lj-style-gap = 간격
 
 lj-style-square = 사각형
 
+no-matching-commands = 일치하는 명령이 없습니다
 routing-appearance = 모양:
 
 routing-deferred = 연결선 라우팅은 아직 사용할 수 없습니다.

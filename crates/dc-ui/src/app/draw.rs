@@ -601,7 +601,13 @@ impl App {
         if self.about_open {
             // Esc closes the frontmost About (the #110 dialog
             // keyboard audit's rule — About slipped it; #218 review).
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // egui raises a freshly-shown window to the top, so the
+            // FRONTMOST of About and the Tell Me help stub is the one
+            // opened last (the chrome epochs); About takes the Esc
+            // only when it is that one (CodeRabbit review rounds).
+            let about_is_frontmost =
+                self.tellme_help.is_none() || self.about_epoch > self.tellme_help_epoch;
+            if about_is_frontmost && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.about_open = false;
                 return;
             }
@@ -638,6 +644,43 @@ impl App {
                     );
                 });
             self.about_open = open && self.about_open;
+        }
+
+        // #204 step 7: the basic help window stub, pre-filled with
+        // the query that opened it (the About window's pattern —
+        // Esc-first, the close button honored). Real help content is
+        // the follow-up issue per the plan's deferral. Esc closes it
+        // when it is the frontmost chrome window (the chrome epochs;
+        // ties go to Help, which paints above About).
+        if let Some(query) = self.tellme_help.clone() {
+            let help_is_frontmost =
+                !self.about_open || self.tellme_help_epoch >= self.about_epoch;
+            if help_is_frontmost && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.tellme_help = None;
+                return;
+            }
+            let mut open = true;
+            egui::Window::new(crate::i18n::strs().msg_get_help_on(&query))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ui.ctx(), |ui| {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(300.0, 80.0), egui::Sense::hover());
+                    // The stub's one piece of content: the query it
+                    // was opened for.
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        &query,
+                        egui::FontId::proportional(15.0),
+                        crate::theme::shell_tokens(ui.visuals()).label,
+                    );
+                });
+            if !open {
+                self.tellme_help = None;
+            }
         }
     }
 }

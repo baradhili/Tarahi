@@ -328,6 +328,7 @@ field-preview = Vorschau:
 field-subject = Thema
 field-title = Titel
 field-width = Breite
+get-help-on = Hilfe zu "{ $query }" abrufen
 horizontal-size = Horizontale Größe:
 
 insert-a-text-field = Ein Textfeld einfügen
@@ -364,6 +365,7 @@ lj-style-gap = Lücke
 
 lj-style-square = Quadrat
 
+no-matching-commands = Keine passenden Befehle
 routing-appearance = Darstellung:
 
 routing-deferred = Konnektor-Routing ist noch nicht verfügbar.
@@ -1562,6 +1564,8 @@ field-preview = Preview:
 field-subject = Subject
 field-title = Title
 field-width = Width
+# $query (String) - the live Tell Me query
+get-help-on = Get help on "{ $query }"
 horizontal-size = Horizontal size:
 
 insert-a-text-field = Insert a text field
@@ -1599,6 +1603,7 @@ lj-style-gap = Gap
 
 lj-style-square = Square
 
+no-matching-commands = No matching commands
 routing-appearance = Appearance:
 
 routing-deferred = Connector routing is not available yet.
@@ -2846,6 +2851,7 @@ field-preview = Vista previa:
 field-subject = Asunto
 field-title = Título
 field-width = Ancho
+get-help-on = Obtener ayuda sobre "{ $query }"
 horizontal-size = Tamaño horizontal:
 
 insert-a-text-field = Insertar un campo de texto
@@ -2882,6 +2888,7 @@ lj-style-gap = Separación
 
 lj-style-square = Cuadrado
 
+no-matching-commands = No hay comandos coincidentes
 routing-appearance = Apariencia:
 
 routing-deferred = El enrutamiento de conectores aún no está disponible.
@@ -4103,6 +4110,7 @@ field-preview = پیش‌نمایش:
 field-subject = موضوع
 field-title = عنوان
 field-width = عرض
+get-help-on = دریافت راهنما دربارهٔ "{ $query }"
 horizontal-size = اندازه افقی:
 
 insert-a-text-field = درج یک فیلد متنی
@@ -4139,6 +4147,7 @@ lj-style-gap = فاصله
 
 lj-style-square = مربع
 
+no-matching-commands = هیچ فرمان منطبقی وجود ندارد
 routing-appearance = نمود:
 
 routing-deferred = مسیریابی اتصال‌دهنده‌ها هنوز در دسترس نیست.
@@ -5296,6 +5305,7 @@ field-preview = プレビュー:
 field-subject = 件名
 field-title = タイトル
 field-width = 幅
+get-help-on = 「{ $query }」のヘルプを表示
 horizontal-size = 横のサイズ：
 
 insert-a-text-field = 文字フィールドを挿入します
@@ -5332,6 +5342,7 @@ lj-style-gap = ギャップ
 
 lj-style-square = 四角
 
+no-matching-commands = 一致するコマンドはありません
 routing-appearance = 外観：
 
 routing-deferred = コネクタのルーティングはまだ利用できません。
@@ -6405,6 +6416,7 @@ field-preview = 미리 보기:
 field-subject = 제목(주제)
 field-title = 제목
 field-width = 너비
+get-help-on = "{ $query }"에 대한 도움말 보기
 horizontal-size = 가로 크기:
 
 insert-a-text-field = 텍스트 필드를 삽입합니다
@@ -6441,6 +6453,7 @@ lj-style-gap = 간격
 
 lj-style-square = 사각형
 
+no-matching-commands = 일치하는 명령이 없습니다
 routing-appearance = 모양:
 
 routing-deferred = 연결선 라우팅은 아직 사용할 수 없습니다.
@@ -7512,6 +7525,7 @@ field-preview = 预览：
 field-subject = 主题
 field-title = 标题
 field-width = 宽度
+get-help-on = 获取关于"{ $query }"的帮助
 horizontal-size = 水平大小：
 
 insert-a-text-field = 插入文本域
@@ -7548,6 +7562,7 @@ lj-style-gap = 间隔
 
 lj-style-square = 方形
 
+no-matching-commands = 没有匹配的命令
 routing-appearance = 外观：
 
 routing-deferred = 连接线布线尚不可用。

@@ -349,6 +349,8 @@ field-preview = Preview:
 field-subject = Subject
 field-title = Title
 field-width = Width
+# $query (String) - the live Tell Me query
+get-help-on = Get help on "{ $query }"
 horizontal-size = Horizontal size:
 
 insert-a-text-field = Insert a text field
@@ -386,6 +388,7 @@ lj-style-gap = Gap
 
 lj-style-square = Square
 
+no-matching-commands = No matching commands
 routing-appearance = Appearance:
 
 routing-deferred = Connector routing is not available yet.
