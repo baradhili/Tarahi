@@ -482,7 +482,11 @@ impl App {
                 &mut self.pool,
                 &ed.doc,
                 page,
-                self.view.px_per_in(),
+                // #414: the RASTER density — the view's logical density
+                // (96 × zoom) folded with the device scale factor — so
+                // HiDPI layers rasterize at device density. Placement
+                // keeps the logical ppi (egui points).
+                self.view.raster_px_per_in(ui.ctx().pixels_per_point()),
                 vp,
                 self.group_edit.first().copied(),
                 &hidden,

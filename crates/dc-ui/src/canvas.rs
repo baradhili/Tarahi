@@ -60,6 +60,23 @@ impl View {
         96.0 * self.zoom
     }
 
+    /// The RASTER density for texture requests (#414): the view's
+    /// logical density scaled by the device pixel ratio. Placement,
+    /// hit-testing, and every other screen conversion keep
+    /// [`Self::px_per_in`] — egui lays out in logical points — so only
+    /// the texture-request seams (the layer store's `composite`, the
+    /// background-page underlays) rasterize at device density and a
+    /// HiDPI compositor upscales nothing. `pixels_per_point` is read
+    /// from the egui context each frame (`Context::pixels_per_point`
+    /// — the effective value, monitor DPI times any user zoom; the
+    /// native value is `native_pixels_per_point` when a future need
+    /// wants the un-zoomed monitor scale). The 96-dpi DOCUMENT
+    /// convention is untouched: intrinsic sizes, SVG export geometry,
+    /// and file-export DPI never see this value.
+    pub fn raster_px_per_in(&self, pixels_per_point: f32) -> f32 {
+        self.px_per_in() * pixels_per_point
+    }
+
     /// Fit zoom + centered pan for a content area (origin = top-left of
     /// the area below/right of any rulers), and enter fit mode.
     pub fn apply_fit(&mut self, content: Vec2, origin: Vec2, page: &PageGeom) {
@@ -2949,5 +2966,21 @@ mod tests {
             (back2 - mid_pan).abs() < 1e-4,
             "the thumb position round-trips: {back2} vs {mid_pan}"
         );
+    }
+
+    /// #414: the raster density includes the device scale factor —
+    /// `96 × zoom × pixels_per_point` — while the placement density
+    /// stays logical (egui points) no matter the display.
+    #[test]
+    fn raster_ppi_includes_the_device_scale() {
+        let mut v = View::default(); // zoom 1.0 → 96 logical px/in
+        assert_eq!(v.raster_px_per_in(1.0), 96.0, "a 1× display keeps 96");
+        assert_eq!(v.raster_px_per_in(2.0), 192.0, "a 2× display doubles density");
+        v.zoom = 0.5;
+        assert_eq!(v.raster_px_per_in(2.0), 96.0, "zoom halves before the scale folds");
+        v.zoom = 2.0;
+        assert_eq!(v.raster_px_per_in(1.5), 288.0, "96 × 2 × 1.5");
+        // The DOCUMENT/placement density is untouched by the device.
+        assert_eq!(v.px_per_in(), 192.0);
     }
 }

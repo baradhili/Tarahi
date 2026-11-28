@@ -82,6 +82,13 @@ impl App {
     /// The full shell, testable headlessly (see tests/shell.rs).
     pub fn draw(&mut self, ui: &mut Ui) {
         let _frame = crate::perf::span(crate::perf::Stage::Frame);
+        // #414: fold the device into the raster pipeline — the GPU's
+        // max texture side (backend-reported through the egui input;
+        // egui's InputState defaults to 2048 where nothing reports,
+        // which is exactly kittest's floor) caps the texture ceiling
+        // at min(reported, 8192). The device scale factor itself is
+        // read at the texture-request seams (`View::raster_px_per_in`).
+        crate::svgimg::set_device_max_texture_side(ui.ctx().input(|i| i.max_texture_side));
         // #184: the per-frame keytip captures (badges, veil rects)
         // start empty; the ribbon layout below refills them.
         self.keytips.begin_frame();

@@ -201,7 +201,12 @@ impl App {
                     .and_then(|(_, v)| v.parse::<i64>().ok())
             });
         }
-        let bucket = (self.view.px_per_in() * 4.0).round().max(4.0) as u32;
+        // #414: underlays are canvas layers — the raster density (and
+        // its bucket key) folds the device scale factor like the layer
+        // store's, so background-page ink stays as sharp as the ink
+        // above it on a HiDPI display.
+        let raster_ppi = self.view.raster_px_per_in(ctx.pixels_per_point());
+        let bucket = (raster_ppi * 4.0).round().max(4.0) as u32;
         let version = self.layer_base_version();
         // Drop stale entries — page switch, version bump, zoom bucket
         // (CodeRabbit: keeping version-stale handles leaked a texture
@@ -247,7 +252,7 @@ impl App {
             };
             let Ok(img) = crate::svgimg::render_tree(
                 &tree,
-                w as f32 * self.view.px_per_in(),
+                w as f32 * raster_ppi,
                 crate::perf::Kind::Thumb,
             ) else {
                 continue;

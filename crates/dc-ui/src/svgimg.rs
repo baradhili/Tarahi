@@ -6,7 +6,7 @@
 use egui::{ColorImage, Context, TextureHandle, TextureId, TextureOptions};
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Kittest/snapshot mode: resolve every font-family to the embedded
 /// Carlito instead of the installed system faces, so the goldens
@@ -37,6 +37,40 @@ pub fn force_sync_raster_for_tests() {
 
 pub(crate) fn sync_forced() -> bool {
     FORCE_SYNC.load(Ordering::Relaxed)
+}
+
+/// Widest/highest texture the raster pipeline ever allocates (#414):
+/// `min(device-reported max texture side, 8192)`. The egui backends
+/// report the GPU's own limit through `RawInput::max_texture_side`
+/// (eframe's glow backend queries GL `MAX_TEXTURE_SIZE` at startup),
+/// and egui's `InputState` defaults to 2048 when nothing reports one —
+/// exactly the kittest/headless floor, so the goldens and the headless
+/// pixel tests keep their 2048 cap unchanged. 8192 is the documented
+/// production ceiling: it covers a 5K fullscreen panel (5120 px) with
+/// headroom, and the texture-BYTE budget in `layers` — not this
+/// dimension cap — is the real memory guardrail. `App::draw` folds the
+/// frame's reported value in before any post; the 2048 initial value
+/// is the pre-#414 behavior every context that never reports keeps.
+static MAX_TEX: AtomicU32 = AtomicU32::new(2048);
+
+/// The current texture-side ceiling (see [`MAX_TEX`]). Worker threads
+/// read this at render time — the value crosses the thread boundary
+/// as a relaxed atomic (it is fixed for a GL/wgpu context's lifetime,
+/// so ordering against in-flight jobs never matters).
+pub(crate) fn max_texture_dimension() -> u32 {
+    MAX_TEX.load(Ordering::Relaxed)
+}
+
+/// Fold the device-reported max texture side into the raster ceiling
+/// (#414): `min(reported, 8192)`. `reported` comes from the egui
+/// context's input (`max_texture_side`) — the GPU's limit on the
+/// active backend, or egui's 2048 default where no backend reports
+/// one (kittest), which the min keeps as-is.
+pub(crate) fn set_device_max_texture_side(reported: usize) {
+    let capped = reported.min(8192) as u32;
+    if capped != MAX_TEX.load(Ordering::Relaxed) {
+        MAX_TEX.store(capped, Ordering::Relaxed);
+    }
 }
 
 /// One-call kittest determinism: pinned fonts + synchronous rasters
@@ -84,14 +118,16 @@ pub fn render_tree(
     target_width: f32,
     kind: crate::perf::Kind,
 ) -> anyhow::Result<ColorImage> {
-    // Widest texture we ever allocate (kittest caps at 2048; GPUs
-    // allow more but upscaling a 2048px raster is fine on screen).
-    const MAX_TEX: u32 = 2048;
+    // The device-derived ceiling (#414, see `MAX_TEX` above): DPI-aware
+    // rendering wants a 4K/5K panel's full width of texture, which the
+    // old fixed 2048 cap would guarantee-soften; the byte budget in
+    // `layers`, not this cap, bounds memory.
+    let max_tex = max_texture_dimension();
     let size = tree.size();
     let aspect = size.height().max(1e-3) / size.width().max(1e-3);
-    let w = target_width.ceil().clamp(1.0, MAX_TEX as f32) as u32;
+    let w = target_width.ceil().clamp(1.0, max_tex as f32) as u32;
     let h = ((target_width * aspect).ceil().max(1.0)) as u32;
-    let (w, h) = (w, h.min(MAX_TEX));
+    let (w, h) = (w, h.min(max_tex));
     let t = resvg::usvg::Transform::from_scale(
         w as f32 / size.width().max(1e-3),
         h as f32 / size.height().max(1e-3),
@@ -521,5 +557,33 @@ mod tests {
         assert_eq!(width(192.0, &mut build), 768);
         assert_eq!(width(300.0, &mut build), 1200);
         assert_eq!(calls.get(), 1, "re-gets still build nothing");
+    }
+
+    /// #414: the texture-side ceiling is device-derived —
+    /// `min(reported, 8192)` — and stays 2048 until a backend reports
+    /// more. The 2048 floor is egui's own `InputState` default where no
+    /// backend reports a limit (kittest), so the headless goldens keep
+    /// the pre-#414 cap; a real GPU's larger report (capped at the
+    /// documented 8192 default) lets a 4K/5K panel's full width
+    /// allocate. This is the only test that writes the static — the
+    /// module's other renders ask for ≤1200 px and are insensitive to
+    /// it, so the restore at the end keeps order-independence.
+    #[test]
+    fn texture_ceiling_is_device_derived() {
+        let wide = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20000" height="10" viewBox="0 0 20000 10"><rect width="20000" height="10" fill="red"/></svg>"#;
+        let tree = parse_svg(wide, crate::perf::Kind::Icon).unwrap();
+        // The headless/kittest floor: nothing reported, ceiling 2048.
+        assert_eq!(max_texture_dimension(), 2048);
+        assert_eq!(render_tree(&tree, 9000.0, crate::perf::Kind::Icon).unwrap().size[0], 2048);
+        // A big GPU report caps at the documented 8192 default.
+        set_device_max_texture_side(16384);
+        assert_eq!(max_texture_dimension(), 8192);
+        assert_eq!(render_tree(&tree, 9000.0, crate::perf::Kind::Icon).unwrap().size[0], 8192);
+        // A mid-size report is honored as-is.
+        set_device_max_texture_side(4096);
+        assert_eq!(max_texture_dimension(), 4096);
+        assert_eq!(render_tree(&tree, 9000.0, crate::perf::Kind::Icon).unwrap().size[0], 4096);
+        // Restore the headless floor for any later test in this binary.
+        set_device_max_texture_side(2048);
     }
 }
