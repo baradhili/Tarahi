@@ -946,3 +946,58 @@ fn tellme_no_results_and_get_help() {
         "Esc closed the help stub"
     );
 }
+
+/// #204 (CodeRabbit review): egui raises a freshly-shown window to
+/// the top, so Esc closes the most recently OPENED of About and the
+/// Tell Me help stub — About opened after Help takes the first Esc,
+/// Help the second (and vice versa).
+#[test]
+fn tellme_help_esc_ordering_with_about() {
+    use egui_kittest::kittest::Queryable;
+    dc_ui::svgimg::pin_determinism_for_tests();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(
+            |ui, app: &mut App| {
+                dc_ui::theme::install(ui.ctx());
+                app.draw(ui);
+            },
+            App::with_blank(),
+        );
+    harness.run();
+    // Help opens from the panel's footer.
+    harness.get_by_label("Tell Me").click();
+    harness.run();
+    harness.get_by_label("Tell Me").type_text("grid");
+    harness.run();
+    harness.get_by_label_contains("Get help on").click();
+    harness.hover_at(egui::Pos2::new(200.0, 400.0));
+    harness.run();
+    assert_eq!(
+        harness.state().debug_tellme_help_query(),
+        Some("grid".to_string())
+    );
+    // About opens AFTER Help — egui raises it above; it owns Esc.
+    harness.state_mut().debug_open_about_for_test();
+    harness.run();
+    assert!(harness.query_by_label("About Tarahi").is_some());
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(
+        harness.query_by_label("About Tarahi").is_none(),
+        "the first Esc closed About, the frontmost window"
+    );
+    assert_eq!(
+        harness.state().debug_tellme_help_query(),
+        Some("grid".to_string()),
+        "Help kept its state under About's Esc"
+    );
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert_eq!(
+        harness.state().debug_tellme_help_query(),
+        None,
+        "the second Esc closed Help"
+    );
+}

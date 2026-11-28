@@ -260,6 +260,14 @@ pub struct App {
     /// query that opened it (real help content/pane depth is the
     /// follow-up issue per the plan's deferral).
     tellme_help: Option<String>,
+    /// #204 (CodeRabbit PR review): the open generation of the
+    /// floating chrome windows — egui raises a freshly-shown or
+    /// clicked window to the top, so Esc must close the most
+    /// recently OPENED one. `chrome_epoch` hands out generations;
+    /// the two `_*_epoch` fields stamp each window's last open.
+    chrome_epoch: u64,
+    about_epoch: u64,
+    tellme_help_epoch: u64,
     /// #192 spec: the open ShapeSheet windows, one per target (each
     /// its own child window; a target appears at most once). #272: a
     /// target is a shape, a page's PageSheet or the DocumentSheet.

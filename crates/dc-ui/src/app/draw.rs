@@ -601,12 +601,13 @@ impl App {
         if self.about_open {
             // Esc closes the frontmost About (the #110 dialog
             // keyboard audit's rule — About slipped it; #218 review).
-            // With the Tell Me help stub ALSO open, Help paints above
-            // About and owns the Esc; About takes the next press
-            // (CodeRabbit review).
-            if self.tellme_help.is_none()
-                && ui.input(|i| i.key_pressed(egui::Key::Escape))
-            {
+            // egui raises a freshly-shown window to the top, so the
+            // FRONTMOST of About and the Tell Me help stub is the one
+            // opened last (the chrome epochs); About takes the Esc
+            // only when it is that one (CodeRabbit review rounds).
+            let about_is_frontmost =
+                self.tellme_help.is_none() || self.about_epoch > self.tellme_help_epoch;
+            if about_is_frontmost && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.about_open = false;
                 return;
             }
@@ -648,9 +649,13 @@ impl App {
         // #204 step 7: the basic help window stub, pre-filled with
         // the query that opened it (the About window's pattern —
         // Esc-first, the close button honored). Real help content is
-        // the follow-up issue per the plan's deferral.
+        // the follow-up issue per the plan's deferral. Esc closes it
+        // when it is the frontmost chrome window (the chrome epochs;
+        // ties go to Help, which paints above About).
         if let Some(query) = self.tellme_help.clone() {
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            let help_is_frontmost =
+                !self.about_open || self.tellme_help_epoch >= self.about_epoch;
+            if help_is_frontmost && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.tellme_help = None;
                 return;
             }

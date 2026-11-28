@@ -1025,17 +1025,20 @@ fn tellme_popup_mirrors_under_persian() {
     );
     // The mirrored geometry (icon at the reading start, RTL rows)
     // rides the golden — READ it (the step-9 fa audit). Unlike the
-    // idle localized shells (exact match), this golden carries the
-    // shell.rs AA tolerances: the panel contains the field's TYPED
-    // text, and egui's TextEdit rendering varies per OS at the
-    // anti-alias level (the PR #411 macOS/Windows rounds: 473
-    // sub-threshold pixels, none above 0.4) — a real mirroring break
-    // would fail by whole-glyph deltas, not tenths.
+    // idle localized shells (exact match), this golden carries a
+    // NARROW tolerance: the panel contains the field's TYPED text,
+    // and egui's TextEdit rendering varies per OS at the anti-alias
+    // level (the PR #411 CI rounds measured it: every failing pixel
+    // under delta 2.1) — so the threshold sits just above the
+    // measured variance and the failed-pixel budget at 100, far
+    // below one displaced icon (18x18 = 324 px): a moved popup,
+    // icon, or row fails (CodeRabbit review round; verified by
+    // mutation — a 4px popup shift fails this golden).
     harness.snapshot_options(
         "i18n_persian_tellme",
         &egui_kittest::SnapshotOptions::new()
-            .threshold(3.0)
-            .max_failed_pixels(10_000),
+            .threshold(2.5)
+            .max_failed_pixels(100),
     );
 }
 

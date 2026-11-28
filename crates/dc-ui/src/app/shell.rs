@@ -76,7 +76,12 @@ impl App {
                 self.view.zoom = (pct as f32 / 100.0).clamp(0.1, 8.0);
                 self.view.fit_mode = false;
             }
-            Action::About => self.about_open = !self.about_open,
+            Action::About => {
+                self.about_open = !self.about_open;
+                if self.about_open {
+                    self.about_epoch = self.bump_chrome_epoch();
+                }
+            }
             // #237: zoom-to-selection defers to the canvas frame — it
             // needs the content area + selection rects the frame owns.
             Action::ZoomSelection => self.zoom_selection_pending = true,
@@ -629,7 +634,9 @@ impl App {
                                     // stub with the query (#204 step
                                     // 7) and close the panel.
                                     crate::tellme::PanelRow::Help { .. } => {
-                                        self.tellme_help = Some(self.tellme_query.clone());
+                                        let q = self.tellme_query.clone();
+                                        self.tellme_help = Some(q);
+                                        self.tellme_help_epoch = self.bump_chrome_epoch();
                                         self.tellme_open = false;
                                         self.tellme_query.clear();
                                         self.tellme_sel = 0;
@@ -980,7 +987,9 @@ impl App {
                                 // panel closes and the stub window
                                 // opens pre-filled with the query
                                 // (#204 step 7, spec 3.3.3/5).
-                                self.tellme_help = Some(self.tellme_query.clone());
+                                let q = self.tellme_query.clone();
+                                        self.tellme_help = Some(q);
+                                        self.tellme_help_epoch = self.bump_chrome_epoch();
                                 self.tellme_open = false;
                                 self.tellme_query.clear();
                                 self.tellme_sel = 0;
