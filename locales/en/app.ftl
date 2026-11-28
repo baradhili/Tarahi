@@ -61,6 +61,8 @@ aligning-to-the-page = aligning to the page
 alignment-and-spacing-hints-whil = Alignment and spacing hints while dragging
 alignment-boxes = Alignment boxes
 all-changes-saved = All changes saved
+all-pages = All pages
+
 # $page_count (Number) - argument
 all-pages-page-count = All pages ({ $page_count })
 already-aligned = already aligned
@@ -116,13 +118,15 @@ cancel = Cancel
 # $f (String) - the guarding formula
 cell-is-formula-driven = { $name } is formula-driven ({ $f })
 center = Center
+change-shape = Change Shape
+
+change-shape-planned = Change Shape — planned (#131)
+
 chart = Chart
 charts-planned-later-milestone = Charts — planned (later milestone)
 checking-the-clipboard-for-a-pic = checking the clipboard for a picture…
 choose-the-display-language-for = Choose the display language for the ribbon, menus, and dialogs
 classic-arrow = Classic Arrow
-clear = Clear
-clear-planned-later-milestone = Clear — planned (later milestone)
 click-a-shape-to-add-a-connectio = click a shape to add a connection point
 clipboard = Clipboard
 clipboard-image-could-not-be-enc = clipboard image could not be encoded
@@ -451,7 +455,34 @@ filter-pdf = PDF (document)
 filter-png = PNG (raster image)
 filter-svg = SVG (vector graphics)
 find = Find
-find-planned-later-milestone = Find — planned (later milestone)
+find-any-character = Any Character
+
+find-caret-character = Caret Character
+
+find-ellipsis = Find…
+
+find-manual-return = Manual Return
+
+find-next = Find Next
+
+find-not-found = The search string was not found.
+
+find-optional-hyphen = Optional Hyphen
+
+find-shape-data = Shape data
+
+find-shape-name = Shape name
+
+find-shape-text = Shape text
+
+find-tab-character = Tab Character
+
+find-user-defined-cell = User-defined cell
+
+find-what = Find what:
+
+find-whole-words-only = Find whole words only
+
 fine-dash = Fine Dash
 fine-dot = Fine Dot
 first-page = First page
@@ -485,6 +516,10 @@ format-shape-fill = Format Shape Fill…
 format-shape-line = Format Shape Line…
 format-shape-menu = Format Shape…
 format-shape-text = Format Shape Text…
+# $page (String) - the page the match was found on
+# $shape (String) - the owning shape's display name
+found-in = Found in: { $page }, { $shape }
+
 freeform = Freeform
 freeform-drag-on-the-page-to-dra = Freeform: drag on the page to draw freehand geometry (Esc to finish)
 freeform-off = freeform off
@@ -526,6 +561,8 @@ heading-style-gallery-planned = Heading style gallery — planned
 height = Height
 # $g (String) - guard formula
 height-not-resized-guard = height not resized: { $g } (width only)
+help = Help
+
 help-about = Help / About
 high-192-dpi = High (192 dpi)
 highlight-members = Highlight Members
@@ -583,6 +620,10 @@ layer = Layer
 layer-composite-failed = layer { $id }: { $e }
 # $ix (Number) - layer row index
 layer-ix-fallback = layer { $ix }
+layers = Layers
+
+layers-planned = Layers — planned
+
 layout = Layout
 layout-options = Layout Options
 layout-options-planned = Layout options — planned
@@ -628,6 +669,10 @@ master = Master
 master-armed-click-place = master { $id } armed — click the canvas to place
 # $mid (Number) - argument
 master-mid = master { $mid }
+match-case = Match case
+
+match-character-width = Match character width
+
 member-highlight-off = member highlight off
 member-highlight-on = member highlight on
 membership = Membership
@@ -855,7 +900,19 @@ rendering-scrim = Rendering…
 reorder-pages = Reorder Pages
 reorder-pages-menu = Reorder Pages…
 replace = Replace
-replace-planned-later-milestone = Replace — planned (later milestone)
+
+replace-all = Replace All
+
+replace-ellipsis = Replace…
+
+replace-with = Replace with:
+
+# $count (Number) - how many replacements the sweep made
+replacements-made = { $count ->
+  [1] Made 1 replacement
+ *[other] Made { $count } replacements
+}
+
 reply = Reply
 report-definitions-planned = Report definitions — planned
 reports = Reports
@@ -897,6 +954,14 @@ save-the-stencil-planned = Save the stencil — planned
 saved-path = saved { $path }
 scale = Scale
 screen-96-dpi = Screen (96 dpi)
+scroll-left = Scroll left
+
+scroll-right = Scroll right
+
+search = Search
+
+search-in = Search in
+
 search-results = Search Results
 search-shapes = Search Shapes
 search-templates = Search Templates
@@ -958,6 +1023,9 @@ shape-effects-planned = Shape effects — planned
 shape-extensions = Shape extensions
 shape-fill-color = Shape fill color
 shape-handles = Shape handles
+# $id (Number) - the shape's numeric ID
+shape-id-fallback = Sheet.{ $id }
+
 # $id (Number) - argument
 shape-id-s-alignment-box = shape { $id }'s alignment box
 # $id (Number) - argument
@@ -1031,6 +1099,8 @@ sp-width = Shape width
 sp-x = X position
 sp-y = Y position
 spacing = Spacing
+special = Special
+
 spell-add = Add
 spell-change = Change
 spell-change-all = Change All
@@ -1118,8 +1188,16 @@ text = Text
 text-align-left = Align Left
 text-align-right = Align Right
 text-box = Text Box
+text-case = Change Case
+
+text-case-planned = Change Case — planned
+
 text-color = Text Color
 text-color-tip = Text color of the selection
+text-direction = Text Direction
+
+text-direction-planned = Text Direction — planned
+
 text-field = Text Field
 text-formatting-arrives-with-a-l = Text formatting arrives with a later milestone
 text-shapes-planned = Text shapes — planned

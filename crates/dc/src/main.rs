@@ -7,7 +7,7 @@
 //!   dc roundtrip <file> -o out.vsdx  re-write the package from the model
 //!   dc edit      <file> -o out.vsdx  apply undoable edits, save (M4)
 
-use dc::{edit, export, svg};
+use dc::{edit, export, roundtrip, svg};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -391,7 +391,7 @@ fn roundtrip(path: &Path, out: &Path, verify: bool) -> Result<()> {
     vsdx::write::save(&doc, out)?;
     println!("wrote {}", out.display());
     if verify {
-        verify_roundtrip(&doc, path, out)?;
+        roundtrip::verify_roundtrip(&doc, path, out)?;
     }
     Ok(())
 }
@@ -473,78 +473,6 @@ fn parse_page_ranges(spec: Option<&str>, total: usize) -> Result<Vec<usize>> {
 /// Round-trip verification per the v0.2 definition of done: identical part
 /// inventory; canonical-XML equality for re-serialized parts; byte equality
 /// for verbatim parts; equal re-parsed model; identical rendered output.
-fn verify_roundtrip(source: &vsdx::Document, src_path: &Path, out_path: &Path) -> Result<()> {
-    let src_pkg = source.package.as_ref().context("source package missing")?;
-    let out_pkg = vsdx::Package::open(out_path)?;
-    let modeled: Vec<String> = vsdx::write::modeled_parts(source);
-
-    let src_names: Vec<&str> = src_pkg.part_names();
-    let out_names: Vec<&str> = out_pkg.part_names();
-    if src_names != out_names {
-        bail!(
-            "part inventory differs: missing {:?}, extra {:?}",
-            src_names
-                .iter()
-                .filter(|n| !out_names.contains(n))
-                .collect::<Vec<_>>(),
-            out_names
-                .iter()
-                .filter(|n| !src_names.contains(n))
-                .collect::<Vec<_>>()
-        );
-    }
-
-    let mut mismatches = Vec::new();
-    for name in &src_names {
-        let (a, b) = (src_pkg.part(name).unwrap(), out_pkg.part(name).unwrap());
-        if modeled.iter().any(|m| m == name) {
-            let (ca, cb) = (vsdx::canonical_form(a), vsdx::canonical_form(b));
-            if ca != cb {
-                mismatches.push(format!("{name}: canonical XML differs"));
-            }
-        } else if a != b {
-            mismatches.push(format!("{name}: bytes differ (should be verbatim)"));
-        }
-    }
-    if let Some(first) = mismatches.first() {
-        bail!(
-            "round-trip verification failed ({} part(s) differ): {}",
-            mismatches.len(),
-            first
-        );
-    }
-
-    let reparsed = vsdx::parse::parse(out_path)?;
-    if !source.same_model(&reparsed) {
-        bail!("re-parsed model differs from source model");
-    }
-
-    // Render equality: same picture in, same picture out.
-    for (i, (a, b)) in source.pages.iter().zip(&reparsed.pages).enumerate() {
-        let sa = svg::render_page(source, a)?;
-        let sb = svg::render_page(&reparsed, b)?;
-        if sa != sb {
-            bail!(
-                "rendered page {} differs between source and round-trip",
-                i + 1
-            );
-        }
-    }
-    if !source.masters.is_empty() && svg::render_masters(source)? != svg::render_masters(&reparsed)?
-    {
-        bail!("rendered master contact sheet differs between source and round-trip");
-    }
-
-    println!(
-        "verify PASS: {} parts ({} re-serialized, {} verbatim), model and renders equal — {}",
-        src_names.len(),
-        modeled.len(),
-        src_names.len() - modeled.len(),
-        src_path.display()
-    );
-    Ok(())
-}
-
 #[cfg(test)]
 mod page_range_tests {
     use super::parse_page_ranges;

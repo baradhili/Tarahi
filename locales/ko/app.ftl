@@ -55,6 +55,8 @@ aligning-to-the-page = 페이지에 맞춰 정렬합니다
 alignment-and-spacing-hints-whil = 끄는 동안 정렬과 간격 힌트
 alignment-boxes = 정렬 상자
 all-changes-saved = 모든 변경 내용이 저장되었습니다
+all-pages = 모든 페이지
+
 all-pages-page-count = 모든 페이지({ $page_count })
 already-aligned = 이미 정렬되어 있습니다
 applies-to-the-ribbon-menus-and = 리본, 메뉴, 대화 상자에 적용됩니다. 드로잉의 텍스트에는 영향을 주지 않습니다.
@@ -103,13 +105,15 @@ callouts-planned = 설명선 — 예정
 cancel = 취소
 cell-is-formula-driven = { $name }은(는) 수식으로 관리됩니다({ $f })
 center = 가운데
+change-shape = 도형 변경
+
+change-shape-planned = 도형 변경 — 계획됨(#131)
+
 chart = 차트
 charts-planned-later-milestone = 차트 — 예정(이후 마일스톤)
 checking-the-clipboard-for-a-pic = 클립보드에서 그림을 확인하는 중…
 choose-the-display-language-for = 리본, 메뉴, 대화 상자의 표시 언어를 선택합니다
 classic-arrow = 클래식 화살표
-clear = 지우기
-clear-planned-later-milestone = 지우기 — 예정(이후 마일스톤)
 click-a-shape-to-add-a-connectio = 셰이프를 클릭하여 연결 지점을 추가합니다
 clipboard = 클립보드
 clipboard-image-could-not-be-enc = 클립보드 이미지를 인코딩하지 못했습니다
@@ -405,7 +409,34 @@ filter-pdf = PDF(문서)
 filter-png = PNG(래스터 이미지)
 filter-svg = SVG(벡터 그래픽)
 find = 찾기
-find-planned-later-milestone = 찾기 — 예정(이후 마일스톤)
+find-any-character = 모든 문자
+
+find-caret-character = 캐럿 문자
+
+find-ellipsis = 찾기…
+
+find-manual-return = 수동 줄 바꿈
+
+find-next = 다음 찾기
+
+find-not-found = 검색 문자열을 찾을 수 없습니다.
+
+find-optional-hyphen = 선택적 하이픈
+
+find-shape-data = 도형 데이터
+
+find-shape-name = 도형 이름
+
+find-shape-text = 도형 텍스트
+
+find-tab-character = 탭 문자
+
+find-user-defined-cell = 사용자 정의 셀
+
+find-what = 찾을 내용:
+
+find-whole-words-only = 전체 단어만 찾기
+
 fine-dash = 가는 파선
 fine-dot = 가는 점선
 first-page = 첫 페이지
@@ -437,6 +468,8 @@ format-shape-fill = 셰이프 채우기 서식…
 format-shape-line = 셰이프 선 서식…
 format-shape-menu = 셰이프 서식…
 format-shape-text = 셰이프 텍스트 서식…
+found-in = 찾은 위치: { $page }, { $shape }
+
 freeform = 자유형
 freeform-drag-on-the-page-to-dra = 자유형: 페이지에서 끌어 자유 곡선을 그립니다(Esc로 끝내기)
 freeform-off = 자유형을 해제했습니다
@@ -469,6 +502,8 @@ heading-style = 제목 스타일
 heading-style-gallery-planned = 제목 스타일 갤러리 — 예정
 height = 높이
 height-not-resized-guard = 높이는 크기 조정되지 않았습니다: { $g }(너비만)
+help = 도움말
+
 help-about = 도움말/정보
 high-192-dpi = 높음(192dpi)
 highlight-members = 멤버 강조 표시
@@ -517,6 +552,10 @@ last-page = 마지막 페이지
 layer = 레이어
 layer-composite-failed = 레이어 { $id }: { $e }
 layer-ix-fallback = 레이어 { $ix }
+layers = 레이어
+
+layers-planned = 레이어 — 계획됨
+
 layout = 레이아웃
 layout-options = 레이아웃 옵션
 layout-options-planned = 레이아웃 옵션 — 예정
@@ -556,6 +595,10 @@ markup-tracking-planned-no-marku = 마크업 추적 — 예정(마크업 모델 
 master = 마스터
 master-armed-click-place = 마스터 { $id } 준비됨 — 캔버스를 클릭하여 배치합니다
 master-mid = 마스터 { $mid }
+match-case = 대/소문자 구분
+
+match-character-width = 문자 너비 일치
+
 member-highlight-off = 멤버 강조 표시를 해제했습니다
 member-highlight-on = 멤버 강조 표시를 켰습니다
 membership = 멤버십
@@ -744,7 +787,18 @@ rendering-scrim = 렌더링 중…
 reorder-pages = 페이지 다시 정렬
 reorder-pages-menu = 페이지 다시 정렬…
 replace = 바꾸기
-replace-planned-later-milestone = 바꾸기 — 예정(이후 마일스톤)
+
+replace-all = 모두 바꾸기
+
+replace-ellipsis = 바꾸기…
+
+replace-with = 바꿀 내용:
+
+replacements-made = { $count ->
+  [1] 1개를 바꾸었습니다
+ *[other] { $count }개를 바꾸었습니다
+}
+
 reply = 회신
 report-definitions-planned = 보고서 정의 — 예정
 reports = 보고서
@@ -783,6 +837,14 @@ save-the-stencil-planned = 스텐실 저장 — 예정
 saved-path = { $path }을(를) 저장했습니다
 scale = 배율
 screen-96-dpi = 화면(96dpi)
+scroll-left = 왼쪽으로 스크롤
+
+scroll-right = 오른쪽으로 스크롤
+
+search = 검색
+
+search-in = 검색 위치
+
 search-results = 검색 결과
 search-shapes = 셰이프 검색
 search-templates = 템플릿 검색
@@ -830,6 +892,8 @@ shape-effects-planned = 셰이프 효과 — 예정
 shape-extensions = 셰이프 확장
 shape-fill-color = 셰이프 채우기 색
 shape-handles = 셰이프 핸들
+shape-id-fallback = 시트.{ $id }
+
 shape-id-s-alignment-box = 셰이프 { $id }의 정렬 상자
 shape-id-s-connection-point = 셰이프 { $id }의 연결 지점
 shape-id-s-extension = 셰이프 { $id }의 확장
@@ -896,6 +960,8 @@ sp-width = 도형 너비
 sp-x = X 위치
 sp-y = Y 위치
 spacing = 간격
+special = 특수 문자
+
 spell-add = 추가
 spell-change = 바꾸기
 spell-change-all = 모두 바꾸기
@@ -976,8 +1042,16 @@ text = 텍스트
 text-align-left = 왼쪽 맞춤
 text-align-right = 오른쪽 맞춤
 text-box = 텍스트 상자
+text-case = 대/소문자 변경
+
+text-case-planned = 대/소문자 변경 — 계획됨
+
 text-color = 글자 색
 text-color-tip = 선택 영역의 글자 색
+text-direction = 텍스트 방향
+
+text-direction-planned = 텍스트 방향 — 계획됨
+
 text-field = 텍스트 필드
 text-formatting-arrives-with-a-l = 텍스트 서식은 이후 마일스톤에서 제공됩니다
 text-shapes-planned = 텍스트 셰이프 — 예정

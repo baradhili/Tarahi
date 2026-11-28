@@ -395,6 +395,20 @@ impl App {
         // #121: the spelling pass does not carry across documents
         // (same-ID collision rule).
         self.spell.session = None;
+
+        // #115: the Find session's cached match list neither (its
+        // key cannot see the swap).
+        self.find.session.matches.clear();
+        self.find.session.key = None;
+        self.find.session.nav_sel = None;
+        self.find.session.cursor = 0;
+        self.find.session.current = None;
+        self.repl.session.matches.clear();
+        self.repl.session.key = None;
+        self.repl.session.nav_sel = None;
+        self.repl.session.cursor = 0;
+        self.repl.session.current = None;
+        self.find.status = crate::find_dlg::FindStatus::Idle;
         self.tex.clear();
         self.layers.clear();
         self.page_states.clear();
@@ -448,6 +462,20 @@ impl App {
         // #121: the spelling pass does not survive a close/promote
         // (same-ID collision rule).
         self.spell.session = None;
+
+        // #115: the Find session's cached match list neither (its
+        // key cannot see the swap).
+        self.find.session.matches.clear();
+        self.find.session.key = None;
+        self.find.session.nav_sel = None;
+        self.find.session.cursor = 0;
+        self.find.session.current = None;
+        self.repl.session.matches.clear();
+        self.repl.session.key = None;
+        self.repl.session.nav_sel = None;
+        self.repl.session.cursor = 0;
+        self.repl.session.current = None;
+        self.find.status = crate::find_dlg::FindStatus::Idle;
         // #192 4a: another open document promotes to active.
         if !self.docs.is_empty() {
             let next = self.docs.remove(0);

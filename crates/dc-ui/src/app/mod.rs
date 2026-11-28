@@ -145,6 +145,17 @@ pub struct App {
     /// `spellcheck.rs`; the app shell keeps only the state field +
     /// glue).
     spell: crate::spellcheck::SpellState,
+    /// Find (#115 phase 2): the modeless Find window's session (the
+    /// domain lives in `find_dlg.rs`; the app shell keeps the state
+    /// field + glue).
+    find: crate::find_dlg::FindState,
+    /// #115 phase 3 (spec 3): the modeless Replace window's session
+    /// (the domain lives in `replace_dlg.rs`).
+    repl: crate::replace_dlg::ReplaceState,
+    /// #115 phase 2 (FS 1 §3.2): the ribbon Find dropdown's anchor —
+    /// `Some` while the menu is open (the Task Panes pattern).
+    find_menu: Option<Pos2>,
+    find_menu_fresh: bool,
     /// File ▸ Options (#268): the dialog's open flag and draft (the
     /// domain lives in `options.rs`; the app shell keeps the state
     /// fields + glue — the decomposition direction).
@@ -1306,6 +1317,7 @@ mod doc;
 mod draw;
 mod editops;
 mod files;
+mod find;
 mod format;
 mod keys;
 mod pages;

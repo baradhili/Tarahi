@@ -56,6 +56,8 @@ aligning-to-the-page = تراز نسبت به صفحه
 alignment-and-spacing-hints-whil = راهنمای تراز و فاصله‌گذاری هنگام کشیدن
 alignment-boxes = کادرهای تراز
 all-changes-saved = همه تغییرات ذخیره شد
+all-pages = همه صفحات
+
 all-pages-page-count = همه صفحه‌ها ({ $page_count })
 already-aligned = از قبل تراز است
 applies-to-the-ribbon-menus-and = روی نوار، منوها و گفت‌وگوها اعمال می‌شود؛ متنِ نقاشی بی‌تأثیر است.
@@ -110,13 +112,15 @@ cancel = لغو
 # $f - فرمول نگهبان
 cell-is-formula-driven = { $name } فرمول‌محور است ({ $f })
 center = وسط
+change-shape = تغییر شکل
+
+change-shape-planned = تغییر شکل — برنامه‌ریزی‌شده (#131)
+
 chart = نمودار
 charts-planned-later-milestone = نمودارها — برنامه‌ریزی شده (نقطهٔ عطف بعدی)
 checking-the-clipboard-for-a-pic = بررسی کلیپ‌بورد برای تصویر…
 choose-the-display-language-for = زبان نمایش نوار، منوها و گفت‌وگوها را انتخاب کنید
 classic-arrow = پیکان کلاسیک
-clear = پاک‌کردن
-clear-planned-later-milestone = پاک‌کردن — برنامه‌ریزی شده (نقطهٔ عطف بعدی)
 click-a-shape-to-add-a-connectio = برای افزودن نقطهٔ اتصال روی یک شکل کلیک کنید
 clipboard = کلیپ‌بورد
 clipboard-image-could-not-be-enc = تصویر کلیپ‌بورد کدگذاری نشد
@@ -424,7 +428,34 @@ filter-pdf = PDF (سند)
 filter-png = PNG (تصویر شطرنجی)
 filter-svg = SVG (گرافیک برداری)
 find = یافتن
-find-planned-later-milestone = یافتن — برنامه‌ریزی‌شده (نقطهٔ عطف بعدی)
+find-any-character = هر نویسه
+
+find-caret-character = نویسه پشتک
+
+find-ellipsis = جستجو…
+
+find-manual-return = بازگشت دستی
+
+find-next = پیدا کردن بعدی
+
+find-not-found = رشته جستجو پیدا نشد.
+
+find-optional-hyphen = خط تیره اختیاری
+
+find-shape-data = داده‌های شکل
+
+find-shape-name = نام شکل
+
+find-shape-text = متن شکل
+
+find-tab-character = نویسه تب
+
+find-user-defined-cell = سلول تعریف‌شده توسط کاربر
+
+find-what = جستجو برای:
+
+find-whole-words-only = فقط کلمات کامل را جستجو کن
+
 fine-dash = خط‌چین ریز
 fine-dot = نقطهٔ ریز
 first-page = صفحهٔ نخست
@@ -456,6 +487,8 @@ format-shape-fill = قالب‌بندی پرکنندگی شکل…
 format-shape-line = قالب‌بندی خط شکل…
 format-shape-menu = قالب‌بندی شکل…
 format-shape-text = قالب‌بندی متن شکل…
+found-in = یافت شد در: { $page }، { $shape }
+
 freeform = آزاد
 freeform-drag-on-the-page-to-dra = آزاد: برای ترسیم هندسی دست‌آزاد روی صفحه بکشید (Esc برای پایان)
 freeform-off = حالت آزاد خاموش است
@@ -494,6 +527,8 @@ heading-style-gallery-planned = گالری سبک عنوان — برنامه‌
 height = ارتفاع
 # $g - فرمول نگهبان
 height-not-resized-guard = ارتفاع تغییر نکرد: { $g } (فقط عرض)
+help = راهنما
+
 help-about = راهنما / درباره
 high-192-dpi = بالا (۱۹۲ dpi)
 highlight-members = برجسته‌سازی اعضا
@@ -547,6 +582,10 @@ layer = لایه
 layer-composite-failed = لایهٔ { $id }: { $e }
 # $ix - شاخص سطر لایه
 layer-ix-fallback = لایهٔ { $ix }
+layers = لایه‌ها
+
+layers-planned = لایه‌ها — برنامه‌ریزی‌شده
+
 layout = چیدمان
 layout-options = گزینه‌های چیدمان
 layout-options-planned = گزینه‌های چیدمان — برنامه‌ریزی شده
@@ -588,6 +627,10 @@ master = شابلون
 # $id - شناسهٔ استاد
 master-armed-click-place = استاد { $id } آماده است — برای جای‌گذاری روی بوم کلیک کنید
 master-mid = شابلون { $mid }
+match-case = حساس به بزرگی و کوچکی حروف
+
+match-character-width = تطبیق عرض نویسه
+
 member-highlight-off = برجسته‌سازی اعضا خاموش است
 member-highlight-on = برجسته‌سازی اعضا روشن است
 membership = عضویت
@@ -797,7 +840,18 @@ rendering-scrim = در حال رندر…
 reorder-pages = بازچینی صفحه‌ها
 reorder-pages-menu = بازچینی صفحه‌ها…
 replace = جایگزینی
-replace-planned-later-milestone = جایگزینی — برنامه‌ریزی‌شده (نقطهٔ عطف بعدی)
+
+replace-all = جایگزینی همه
+
+replace-ellipsis = جایگزینی…
+
+replace-with = جایگزینی با:
+
+replacements-made = { $count ->
+  [1] 1 جایگزینی انجام شد
+ *[other] { $count } جایگزینی انجام شد
+}
+
 reply = پاسخ
 report-definitions-planned = تعاریف گزارش — برنامه‌ریزی شده
 reports = گزارش‌ها
@@ -838,6 +892,14 @@ save-the-stencil-planned = ذخیرهٔ شابلون — برنامه‌ریزی
 saved-path = { $path } ذخیره شد
 scale = مقیاس
 screen-96-dpi = نمایشگر (۹۶ dpi)
+scroll-left = اسکرول به چپ
+
+scroll-right = اسکرول به راست
+
+search = جستجو
+
+search-in = جستجو در
+
 search-results = نتایج جستجو
 search-shapes = جستجوی شکل‌ها
 search-templates = جستجوی قالب‌ها
@@ -896,6 +958,8 @@ shape-effects-planned = جلوه‌های شکل — برنامه‌ریزی ش�
 shape-extensions = پسوندهای شکل
 shape-fill-color = رنگ پرکنندگی شکل
 shape-handles = دسته‌های شکل
+shape-id-fallback = Sheet.{ $id }
+
 shape-id-s-alignment-box = کادر تراز شکل { $id }
 shape-id-s-connection-point = نقطهٔ اتصال شکل { $id }
 shape-id-s-extension = پسوند شکل { $id }
@@ -962,6 +1026,8 @@ sp-width = عرض شکل
 sp-x = موقعیت X
 sp-y = موقعیت Y
 spacing = فاصله‌گذاری
+special = ویژه
+
 spell-add = افزودن
 spell-change = تغییر
 spell-change-all = تغییر همه
@@ -1043,8 +1109,16 @@ text = متن
 text-align-left = تراز چپ
 text-align-right = تراز راست
 text-box = جعبهٔ متن
+text-case = تغییر بزرگی و کوچکی حروف
+
+text-case-planned = تغییر بزرگی و کوچکی حروف — برنامه‌ریزی‌شده
+
 text-color = رنگ متن
 text-color-tip = رنگ متن انتخاب
+text-direction = جهت متن
+
+text-direction-planned = جهت متن — برنامه‌ریزی‌شده
+
 text-field = فیلد متنی
 text-formatting-arrives-with-a-l = قالب‌بندی متن با نقطهٔ عطف بعدی می‌آید
 text-shapes-planned = شکل‌های متنی — برنامه‌ریزی شده

@@ -153,6 +153,16 @@ impl App {
             self.spell.session = None;
             return true;
         }
+        // #115 phase 2: the modeless Find dialog.
+        if self.find.open {
+            self.find.open = false;
+            return true;
+        }
+        // #115 phase 3: the modeless Replace dialog.
+        if self.repl.open {
+            self.repl.open = false;
+            return true;
+        }
         if self.snap_dlg_open {
             self.snap_dlg_open = false;
             return true;

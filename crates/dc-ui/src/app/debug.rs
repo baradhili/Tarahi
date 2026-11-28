@@ -592,6 +592,27 @@ impl App {
         let sh = vsdx::model::find_shape_by_id(&page.shapes, shape)?;
         sh.sheet.cell(cell).and_then(|c| c.f.clone())
     }
+    /// #115 phase 2: the Find dialog's "Found in:" location — the
+    /// page and shape display names of the last Find Next.
+    #[doc(hidden)]
+    pub fn debug_find_found_in(&self) -> Option<(String, String)> {
+        match &self.find.status {
+            crate::find_dlg::FindStatus::Found { page, shape } => {
+                Some((page.clone(), shape.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    /// #115 phase 2: the Find dialog reported no match for the query.
+    #[doc(hidden)]
+    pub fn debug_find_not_found(&self) -> bool {
+        matches!(
+            self.find.status,
+            crate::find_dlg::FindStatus::NotFound
+        )
+    }
+
     pub fn debug_sel(&self) -> Option<(i64, i64)> {
         self.sel
     }

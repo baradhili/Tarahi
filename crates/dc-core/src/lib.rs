@@ -16,6 +16,7 @@
 
 pub mod commands;
 pub mod connects;
+pub mod find;
 pub mod layers;
 pub mod scope;
 
@@ -27,6 +28,9 @@ pub use commands::{
     ReplaceTextRange, SetCell, SetCellCache, SetGluedCell, SetRowCell, SetSectionRows, SetText,
 };
 pub use connects::{Connect, Connects, ConnectsOwner};
+pub use find::{
+    find_matches, FindMatch, FindOptions, FindScope, FindTarget, FindTargetClass, FindTargets,
+};
 pub use scope::{find_shape_mut, shape_chain, Scope};
 
 use anyhow::Result;
@@ -139,6 +143,15 @@ impl Touch {
 /// A reversible model mutation. `apply` is idempotent from the command's
 /// captured pre-state; `undo` restores exactly that state.
 pub trait Command {
+    /// Boxed commands are commands (#115 phase 3: Replace All builds
+    /// its sweep as a `Vec<Box<dyn Command>>`).
+    fn boxed(self) -> Box<dyn Command>
+    where
+        Self: Sized + 'static,
+    {
+        Box::new(self)
+    }
+
     /// Short human-readable description for history listings.
     fn label(&self) -> String;
     /// Execute the mutation, capturing whatever `undo` needs.
@@ -151,6 +164,21 @@ pub trait Command {
     /// for any command, refined per type where it pays.
     fn touched(&self, doc: &Document) -> TouchList {
         TouchList::all_pages(doc)
+    }
+}
+
+impl<C: Command + ?Sized> Command for Box<C> {
+    fn label(&self) -> String {
+        (**self).label()
+    }
+    fn apply(&mut self, doc: &mut Document) -> Result<()> {
+        (**self).apply(doc)
+    }
+    fn undo(&mut self, doc: &mut Document) -> Result<()> {
+        (**self).undo(doc)
+    }
+    fn touched(&self, doc: &Document) -> TouchList {
+        (**self).touched(doc)
     }
 }
 

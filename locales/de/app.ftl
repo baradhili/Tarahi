@@ -56,6 +56,8 @@ aligning-to-the-page = Ausrichtung an der Seite
 alignment-and-spacing-hints-whil = Ausrichtungs- und Abstandshinweise beim Ziehen
 alignment-boxes = Ausrichtungsrahmen
 all-changes-saved = Alle Änderungen gespeichert
+all-pages = Alle Seiten
+
 all-pages-page-count = Alle Seiten ({ $page_count })
 already-aligned = bereits ausgerichtet
 applies-to-the-ribbon-menus-and = Gilt für Menüband, Menüs und Dialoge. Zeichnungstext bleibt unverändert.
@@ -110,13 +112,15 @@ cancel = Abbrechen
 # $f - die schützende Formel
 cell-is-formula-driven = { $name } ist formelgetrieben ({ $f })
 center = Mitte
+change-shape = Shape ändern
+
+change-shape-planned = Shape ändern — geplant (#131)
+
 chart = Diagramm
 charts-planned-later-milestone = Diagramme — geplant (späterer Meilenstein)
 checking-the-clipboard-for-a-pic = Die Zwischenablage wird auf ein Bild geprüft …
 choose-the-display-language-for = Die Anzeigesprache für Menüband, Menüs und Dialoge wählen
 classic-arrow = Klassischer Pfeil
-clear = Löschen
-clear-planned-later-milestone = Löschen — geplant (späterer Meilenstein)
 click-a-shape-to-add-a-connectio = Klicken Sie auf eine Form, um einen Verbindungspunkt hinzuzufügen
 clipboard = Zwischenablage
 clipboard-image-could-not-be-enc = Das Zwischenablage-Bild konnte nicht kodiert werden
@@ -424,7 +428,34 @@ filter-pdf = PDF (Dokument)
 filter-png = PNG (Rasterbild)
 filter-svg = SVG (Vektorgrafik)
 find = Suchen
-find-planned-later-milestone = Suchen — geplant (späterer Meilenstein)
+find-any-character = Beliebiges Zeichen
+
+find-caret-character = Caret-Zeichen
+
+find-ellipsis = Suchen…
+
+find-manual-return = Manueller Umbruch
+
+find-next = Weitersuchen
+
+find-not-found = Die Suchzeichenfolge wurde nicht gefunden.
+
+find-optional-hyphen = Bedingter Trennstrich
+
+find-shape-data = Shape-Daten
+
+find-shape-name = Shape-Name
+
+find-shape-text = Shape-Text
+
+find-tab-character = Tabulatorzeichen
+
+find-user-defined-cell = Benutzerdefinierte Zelle
+
+find-what = Suchen nach:
+
+find-whole-words-only = Nur ganze Wörter suchen
+
 fine-dash = Feiner Strich
 fine-dot = Feiner Punkt
 first-page = Erste Seite
@@ -456,6 +487,8 @@ format-shape-fill = Füllung formatieren …
 format-shape-line = Linie formatieren …
 format-shape-menu = Form formatieren …
 format-shape-text = Text formatieren …
+found-in = Gefunden in: { $page }, { $shape }
+
 freeform = Freihand
 freeform-drag-on-the-page-to-dra = Freihand: auf der Seite ziehen, um freihändig zu zeichnen (Esc beendet)
 freeform-off = Freihand aus
@@ -494,6 +527,8 @@ heading-style-gallery-planned = Überschriftenstil-Galerie — geplant
 height = Höhe
 # $g - Schutzformel
 height-not-resized-guard = Höhe nicht geändert: { $g } (nur Breite)
+help = Hilfe
+
 help-about = Hilfe / Über
 high-192-dpi = Hoch (192 dpi)
 highlight-members = Mitglieder hervorheben
@@ -547,6 +582,10 @@ layer = Ebene
 layer-composite-failed = Layer { $id }: { $e }
 # $ix - Layer-Zeilenindex
 layer-ix-fallback = Layer { $ix }
+layers = Ebenen
+
+layers-planned = Ebenen — geplant
+
 layout = Layout
 layout-options = Layoutoptionen
 layout-options-planned = Layoutoptionen — geplant
@@ -588,6 +627,10 @@ master = Vorlage
 # $id - Master-ID
 master-armed-click-place = Master { $id } bereit — zum Platzieren auf die Zeichenfläche klicken
 master-mid = Vorlage { $mid }
+match-case = Groß-/Kleinschreibung beachten
+
+match-character-width = Zeichenbreite vergleichen
+
 member-highlight-off = Member-Hervorhebung aus
 member-highlight-on = Member-Hervorhebung ein
 membership = Mitgliedschaft
@@ -797,7 +840,18 @@ rendering-scrim = Rendern …
 reorder-pages = Seiten neu anordnen
 reorder-pages-menu = Seiten neu anordnen …
 replace = Ersetzen
-replace-planned-later-milestone = Ersetzen — geplant (späterer Meilenstein)
+
+replace-all = Alle ersetzen
+
+replace-ellipsis = Ersetzen…
+
+replace-with = Ersetzen durch:
+
+replacements-made = { $count ->
+  [1] 1 Ersetzung durchgeführt
+ *[other] { $count } Ersetzungen durchgeführt
+}
+
 reply = Antworten
 report-definitions-planned = Berichtsdefinitionen — geplant
 reports = Berichte
@@ -838,6 +892,14 @@ save-the-stencil-planned = Die Schablone speichern — geplant
 saved-path = { $path } gespeichert
 scale = Skalieren
 screen-96-dpi = Bildschirm (96 dpi)
+scroll-left = Nach links scrollen
+
+scroll-right = Nach rechts scrollen
+
+search = Suchen
+
+search-in = Suchen in
+
 search-results = Suchergebnisse
 search-shapes = Formen suchen
 search-templates = Vorlagen suchen
@@ -896,6 +958,8 @@ shape-effects-planned = Formeffekte — geplant
 shape-extensions = Formverlängerungen
 shape-fill-color = Füllfarbe der Form
 shape-handles = Formgriffe
+shape-id-fallback = Blatt.{ $id }
+
 shape-id-s-alignment-box = der Ausrichtungsrahmen von Form { $id }
 shape-id-s-connection-point = der Verbindungspunkt von Form { $id }
 shape-id-s-extension = die Formverlängerung von Form { $id }
@@ -962,6 +1026,8 @@ sp-width = Shape-Breite
 sp-x = X-Position
 sp-y = Y-Position
 spacing = Abstand
+special = Sonderzeichen
+
 spell-add = Hinzufügen
 spell-change = Ändern
 spell-change-all = Alle ändern
@@ -1043,8 +1109,16 @@ text = Text
 text-align-left = Linksbündig
 text-align-right = Rechtsbündig
 text-box = Textfeld
+text-case = Groß-/Kleinschreibung
+
+text-case-planned = Groß-/Kleinschreibung — geplant
+
 text-color = Textfarbe
 text-color-tip = Textfarbe der Auswahl
+text-direction = Textrichtung
+
+text-direction-planned = Textrichtung — geplant
+
 text-field = Textfeld (Feld)
 text-formatting-arrives-with-a-l = Textformatierung kommt in einem späteren Meilenstein
 text-shapes-planned = Textformen — geplant

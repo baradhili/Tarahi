@@ -10,6 +10,7 @@ pub mod cmd;
 pub mod connectors;
 pub mod export;
 pub mod fields_dlg;
+pub mod find_dlg;
 pub mod freeform;
 #[doc(hidden)]
 pub mod group_fixture;
@@ -32,6 +33,7 @@ pub mod props;
 pub mod quickshapes;
 mod rasterpool;
 pub mod recent;
+pub mod replace_dlg;
 pub mod ribbon;
 pub mod shapesheet;
 pub mod snap;

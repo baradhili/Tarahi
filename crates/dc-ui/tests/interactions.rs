@@ -27,11 +27,22 @@ fn strip_bidi(s: &str) -> String {
 }
 
 fn harness_with_blank() -> Harness<'static, App> {
+    find_harness_with_width(1280.0)
+}
+
+/// The Find/Replace dialog tests' harness: the Editing group clips
+/// off a 1280px ribbon (#115 phase 4's FS 1 layout is wider), and
+/// their flows drive the real ribbon dropdown.
+fn find_harness() -> Harness<'static, App> {
+    find_harness_with_width(1680.0)
+}
+
+fn find_harness_with_width(w: f32) -> Harness<'static, App> {
     // Goldens/steps must be machine-independent: pin text to the
     // embedded Carlito rather than this machine's installed fonts.
     dc_ui::svgimg::pin_determinism_for_tests();
     Harness::builder()
-        .with_size(egui::vec2(1280.0, 800.0))
+        .with_size(egui::vec2(w, 800.0))
         // #203 review: the settle-gate repaint (#124 item 6.2) keeps
         // frames alive until the zoom bucket holds after open — give
         // run() the steps it needs.
@@ -11001,5 +11012,423 @@ fn layout_and_routing_dialog_writes_jump_cells() {
             .debug_page_sheet_cell_for_test("RouteStyle")
             .is_none(),
         "no routing cell was written"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Find (#115 phase 2): the ribbon dropdown opens the modeless dialog,
+// Find Next cycles the matches (selecting the owning shape), and a
+// miss reports in the status area.
+// ---------------------------------------------------------------------------
+
+/// Open the Find dialog through the real ribbon path — the Editing
+/// group's Find dropdown (FS 1 §3.2), then its Find… entry.
+fn open_find_dialog(h: &mut Harness<'_, App>) {
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label("Find").click();
+    h.run();
+    h.get_by_label("Find…").click();
+    h.run();
+}
+
+#[test]
+fn find_dialog_cycles_matches_and_reports_the_location() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = find_harness();
+    let first = place_shape_with_text(&mut h, "alpha widget");
+    let second = place_shape_with_text(&mut h, "beta widget");
+
+    open_find_dialog(&mut h);
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("Find what:"),
+    )
+    .set_text_value_accesskit("widget");
+    h.run();
+
+    // Find Next selects the owning shape, in match order, wrapping.
+    h.get_by_label("Find Next").click();
+    h.run();
+    let (page, sel1) = h.state().debug_sel().expect("first match selected");
+    assert_eq!(sel1, first, "match order is shape-tree order");
+    let (found_page, found_shape) = h
+        .state()
+        .debug_find_found_in()
+        .expect("the status line reports the location");
+    // The unnamed-shape fallback (Fluent isolates the number arg —
+    // U+2068/9 — so assert the prefix and digit, not the isolation).
+    assert!(
+        found_shape.starts_with("Sheet.") && found_shape.contains('1'),
+        "an unnamed shape shows the fallback: {found_shape:?}"
+    );
+    assert!(!found_page.is_empty(), "the page name rides along");
+
+    h.get_by_label("Find Next").click();
+    h.run();
+    assert_eq!(h.state().debug_sel().map(|(_, s)| s), Some(second));
+
+    // Past the last match, Find Next WRAPS to the first.
+    h.get_by_label("Find Next").click();
+    h.run();
+    assert_eq!(h.state().debug_sel().map(|(_, s)| s), Some(first));
+    assert_eq!(page, h.state().debug_sel().unwrap().0);
+
+    // Cancel closes the modeless window.
+    h.get_by_label("Cancel").click();
+    h.run();
+    assert!(h.state().debug_find_found_in().is_some(), "state survives");
+}
+
+#[test]
+fn find_dialog_reports_a_miss_in_the_status_area() {
+    use egui_kittest::kittest::Queryable;
+    // The standard 1280px harness ON PURPOSE (the PR review round):
+    // the Editing group sits past the row's edge at this width — the
+    // scroll arrows (observed Visio: the row scrolls once it no
+    // longer fits) must walk it into reach.
+    let mut h = find_harness_with_width(1280.0);
+    place_shape_with_text(&mut h, "nothing to see");
+
+    // Walk the row right until the Editing group is on screen.
+    for _ in 0..10 {
+        // Walk the row right until the Editing group is on screen.
+        // (Click-by-position: the query's borrow outlives the
+        // click.)
+        let pos = h
+            .query_all_by_label_contains("Scroll right")
+            .next()
+            .map(|a| a.rect().center());
+        match pos {
+            Some(p) => {
+                click_at(&mut h, p, egui::PointerButton::Primary);
+                h.run();
+            }
+            None => break,
+        }
+    }
+    open_find_dialog(&mut h);
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("Find what:"),
+    )
+    .set_text_value_accesskit("see");
+    h.run();
+    h.get_by_label("Find Next").click();
+    h.run();
+    assert!(
+        h.state().debug_find_found_in().is_some(),
+        "the hit lands first"
+    );
+
+    // A query nothing matches reports in the status area.
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("Find what:"),
+    )
+    .set_text_value_accesskit("absent");
+    h.run();
+    h.get_by_label("Find Next").click();
+    h.run();
+    assert!(h.state().debug_find_not_found());
+    assert!(h.state().debug_find_found_in().is_none());
+}
+
+/// Selection scope keeps the selection the search started from: Find
+/// Next's own navigation must not re-scope the search to the single
+/// shape it just selected (the cycle reaches every selected shape).
+#[test]
+fn find_dialog_selection_scope_cycles_all_selected_shapes() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = find_harness();
+    let first = place_shape_with_text(&mut h, "alpha token");
+    // The second shape lands clear of the first (the helper always
+    // drops at the canvas center, where it would cover shape one).
+    h.run();
+    let from = h.state().debug_master_cells()[0].1.center();
+    let to = h.state().debug_canvas_rect().center() + egui::vec2(150.0, 0.0);
+    click_at(&mut h, from, egui::PointerButton::Primary);
+    click_at(&mut h, to, egui::PointerButton::Primary);
+    let (_, second) = h.state().debug_sel().expect("placed shape selected");
+    h.state_mut()
+        .debug_set_shape_text_for_test(second, "beta token");
+    h.run();
+    // Multi-select both: click the first, shift-click the second.
+    let fc = h
+        .state()
+        .debug_shape_screen_rect(first)
+        .unwrap()
+        .center();
+    click_at(&mut h, fc, egui::PointerButton::Primary);
+    h.run();
+    let sc = h
+        .state()
+        .debug_shape_screen_rect(second)
+        .unwrap()
+        .center();
+    let shift = egui::Modifiers {
+        shift: true,
+        ..Default::default()
+    };
+    h.event(egui::Event::ModifiersChanged(shift));
+    h.hover_at(sc);
+    h.event(egui::Event::PointerButton {
+        pos: sc,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: shift,
+    });
+    h.event(egui::Event::PointerButton {
+        pos: sc,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: shift,
+    });
+    h.run();
+    assert_eq!(
+        h.state().debug_sel_set_len(),
+        2,
+        "both shapes selected before the search"
+    );
+
+    open_find_dialog(&mut h);
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("Find what:"),
+    )
+    .set_text_value_accesskit("token");
+    h.run();
+    h.get_by_label("Selection").click();
+    h.run();
+
+    h.get_by_label("Find Next").click();
+    h.run();
+    assert_eq!(h.state().debug_sel().map(|(_, s)| s), Some(first));
+    h.get_by_label("Find Next").click();
+    h.run();
+    assert_eq!(
+        h.state().debug_sel().map(|(_, s)| s),
+        Some(second),
+        "the cycle reaches the second SELECTED shape despite the first Find Next selecting only the first"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Replace (#115 phase 3): the dialog flow through the real ribbon
+// menu, one undo per Replace, one undo per Replace All sweep.
+// ---------------------------------------------------------------------------
+
+/// Open the Replace dialog through the Editing group's Find dropdown
+/// (FS 1 §3.2's Replace… entry).
+fn open_replace_dialog(h: &mut Harness<'_, App>) {
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label("Find").click();
+    h.run();
+    h.get_by_label("Replace…").click();
+    h.run();
+}
+
+fn fill_replace_fields(h: &mut Harness<'_, App>, find: &str, with: &str) {
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("Find what:"),
+    )
+    .set_text_value_accesskit(find);
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("Replace with:"),
+    )
+    .set_text_value_accesskit(with);
+    h.run();
+}
+
+#[test]
+fn replace_dialog_replaces_the_current_match_then_advances() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = find_harness();
+    let first = place_shape_with_text(&mut h, "alpha token");
+    let second = place_shape_with_text(&mut h, "beta token");
+
+    open_replace_dialog(&mut h);
+    fill_replace_fields(&mut h, "token", "mark");
+
+    // Find Next highlights the first match; Replace then replaces it
+    // and automatically finds the next (the selection advances).
+    h.get_by_label("Find Next").click();
+    h.run();
+    assert_eq!(h.state().debug_sel().map(|(_, s)| s), Some(first));
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::Button)
+            .label("Replace"),
+    )
+    .click();
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(first).as_deref(),
+        Some("alpha mark"),
+        "the current match was replaced"
+    );
+    assert_eq!(
+        h.state().debug_sel().map(|(_, s)| s),
+        Some(second),
+        "Replace advanced to the next match"
+    );
+    // Replacing the last match reports no further match (spec 3 has
+    // no status area; the status bar carries it).
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::Button)
+            .label("Replace"),
+    )
+    .click();
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(second).as_deref(),
+        Some("beta mark")
+    );
+
+    // One undo per Replace: two undos restore both texts exactly.
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(second).as_deref(),
+        Some("beta token")
+    );
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(first).as_deref(),
+        Some("alpha token")
+    );
+}
+
+#[test]
+fn replace_all_sweeps_every_match_in_one_undo_step() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = find_harness();
+    let first = place_shape_with_text(&mut h, "token one token");
+    let second = place_shape_with_text(&mut h, "token two");
+
+    open_replace_dialog(&mut h);
+    fill_replace_fields(&mut h, "token", "mark");
+    h.get_by_label("Replace All").click();
+    h.run();
+
+    assert_eq!(
+        h.state().debug_shape_plain_text(first).as_deref(),
+        Some("mark one mark"),
+        "both spans inside one text replace"
+    );
+    assert_eq!(
+        h.state().debug_shape_plain_text(second).as_deref(),
+        Some("mark two")
+    );
+    // The sweep's count reports on the status bar (spec 3 has no
+    // dialog status area).
+    assert!(h.state().debug_status().contains("3"), "{}", h.state().debug_status());
+
+    // ONE undo restores the exact prior state of every shape.
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(first).as_deref(),
+        Some("token one token")
+    );
+    assert_eq!(
+        h.state().debug_shape_plain_text(second).as_deref(),
+        Some("token two")
+    );
+}
+
+/// The review round's stale-current and resume regressions
+/// (CodeRabbit on phase 3): a query change never splices the old
+/// match's span, and replacing a shape's only match continues
+/// FORWARD to the next shape instead of wrapping to the first.
+#[test]
+fn replace_dialog_stale_current_and_forward_resume() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = find_harness();
+    let a = place_shape_with_text(&mut h, "alpha token");
+    // The second shape lands clear of the first (the helper drops at
+    // the canvas center, where it would cover shape one).
+    h.run();
+    let from = h.state().debug_master_cells()[0].1.center();
+    let to = h.state().debug_canvas_rect().center() + egui::vec2(150.0, 0.0);
+    click_at(&mut h, from, egui::PointerButton::Primary);
+    click_at(&mut h, to, egui::PointerButton::Primary);
+    let (_, b) = h.state().debug_sel().expect("placed shape selected");
+    h.state_mut().debug_set_shape_text_for_test(b, "beta token");
+    let to2 = h.state().debug_canvas_rect().center() + egui::vec2(-150.0, 60.0);
+    click_at(&mut h, from, egui::PointerButton::Primary);
+    click_at(&mut h, to2, egui::PointerButton::Primary);
+    let (_, c) = h.state().debug_sel().expect("placed shape selected");
+    h.state_mut().debug_set_shape_text_for_test(c, "gamma token");
+    h.run();
+
+    open_replace_dialog(&mut h);
+    fill_replace_fields(&mut h, "token", "mark");
+
+    // A: Find Next highlights, Replace rewrites and advances to B.
+    h.get_by_label("Find Next").click();
+    h.run();
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::Button)
+            .label("Replace"),
+    )
+    .click();
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(a).as_deref(),
+        Some("alpha mark")
+    );
+    assert_eq!(h.state().debug_sel().map(|(_, s)| s), Some(b));
+
+    // B: replacing its ONLY match must continue FORWARD to C — not
+    // wrap back to A's already-replaced text.
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::Button)
+            .label("Replace"),
+    )
+    .click();
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(b).as_deref(),
+        Some("beta mark")
+    );
+    assert_eq!(
+        h.state().debug_sel().map(|(_, s)| s),
+        Some(c),
+        "the resume continues to the next shape after the replaced one"
+    );
+
+    // Stale current: change the QUERY to something absent — the next
+    // Replace click may not splice the previous match's span; it
+    // behaves as Find Next and reports the miss.
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("Find what:"),
+    )
+    .set_text_value_accesskit("absent");
+    h.run();
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::Button)
+            .label("Replace"),
+    )
+    .click();
+    h.run();
+    assert_eq!(
+        h.state().debug_shape_plain_text(c).as_deref(),
+        Some("gamma token"),
+        "a stale current match never splices after a query change"
     );
 }

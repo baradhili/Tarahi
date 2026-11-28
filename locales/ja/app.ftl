@@ -54,6 +54,8 @@ aligning-to-the-page = ページに合わせて整列します
 alignment-and-spacing-hints-whil = ドラッグ中の整列と間隔のヒント
 alignment-boxes = 整列ボックス
 all-changes-saved = すべての変更を保存しました
+all-pages = すべてのページ
+
 all-pages-page-count = すべてのページ（{ $page_count }）
 already-aligned = 既に整列しています
 applies-to-the-ribbon-menus-and = リボン、メニュー、ダイアログに適用されます。図面の文字には影響しません。
@@ -102,13 +104,15 @@ callouts-planned = 吹き出し — 予定
 cancel = キャンセル
 cell-is-formula-driven = { $name } は数式で管理されています（{ $f }）
 center = 中央
+change-shape = 図形の変更
+
+change-shape-planned = 図形の変更 — 計画中（#131）
+
 chart = チャート
 charts-planned-later-milestone = チャート — 予定（後のマイルストーン）
 checking-the-clipboard-for-a-pic = クリップボードの画像を確認しています…
 choose-the-display-language-for = リボン、メニュー、ダイアログの表示言語を選択します
 classic-arrow = クラシック矢印
-clear = 消去
-clear-planned-later-milestone = 消去 — 予定（後のマイルストーン）
 click-a-shape-to-add-a-connectio = 図形をクリックして接続点を追加します
 clipboard = クリップボード
 clipboard-image-could-not-be-enc = クリップボードの画像をエンコードできませんでした
@@ -404,7 +408,34 @@ filter-pdf = PDF（ドキュメント）
 filter-png = PNG（ラスター画像）
 filter-svg = SVG（ベクター グラフィックス）
 find = 検索
-find-planned-later-milestone = 検索 — 予定（後のマイルストーン）
+find-any-character = 任意の文字
+
+find-caret-character = カレット文字
+
+find-ellipsis = 検索…
+
+find-manual-return = 手動改行
+
+find-next = 次を検索
+
+find-not-found = 検索文字列が見つかりませんでした。
+
+find-optional-hyphen = 任意ハイフン
+
+find-shape-data = 図形データ
+
+find-shape-name = 図形名
+
+find-shape-text = 図形テキスト
+
+find-tab-character = タブ文字
+
+find-user-defined-cell = ユーザー定義セル
+
+find-what = 検索する文字列:
+
+find-whole-words-only = 単語単位で検索する
+
 fine-dash = 細かい破線
 fine-dot = 細かい点線
 first-page = 先頭ページ
@@ -436,6 +467,8 @@ format-shape-fill = 図形の塗りつぶしの書式設定…
 format-shape-line = 図形の線の書式設定…
 format-shape-menu = 図形の書式設定…
 format-shape-text = 図形の文字の書式設定…
+found-in = 検索結果: { $page }、{ $shape }
+
 freeform = フリーフォーム
 freeform-drag-on-the-page-to-dra = フリーフォーム: ページ上をドラッグして自由な形状を描きます（Esc で終了）
 freeform-off = フリーフォームをオフにしました
@@ -468,6 +501,8 @@ heading-style = 見出しスタイル
 heading-style-gallery-planned = 見出しスタイル ギャラリー — 予定
 height = 高さ
 height-not-resized-guard = 高さはサイズ変更されませんでした: { $g }（幅のみ）
+help = ヘルプ
+
 help-about = ヘルプ/バージョン情報
 high-192-dpi = 高（192 dpi）
 highlight-members = メンバーを強調表示
@@ -516,6 +551,10 @@ last-page = 最終ページ
 layer = レイヤー
 layer-composite-failed = レイヤー { $id }: { $e }
 layer-ix-fallback = レイヤー { $ix }
+layers = レイヤー
+
+layers-planned = レイヤー — 計画中
+
 layout = レイアウト
 layout-options = レイアウト オプション
 layout-options-planned = レイアウト オプション — 予定
@@ -555,6 +594,10 @@ markup-tracking-planned-no-marku = マークアップの追跡 — 予定（マ�
 master = マスター
 master-armed-click-place = マスター { $id } を準備しました — キャンバスをクリックして配置します
 master-mid = マスター { $mid }
+match-case = 大文字/小文字を区別する
+
+match-character-width = 全角/半角を区別する
+
 member-highlight-off = メンバーの強調表示をオフにしました
 member-highlight-on = メンバーの強調表示をオンにしました
 membership = メンバーシップ
@@ -743,7 +786,18 @@ rendering-scrim = 描画中…
 reorder-pages = ページの並べ替え
 reorder-pages-menu = ページの並べ替え…
 replace = 置換
-replace-planned-later-milestone = 置換 — 予定（後のマイルストーン）
+
+replace-all = すべて置換
+
+replace-ellipsis = 置換…
+
+replace-with = 置換後の文字列:
+
+replacements-made = { $count ->
+  [1] 1 件置換しました
+ *[other] { $count } 件置換しました
+}
+
 reply = 返信
 report-definitions-planned = レポート定義 — 予定
 reports = レポート
@@ -782,6 +836,14 @@ save-the-stencil-planned = ステンシルの保存 — 予定
 saved-path = { $path } を保存しました
 scale = 縮尺
 screen-96-dpi = 画面（96 dpi）
+scroll-left = 左にスクロール
+
+scroll-right = 右にスクロール
+
+search = 検索
+
+search-in = 検索場所
+
 search-results = 検索結果
 search-shapes = シェイプの検索
 search-templates = テンプレートの検索
@@ -829,6 +891,8 @@ shape-effects-planned = 図形の効果 — 予定
 shape-extensions = 図形の拡張
 shape-fill-color = 図形の塗りつぶしの色
 shape-handles = 図形のハンドル
+shape-id-fallback = シート.{ $id }
+
 shape-id-s-alignment-box = 図形 { $id } の整列ボックス
 shape-id-s-connection-point = 図形 { $id } の接続点
 shape-id-s-extension = 図形 { $id } の拡張
@@ -895,6 +959,8 @@ sp-width = 図形の幅
 sp-x = X 位置
 sp-y = Y 位置
 spacing = 間隔
+special = 特殊文字
+
 spell-add = 追加
 spell-change = 変更
 spell-change-all = すべて変更
@@ -975,8 +1041,16 @@ text = 文字
 text-align-left = 左揃え
 text-align-right = 右揃え
 text-box = テキスト ボックス
+text-case = 文字種の変更
+
+text-case-planned = 文字種の変更 — 計画中
+
 text-color = 文字の色
 text-color-tip = 選択範囲の文字色
+text-direction = 文字の方向
+
+text-direction-planned = 文字の方向 — 計画中
+
 text-field = 文字フィールド
 text-formatting-arrives-with-a-l = 文字書式は後のマイルストーンで提供されます
 text-shapes-planned = 文字図形 — 予定

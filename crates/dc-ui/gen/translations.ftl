@@ -59,6 +59,8 @@ aligning-to-the-page = Ausrichtung an der Seite
 alignment-and-spacing-hints-whil = Ausrichtungs- und Abstandshinweise beim Ziehen
 alignment-boxes = Ausrichtungsrahmen
 all-changes-saved = Alle Änderungen gespeichert
+all-pages = Alle Seiten
+
 all-pages-page-count = Alle Seiten ({ $page_count })
 already-aligned = bereits ausgerichtet
 applies-to-the-ribbon-menus-and = Gilt für Menüband, Menüs und Dialoge. Zeichnungstext bleibt unverändert.
@@ -113,13 +115,15 @@ cancel = Abbrechen
 # $f - die schützende Formel
 cell-is-formula-driven = { $name } ist formelgetrieben ({ $f })
 center = Mitte
+change-shape = Shape ändern
+
+change-shape-planned = Shape ändern — geplant (#131)
+
 chart = Diagramm
 charts-planned-later-milestone = Diagramme — geplant (späterer Meilenstein)
 checking-the-clipboard-for-a-pic = Die Zwischenablage wird auf ein Bild geprüft …
 choose-the-display-language-for = Die Anzeigesprache für Menüband, Menüs und Dialoge wählen
 classic-arrow = Klassischer Pfeil
-clear = Löschen
-clear-planned-later-milestone = Löschen — geplant (späterer Meilenstein)
 click-a-shape-to-add-a-connectio = Klicken Sie auf eine Form, um einen Verbindungspunkt hinzuzufügen
 clipboard = Zwischenablage
 clipboard-image-could-not-be-enc = Das Zwischenablage-Bild konnte nicht kodiert werden
@@ -427,7 +431,34 @@ filter-pdf = PDF (Dokument)
 filter-png = PNG (Rasterbild)
 filter-svg = SVG (Vektorgrafik)
 find = Suchen
-find-planned-later-milestone = Suchen — geplant (späterer Meilenstein)
+find-any-character = Beliebiges Zeichen
+
+find-caret-character = Caret-Zeichen
+
+find-ellipsis = Suchen…
+
+find-manual-return = Manueller Umbruch
+
+find-next = Weitersuchen
+
+find-not-found = Die Suchzeichenfolge wurde nicht gefunden.
+
+find-optional-hyphen = Bedingter Trennstrich
+
+find-shape-data = Shape-Daten
+
+find-shape-name = Shape-Name
+
+find-shape-text = Shape-Text
+
+find-tab-character = Tabulatorzeichen
+
+find-user-defined-cell = Benutzerdefinierte Zelle
+
+find-what = Suchen nach:
+
+find-whole-words-only = Nur ganze Wörter suchen
+
 fine-dash = Feiner Strich
 fine-dot = Feiner Punkt
 first-page = Erste Seite
@@ -459,6 +490,8 @@ format-shape-fill = Füllung formatieren …
 format-shape-line = Linie formatieren …
 format-shape-menu = Form formatieren …
 format-shape-text = Text formatieren …
+found-in = Gefunden in: { $page }, { $shape }
+
 freeform = Freihand
 freeform-drag-on-the-page-to-dra = Freihand: auf der Seite ziehen, um freihändig zu zeichnen (Esc beendet)
 freeform-off = Freihand aus
@@ -497,6 +530,8 @@ heading-style-gallery-planned = Überschriftenstil-Galerie — geplant
 height = Höhe
 # $g - Schutzformel
 height-not-resized-guard = Höhe nicht geändert: { $g } (nur Breite)
+help = Hilfe
+
 help-about = Hilfe / Über
 high-192-dpi = Hoch (192 dpi)
 highlight-members = Mitglieder hervorheben
@@ -550,6 +585,10 @@ layer = Ebene
 layer-composite-failed = Layer { $id }: { $e }
 # $ix - Layer-Zeilenindex
 layer-ix-fallback = Layer { $ix }
+layers = Ebenen
+
+layers-planned = Ebenen — geplant
+
 layout = Layout
 layout-options = Layoutoptionen
 layout-options-planned = Layoutoptionen — geplant
@@ -591,6 +630,10 @@ master = Vorlage
 # $id - Master-ID
 master-armed-click-place = Master { $id } bereit — zum Platzieren auf die Zeichenfläche klicken
 master-mid = Vorlage { $mid }
+match-case = Groß-/Kleinschreibung beachten
+
+match-character-width = Zeichenbreite vergleichen
+
 member-highlight-off = Member-Hervorhebung aus
 member-highlight-on = Member-Hervorhebung ein
 membership = Mitgliedschaft
@@ -800,7 +843,18 @@ rendering-scrim = Rendern …
 reorder-pages = Seiten neu anordnen
 reorder-pages-menu = Seiten neu anordnen …
 replace = Ersetzen
-replace-planned-later-milestone = Ersetzen — geplant (späterer Meilenstein)
+
+replace-all = Alle ersetzen
+
+replace-ellipsis = Ersetzen…
+
+replace-with = Ersetzen durch:
+
+replacements-made = { $count ->
+  [1] 1 Ersetzung durchgeführt
+ *[other] { $count } Ersetzungen durchgeführt
+}
+
 reply = Antworten
 report-definitions-planned = Berichtsdefinitionen — geplant
 reports = Berichte
@@ -841,6 +895,14 @@ save-the-stencil-planned = Die Schablone speichern — geplant
 saved-path = { $path } gespeichert
 scale = Skalieren
 screen-96-dpi = Bildschirm (96 dpi)
+scroll-left = Nach links scrollen
+
+scroll-right = Nach rechts scrollen
+
+search = Suchen
+
+search-in = Suchen in
+
 search-results = Suchergebnisse
 search-shapes = Formen suchen
 search-templates = Vorlagen suchen
@@ -899,6 +961,8 @@ shape-effects-planned = Formeffekte — geplant
 shape-extensions = Formverlängerungen
 shape-fill-color = Füllfarbe der Form
 shape-handles = Formgriffe
+shape-id-fallback = Blatt.{ $id }
+
 shape-id-s-alignment-box = der Ausrichtungsrahmen von Form { $id }
 shape-id-s-connection-point = der Verbindungspunkt von Form { $id }
 shape-id-s-extension = die Formverlängerung von Form { $id }
@@ -965,6 +1029,8 @@ sp-width = Shape-Breite
 sp-x = X-Position
 sp-y = Y-Position
 spacing = Abstand
+special = Sonderzeichen
+
 spell-add = Hinzufügen
 spell-change = Ändern
 spell-change-all = Alle ändern
@@ -1046,8 +1112,16 @@ text = Text
 text-align-left = Linksbündig
 text-align-right = Rechtsbündig
 text-box = Textfeld
+text-case = Groß-/Kleinschreibung
+
+text-case-planned = Groß-/Kleinschreibung — geplant
+
 text-color = Textfarbe
 text-color-tip = Textfarbe der Auswahl
+text-direction = Textrichtung
+
+text-direction-planned = Textrichtung — geplant
+
 text-field = Textfeld (Feld)
 text-formatting-arrives-with-a-l = Textformatierung kommt in einem späteren Meilenstein
 text-shapes-planned = Textformen — geplant
@@ -1278,6 +1352,8 @@ aligning-to-the-page = aligning to the page
 alignment-and-spacing-hints-whil = Alignment and spacing hints while dragging
 alignment-boxes = Alignment boxes
 all-changes-saved = All changes saved
+all-pages = All pages
+
 # $page_count (Number) - argument
 all-pages-page-count = All pages ({ $page_count })
 already-aligned = already aligned
@@ -1333,13 +1409,15 @@ cancel = Cancel
 # $f (String) - the guarding formula
 cell-is-formula-driven = { $name } is formula-driven ({ $f })
 center = Center
+change-shape = Change Shape
+
+change-shape-planned = Change Shape — planned (#131)
+
 chart = Chart
 charts-planned-later-milestone = Charts — planned (later milestone)
 checking-the-clipboard-for-a-pic = checking the clipboard for a picture…
 choose-the-display-language-for = Choose the display language for the ribbon, menus, and dialogs
 classic-arrow = Classic Arrow
-clear = Clear
-clear-planned-later-milestone = Clear — planned (later milestone)
 click-a-shape-to-add-a-connectio = click a shape to add a connection point
 clipboard = Clipboard
 clipboard-image-could-not-be-enc = clipboard image could not be encoded
@@ -1668,7 +1746,34 @@ filter-pdf = PDF (document)
 filter-png = PNG (raster image)
 filter-svg = SVG (vector graphics)
 find = Find
-find-planned-later-milestone = Find — planned (later milestone)
+find-any-character = Any Character
+
+find-caret-character = Caret Character
+
+find-ellipsis = Find…
+
+find-manual-return = Manual Return
+
+find-next = Find Next
+
+find-not-found = The search string was not found.
+
+find-optional-hyphen = Optional Hyphen
+
+find-shape-data = Shape data
+
+find-shape-name = Shape name
+
+find-shape-text = Shape text
+
+find-tab-character = Tab Character
+
+find-user-defined-cell = User-defined cell
+
+find-what = Find what:
+
+find-whole-words-only = Find whole words only
+
 fine-dash = Fine Dash
 fine-dot = Fine Dot
 first-page = First page
@@ -1702,6 +1807,10 @@ format-shape-fill = Format Shape Fill…
 format-shape-line = Format Shape Line…
 format-shape-menu = Format Shape…
 format-shape-text = Format Shape Text…
+# $page (String) - the page the match was found on
+# $shape (String) - the owning shape's display name
+found-in = Found in: { $page }, { $shape }
+
 freeform = Freeform
 freeform-drag-on-the-page-to-dra = Freeform: drag on the page to draw freehand geometry (Esc to finish)
 freeform-off = freeform off
@@ -1743,6 +1852,8 @@ heading-style-gallery-planned = Heading style gallery — planned
 height = Height
 # $g (String) - guard formula
 height-not-resized-guard = height not resized: { $g } (width only)
+help = Help
+
 help-about = Help / About
 high-192-dpi = High (192 dpi)
 highlight-members = Highlight Members
@@ -1800,6 +1911,10 @@ layer = Layer
 layer-composite-failed = layer { $id }: { $e }
 # $ix (Number) - layer row index
 layer-ix-fallback = layer { $ix }
+layers = Layers
+
+layers-planned = Layers — planned
+
 layout = Layout
 layout-options = Layout Options
 layout-options-planned = Layout options — planned
@@ -1845,6 +1960,10 @@ master = Master
 master-armed-click-place = master { $id } armed — click the canvas to place
 # $mid (Number) - argument
 master-mid = master { $mid }
+match-case = Match case
+
+match-character-width = Match character width
+
 member-highlight-off = member highlight off
 member-highlight-on = member highlight on
 membership = Membership
@@ -2072,7 +2191,19 @@ rendering-scrim = Rendering…
 reorder-pages = Reorder Pages
 reorder-pages-menu = Reorder Pages…
 replace = Replace
-replace-planned-later-milestone = Replace — planned (later milestone)
+
+replace-all = Replace All
+
+replace-ellipsis = Replace…
+
+replace-with = Replace with:
+
+# $count (Number) - how many replacements the sweep made
+replacements-made = { $count ->
+  [1] Made 1 replacement
+ *[other] Made { $count } replacements
+}
+
 reply = Reply
 report-definitions-planned = Report definitions — planned
 reports = Reports
@@ -2114,6 +2245,14 @@ save-the-stencil-planned = Save the stencil — planned
 saved-path = saved { $path }
 scale = Scale
 screen-96-dpi = Screen (96 dpi)
+scroll-left = Scroll left
+
+scroll-right = Scroll right
+
+search = Search
+
+search-in = Search in
+
 search-results = Search Results
 search-shapes = Search Shapes
 search-templates = Search Templates
@@ -2175,6 +2314,9 @@ shape-effects-planned = Shape effects — planned
 shape-extensions = Shape extensions
 shape-fill-color = Shape fill color
 shape-handles = Shape handles
+# $id (Number) - the shape's numeric ID
+shape-id-fallback = Sheet.{ $id }
+
 # $id (Number) - argument
 shape-id-s-alignment-box = shape { $id }'s alignment box
 # $id (Number) - argument
@@ -2248,6 +2390,8 @@ sp-width = Shape width
 sp-x = X position
 sp-y = Y position
 spacing = Spacing
+special = Special
+
 spell-add = Add
 spell-change = Change
 spell-change-all = Change All
@@ -2335,8 +2479,16 @@ text = Text
 text-align-left = Align Left
 text-align-right = Align Right
 text-box = Text Box
+text-case = Change Case
+
+text-case-planned = Change Case — planned
+
 text-color = Text Color
 text-color-tip = Text color of the selection
+text-direction = Text Direction
+
+text-direction-planned = Text Direction — planned
+
 text-field = Text Field
 text-formatting-arrives-with-a-l = Text formatting arrives with a later milestone
 text-shapes-planned = Text shapes — planned
@@ -2567,6 +2719,8 @@ aligning-to-the-page = alineando con la página
 alignment-and-spacing-hints-whil = Sugerencias de alineación y espaciado al arrastrar
 alignment-boxes = Cuadros de alineación
 all-changes-saved = Todos los cambios guardados
+all-pages = Todas las páginas
+
 # $page_count - argumento
 all-pages-page-count = Todas las páginas ({ $page_count })
 already-aligned = ya está alineado
@@ -2622,13 +2776,15 @@ cancel = Cancelar
 # $f - la fórmula protectora
 cell-is-formula-driven = { $name } está controlado por una fórmula ({ $f })
 center = Centro
+change-shape = Cambiar forma
+
+change-shape-planned = Cambiar forma — previsto (#131)
+
 chart = Gráfico
 charts-planned-later-milestone = Gráficos — planeado (hito posterior)
 checking-the-clipboard-for-a-pic = comprobando el portapapeles en busca de una imagen…
 choose-the-display-language-for = Elija el idioma de presentación de la cinta de opciones, los menús y los cuadros de diálogo
 classic-arrow = Flecha clásica
-clear = Borrar
-clear-planned-later-milestone = Borrar — planeado (hito posterior)
 click-a-shape-to-add-a-connectio = haga clic en una forma para agregar un punto de conexión
 clipboard = Portapapeles
 clipboard-image-could-not-be-enc = no se pudo codificar la imagen del portapapeles
@@ -2955,7 +3111,34 @@ filter-pdf = PDF (documento)
 filter-png = PNG (imagen rasterizada)
 filter-svg = SVG (gráficos vectoriales)
 find = Buscar
-find-planned-later-milestone = Buscar — planeado (hito posterior)
+find-any-character = Cualquier carácter
+
+find-caret-character = Carácter de intercalación
+
+find-ellipsis = Buscar…
+
+find-manual-return = Retorno manual
+
+find-next = Buscar siguiente
+
+find-not-found = No se encontró la cadena de búsqueda.
+
+find-optional-hyphen = Guion opcional
+
+find-shape-data = Datos de forma
+
+find-shape-name = Nombre de forma
+
+find-shape-text = Texto de forma
+
+find-tab-character = Carácter de tabulación
+
+find-user-defined-cell = Celda definida por el usuario
+
+find-what = Buscar:
+
+find-whole-words-only = Buscar solo palabras completas
+
 fine-dash = Guion fino
 fine-dot = Punto fino
 first-page = Primera página
@@ -2989,6 +3172,8 @@ format-shape-fill = Dar formato al relleno de la forma…
 format-shape-line = Dar formato a la línea de la forma…
 format-shape-menu = Dar formato a la forma…
 format-shape-text = Dar formato al texto de la forma…
+found-in = Se encontró en: { $page }, { $shape }
+
 freeform = Forma libre
 freeform-drag-on-the-page-to-dra = Forma libre: arrastre en la página para dibujar geometría a mano alzada (Esc para terminar)
 freeform-off = forma libre desactivada
@@ -3030,6 +3215,8 @@ heading-style-gallery-planned = Galería de estilos de título — planeado
 height = Alto
 # $g - fórmula protectora
 height-not-resized-guard = alto sin cambiar de tamaño: { $g } (solo el ancho)
+help = Ayuda
+
 help-about = Ayuda / Acerca de
 high-192-dpi = Alta (192 ppp)
 highlight-members = Resaltar miembros
@@ -3087,6 +3274,10 @@ layer = Capa
 layer-composite-failed = capa { $id }: { $e }
 # $ix - índice de la fila de capa
 layer-ix-fallback = capa { $ix }
+layers = Capas
+
+layers-planned = Capas — previsto
+
 layout = Diseño
 layout-options = Opciones de diseño
 layout-options-planned = Opciones de diseño — planeado
@@ -3132,6 +3323,10 @@ master = Patrón
 master-armed-click-place = patrón { $id } preparado — haga clic en el lienzo para colocarlo
 # $mid - argumento
 master-mid = patrón { $mid }
+match-case = Coincidir mayúsculas y minúsculas
+
+match-character-width = Coincidir el ancho de carácter
+
 member-highlight-off = resaltado de miembros desactivado
 member-highlight-on = resaltado de miembros activado
 membership = Pertenencia
@@ -3358,7 +3553,18 @@ rendering-scrim = Renderizando…
 reorder-pages = Reordenar páginas
 reorder-pages-menu = Reordenar páginas…
 replace = Reemplazar
-replace-planned-later-milestone = Reemplazar — planeado (hito posterior)
+
+replace-all = Reemplazar todo
+
+replace-ellipsis = Reemplazar…
+
+replace-with = Reemplazar con:
+
+replacements-made = { $count ->
+  [1] Se hizo 1 reemplazo
+ *[other] Se hicieron { $count } reemplazos
+}
+
 reply = Responder
 report-definitions-planned = Definiciones de informes — planeado
 reports = Informes
@@ -3400,6 +3606,14 @@ save-the-stencil-planned = Guardar la galería — planeado
 saved-path = se guardó { $path }
 scale = Escala
 screen-96-dpi = Pantalla (96 ppp)
+scroll-left = Desplazar a la izquierda
+
+scroll-right = Desplazar a la derecha
+
+search = Buscar
+
+search-in = Buscar en
+
 search-results = Resultados de búsqueda
 search-shapes = Buscar formas
 search-templates = Buscar plantillas
@@ -3461,6 +3675,8 @@ shape-effects-planned = Efectos de forma — planeado
 shape-extensions = Extensiones de forma
 shape-fill-color = Color de relleno de la forma
 shape-handles = Tiradores de forma
+shape-id-fallback = Hoja.{ $id }
+
 # $id - argumento
 shape-id-s-alignment-box = cuadro de alineación de la forma { $id }
 # $id - argumento
@@ -3534,6 +3750,8 @@ sp-width = Ancho de la forma
 sp-x = Posición X
 sp-y = Posición Y
 spacing = Espaciado
+special = Especial
+
 spell-add = Agregar
 spell-change = Cambiar
 spell-change-all = Cambiar todo
@@ -3619,8 +3837,16 @@ text = Texto
 text-align-left = Alinear a la izquierda
 text-align-right = Alinear a la derecha
 text-box = Cuadro de texto
+text-case = Cambiar mayús./minús.
+
+text-case-planned = Cambiar mayús./minús. — previsto
+
 text-color = Color de texto
 text-color-tip = Color de texto de la selección
+text-direction = Dirección del texto
+
+text-direction-planned = Dirección del texto — previsto
+
 text-field = Campo de texto
 text-formatting-arrives-with-a-l = El formato de texto llega con un hito posterior
 text-shapes-planned = Formas de texto — planeado
@@ -3847,6 +4073,8 @@ aligning-to-the-page = تراز نسبت به صفحه
 alignment-and-spacing-hints-whil = راهنمای تراز و فاصله‌گذاری هنگام کشیدن
 alignment-boxes = کادرهای تراز
 all-changes-saved = همه تغییرات ذخیره شد
+all-pages = همه صفحات
+
 all-pages-page-count = همه صفحه‌ها ({ $page_count })
 already-aligned = از قبل تراز است
 applies-to-the-ribbon-menus-and = روی نوار، منوها و گفت‌وگوها اعمال می‌شود؛ متنِ نقاشی بی‌تأثیر است.
@@ -3901,13 +4129,15 @@ cancel = لغو
 # $f - فرمول نگهبان
 cell-is-formula-driven = { $name } فرمول‌محور است ({ $f })
 center = وسط
+change-shape = تغییر شکل
+
+change-shape-planned = تغییر شکل — برنامه‌ریزی‌شده (#131)
+
 chart = نمودار
 charts-planned-later-milestone = نمودارها — برنامه‌ریزی شده (نقطهٔ عطف بعدی)
 checking-the-clipboard-for-a-pic = بررسی کلیپ‌بورد برای تصویر…
 choose-the-display-language-for = زبان نمایش نوار، منوها و گفت‌وگوها را انتخاب کنید
 classic-arrow = پیکان کلاسیک
-clear = پاک‌کردن
-clear-planned-later-milestone = پاک‌کردن — برنامه‌ریزی شده (نقطهٔ عطف بعدی)
 click-a-shape-to-add-a-connectio = برای افزودن نقطهٔ اتصال روی یک شکل کلیک کنید
 clipboard = کلیپ‌بورد
 clipboard-image-could-not-be-enc = تصویر کلیپ‌بورد کدگذاری نشد
@@ -4215,7 +4445,34 @@ filter-pdf = PDF (سند)
 filter-png = PNG (تصویر شطرنجی)
 filter-svg = SVG (گرافیک برداری)
 find = یافتن
-find-planned-later-milestone = یافتن — برنامه‌ریزی‌شده (نقطهٔ عطف بعدی)
+find-any-character = هر نویسه
+
+find-caret-character = نویسه پشتک
+
+find-ellipsis = جستجو…
+
+find-manual-return = بازگشت دستی
+
+find-next = پیدا کردن بعدی
+
+find-not-found = رشته جستجو پیدا نشد.
+
+find-optional-hyphen = خط تیره اختیاری
+
+find-shape-data = داده‌های شکل
+
+find-shape-name = نام شکل
+
+find-shape-text = متن شکل
+
+find-tab-character = نویسه تب
+
+find-user-defined-cell = سلول تعریف‌شده توسط کاربر
+
+find-what = جستجو برای:
+
+find-whole-words-only = فقط کلمات کامل را جستجو کن
+
 fine-dash = خط‌چین ریز
 fine-dot = نقطهٔ ریز
 first-page = صفحهٔ نخست
@@ -4247,6 +4504,8 @@ format-shape-fill = قالب‌بندی پرکنندگی شکل…
 format-shape-line = قالب‌بندی خط شکل…
 format-shape-menu = قالب‌بندی شکل…
 format-shape-text = قالب‌بندی متن شکل…
+found-in = یافت شد در: { $page }، { $shape }
+
 freeform = آزاد
 freeform-drag-on-the-page-to-dra = آزاد: برای ترسیم هندسی دست‌آزاد روی صفحه بکشید (Esc برای پایان)
 freeform-off = حالت آزاد خاموش است
@@ -4285,6 +4544,8 @@ heading-style-gallery-planned = گالری سبک عنوان — برنامه‌
 height = ارتفاع
 # $g - فرمول نگهبان
 height-not-resized-guard = ارتفاع تغییر نکرد: { $g } (فقط عرض)
+help = راهنما
+
 help-about = راهنما / درباره
 high-192-dpi = بالا (۱۹۲ dpi)
 highlight-members = برجسته‌سازی اعضا
@@ -4338,6 +4599,10 @@ layer = لایه
 layer-composite-failed = لایهٔ { $id }: { $e }
 # $ix - شاخص سطر لایه
 layer-ix-fallback = لایهٔ { $ix }
+layers = لایه‌ها
+
+layers-planned = لایه‌ها — برنامه‌ریزی‌شده
+
 layout = چیدمان
 layout-options = گزینه‌های چیدمان
 layout-options-planned = گزینه‌های چیدمان — برنامه‌ریزی شده
@@ -4379,6 +4644,10 @@ master = شابلون
 # $id - شناسهٔ استاد
 master-armed-click-place = استاد { $id } آماده است — برای جای‌گذاری روی بوم کلیک کنید
 master-mid = شابلون { $mid }
+match-case = حساس به بزرگی و کوچکی حروف
+
+match-character-width = تطبیق عرض نویسه
+
 member-highlight-off = برجسته‌سازی اعضا خاموش است
 member-highlight-on = برجسته‌سازی اعضا روشن است
 membership = عضویت
@@ -4588,7 +4857,18 @@ rendering-scrim = در حال رندر…
 reorder-pages = بازچینی صفحه‌ها
 reorder-pages-menu = بازچینی صفحه‌ها…
 replace = جایگزینی
-replace-planned-later-milestone = جایگزینی — برنامه‌ریزی‌شده (نقطهٔ عطف بعدی)
+
+replace-all = جایگزینی همه
+
+replace-ellipsis = جایگزینی…
+
+replace-with = جایگزینی با:
+
+replacements-made = { $count ->
+  [1] 1 جایگزینی انجام شد
+ *[other] { $count } جایگزینی انجام شد
+}
+
 reply = پاسخ
 report-definitions-planned = تعاریف گزارش — برنامه‌ریزی شده
 reports = گزارش‌ها
@@ -4629,6 +4909,14 @@ save-the-stencil-planned = ذخیرهٔ شابلون — برنامه‌ریزی
 saved-path = { $path } ذخیره شد
 scale = مقیاس
 screen-96-dpi = نمایشگر (۹۶ dpi)
+scroll-left = اسکرول به چپ
+
+scroll-right = اسکرول به راست
+
+search = جستجو
+
+search-in = جستجو در
+
 search-results = نتایج جستجو
 search-shapes = جستجوی شکل‌ها
 search-templates = جستجوی قالب‌ها
@@ -4687,6 +4975,8 @@ shape-effects-planned = جلوه‌های شکل — برنامه‌ریزی ش�
 shape-extensions = پسوندهای شکل
 shape-fill-color = رنگ پرکنندگی شکل
 shape-handles = دسته‌های شکل
+shape-id-fallback = Sheet.{ $id }
+
 shape-id-s-alignment-box = کادر تراز شکل { $id }
 shape-id-s-connection-point = نقطهٔ اتصال شکل { $id }
 shape-id-s-extension = پسوند شکل { $id }
@@ -4753,6 +5043,8 @@ sp-width = عرض شکل
 sp-x = موقعیت X
 sp-y = موقعیت Y
 spacing = فاصله‌گذاری
+special = ویژه
+
 spell-add = افزودن
 spell-change = تغییر
 spell-change-all = تغییر همه
@@ -4834,8 +5126,16 @@ text = متن
 text-align-left = تراز چپ
 text-align-right = تراز راست
 text-box = جعبهٔ متن
+text-case = تغییر بزرگی و کوچکی حروف
+
+text-case-planned = تغییر بزرگی و کوچکی حروف — برنامه‌ریزی‌شده
+
 text-color = رنگ متن
 text-color-tip = رنگ متن انتخاب
+text-direction = جهت متن
+
+text-direction-planned = جهت متن — برنامه‌ریزی‌شده
+
 text-field = فیلد متنی
 text-formatting-arrives-with-a-l = قالب‌بندی متن با نقطهٔ عطف بعدی می‌آید
 text-shapes-planned = شکل‌های متنی — برنامه‌ریزی شده
@@ -5059,6 +5359,8 @@ aligning-to-the-page = ページに合わせて整列します
 alignment-and-spacing-hints-whil = ドラッグ中の整列と間隔のヒント
 alignment-boxes = 整列ボックス
 all-changes-saved = すべての変更を保存しました
+all-pages = すべてのページ
+
 all-pages-page-count = すべてのページ（{ $page_count }）
 already-aligned = 既に整列しています
 applies-to-the-ribbon-menus-and = リボン、メニュー、ダイアログに適用されます。図面の文字には影響しません。
@@ -5107,13 +5409,15 @@ callouts-planned = 吹き出し — 予定
 cancel = キャンセル
 cell-is-formula-driven = { $name } は数式で管理されています（{ $f }）
 center = 中央
+change-shape = 図形の変更
+
+change-shape-planned = 図形の変更 — 計画中（#131）
+
 chart = チャート
 charts-planned-later-milestone = チャート — 予定（後のマイルストーン）
 checking-the-clipboard-for-a-pic = クリップボードの画像を確認しています…
 choose-the-display-language-for = リボン、メニュー、ダイアログの表示言語を選択します
 classic-arrow = クラシック矢印
-clear = 消去
-clear-planned-later-milestone = 消去 — 予定（後のマイルストーン）
 click-a-shape-to-add-a-connectio = 図形をクリックして接続点を追加します
 clipboard = クリップボード
 clipboard-image-could-not-be-enc = クリップボードの画像をエンコードできませんでした
@@ -5409,7 +5713,34 @@ filter-pdf = PDF（ドキュメント）
 filter-png = PNG（ラスター画像）
 filter-svg = SVG（ベクター グラフィックス）
 find = 検索
-find-planned-later-milestone = 検索 — 予定（後のマイルストーン）
+find-any-character = 任意の文字
+
+find-caret-character = カレット文字
+
+find-ellipsis = 検索…
+
+find-manual-return = 手動改行
+
+find-next = 次を検索
+
+find-not-found = 検索文字列が見つかりませんでした。
+
+find-optional-hyphen = 任意ハイフン
+
+find-shape-data = 図形データ
+
+find-shape-name = 図形名
+
+find-shape-text = 図形テキスト
+
+find-tab-character = タブ文字
+
+find-user-defined-cell = ユーザー定義セル
+
+find-what = 検索する文字列:
+
+find-whole-words-only = 単語単位で検索する
+
 fine-dash = 細かい破線
 fine-dot = 細かい点線
 first-page = 先頭ページ
@@ -5441,6 +5772,8 @@ format-shape-fill = 図形の塗りつぶしの書式設定…
 format-shape-line = 図形の線の書式設定…
 format-shape-menu = 図形の書式設定…
 format-shape-text = 図形の文字の書式設定…
+found-in = 検索結果: { $page }、{ $shape }
+
 freeform = フリーフォーム
 freeform-drag-on-the-page-to-dra = フリーフォーム: ページ上をドラッグして自由な形状を描きます（Esc で終了）
 freeform-off = フリーフォームをオフにしました
@@ -5473,6 +5806,8 @@ heading-style = 見出しスタイル
 heading-style-gallery-planned = 見出しスタイル ギャラリー — 予定
 height = 高さ
 height-not-resized-guard = 高さはサイズ変更されませんでした: { $g }（幅のみ）
+help = ヘルプ
+
 help-about = ヘルプ/バージョン情報
 high-192-dpi = 高（192 dpi）
 highlight-members = メンバーを強調表示
@@ -5521,6 +5856,10 @@ last-page = 最終ページ
 layer = レイヤー
 layer-composite-failed = レイヤー { $id }: { $e }
 layer-ix-fallback = レイヤー { $ix }
+layers = レイヤー
+
+layers-planned = レイヤー — 計画中
+
 layout = レイアウト
 layout-options = レイアウト オプション
 layout-options-planned = レイアウト オプション — 予定
@@ -5560,6 +5899,10 @@ markup-tracking-planned-no-marku = マークアップの追跡 — 予定（マ�
 master = マスター
 master-armed-click-place = マスター { $id } を準備しました — キャンバスをクリックして配置します
 master-mid = マスター { $mid }
+match-case = 大文字/小文字を区別する
+
+match-character-width = 全角/半角を区別する
+
 member-highlight-off = メンバーの強調表示をオフにしました
 member-highlight-on = メンバーの強調表示をオンにしました
 membership = メンバーシップ
@@ -5748,7 +6091,18 @@ rendering-scrim = 描画中…
 reorder-pages = ページの並べ替え
 reorder-pages-menu = ページの並べ替え…
 replace = 置換
-replace-planned-later-milestone = 置換 — 予定（後のマイルストーン）
+
+replace-all = すべて置換
+
+replace-ellipsis = 置換…
+
+replace-with = 置換後の文字列:
+
+replacements-made = { $count ->
+  [1] 1 件置換しました
+ *[other] { $count } 件置換しました
+}
+
 reply = 返信
 report-definitions-planned = レポート定義 — 予定
 reports = レポート
@@ -5787,6 +6141,14 @@ save-the-stencil-planned = ステンシルの保存 — 予定
 saved-path = { $path } を保存しました
 scale = 縮尺
 screen-96-dpi = 画面（96 dpi）
+scroll-left = 左にスクロール
+
+scroll-right = 右にスクロール
+
+search = 検索
+
+search-in = 検索場所
+
 search-results = 検索結果
 search-shapes = シェイプの検索
 search-templates = テンプレートの検索
@@ -5834,6 +6196,8 @@ shape-effects-planned = 図形の効果 — 予定
 shape-extensions = 図形の拡張
 shape-fill-color = 図形の塗りつぶしの色
 shape-handles = 図形のハンドル
+shape-id-fallback = シート.{ $id }
+
 shape-id-s-alignment-box = 図形 { $id } の整列ボックス
 shape-id-s-connection-point = 図形 { $id } の接続点
 shape-id-s-extension = 図形 { $id } の拡張
@@ -5900,6 +6264,8 @@ sp-width = 図形の幅
 sp-x = X 位置
 sp-y = Y 位置
 spacing = 間隔
+special = 特殊文字
+
 spell-add = 追加
 spell-change = 変更
 spell-change-all = すべて変更
@@ -5980,8 +6346,16 @@ text = 文字
 text-align-left = 左揃え
 text-align-right = 右揃え
 text-box = テキスト ボックス
+text-case = 文字種の変更
+
+text-case-planned = 文字種の変更 — 計画中
+
 text-color = 文字の色
 text-color-tip = 選択範囲の文字色
+text-direction = 文字の方向
+
+text-direction-planned = 文字の方向 — 計画中
+
 text-field = 文字フィールド
 text-formatting-arrives-with-a-l = 文字書式は後のマイルストーンで提供されます
 text-shapes-planned = 文字図形 — 予定
@@ -6172,6 +6546,8 @@ aligning-to-the-page = 페이지에 맞춰 정렬합니다
 alignment-and-spacing-hints-whil = 끄는 동안 정렬과 간격 힌트
 alignment-boxes = 정렬 상자
 all-changes-saved = 모든 변경 내용이 저장되었습니다
+all-pages = 모든 페이지
+
 all-pages-page-count = 모든 페이지({ $page_count })
 already-aligned = 이미 정렬되어 있습니다
 applies-to-the-ribbon-menus-and = 리본, 메뉴, 대화 상자에 적용됩니다. 드로잉의 텍스트에는 영향을 주지 않습니다.
@@ -6220,13 +6596,15 @@ callouts-planned = 설명선 — 예정
 cancel = 취소
 cell-is-formula-driven = { $name }은(는) 수식으로 관리됩니다({ $f })
 center = 가운데
+change-shape = 도형 변경
+
+change-shape-planned = 도형 변경 — 계획됨(#131)
+
 chart = 차트
 charts-planned-later-milestone = 차트 — 예정(이후 마일스톤)
 checking-the-clipboard-for-a-pic = 클립보드에서 그림을 확인하는 중…
 choose-the-display-language-for = 리본, 메뉴, 대화 상자의 표시 언어를 선택합니다
 classic-arrow = 클래식 화살표
-clear = 지우기
-clear-planned-later-milestone = 지우기 — 예정(이후 마일스톤)
 click-a-shape-to-add-a-connectio = 셰이프를 클릭하여 연결 지점을 추가합니다
 clipboard = 클립보드
 clipboard-image-could-not-be-enc = 클립보드 이미지를 인코딩하지 못했습니다
@@ -6522,7 +6900,34 @@ filter-pdf = PDF(문서)
 filter-png = PNG(래스터 이미지)
 filter-svg = SVG(벡터 그래픽)
 find = 찾기
-find-planned-later-milestone = 찾기 — 예정(이후 마일스톤)
+find-any-character = 모든 문자
+
+find-caret-character = 캐럿 문자
+
+find-ellipsis = 찾기…
+
+find-manual-return = 수동 줄 바꿈
+
+find-next = 다음 찾기
+
+find-not-found = 검색 문자열을 찾을 수 없습니다.
+
+find-optional-hyphen = 선택적 하이픈
+
+find-shape-data = 도형 데이터
+
+find-shape-name = 도형 이름
+
+find-shape-text = 도형 텍스트
+
+find-tab-character = 탭 문자
+
+find-user-defined-cell = 사용자 정의 셀
+
+find-what = 찾을 내용:
+
+find-whole-words-only = 전체 단어만 찾기
+
 fine-dash = 가는 파선
 fine-dot = 가는 점선
 first-page = 첫 페이지
@@ -6554,6 +6959,8 @@ format-shape-fill = 셰이프 채우기 서식…
 format-shape-line = 셰이프 선 서식…
 format-shape-menu = 셰이프 서식…
 format-shape-text = 셰이프 텍스트 서식…
+found-in = 찾은 위치: { $page }, { $shape }
+
 freeform = 자유형
 freeform-drag-on-the-page-to-dra = 자유형: 페이지에서 끌어 자유 곡선을 그립니다(Esc로 끝내기)
 freeform-off = 자유형을 해제했습니다
@@ -6586,6 +6993,8 @@ heading-style = 제목 스타일
 heading-style-gallery-planned = 제목 스타일 갤러리 — 예정
 height = 높이
 height-not-resized-guard = 높이는 크기 조정되지 않았습니다: { $g }(너비만)
+help = 도움말
+
 help-about = 도움말/정보
 high-192-dpi = 높음(192dpi)
 highlight-members = 멤버 강조 표시
@@ -6634,6 +7043,10 @@ last-page = 마지막 페이지
 layer = 레이어
 layer-composite-failed = 레이어 { $id }: { $e }
 layer-ix-fallback = 레이어 { $ix }
+layers = 레이어
+
+layers-planned = 레이어 — 계획됨
+
 layout = 레이아웃
 layout-options = 레이아웃 옵션
 layout-options-planned = 레이아웃 옵션 — 예정
@@ -6673,6 +7086,10 @@ markup-tracking-planned-no-marku = 마크업 추적 — 예정(마크업 모델 
 master = 마스터
 master-armed-click-place = 마스터 { $id } 준비됨 — 캔버스를 클릭하여 배치합니다
 master-mid = 마스터 { $mid }
+match-case = 대/소문자 구분
+
+match-character-width = 문자 너비 일치
+
 member-highlight-off = 멤버 강조 표시를 해제했습니다
 member-highlight-on = 멤버 강조 표시를 켰습니다
 membership = 멤버십
@@ -6861,7 +7278,18 @@ rendering-scrim = 렌더링 중…
 reorder-pages = 페이지 다시 정렬
 reorder-pages-menu = 페이지 다시 정렬…
 replace = 바꾸기
-replace-planned-later-milestone = 바꾸기 — 예정(이후 마일스톤)
+
+replace-all = 모두 바꾸기
+
+replace-ellipsis = 바꾸기…
+
+replace-with = 바꿀 내용:
+
+replacements-made = { $count ->
+  [1] 1개를 바꾸었습니다
+ *[other] { $count }개를 바꾸었습니다
+}
+
 reply = 회신
 report-definitions-planned = 보고서 정의 — 예정
 reports = 보고서
@@ -6900,6 +7328,14 @@ save-the-stencil-planned = 스텐실 저장 — 예정
 saved-path = { $path }을(를) 저장했습니다
 scale = 배율
 screen-96-dpi = 화면(96dpi)
+scroll-left = 왼쪽으로 스크롤
+
+scroll-right = 오른쪽으로 스크롤
+
+search = 검색
+
+search-in = 검색 위치
+
 search-results = 검색 결과
 search-shapes = 셰이프 검색
 search-templates = 템플릿 검색
@@ -6947,6 +7383,8 @@ shape-effects-planned = 셰이프 효과 — 예정
 shape-extensions = 셰이프 확장
 shape-fill-color = 셰이프 채우기 색
 shape-handles = 셰이프 핸들
+shape-id-fallback = 시트.{ $id }
+
 shape-id-s-alignment-box = 셰이프 { $id }의 정렬 상자
 shape-id-s-connection-point = 셰이프 { $id }의 연결 지점
 shape-id-s-extension = 셰이프 { $id }의 확장
@@ -7013,6 +7451,8 @@ sp-width = 도형 너비
 sp-x = X 위치
 sp-y = Y 위치
 spacing = 간격
+special = 특수 문자
+
 spell-add = 추가
 spell-change = 바꾸기
 spell-change-all = 모두 바꾸기
@@ -7093,8 +7533,16 @@ text = 텍스트
 text-align-left = 왼쪽 맞춤
 text-align-right = 오른쪽 맞춤
 text-box = 텍스트 상자
+text-case = 대/소문자 변경
+
+text-case-planned = 대/소문자 변경 — 계획됨
+
 text-color = 글자 색
 text-color-tip = 선택 영역의 글자 색
+text-direction = 텍스트 방향
+
+text-direction-planned = 텍스트 방향 — 계획됨
+
 text-field = 텍스트 필드
 text-formatting-arrives-with-a-l = 텍스트 서식은 이후 마일스톤에서 제공됩니다
 text-shapes-planned = 텍스트 셰이프 — 예정
@@ -7283,6 +7731,8 @@ aligning-to-the-page = 正在相对页面对齐
 alignment-and-spacing-hints-whil = 拖动时显示对齐和间距提示
 alignment-boxes = 对齐框
 all-changes-saved = 所有更改已保存
+all-pages = 所有页
+
 all-pages-page-count = 所有页面（{ $page_count }）
 already-aligned = 已对齐
 applies-to-the-ribbon-menus-and = 适用于功能区、菜单和对话框。绘图文本不受影响。
@@ -7331,13 +7781,15 @@ callouts-planned = 标注 — 计划中
 cancel = 取消
 cell-is-formula-driven = { $name }由公式驱动（{ $f }）
 center = 居中
+change-shape = 更改形状
+
+change-shape-planned = 更改形状 — 已计划（#131）
+
 chart = 图表
 charts-planned-later-milestone = 图表 — 计划中（后期里程碑）
 checking-the-clipboard-for-a-pic = 正在检查剪贴板中的图片…
 choose-the-display-language-for = 选择功能区、菜单和对话框的显示语言
 classic-arrow = 经典箭头
-clear = 清除
-clear-planned-later-milestone = 清除 — 计划中（后期里程碑）
 click-a-shape-to-add-a-connectio = 单击形状以添加连接点
 clipboard = 剪贴板
 clipboard-image-could-not-be-enc = 剪贴板图像无法编码
@@ -7634,7 +8086,34 @@ filter-pdf = PDF（文档）
 filter-png = PNG（位图图像）
 filter-svg = SVG（矢量图形）
 find = 查找
-find-planned-later-milestone = 查找 — 计划中（后期里程碑）
+find-any-character = 任意字符
+
+find-caret-character = 插入符字符
+
+find-ellipsis = 查找…
+
+find-manual-return = 手动换行
+
+find-next = 查找下一个
+
+find-not-found = 未找到搜索字符串。
+
+find-optional-hyphen = 可选连字符
+
+find-shape-data = 形状数据
+
+find-shape-name = 形状名称
+
+find-shape-text = 形状文本
+
+find-tab-character = 制表符
+
+find-user-defined-cell = 用户定义的单元格
+
+find-what = 查找内容：
+
+find-whole-words-only = 全字匹配
+
 fine-dash = 细虚线
 fine-dot = 细点
 first-page = 第一页
@@ -7666,6 +8145,8 @@ format-shape-fill = 设置形状填充格式…
 format-shape-line = 设置形状线条格式…
 format-shape-menu = 设置形状格式…
 format-shape-text = 设置形状文本格式…
+found-in = 找到位置：{ $page }，{ $shape }
+
 freeform = 任意多边形
 freeform-drag-on-the-page-to-dra = 任意多边形：在页面上拖动以绘制手绘几何（按 Esc 结束）
 freeform-off = 任意多边形工具已关闭
@@ -7698,6 +8179,8 @@ heading-style = 标题样式
 heading-style-gallery-planned = 标题样式库 — 计划中
 height = 高度
 height-not-resized-guard = 高度未调整：{ $g }（仅调整宽度）
+help = 帮助
+
 help-about = 帮助 / 关于
 high-192-dpi = 高（192 dpi）
 highlight-members = 突出显示成员
@@ -7746,6 +8229,10 @@ last-page = 最后一页
 layer = 图层
 layer-composite-failed = 图层 { $id }：{ $e }
 layer-ix-fallback = 图层 { $ix }
+layers = 图层
+
+layers-planned = 图层 — 已计划
+
 layout = 布局
 layout-options = 布局选项
 layout-options-planned = 布局选项 — 计划中
@@ -7785,6 +8272,10 @@ markup-tracking-planned-no-marku = 修订跟踪 — 计划中（尚无修订模�
 master = 主形状
 master-armed-click-place = 主形状 { $id } 已就绪——单击画布以放置
 master-mid = 主形状 { $mid }
+match-case = 区分大小写
+
+match-character-width = 匹配字符宽度
+
 member-highlight-off = 成员突出显示已关闭
 member-highlight-on = 成员突出显示已开启
 membership = 成员资格
@@ -7973,7 +8464,18 @@ rendering-scrim = 正在渲染…
 reorder-pages = 重新排序页面
 reorder-pages-menu = 重新排序页面…
 replace = 替换
-replace-planned-later-milestone = 替换 — 计划中（后期里程碑）
+
+replace-all = 全部替换
+
+replace-ellipsis = 替换…
+
+replace-with = 替换为：
+
+replacements-made = { $count ->
+  [1] 已替换 1 处
+ *[other] 已替换 { $count } 处
+}
+
 reply = 答复
 report-definitions-planned = 报表定义 — 计划中
 reports = 报表
@@ -8012,6 +8514,14 @@ save-the-stencil-planned = 保存模具 — 计划中
 saved-path = 已保存 { $path }
 scale = 比例
 screen-96-dpi = 屏幕（96 dpi）
+scroll-left = 向左滚动
+
+scroll-right = 向右滚动
+
+search = 搜索
+
+search-in = 搜索范围
+
 search-results = 搜索结果
 search-shapes = 搜索形状
 search-templates = 搜索模板
@@ -8064,6 +8574,8 @@ shape-effects-planned = 形状效果 — 计划中
 shape-extensions = 形状延伸
 shape-fill-color = 形状填充颜色
 shape-handles = 形状手柄
+shape-id-fallback = 形状.{ $id }
+
 shape-id-s-alignment-box = 形状 { $id } 的对齐框
 shape-id-s-connection-point = 形状 { $id } 的连接点
 shape-id-s-extension = 形状 { $id } 的延伸线
@@ -8130,6 +8642,8 @@ sp-width = 形状宽度
 sp-x = X 位置
 sp-y = Y 位置
 spacing = 间距
+special = 特殊字符
+
 spell-add = 添加
 spell-change = 更改
 spell-change-all = 全部更改
@@ -8210,8 +8724,16 @@ text = 文本
 text-align-left = 文本左对齐
 text-align-right = 文本右对齐
 text-box = 文本框
+text-case = 更改大小写
+
+text-case-planned = 更改大小写 — 已计划
+
 text-color = 文本颜色
 text-color-tip = 选定内容的文本颜色
+text-direction = 文字方向
+
+text-direction-planned = 文字方向 — 已计划
+
 text-field = 域
 text-formatting-arrives-with-a-l = 文本格式设置将在后期里程碑提供
 text-shapes-planned = 文本形状 — 计划中
