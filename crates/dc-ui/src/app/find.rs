@@ -58,11 +58,11 @@ impl App {
             match_case: self.find.match_case,
             match_width: self.find.match_width,
             whole_words: self.find.whole_words,
-            rev: self
-                .ed
-                .as_ref()
-                .map(|e| e.history.undo_labels().len())
-                .unwrap_or(0),
+            // The DOCUMENT revision (`App::version`, bumped by every
+            // edit, undo, redo and open) — the undo-stack depth would
+            // collide between "n edits" and "n-1 edits, one undone,
+            // another made" (CodeRabbit round on phase 2).
+            rev: self.version,
         }
     }
 
@@ -82,9 +82,14 @@ impl App {
                 self.find.status = crate::find_dlg::FindStatus::NotFound;
                 return;
             };
+            // The Selection scope searches the selection the KEY
+            // carries — with navigation holding, that is the
+            // selection the search started from, not the live one
+            // Find Next itself just narrowed (CodeRabbit round on
+            // phase 2); any other live selection re-keyed already.
             let scope = match self.find.scope {
                 crate::find_dlg::FindScopeKind::Selection => {
-                    dc_core::FindScope::Selection(&self.sel_set)
+                    dc_core::FindScope::Selection(&key.selection)
                 }
                 crate::find_dlg::FindScopeKind::CurrentPage => match self.page_id() {
                     Some(p) => dc_core::FindScope::CurrentPage(p),
@@ -115,24 +120,29 @@ impl App {
         }
         let wrapped = self.find.cursor >= self.find.matches.len();
         let cursor = if wrapped { 0 } else { self.find.cursor };
-        let Some(m) = self.find.matches.get(cursor) else {
+        let Some(m) = self.find.matches.get(cursor).cloned() else {
             self.find.status = crate::find_dlg::FindStatus::NotFound;
             return;
         };
-        // Navigate: switch to the match's page, select the owning
-        // shape, and zoom it into view.
+        // Navigate: switch to the match's page through the canonical
+        // page switch — the outgoing page's view and selection park
+        // under its id and group-edit resets (a bare `page_idx` write
+        // lost both, CodeRabbit round on phase 2) — then select the
+        // owning shape and zoom it into view. The names resolve into
+        // owned strings first (the switch takes `&mut self`).
         let Some(ed) = self.ed.as_ref() else {
             return;
         };
         let page = ed.doc.pages.iter().find(|p| p.id == m.page);
         let page_name = page.map(|p| p.name.clone());
-        if let Some(idx) = ed.doc.pages.iter().position(|p| p.id == m.page) {
-            self.page_idx = idx;
-        }
+        let idx = ed.doc.pages.iter().position(|p| p.id == m.page);
         let shape_label = page
             .and_then(|p| vsdx::model::find_shape_by_id(&p.shapes, m.shape))
             .and_then(|sh| sh.name_u.clone())
             .unwrap_or_else(|| crate::i18n::strs().msg_shape_id_fallback(m.shape));
+        if let Some(idx) = idx {
+            self.switch_page(idx);
+        }
         self.set_selection(Some((m.page, m.shape)));
         self.find.nav_sel = Some(self.sel_set.clone());
         self.zoom_selection_pending = true;

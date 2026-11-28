@@ -621,7 +621,7 @@ master = شابلون
 # $id - شناسهٔ استاد
 master-armed-click-place = استاد { $id } آماده است — برای جای‌گذاری روی بوم کلیک کنید
 master-mid = شابلون { $mid }
-match-case = تطبیق مورد
+match-case = حساس به بزرگی و کوچکی حروف
 
 match-character-width = تطبیق عرض نویسه
 

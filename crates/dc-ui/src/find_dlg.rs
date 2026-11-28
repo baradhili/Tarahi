@@ -54,7 +54,8 @@ pub(crate) struct FindKey {
     pub match_case: bool,
     pub match_width: bool,
     pub whole_words: bool,
-    pub rev: usize,
+    /// The document revision (`App::version`).
+    pub rev: u64,
 }
 
 /// The Find window's session state. History is session-lifetime (the

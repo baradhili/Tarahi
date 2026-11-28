@@ -7586,10 +7586,10 @@ impl L10n {
             Self::De => 0..52783,
             Self::En => 52783..103661,
             Self::Es => 103661..159665,
-            Self::Fa => 159665..226259,
-            Self::Ja => 226259..282864,
-            Self::Ko => 282864..334984,
-            Self::ZhHans => 334984..380624,
+            Self::Fa => 159665..226287,
+            Self::Ja => 226287..282892,
+            Self::Ko => 282892..335012,
+            Self::ZhHans => 335012..380652,
         }
     }
     /// Load a L10nLanguage from the embedded data.
