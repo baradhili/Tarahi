@@ -60,6 +60,8 @@ aligning-to-the-page = alineando con la página
 alignment-and-spacing-hints-whil = Sugerencias de alineación y espaciado al arrastrar
 alignment-boxes = Cuadros de alineación
 all-changes-saved = Todos los cambios guardados
+all-pages = Todas las páginas
+
 # $page_count - argumento
 all-pages-page-count = Todas las páginas ({ $page_count })
 already-aligned = ya está alineado
@@ -448,7 +450,34 @@ filter-pdf = PDF (documento)
 filter-png = PNG (imagen rasterizada)
 filter-svg = SVG (gráficos vectoriales)
 find = Buscar
-find-planned-later-milestone = Buscar — planeado (hito posterior)
+find-any-character = Cualquier carácter
+
+find-caret-character = Carácter de intercalación
+
+find-ellipsis = Buscar…
+
+find-manual-return = Retorno manual
+
+find-next = Buscar siguiente
+
+find-not-found = No se encontró la cadena de búsqueda.
+
+find-optional-hyphen = Guion opcional
+
+find-shape-data = Datos de forma
+
+find-shape-name = Nombre de forma
+
+find-shape-text = Texto de forma
+
+find-tab-character = Carácter de tabulación
+
+find-user-defined-cell = Celda definida por el usuario
+
+find-what = Buscar:
+
+find-whole-words-only = Buscar solo palabras completas
+
 fine-dash = Guion fino
 fine-dot = Punto fino
 first-page = Primera página
@@ -482,6 +511,8 @@ format-shape-fill = Dar formato al relleno de la forma…
 format-shape-line = Dar formato a la línea de la forma…
 format-shape-menu = Dar formato a la forma…
 format-shape-text = Dar formato al texto de la forma…
+found-in = Se encontró en: { $page }, { $shape }
+
 freeform = Forma libre
 freeform-drag-on-the-page-to-dra = Forma libre: arrastre en la página para dibujar geometría a mano alzada (Esc para terminar)
 freeform-off = forma libre desactivada
@@ -523,6 +554,8 @@ heading-style-gallery-planned = Galería de estilos de título — planeado
 height = Alto
 # $g - fórmula protectora
 height-not-resized-guard = alto sin cambiar de tamaño: { $g } (solo el ancho)
+help = Ayuda
+
 help-about = Ayuda / Acerca de
 high-192-dpi = Alta (192 ppp)
 highlight-members = Resaltar miembros
@@ -625,6 +658,10 @@ master = Patrón
 master-armed-click-place = patrón { $id } preparado — haga clic en el lienzo para colocarlo
 # $mid - argumento
 master-mid = patrón { $mid }
+match-case = Coincidir mayúsculas y minúsculas
+
+match-character-width = Coincidir el ancho de carácter
+
 member-highlight-off = resaltado de miembros desactivado
 member-highlight-on = resaltado de miembros activado
 membership = Pertenencia
@@ -850,7 +887,8 @@ rename-page = Cambiar el nombre de la página
 rendering-scrim = Renderizando…
 reorder-pages = Reordenar páginas
 reorder-pages-menu = Reordenar páginas…
-replace = Reemplazar
+replace-ellipsis = Reemplazar…
+
 replace-planned-later-milestone = Reemplazar — planeado (hito posterior)
 reply = Responder
 report-definitions-planned = Definiciones de informes — planeado
@@ -893,6 +931,8 @@ save-the-stencil-planned = Guardar la galería — planeado
 saved-path = se guardó { $path }
 scale = Escala
 screen-96-dpi = Pantalla (96 ppp)
+search-in = Buscar en
+
 search-results = Resultados de búsqueda
 search-shapes = Buscar formas
 search-templates = Buscar plantillas
@@ -954,6 +994,8 @@ shape-effects-planned = Efectos de forma — planeado
 shape-extensions = Extensiones de forma
 shape-fill-color = Color de relleno de la forma
 shape-handles = Tiradores de forma
+shape-id-fallback = Hoja.{ $id }
+
 # $id - argumento
 shape-id-s-alignment-box = cuadro de alineación de la forma { $id }
 # $id - argumento
@@ -1027,6 +1069,8 @@ sp-width = Ancho de la forma
 sp-x = Posición X
 sp-y = Posición Y
 spacing = Espaciado
+special = Especial
+
 spell-add = Agregar
 spell-change = Cambiar
 spell-change-all = Cambiar todo

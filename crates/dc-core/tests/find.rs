@@ -708,3 +708,78 @@ fn matches_are_leftmost_and_non_overlapping() {
     // A needle longer than the text never matches.
     assert!(find_matches(&d, "aaaaaa", FindScope::AllPages, &FindOptions::default()).is_empty());
 }
+
+// -- caret codes and width folding (phase 2) --------------------------
+
+#[test]
+fn caret_codes_search_the_special_characters() {
+    // a, TAB, b, LF, c, soft hyphen, d, ^, e — one of each Special
+    // entry's literal.
+    let raw = "a\tb\nc\u{AD}d^e";
+    let d = doc(vec![page(0, vec![text_shape(1, None, raw)])]);
+    let find = |needle: &str| {
+        find_matches(&d, needle, FindScope::AllPages, &FindOptions::default())
+            .into_iter()
+            .map(|m| m.target)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(find("^t"), vec![FindTarget::Text { start: 1, len: 1 }]);
+    assert_eq!(find("^p"), vec![FindTarget::Text { start: 3, len: 1 }]);
+    assert_eq!(find("^-"), vec![FindTarget::Text { start: 5, len: 1 }]);
+    assert_eq!(find("^^"), vec![FindTarget::Text { start: 7, len: 1 }]);
+    // Codes combine with literals.
+    assert_eq!(find("b^pc"), vec![FindTarget::Text { start: 2, len: 3 }]);
+}
+
+#[test]
+fn unrecognized_or_trailing_caret_stays_literal() {
+    let d = doc(vec![page(0, vec![text_shape(1, None, "a^x b^")])]);
+    let got = find_matches(&d, "^x", FindScope::AllPages, &FindOptions::default());
+    assert_eq!(
+        got.iter().map(|m| m.target.clone()).collect::<Vec<_>>(),
+        vec![FindTarget::Text { start: 1, len: 2 }]
+    );
+    let got = find_matches(&d, "b^", FindScope::AllPages, &FindOptions::default());
+    assert_eq!(
+        got.iter().map(|m| m.target.clone()).collect::<Vec<_>>(),
+        vec![FindTarget::Text { start: 4, len: 2 }]
+    );
+}
+
+#[test]
+fn any_character_wildcard_matches_exactly_one_char() {
+    let d = doc(vec![page(0, vec![text_shape(1, None, "hot hat ht ho")])]);
+    let got = find_matches(&d, "h^?t", FindScope::AllPages, &FindOptions::default());
+    let spans: Vec<FindTarget> = got.iter().map(|m| m.target.clone()).collect();
+    assert_eq!(
+        spans,
+        vec![
+            FindTarget::Text { start: 0, len: 3 }, // hot
+            FindTarget::Text { start: 4, len: 3 }, // hat
+        ],
+        "the two-letter `ht` never matches; each wildcard eats one char"
+    );
+}
+
+#[test]
+fn match_width_folds_fullwidth_forms() {
+    // ＡＢＣ is fullwidth; 　(U+3000) is the ideographic space.
+    let d = doc(vec![page(0, vec![text_shape(1, None, "ＡＢＣ　Ｄ")])]);
+    let plain_opts = FindOptions::default();
+    assert!(
+        find_matches(&d, "abc", FindScope::AllPages, &plain_opts).is_empty(),
+        "without the fold the widths differ"
+    );
+    let opts = FindOptions {
+        match_width: true,
+        ..FindOptions::default()
+    };
+    assert_eq!(find_matches(&d, "abc", FindScope::AllPages, &opts).len(), 1);
+    assert_eq!(find_matches(&d, "c d", FindScope::AllPages, &opts).len(), 1);
+    // The fold is symmetric: a fullwidth NEEDLE finds halfwidth text.
+    let d = doc(vec![page(0, vec![text_shape(1, None, "width fold")])]);
+    assert_eq!(
+        find_matches(&d, "ＷＩＤＴＨ", FindScope::AllPages, &opts).len(),
+        1
+    );
+}

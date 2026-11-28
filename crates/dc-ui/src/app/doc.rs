@@ -117,6 +117,16 @@ impl App {
                 // way (#121): page and shape IDs collide across
                 // documents, so the session must not outlive its own.
                 self.spell.session = None;
+                // The Find session's cached match list is
+                // document-scoped the same way (#115): its key cannot
+                // see the swap (same query, same undo depth), so the
+                // list must not outlive its document. The window
+                // stays open — the next Find Next recomputes.
+                self.find.matches.clear();
+                self.find.key = None;
+                self.find.nav_sel = None;
+                self.find.cursor = 0;
+                self.find.status = crate::find_dlg::FindStatus::Idle;
                 self.ed = Some(Editor::new(ed));
                 self.reload_snap_settings();
                 self.path = path;

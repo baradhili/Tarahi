@@ -229,6 +229,7 @@ impl App {
         self.hyperlink_window(&ctx);
         self.fields_insert_window(&ctx);
         self.spell_window(&ctx);
+        self.find_window(&ctx);
         self.comment_window(&ctx);
         self.shape_data_window(&ctx);
         self.size_pos_window(&ctx);
@@ -236,6 +237,7 @@ impl App {
         // dropdown that opens it.
         self.panzoom_window(&ctx);
         self.task_panes_menu(&ctx);
+        self.find_menu(&ctx);
         self.color_palette_window(&ctx);
 
         // The eframe root Ui paints no background and eframe's clear

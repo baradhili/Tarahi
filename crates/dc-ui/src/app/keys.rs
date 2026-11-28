@@ -518,6 +518,8 @@ impl App {
     /// manage their own Esc (Hyperlinks, Shape Data, Comments, About).
     pub(super) fn shell_surface_open(&self) -> bool {
         self.selby_open
+            || self.find.open
+            || self.find_menu.is_some()
             || self.snap_dlg_open
             || self.zoom_dlg_open
             || self.pagesetup_open

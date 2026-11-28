@@ -11003,3 +11003,183 @@ fn layout_and_routing_dialog_writes_jump_cells() {
         "no routing cell was written"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Find (#115 phase 2): the ribbon dropdown opens the modeless dialog,
+// Find Next cycles the matches (selecting the owning shape), and a
+// miss reports in the status area.
+// ---------------------------------------------------------------------------
+
+/// Open the Find dialog through the real ribbon path — the Editing
+/// group's Find dropdown (FS 1 §3.2), then its Find… entry.
+fn open_find_dialog(h: &mut Harness<'_, App>) {
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label("Find").click();
+    h.run();
+    h.get_by_label("Find…").click();
+    h.run();
+}
+
+#[test]
+fn find_dialog_cycles_matches_and_reports_the_location() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness_with_blank();
+    let first = place_shape_with_text(&mut h, "alpha widget");
+    let second = place_shape_with_text(&mut h, "beta widget");
+
+    open_find_dialog(&mut h);
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("Find what:"),
+    )
+    .set_text_value_accesskit("widget");
+    h.run();
+
+    // Find Next selects the owning shape, in match order, wrapping.
+    h.get_by_label("Find Next").click();
+    h.run();
+    let (page, sel1) = h.state().debug_sel().expect("first match selected");
+    assert_eq!(sel1, first, "match order is shape-tree order");
+    let (found_page, found_shape) = h
+        .state()
+        .debug_find_found_in()
+        .expect("the status line reports the location");
+    // The unnamed-shape fallback (Fluent isolates the number arg —
+    // U+2068/9 — so assert the prefix and digit, not the isolation).
+    assert!(
+        found_shape.starts_with("Sheet.") && found_shape.contains('1'),
+        "an unnamed shape shows the fallback: {found_shape:?}"
+    );
+    assert!(!found_page.is_empty(), "the page name rides along");
+
+    h.get_by_label("Find Next").click();
+    h.run();
+    assert_eq!(h.state().debug_sel().map(|(_, s)| s), Some(second));
+
+    // Past the last match, Find Next WRAPS to the first.
+    h.get_by_label("Find Next").click();
+    h.run();
+    assert_eq!(h.state().debug_sel().map(|(_, s)| s), Some(first));
+    assert_eq!(page, h.state().debug_sel().unwrap().0);
+
+    // Cancel closes the modeless window.
+    h.get_by_label("Cancel").click();
+    h.run();
+    assert!(h.state().debug_find_found_in().is_some(), "state survives");
+}
+
+#[test]
+fn find_dialog_reports_a_miss_in_the_status_area() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness_with_blank();
+    place_shape_with_text(&mut h, "nothing to see");
+
+    open_find_dialog(&mut h);
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("Find what:"),
+    )
+    .set_text_value_accesskit("see");
+    h.run();
+    h.get_by_label("Find Next").click();
+    h.run();
+    assert!(
+        h.state().debug_find_found_in().is_some(),
+        "the hit lands first"
+    );
+
+    // A query nothing matches reports in the status area.
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("Find what:"),
+    )
+    .set_text_value_accesskit("absent");
+    h.run();
+    h.get_by_label("Find Next").click();
+    h.run();
+    assert!(h.state().debug_find_not_found());
+    assert!(h.state().debug_find_found_in().is_none());
+}
+
+/// Selection scope keeps the selection the search started from: Find
+/// Next's own navigation must not re-scope the search to the single
+/// shape it just selected (the cycle reaches every selected shape).
+#[test]
+fn find_dialog_selection_scope_cycles_all_selected_shapes() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness_with_blank();
+    let first = place_shape_with_text(&mut h, "alpha token");
+    // The second shape lands clear of the first (the helper always
+    // drops at the canvas center, where it would cover shape one).
+    h.run();
+    let from = h.state().debug_master_cells()[0].1.center();
+    let to = h.state().debug_canvas_rect().center() + egui::vec2(150.0, 0.0);
+    click_at(&mut h, from, egui::PointerButton::Primary);
+    click_at(&mut h, to, egui::PointerButton::Primary);
+    let (_, second) = h.state().debug_sel().expect("placed shape selected");
+    h.state_mut()
+        .debug_set_shape_text_for_test(second, "beta token");
+    h.run();
+    // Multi-select both: click the first, shift-click the second.
+    let fc = h
+        .state()
+        .debug_shape_screen_rect(first)
+        .unwrap()
+        .center();
+    click_at(&mut h, fc, egui::PointerButton::Primary);
+    h.run();
+    let sc = h
+        .state()
+        .debug_shape_screen_rect(second)
+        .unwrap()
+        .center();
+    let shift = egui::Modifiers {
+        shift: true,
+        ..Default::default()
+    };
+    h.event(egui::Event::ModifiersChanged(shift));
+    h.hover_at(sc);
+    h.event(egui::Event::PointerButton {
+        pos: sc,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: shift,
+    });
+    h.event(egui::Event::PointerButton {
+        pos: sc,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: shift,
+    });
+    h.run();
+    assert_eq!(
+        h.state().debug_sel_set_len(),
+        2,
+        "both shapes selected before the search"
+    );
+
+    open_find_dialog(&mut h);
+    h.get(
+        egui_kittest::kittest::By::default()
+            .role(egui::Role::TextInput)
+            .label("Find what:"),
+    )
+    .set_text_value_accesskit("token");
+    h.run();
+    h.get_by_label("Selection").click();
+    h.run();
+
+    h.get_by_label("Find Next").click();
+    h.run();
+    assert_eq!(h.state().debug_sel().map(|(_, s)| s), Some(first));
+    h.get_by_label("Find Next").click();
+    h.run();
+    assert_eq!(
+        h.state().debug_sel().map(|(_, s)| s),
+        Some(second),
+        "the cycle reaches the second SELECTED shape despite the first Find Next selecting only the first"
+    );
+}

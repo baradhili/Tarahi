@@ -23,21 +23,20 @@ pub(crate) fn groups(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec
         Group::new(s.msg_tools(), tools_cols(s, ctx)),
         Group::new(s.msg_shape_styles(), shape_styles_cols(s, has_sel)),
         Group::new(s.msg_arrange(), arrange_cols(s, ctx, multi_sel, tri_sel)),
-        // #252: Visio's Editing group — Find/Replace/Clear are
-        // placeholders (no backend yet); Select stays beside
-        // Clipboard until the Select dropdown lands.
+        // Visio's Editing group (FS 1, #115): Find is the spec's
+        // dropdown button — Find… opens the Find dialog (#115 phase
+        // 2), Replace… lands with phase 3 and keeps its planned-later
+        // tip. Clear stays a placeholder (out of scope, #252); Select
+        // stays beside Clipboard until the Select dropdown lands.
         Group::new(
             s.msg_editing(),
             vec![grid(vec![
                 vec![
-                    RibbonButton::new(Icon::Find, "", Action::Macros)
+                    RibbonButton::new(Icon::Find, "", Action::FindMenu)
                         .alt(s.msg_find())
-                        .enabled(false)
-                        .tip(s.msg_find_planned_later_milestone()),
-                    RibbonButton::new(Icon::FindReplace, "", Action::Macros)
-                        .alt(s.msg_replace())
-                        .enabled(false)
-                        .tip(s.msg_replace_planned_later_milestone()),
+                        .enabled(ctx.has_doc)
+                        .split()
+                        .tip(s.msg_find()),
                 ],
                 vec![
                     RibbonButton::new(Icon::Eraser, "", Action::Macros)

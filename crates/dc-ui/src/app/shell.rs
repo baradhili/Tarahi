@@ -138,6 +138,17 @@ impl App {
                     self.status = crate::i18n::strs().msg_select_by_type_pick_a_criterion();
                 }
             }
+            // #115 phase 2 (FS 1 §3.2): the Editing group's Find
+            // dropdown — anchored at the pointer's last position (the
+            // Task Panes rule).
+            Action::FindMenu => {
+                self.find_menu = Some(self.pointer_last);
+                self.find_menu_fresh = true;
+            }
+            // #115 phase 2: the Find dialog (modeless, spec 2).
+            Action::FindDialog => {
+                self.find.open = true;
+            }
             Action::FormatPainter => self.arm_format_painter(false),
             Action::FormatPainterSticky => self.arm_format_painter(true),
             Action::PageOrientation => self.toggle_page_orientation(),

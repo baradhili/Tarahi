@@ -23,9 +23,18 @@
 //!
 //! Scope (spec 2's radios): Selection / Current page / All pages —
 //! always traversing nested `sub_shapes` (a selected group puts its
-//! whole subtree in scope). Options: match case, find whole words
-//! only. "Match character width" is the phase-2 CJK decision (issue
-//! plan) and is deliberately absent here.
+//! whole subtree in scope). Options: match case, match character
+//! width, find whole words only.
+//!
+//! The needle takes Visio's caret codes (the Find dialog's Special
+//! menu inserts them): `^t` tab, `^p` manual return (a `\n` in the
+//! text runs), `^-` optional hyphen (U+00AD), `^^` a literal caret,
+//! `^?` any ONE character (a wildcard). A caret ahead of anything
+//! else — or at the needle's end — is a literal caret. "Match
+//! character width" is the East Asian width fold: the fullwidth
+//! ASCII range (U+FF01..U+FF5E) compares against its halfwidth
+//! counterpart and the ideographic space (U+3000) against the plain
+//! space.
 //!
 //! Match records are the edit coordinates: a text match carries the
 //! plain span [`crate::ReplaceTextRange`] splices (a field-bearing
@@ -96,6 +105,10 @@ impl FindTargets {
 pub struct FindOptions {
     pub targets: FindTargets,
     pub match_case: bool,
+    /// East Asian width folding — fullwidth forms compare against
+    /// their halfwidth counterparts (spec 2's "Match character
+    /// width").
+    pub match_width: bool,
     pub whole_words: bool,
 }
 
@@ -408,31 +421,83 @@ fn value_of(row: &vsdx::model::Row) -> Option<&str> {
     row.cell("Value").and_then(|c| c.v.as_deref())
 }
 
+/// One needle token after caret-code compilation: a literal
+/// character or the any-character wildcard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tok {
+    Lit(char),
+    /// `^?` — matches exactly one character.
+    Any,
+}
+
+/// Compile a needle into match tokens, interpreting the caret codes
+/// the Special menu inserts: `^t` tab, `^p` manual return, `^-`
+/// optional hyphen, `^^` literal caret, `^?` any one character. A
+/// caret ahead of anything else — or trailing — stays literal.
+fn compile(needle: &str) -> Vec<Tok> {
+    let chars: Vec<char> = needle.chars().collect();
+    let mut toks = Vec::with_capacity(chars.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '^' {
+            let special = match chars.get(i + 1) {
+                Some('t') => Some(Tok::Lit('\t')),
+                Some('p') => Some(Tok::Lit('\n')),
+                Some('-') => Some(Tok::Lit('\u{00AD}')),
+                Some('^') => Some(Tok::Lit('^')),
+                Some('?') => Some(Tok::Any),
+                _ => None,
+            };
+            if let Some(tok) = special {
+                toks.push(tok);
+                i += 2;
+                continue;
+            }
+            // else: a literal caret; the next char is its own token
+        }
+        toks.push(Tok::Lit(c));
+        i += 1;
+    }
+    toks
+}
+
 /// Every occurrence of `needle` in `hay`, leftmost-first and
 /// non-overlapping, as CHARACTER spans. Case-insensitive matching uses
 /// a simple per-character fold (`char::to_lowercase`'s first char —
 /// 1:1, so span offsets stay aligned with the original characters);
 /// whole-word matching requires a non-word neighbor (or an edge) on
 /// both sides, with word characters being Unicode alphanumerics plus
-/// `_`.
+/// `_`. Every caret-code token — including the `^?` wildcard — is one
+/// character, so a span's length is always the needle's.
 pub fn spans(hay: &str, needle: &str, opts: &FindOptions) -> Vec<(usize, usize)> {
-    let needle: Vec<char> = needle.chars().collect();
+    let toks = compile(needle);
     let mut out = Vec::new();
-    if needle.is_empty() {
+    if toks.is_empty() {
         return out;
     }
     let hay: Vec<char> = hay.chars().collect();
-    let eq = |a: char, b: char| {
-        if opts.match_case {
-            a == b
-        } else {
-            fold(a) == fold(b)
+    let eq = |a: char, t: &Tok| match t {
+        Tok::Any => true,
+        Tok::Lit(b) => {
+            if a == *b {
+                return true;
+            }
+            let (a, b) = if opts.match_width {
+                (fold_width(a), fold_width(*b))
+            } else {
+                (a, *b)
+            };
+            if a == b {
+                return true;
+            }
+            !opts.match_case && fold_case(a) == fold_case(b)
         }
     };
-    let n = needle.len();
+    let n = toks.len();
     let mut i = 0usize;
     while i + n <= hay.len() {
-        let hit = hay[i..i + n].iter().zip(&needle).all(|(a, b)| eq(*a, *b));
+        let hit = hay[i..i + n].iter().zip(&toks).all(|(a, t)| eq(*a, t));
         if hit && (!opts.whole_words || word_edge(&hay, i, i + n)) {
             out.push((i, n));
             i += n; // non-overlapping: the next scan starts past the hit
@@ -443,8 +508,20 @@ pub fn spans(hay: &str, needle: &str, opts: &FindOptions) -> Vec<(usize, usize)>
     out
 }
 
-fn fold(c: char) -> char {
+fn fold_case(c: char) -> char {
     c.to_lowercase().next().unwrap_or(c)
+}
+
+/// The East Asian width fold ("match character width"): fullwidth
+/// ASCII (U+FF01..U+FF5E, ！..～) maps onto its halfwidth counterpart
+/// and the ideographic space (U+3000) onto the plain space.
+fn fold_width(c: char) -> char {
+    let cp = c as u32;
+    match cp {
+        0xFF01..=0xFF5E => char::from_u32(cp - 0xFF00 + 0x20).unwrap_or(c),
+        0x3000 => ' ',
+        _ => c,
+    }
 }
 
 fn is_word_char(c: char) -> bool {

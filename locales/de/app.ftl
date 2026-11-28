@@ -56,6 +56,8 @@ aligning-to-the-page = Ausrichtung an der Seite
 alignment-and-spacing-hints-whil = Ausrichtungs- und Abstandshinweise beim Ziehen
 alignment-boxes = Ausrichtungsrahmen
 all-changes-saved = Alle Änderungen gespeichert
+all-pages = Alle Seiten
+
 all-pages-page-count = Alle Seiten ({ $page_count })
 already-aligned = bereits ausgerichtet
 applies-to-the-ribbon-menus-and = Gilt für Menüband, Menüs und Dialoge. Zeichnungstext bleibt unverändert.
@@ -424,7 +426,34 @@ filter-pdf = PDF (Dokument)
 filter-png = PNG (Rasterbild)
 filter-svg = SVG (Vektorgrafik)
 find = Suchen
-find-planned-later-milestone = Suchen — geplant (späterer Meilenstein)
+find-any-character = Beliebiges Zeichen
+
+find-caret-character = Caret-Zeichen
+
+find-ellipsis = Suchen…
+
+find-manual-return = Manueller Umbruch
+
+find-next = Weitersuchen
+
+find-not-found = Die Suchzeichenfolge wurde nicht gefunden.
+
+find-optional-hyphen = Bedingter Trennstrich
+
+find-shape-data = Shape-Daten
+
+find-shape-name = Shape-Name
+
+find-shape-text = Shape-Text
+
+find-tab-character = Tabulatorzeichen
+
+find-user-defined-cell = Benutzerdefinierte Zelle
+
+find-what = Suchen nach:
+
+find-whole-words-only = Nur ganze Wörter suchen
+
 fine-dash = Feiner Strich
 fine-dot = Feiner Punkt
 first-page = Erste Seite
@@ -456,6 +485,8 @@ format-shape-fill = Füllung formatieren …
 format-shape-line = Linie formatieren …
 format-shape-menu = Form formatieren …
 format-shape-text = Text formatieren …
+found-in = Gefunden in: { $page }, { $shape }
+
 freeform = Freihand
 freeform-drag-on-the-page-to-dra = Freihand: auf der Seite ziehen, um freihändig zu zeichnen (Esc beendet)
 freeform-off = Freihand aus
@@ -494,6 +525,8 @@ heading-style-gallery-planned = Überschriftenstil-Galerie — geplant
 height = Höhe
 # $g - Schutzformel
 height-not-resized-guard = Höhe nicht geändert: { $g } (nur Breite)
+help = Hilfe
+
 help-about = Hilfe / Über
 high-192-dpi = Hoch (192 dpi)
 highlight-members = Mitglieder hervorheben
@@ -588,6 +621,10 @@ master = Vorlage
 # $id - Master-ID
 master-armed-click-place = Master { $id } bereit — zum Platzieren auf die Zeichenfläche klicken
 master-mid = Vorlage { $mid }
+match-case = Groß-/Kleinschreibung beachten
+
+match-character-width = Zeichenbreite vergleichen
+
 member-highlight-off = Member-Hervorhebung aus
 member-highlight-on = Member-Hervorhebung ein
 membership = Mitgliedschaft
@@ -796,7 +833,8 @@ rename-page = Seite umbenennen
 rendering-scrim = Rendern …
 reorder-pages = Seiten neu anordnen
 reorder-pages-menu = Seiten neu anordnen …
-replace = Ersetzen
+replace-ellipsis = Ersetzen…
+
 replace-planned-later-milestone = Ersetzen — geplant (späterer Meilenstein)
 reply = Antworten
 report-definitions-planned = Berichtsdefinitionen — geplant
@@ -838,6 +876,8 @@ save-the-stencil-planned = Die Schablone speichern — geplant
 saved-path = { $path } gespeichert
 scale = Skalieren
 screen-96-dpi = Bildschirm (96 dpi)
+search-in = Suchen in
+
 search-results = Suchergebnisse
 search-shapes = Formen suchen
 search-templates = Vorlagen suchen
@@ -896,6 +936,8 @@ shape-effects-planned = Formeffekte — geplant
 shape-extensions = Formverlängerungen
 shape-fill-color = Füllfarbe der Form
 shape-handles = Formgriffe
+shape-id-fallback = Blatt.{ $id }
+
 shape-id-s-alignment-box = der Ausrichtungsrahmen von Form { $id }
 shape-id-s-connection-point = der Verbindungspunkt von Form { $id }
 shape-id-s-extension = die Formverlängerung von Form { $id }
@@ -962,6 +1004,8 @@ sp-width = Shape-Breite
 sp-x = X-Position
 sp-y = Y-Position
 spacing = Abstand
+special = Sonderzeichen
+
 spell-add = Hinzufügen
 spell-change = Ändern
 spell-change-all = Alle ändern

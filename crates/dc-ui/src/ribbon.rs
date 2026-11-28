@@ -273,6 +273,12 @@ pub enum Action {
     /// #121 Review ▸ Proofing: the dialog-driven Check Spelling pass
     /// over the page's shape text (F7).
     SpellCheck,
+    /// #115 phase 2 (FS 1 §3.2): open the Editing group's Find
+    /// dropdown — Find… (and Replace…, phase 3). The anchor is the
+    /// dispatch frame's pointer (the Task Panes rule).
+    FindMenu,
+    /// #115 phase 2: open the Find dialog (spec 2).
+    FindDialog,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

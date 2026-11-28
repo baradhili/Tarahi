@@ -53,6 +53,8 @@ aligning-to-the-page = 正在相对页面对齐
 alignment-and-spacing-hints-whil = 拖动时显示对齐和间距提示
 alignment-boxes = 对齐框
 all-changes-saved = 所有更改已保存
+all-pages = 所有页
+
 all-pages-page-count = 所有页面（{ $page_count }）
 already-aligned = 已对齐
 applies-to-the-ribbon-menus-and = 适用于功能区、菜单和对话框。绘图文本不受影响。
@@ -404,7 +406,34 @@ filter-pdf = PDF（文档）
 filter-png = PNG（位图图像）
 filter-svg = SVG（矢量图形）
 find = 查找
-find-planned-later-milestone = 查找 — 计划中（后期里程碑）
+find-any-character = 任意字符
+
+find-caret-character = 插入符字符
+
+find-ellipsis = 查找…
+
+find-manual-return = 手动换行
+
+find-next = 查找下一个
+
+find-not-found = 未找到搜索字符串。
+
+find-optional-hyphen = 可选连字符
+
+find-shape-data = 形状数据
+
+find-shape-name = 形状名称
+
+find-shape-text = 形状文本
+
+find-tab-character = 制表符
+
+find-user-defined-cell = 用户定义的单元格
+
+find-what = 查找内容：
+
+find-whole-words-only = 全字匹配
+
 fine-dash = 细虚线
 fine-dot = 细点
 first-page = 第一页
@@ -436,6 +465,8 @@ format-shape-fill = 设置形状填充格式…
 format-shape-line = 设置形状线条格式…
 format-shape-menu = 设置形状格式…
 format-shape-text = 设置形状文本格式…
+found-in = 找到位置：{ $page }，{ $shape }
+
 freeform = 任意多边形
 freeform-drag-on-the-page-to-dra = 任意多边形：在页面上拖动以绘制手绘几何（按 Esc 结束）
 freeform-off = 任意多边形工具已关闭
@@ -468,6 +499,8 @@ heading-style = 标题样式
 heading-style-gallery-planned = 标题样式库 — 计划中
 height = 高度
 height-not-resized-guard = 高度未调整：{ $g }（仅调整宽度）
+help = 帮助
+
 help-about = 帮助 / 关于
 high-192-dpi = 高（192 dpi）
 highlight-members = 突出显示成员
@@ -555,6 +588,10 @@ markup-tracking-planned-no-marku = 修订跟踪 — 计划中（尚无修订模�
 master = 主形状
 master-armed-click-place = 主形状 { $id } 已就绪——单击画布以放置
 master-mid = 主形状 { $mid }
+match-case = 区分大小写
+
+match-character-width = 匹配字符宽度
+
 member-highlight-off = 成员突出显示已关闭
 member-highlight-on = 成员突出显示已开启
 membership = 成员资格
@@ -742,7 +779,8 @@ rename-page = 重命名页面
 rendering-scrim = 正在渲染…
 reorder-pages = 重新排序页面
 reorder-pages-menu = 重新排序页面…
-replace = 替换
+replace-ellipsis = 替换…
+
 replace-planned-later-milestone = 替换 — 计划中（后期里程碑）
 reply = 答复
 report-definitions-planned = 报表定义 — 计划中
@@ -782,6 +820,8 @@ save-the-stencil-planned = 保存模具 — 计划中
 saved-path = 已保存 { $path }
 scale = 比例
 screen-96-dpi = 屏幕（96 dpi）
+search-in = 搜索范围
+
 search-results = 搜索结果
 search-shapes = 搜索形状
 search-templates = 搜索模板
@@ -834,6 +874,8 @@ shape-effects-planned = 形状效果 — 计划中
 shape-extensions = 形状延伸
 shape-fill-color = 形状填充颜色
 shape-handles = 形状手柄
+shape-id-fallback = 工作表.{ $id }
+
 shape-id-s-alignment-box = 形状 { $id } 的对齐框
 shape-id-s-connection-point = 形状 { $id } 的连接点
 shape-id-s-extension = 形状 { $id } 的延伸线
@@ -900,6 +942,8 @@ sp-width = 形状宽度
 sp-x = X 位置
 sp-y = Y 位置
 spacing = 间距
+special = 特殊字符
+
 spell-add = 添加
 spell-change = 更改
 spell-change-all = 全部更改

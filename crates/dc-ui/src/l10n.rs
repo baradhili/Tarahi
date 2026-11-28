@@ -352,6 +352,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "all-pages",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "all-pages-page-count",
         attribute: None,
         vars: &["page_count"],
@@ -2585,7 +2592,98 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "find-planned-later-milestone",
+        message: "find-any-character",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "find-caret-character",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "find-ellipsis",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "find-manual-return",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "find-next",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "find-not-found",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "find-optional-hyphen",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "find-shape-data",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "find-shape-name",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "find-shape-text",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "find-tab-character",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "find-user-defined-cell",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "find-what",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "find-whole-words-only",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -2809,6 +2907,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "found-in",
+        attribute: None,
+        vars: &["page", "shape"],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "freeform",
         attribute: None,
         vars: &[],
@@ -3008,6 +3113,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         message: "height-not-resized-guard",
         attribute: None,
         vars: &["g"],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "help",
+        attribute: None,
+        vars: &[],
         bool_vars: &[],
         elements: &[],
     },
@@ -3596,6 +3708,20 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         message: "master-mid",
         attribute: None,
         vars: &["mid"],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "match-case",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "match-character-width",
+        attribute: None,
+        vars: &[],
         bool_vars: &[],
         elements: &[],
     },
@@ -4909,7 +5035,7 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
-        message: "replace",
+        message: "replace-ellipsis",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -5183,6 +5309,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "screen-96-dpi",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "search-in",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -5514,6 +5647,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         message: "shape-handles",
         attribute: None,
         vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "shape-id-fallback",
+        attribute: None,
+        vars: &["id"],
         bool_vars: &[],
         elements: &[],
     },
@@ -5974,6 +6114,13 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "spacing",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "special",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -7436,13 +7583,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..52042,
-            Self::En => 52042..102109,
-            Self::Es => 102109..157319,
-            Self::Fa => 157319..223094,
-            Self::Ja => 223094..278915,
-            Self::Ko => 278915..330289,
-            Self::ZhHans => 330289..375240,
+            Self::De => 0..52783,
+            Self::En => 52783..103661,
+            Self::Es => 103661..159665,
+            Self::Fa => 159665..226259,
+            Self::Ja => 226259..282864,
+            Self::Ko => 282864..334984,
+            Self::ZhHans => 334984..380624,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -7678,6 +7825,9 @@ impl L10nLanguage {
     }
     pub fn msg_all_changes_saved(&self) -> String {
         self.0.msg("all-changes-saved", None).unwrap()
+    }
+    pub fn msg_all_pages(&self) -> String {
+        self.0.msg("all-pages", None).unwrap()
     }
     /// $page_count (Number) - argument
     pub fn msg_all_pages_page_count<F0: Into<FluentNumber>>(&self, page_count: F0) -> String {
@@ -8871,8 +9021,47 @@ impl L10nLanguage {
     pub fn msg_find(&self) -> String {
         self.0.msg("find", None).unwrap()
     }
-    pub fn msg_find_planned_later_milestone(&self) -> String {
-        self.0.msg("find-planned-later-milestone", None).unwrap()
+    pub fn msg_find_any_character(&self) -> String {
+        self.0.msg("find-any-character", None).unwrap()
+    }
+    pub fn msg_find_caret_character(&self) -> String {
+        self.0.msg("find-caret-character", None).unwrap()
+    }
+    pub fn msg_find_ellipsis(&self) -> String {
+        self.0.msg("find-ellipsis", None).unwrap()
+    }
+    pub fn msg_find_manual_return(&self) -> String {
+        self.0.msg("find-manual-return", None).unwrap()
+    }
+    pub fn msg_find_next(&self) -> String {
+        self.0.msg("find-next", None).unwrap()
+    }
+    pub fn msg_find_not_found(&self) -> String {
+        self.0.msg("find-not-found", None).unwrap()
+    }
+    pub fn msg_find_optional_hyphen(&self) -> String {
+        self.0.msg("find-optional-hyphen", None).unwrap()
+    }
+    pub fn msg_find_shape_data(&self) -> String {
+        self.0.msg("find-shape-data", None).unwrap()
+    }
+    pub fn msg_find_shape_name(&self) -> String {
+        self.0.msg("find-shape-name", None).unwrap()
+    }
+    pub fn msg_find_shape_text(&self) -> String {
+        self.0.msg("find-shape-text", None).unwrap()
+    }
+    pub fn msg_find_tab_character(&self) -> String {
+        self.0.msg("find-tab-character", None).unwrap()
+    }
+    pub fn msg_find_user_defined_cell(&self) -> String {
+        self.0.msg("find-user-defined-cell", None).unwrap()
+    }
+    pub fn msg_find_what(&self) -> String {
+        self.0.msg("find-what", None).unwrap()
+    }
+    pub fn msg_find_whole_words_only(&self) -> String {
+        self.0.msg("find-whole-words-only", None).unwrap()
     }
     pub fn msg_fine_dash(&self) -> String {
         self.0.msg("fine-dash", None).unwrap()
@@ -8980,6 +9169,14 @@ impl L10nLanguage {
     }
     pub fn msg_format_shape_text(&self) -> String {
         self.0.msg("format-shape-text", None).unwrap()
+    }
+    /// $page (String) - the page the match was found on
+    /// $shape (String) - the owning shape's display name
+    pub fn msg_found_in<F0: AsRef<str>, F1: AsRef<str>>(&self, page: F0, shape: F1) -> String {
+        let mut _args = FluentArgs::new();
+        _args.set("page", page.as_ref());
+        _args.set("shape", shape.as_ref());
+        self.0.msg("found-in", Some(_args)).unwrap()
     }
     pub fn msg_freeform(&self) -> String {
         self.0.msg("freeform", None).unwrap()
@@ -9103,6 +9300,9 @@ impl L10nLanguage {
         let mut _args = FluentArgs::new();
         _args.set("g", g.as_ref());
         self.0.msg("height-not-resized-guard", Some(_args)).unwrap()
+    }
+    pub fn msg_help(&self) -> String {
+        self.0.msg("help", None).unwrap()
     }
     pub fn msg_help_about(&self) -> String {
         self.0.msg("help-about", None).unwrap()
@@ -9425,6 +9625,12 @@ impl L10nLanguage {
         let mut _args = FluentArgs::new();
         _args.set("mid", mid.into());
         self.0.msg("master-mid", Some(_args)).unwrap()
+    }
+    pub fn msg_match_case(&self) -> String {
+        self.0.msg("match-case", None).unwrap()
+    }
+    pub fn msg_match_character_width(&self) -> String {
+        self.0.msg("match-character-width", None).unwrap()
     }
     pub fn msg_member_highlight_off(&self) -> String {
         self.0.msg("member-highlight-off", None).unwrap()
@@ -10169,8 +10375,8 @@ impl L10nLanguage {
     pub fn msg_reorder_pages_menu(&self) -> String {
         self.0.msg("reorder-pages-menu", None).unwrap()
     }
-    pub fn msg_replace(&self) -> String {
-        self.0.msg("replace", None).unwrap()
+    pub fn msg_replace_ellipsis(&self) -> String {
+        self.0.msg("replace-ellipsis", None).unwrap()
     }
     pub fn msg_replace_planned_later_milestone(&self) -> String {
         self.0.msg("replace-planned-later-milestone", None).unwrap()
@@ -10301,6 +10507,9 @@ impl L10nLanguage {
     }
     pub fn msg_screen_96_dpi(&self) -> String {
         self.0.msg("screen-96-dpi", None).unwrap()
+    }
+    pub fn msg_search_in(&self) -> String {
+        self.0.msg("search-in", None).unwrap()
     }
     pub fn msg_search_results(&self) -> String {
         self.0.msg("search-results", None).unwrap()
@@ -10490,6 +10699,12 @@ impl L10nLanguage {
     }
     pub fn msg_shape_handles(&self) -> String {
         self.0.msg("shape-handles", None).unwrap()
+    }
+    /// $id (Number) - the shape's numeric ID
+    pub fn msg_shape_id_fallback<F0: Into<FluentNumber>>(&self, id: F0) -> String {
+        let mut _args = FluentArgs::new();
+        _args.set("id", id.into());
+        self.0.msg("shape-id-fallback", Some(_args)).unwrap()
     }
     /// $id (Number) - argument
     pub fn msg_shape_id_s_alignment_box<F0: Into<FluentNumber>>(&self, id: F0) -> String {
@@ -10738,6 +10953,9 @@ impl L10nLanguage {
     }
     pub fn msg_spacing(&self) -> String {
         self.0.msg("spacing", None).unwrap()
+    }
+    pub fn msg_special(&self) -> String {
+        self.0.msg("special", None).unwrap()
     }
     pub fn msg_spell_add(&self) -> String {
         self.0.msg("spell-add", None).unwrap()
