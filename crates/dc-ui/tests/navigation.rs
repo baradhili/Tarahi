@@ -786,3 +786,60 @@ fn pan_zoom_percent_floors_and_outside_press_recenters() {
     pan_zoom_enter_pct(&mut h, "5");
     assert_eq!(h.state().debug_view_for_test().0, 0.1);
 }
+
+/// PR #413 review: a discrete view write that lands AFTER the overview
+/// painted — here a plain wheel SCROLL, the sharpest case (pan-only:
+/// no ppi re-bucket, so the layer settle machinery requests nothing
+/// either) — must be detected and a catch-up frame requested, or the
+/// rectangle sits one interaction behind until unrelated input arrives.
+/// kittest's `run()` forces frames by itself, so the DETECTION is what
+/// this pins (the `debug_panzoom_view_lags` predicate `draw` turns into
+/// the repaint); the follow-up assertion checks the rectangle then
+/// follows the scrolled view.
+#[test]
+fn pan_zoom_rectangle_requests_its_catch_up_frame() {
+    let mut h = harness_with_blank();
+    h.run();
+    h.run();
+    open_pan_zoom(&mut h);
+    // Zoom until the rectangle is unclamped, then settle: nothing owed.
+    pan_zoom_enter_pct(&mut h, "200");
+    h.run();
+    assert!(
+        !h.state().debug_panzoom_view_lags(),
+        "settled: the rectangle agrees with the view"
+    );
+    let vp0 = h.state().debug_panzoom_vp();
+
+    // ONE plain wheel scroll over the canvas, ONE pass.
+    let c = h.state().debug_canvas_rect().center();
+    h.hover_at(c);
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -120.0),
+        modifiers: egui::Modifiers::NONE,
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Wheel,
+    });
+    h.step();
+    assert!(
+        h.state().debug_panzoom_view_lags(),
+        "the scroll wrote the view after the overview painted — a catch-up frame is owed"
+    );
+
+    // The owed frame runs and the rectangle follows the scroll (wheel
+    // down: the page moves up the screen, the viewport slides DOWN the
+    // thumbnail).
+    h.run();
+    assert!(
+        !h.state().debug_panzoom_view_lags(),
+        "the catch-up frame redrew the rectangle from the current view"
+    );
+    let vp1 = h.state().debug_panzoom_vp();
+    assert!(
+        vp1.top() > vp0.top() + 1.0,
+        "the rectangle followed the scroll: {} → {}",
+        vp0.top(),
+        vp1.top()
+    );
+}

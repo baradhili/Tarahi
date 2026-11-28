@@ -207,6 +207,14 @@ pub struct App {
     /// (NOTHING otherwise).
     panzoom_thumb: Rect,
     panzoom_vp: Rect,
+    /// #211 (PR #413 review): the view (zoom, pan) the overview's
+    /// rectangle was DRAWN from this frame. Wheel zoom/scroll, Fit
+    /// Page and the zoom chrome write the view later in the same
+    /// frame — `draw` compares this against the end-of-frame view and
+    /// requests one repaint so the rectangle never sits an interaction
+    /// behind (input-driven gestures self-correct on their release
+    /// frame; these discrete writes have no follow-up event).
+    panzoom_view_drawn: Option<(f32, f32, f32)>,
     /// The Format Shape pane is open (#31).
     format_pane_open: bool,
     /// #149 item 2: the pane section a mini-toolbar Format icon

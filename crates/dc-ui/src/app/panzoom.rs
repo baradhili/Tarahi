@@ -82,6 +82,16 @@ impl App {
         self.view.fit_mode = false;
     }
 
+    /// #211 (PR #413 review): whether the overview's rectangle lags
+    /// the live view — the view was written after the overview painted
+    /// this frame (wheel zoom/scroll, Fit Page, the zoom chrome) and a
+    /// catch-up frame is owed. `draw` turns this into the repaint that
+    /// delivers it; None (window not painting) never lags.
+    pub(super) fn panzoom_view_lags(&self) -> bool {
+        self.panzoom_view_drawn
+            .is_some_and(|v| v != (self.view.zoom, self.view.pan.x, self.view.pan.y))
+    }
+
     /// The Pan & Zoom window itself (View ▸ Task Panes ▸ Pan & Zoom,
     /// #211). Nothing paints without a document — the Task Panes
     /// entries arm only with one, and a closed document keeps the flag
@@ -91,6 +101,7 @@ impl App {
         self.panzoom_vp = Rect::NOTHING;
         if !self.panzoom_open || self.ed.is_none() {
             self.panzoom_grab = None;
+            self.panzoom_view_drawn = None;
             return;
         }
         let geom = self.page_geom();
@@ -185,6 +196,15 @@ impl App {
                 );
                 self.panzoom_thumb = paper;
                 self.panzoom_vp = vr;
+                // The view this rectangle was drawn FROM (captured
+                // before the gesture section below can write the view
+                // — those in-frame writes are exactly what the
+                // end-of-frame check in `draw` must see).
+                self.panzoom_view_drawn = Some((
+                    self.view.zoom,
+                    self.view.pan.x,
+                    self.view.pan.y,
+                ));
                 // --- the gesture ---
                 // Arm on the PRESS frame (the canvas's #59 lesson:
                 // egui's click-vs-drag disambiguation reports late, so

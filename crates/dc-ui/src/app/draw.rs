@@ -427,6 +427,20 @@ impl App {
         // AUTOMATICALLY ARRANGE (equal tiles) to fit — any change of
         // the child count re-fires the arrangement.
         self.central(ui);
+        // #211 (PR #413 review): wheel zoom/scroll, Fit Page and the
+        // zoom chrome (ribbon buttons, status slider) write the view
+        // AFTER the Pan & Zoom overview painted this frame, and a
+        // discrete write carries no follow-up input event — the
+        // rectangle would sit one interaction behind. One repaint
+        // whenever the end-of-frame view disagrees with what the
+        // overview drew catches every write path; the follow-up frame
+        // redraws the rectangle fresh and the comparison goes quiet
+        // (zero cost on idle frames). The overview keeps its place
+        // BEFORE the canvas on purpose: a thumb drag's writes must
+        // reach the canvas the same frame.
+        if self.panzoom_view_lags() {
+            ui.ctx().request_repaint();
+        }
         let drawing_open = self.ed.is_some();
         let n_children = drawing_open as usize + self.shapesheets.len();
         if n_children != self.mdi_last_count {

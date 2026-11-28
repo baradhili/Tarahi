@@ -133,6 +133,7 @@ impl App {
             pointer_last: Pos2::ZERO,
             panzoom_thumb: Rect::NOTHING,
             panzoom_vp: Rect::NOTHING,
+            panzoom_view_drawn: None,
             prop_bufs: std::collections::HashMap::new(),
             prop_add: None,
             format_pane_open: false,
