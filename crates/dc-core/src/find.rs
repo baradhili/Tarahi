@@ -133,6 +133,10 @@ pub enum FindTarget {
         len: usize,
     },
     ShapeData {
+        /// The owning section's IX — a sheet can carry several `Prop`
+        /// sections, and the write targets the one that matched
+        /// (CodeRabbit round on the #115 PR).
+        section: i64,
         row: String,
         start: usize,
         len: usize,
@@ -142,6 +146,8 @@ pub enum FindTarget {
         len: usize,
     },
     UserCell {
+        /// The owning section's IX (see [`FindTarget::ShapeData`]).
+        section: i64,
         row: String,
         start: usize,
         len: usize,
@@ -279,11 +285,18 @@ fn shape_matches(
         }
     }
     if opts.targets.shape_data {
-        for (row, start, len) in row_value_matches(doc, shape, ancestors, "Prop", needle, opts) {
+        for (section, row, start, len) in
+            row_value_matches(doc, shape, ancestors, "Prop", needle, opts)
+        {
             out.push(FindMatch {
                 page,
                 shape: shape.id,
-                target: FindTarget::ShapeData { row, start, len },
+                target: FindTarget::ShapeData {
+                    section,
+                    row,
+                    start,
+                    len,
+                },
             });
         }
     }
@@ -299,11 +312,18 @@ fn shape_matches(
         }
     }
     if opts.targets.user_cell {
-        for (row, start, len) in row_value_matches(doc, shape, ancestors, "User", needle, opts) {
+        for (section, row, start, len) in
+            row_value_matches(doc, shape, ancestors, "User", needle, opts)
+        {
             out.push(FindMatch {
                 page,
                 shape: shape.id,
-                target: FindTarget::UserCell { row, start, len },
+                target: FindTarget::UserCell {
+                    section,
+                    row,
+                    start,
+                    len,
+                },
             });
         }
     }
@@ -345,9 +365,9 @@ fn row_value_matches(
     section: &str,
     needle: &str,
     opts: &FindOptions,
-) -> Vec<(String, usize, usize)> {
+) -> Vec<(i64, String, usize, usize)> {
     let mut out = Vec::new();
-    let mut shadowed: HashSet<String> = HashSet::new();
+    let mut shadowed: HashSet<(i64, String)> = HashSet::new();
     scan_rows(
         &shape.sheet,
         section,
@@ -381,8 +401,8 @@ fn scan_rows(
     needle: &str,
     opts: &FindOptions,
     shadow: bool,
-    shadowed: &mut HashSet<String>,
-    out: &mut Vec<(String, usize, usize)>,
+    shadowed: &mut HashSet<(i64, String)>,
+    out: &mut Vec<(i64, String, usize, usize)>,
 ) {
     for sec in sheet.sections_named(section) {
         for row in &sec.rows {
@@ -392,33 +412,44 @@ fn scan_rows(
             if row.is_deleted() {
                 // A local tombstone deletes the master's row too
                 // (#293: Visio honors `Del` on open) — record the
-                // name so the inherited pass skips it. Only the local
-                // pass records; a deleted MASTER row is simply gone.
+                // (section, name) so the inherited pass skips it.
+                // Only the local pass records; a deleted MASTER row
+                // is simply gone.
                 if shadow {
-                    shadowed.insert(name.to_string());
+                    shadowed.insert((sec.ix, name.to_string()));
                 }
                 continue;
             }
             let Some(value) = value_of(row) else {
                 continue;
             };
+            let key = (sec.ix, name.to_string());
             if shadow {
-                shadowed.insert(name.to_string());
-            } else if shadowed.contains(name) {
+                shadowed.insert(key);
+            } else if shadowed.contains(&key) {
                 continue; // a local value-bearing row of this name wins
             }
             for (start, len) in spans(value, needle, opts) {
-                out.push((name.to_string(), start, len));
+                out.push((sec.ix, name.to_string(), start, len));
             }
         }
     }
 }
 
-/// A row's `Value` cell value string, when the cell carries one (a
-/// formula-only or `F='Inh'` cell has nothing to match — the master's
-/// value shows through instead).
+/// A row's `Value` cell value string, when the cell carries a value
+/// of its own: a formula-only cell has nothing to match, and an
+/// `F='Inh'` cell's cached `V` is a stale snapshot, not the effective
+/// value — inheritance is marked by `F`, not by an absent `V`, so
+/// both fall through to the master (CodeRabbit round on the #115
+/// PR).
 fn value_of(row: &vsdx::model::Row) -> Option<&str> {
-    row.cell("Value").and_then(|c| c.v.as_deref())
+    row.cell("Value").and_then(|c| {
+        if c.is_inherited() {
+            None
+        } else {
+            c.v.as_deref()
+        }
+    })
 }
 
 /// One needle token after caret-code compilation: a literal
@@ -570,26 +601,33 @@ pub fn decode_replacement(s: &str) -> String {
     out
 }
 
-/// Resolve a named `Prop`/`User` row for the replace path: the
-/// section IX its write targets and the effective value string the
-/// matcher saw — the local value-bearing row first, else the
-/// master-inherited row of the same name (the matcher's layering).
-/// A locally deleted row resolves nowhere (the tombstone shadows).
+/// Resolve the exact cell a match's row names, for the replace path:
+/// `(section IX, value string, the owning cell)` — the local
+/// value-bearing row first, else the master-inherited row of the same
+/// (section, IX, name) (the matcher's layering). The owning cell
+/// rides along so the write keeps its unit and formula
+/// (CodeRabbit round on the #115 PR). A locally deleted row resolves
+/// nowhere (the tombstone shadows).
 fn resolve_cell(
     doc: &Document,
     page: i64,
     shape: i64,
     section: &str,
+    section_ix: i64,
     row: &str,
-) -> Option<(i64, String)> {
+) -> Option<(i64, String, vsdx::model::Cell)> {
     let p = doc.pages.iter().find(|p| p.id == page)?;
     let sh = vsdx::model::find_shape_by_id(&p.shapes, shape)?;
-    let hit = |sheet: &vsdx::model::Sheet| -> Option<(i64, String)> {
+    let hit = |sheet: &vsdx::model::Sheet| -> Option<(i64, String, vsdx::model::Cell)> {
         for sec in sheet.sections_named(section) {
+            if sec.ix != section_ix {
+                continue;
+            }
             for r in &sec.rows {
                 if r.n.as_deref() == Some(row) && !r.is_deleted() {
                     if let Some(v) = value_of(r) {
-                        return Some((sec.ix, v.to_string()));
+                        let cell = r.cell("Value").cloned()?;
+                        return Some((sec.ix, v.to_string(), cell));
                     }
                 }
             }
@@ -601,7 +639,7 @@ fn resolve_cell(
     // fallback must not resurrect it into a replace write
     // (CodeRabbit round on phase 3). A non-deleted local row without
     // a Value (F='Inh') still falls through to the master.
-    let tombstoned = sh.sheet.sections_named(section).iter().any(|sec| {
+    let tombstoned = sh.sheet.section(section, section_ix).is_some_and(|sec| {
         sec.rows
             .iter()
             .any(|r| r.n.as_deref() == Some(row) && r.is_deleted())
@@ -615,6 +653,20 @@ fn resolve_cell(
         let src = doc.instance_source(sh, &ancestors)?;
         hit(&src.sheet)
     })
+}
+
+/// The replacement cell for a spliced value: a copy of the owning
+/// cell with only `V` changed — the unit and formula survive the
+/// write. Empty attrs so the writer synthesizes N/V/U/F from the
+/// typed fields (the `Sheet::set_cell` rebuild convention; parsed
+/// attrs would re-emit the OLD value verbatim).
+fn spliced_cell(old: &vsdx::model::Cell, value: String) -> vsdx::model::Cell {
+    vsdx::model::Cell {
+        v: Some(value),
+        u: old.u.clone(),
+        f: old.f.clone(),
+        ..vsdx::model::Cell::default()
+    }
 }
 
 /// The command replacing ONE match (one undo step). `None` when the
@@ -631,32 +683,70 @@ pub fn replace_command(
     };
     let replacement = decode_replacement(replacement);
     match &m.target {
-        FindTarget::Text { start, len } => Some(Box::new(crate::ReplaceTextRange::new(
-            scope,
-            *start,
-            *len,
-            replacement,
-        ))),
-        FindTarget::ShapeData { row, start, len } | FindTarget::UserCell { row, start, len } => {
+        FindTarget::Text { start, len } => {
+            // A span that crosses a formatting-marker or CDATA region
+            // boundary cannot splice (`map_plain_span` refuses — a
+            // splice would delete the marker): not replaceable, like
+            // a name match (CodeRabbit round on the #115 PR).
+            if !splicable(doc, m, *start, *len) {
+                return None;
+            }
+            Some(Box::new(crate::ReplaceTextRange::new(
+                scope,
+                *start,
+                *len,
+                replacement,
+            )))
+        }
+        FindTarget::ShapeData {
+            section: ix,
+            row,
+            start,
+            len,
+        }
+        | FindTarget::UserCell {
+            section: ix,
+            row,
+            start,
+            len,
+        } => {
             let section = match m.target.class() {
                 FindTargetClass::ShapeData => "Prop",
                 _ => "User",
             };
-            let (ix, value) = resolve_cell(doc, m.page, m.shape, section, row)?;
+            let (_, value, cell) = resolve_cell(doc, m.page, m.shape, section, *ix, row)?;
             let new = splice(&value, *start, *len, &replacement);
             Some(Box::new(crate::SetRowCell::new(
                 scope,
                 section,
-                ix,
+                *ix,
                 crate::commands::RowSel::Named(row.clone()),
                 "Value",
-                vsdx::model::Cell::value(new),
+                spliced_cell(&cell, new),
             )))
         }
         // A name match replaces nothing editable (NameU is authored,
         // not replaceable text) — the Replace buttons skip it.
         FindTarget::ShapeName { .. } => None,
     }
+}
+
+/// Whether a text match's plain span maps onto the raw text as ONE
+/// replaceable region (`map_plain_span` succeeds) — a span crossing
+/// a marker/CDATA boundary stays searchable but is not replaceable.
+fn splicable(doc: &Document, m: &FindMatch, start: usize, len: usize) -> bool {
+    let Some(p) = doc.pages.iter().find(|p| p.id == m.page) else {
+        return false;
+    };
+    let Some(sh) = vsdx::model::find_shape_by_id(&p.shapes, m.shape) else {
+        return false;
+    };
+    let Ok(chain) = crate::scope::shape_chain(doc, m.page, m.shape) else {
+        return false;
+    };
+    let ancestors: Vec<_> = chain.into_iter().filter(|c| c.id != m.shape).collect();
+    effective_text_raw(doc, sh, &ancestors)
+        .is_some_and(|raw| vsdx::text::map_plain_span(&raw, start, start + len).is_some())
 }
 
 /// One text with `[start, start+len)` replaced (CHAR offsets).
@@ -693,17 +783,50 @@ pub fn replace_all_command(
         while i < matches.len() && matches[i].page == page && matches[i].shape == shape {
             match &matches[i].target {
                 FindTarget::Text { start, len } => texts.push((*start, *len)),
-                FindTarget::ShapeData { row, start, len } => {
-                    bucket_cell(doc, &mut cells, (page, shape), "Prop", row, *start, *len);
+                FindTarget::ShapeData {
+                    section: ix,
+                    row,
+                    start,
+                    len,
+                } => {
+                    bucket_cell(
+                        doc,
+                        &mut cells,
+                        (page, shape, "Prop", *ix, row),
+                        *start,
+                        *len,
+                    );
                 }
-                FindTarget::UserCell { row, start, len } => {
-                    bucket_cell(doc, &mut cells, (page, shape), "User", row, *start, *len);
+                FindTarget::UserCell {
+                    section: ix,
+                    row,
+                    start,
+                    len,
+                } => {
+                    bucket_cell(
+                        doc,
+                        &mut cells,
+                        (page, shape, "User", *ix, row),
+                        *start,
+                        *len,
+                    );
                 }
                 FindTarget::ShapeName { .. } => {}
             }
             i += 1;
         }
         let scope = crate::Scope::Shape { page, shape };
+        // A span that cannot splice (marker/CDATA crossing) stays
+        // untouched and UNCOUNTED — the sweep's reported count is
+        // what it really writes, and the macro never contains a
+        // command that would roll the whole sweep back
+        // (CodeRabbit round on the #115 PR).
+        let m0 = FindMatch {
+            page,
+            shape,
+            target: FindTarget::Text { start: 0, len: 0 },
+        };
+        texts.retain(|(start, len)| splicable(doc, &m0, *start, *len));
         // Text: descending start — each splice leaves earlier spans'
         // offsets untouched.
         texts.sort_by_key(|(start, _)| std::cmp::Reverse(*start));
@@ -720,8 +843,9 @@ pub fn replace_all_command(
         for cell in &mut cells {
             cell.spans
                 .sort_by_key(|(start, _)| std::cmp::Reverse(*start));
+            let mut value = cell.value.clone();
             for (start, len) in cell.spans.clone() {
-                cell.value = splice(&cell.value, start, len, &replacement);
+                value = splice(&value, start, len, &replacement);
                 count += 1;
             }
             cmds.push(Box::new(crate::SetRowCell::new(
@@ -730,7 +854,7 @@ pub fn replace_all_command(
                 cell.ix,
                 crate::commands::RowSel::Named(cell.row.clone()),
                 "Value",
-                vsdx::model::Cell::value(cell.value.clone()),
+                spliced_cell(&cell.cell, value),
             )));
         }
     }
@@ -745,40 +869,43 @@ pub fn replace_all_command(
     (macro_, count)
 }
 
-/// One row's pending Replace All writes: the section and its IX, the
-/// effective value the spans index, and the spans.
+/// One row's pending Replace All writes: the section, its IX, the
+/// effective value the spans index, the owning cell (units and
+/// formulas survive the write), and the spans.
 struct CellRow {
     row: String,
     section: &'static str,
     ix: i64,
     value: String,
+    cell: vsdx::model::Cell,
     spans: Vec<(usize, usize)>,
 }
 
-/// Add one match's span to its row's bucket, resolving the row's
-/// section IX and effective value on first sight.
+/// Add one match's span to its row's bucket — keyed by (section,
+/// IX, row), so same-named rows in different sections never merge
+/// (CodeRabbit round on the #115 PR).
 fn bucket_cell(
     doc: &Document,
     cells: &mut Vec<CellRow>,
-    at: (i64, i64),
-    section: &'static str,
-    row: &str,
+    at: (i64, i64, &'static str, i64, &str),
     start: usize,
     len: usize,
 ) {
+    let (page, shape, section, ix, row) = at;
     if let Some(bucket) = cells
         .iter_mut()
-        .find(|c| c.row == row && c.section == section)
+        .find(|c| c.row == row && c.section == section && c.ix == ix)
     {
         bucket.spans.push((start, len));
         return;
     }
-    if let Some((ix, value)) = resolve_cell(doc, at.0, at.1, section, row) {
+    if let Some((_, value, cell)) = resolve_cell(doc, page, shape, section, ix, row) {
         cells.push(CellRow {
             row: row.to_string(),
             section,
             ix,
             value,
+            cell,
             spans: vec![(start, len)],
         });
     }

@@ -1262,8 +1262,20 @@ impl crate::Command for ReplaceTextRange {
                         crate::scope::shape_chain(doc, *page, *shape).ok().and_then(|chain| {
                             let ancestors: Vec<_> =
                                 chain.into_iter().filter(|c| c.id != *shape).collect();
-                            doc.instance_source(sh, &ancestors)
-                                .and_then(|src| src.sheet.text_raw.clone())
+                            doc.instance_source(sh, &ancestors).and_then(|src| {
+                                // The master's RAW first, else its
+                                // escaped PLAIN — the same seed find's
+                                // effective projection uses, so a match
+                                // found on either form splices
+                                // (CodeRabbit round on the #115 PR).
+                                src.sheet.text_raw.clone().or_else(|| {
+                                    src.sheet.text.clone().map(|t| {
+                                        t.replace('&', "&amp;")
+                                            .replace('<', "&lt;")
+                                            .replace('>', "&gt;")
+                                    })
+                                })
+                            })
                         })
                     };
                     (sh.sheet.text.clone(), sh.sheet.text_raw.clone(), inherited)

@@ -121,6 +121,9 @@ impl Default for FindSession {
 #[derive(Debug, Clone)]
 pub(crate) struct FindState {
     pub open: bool,
+    /// The Find-what edit's widget id — the Special menu parks
+    /// egui's own cursor past an inserted code.
+    pub(crate) query_edit_id: Option<egui::Id>,
     /// The Find-what caret (CHAR index) the Special menu inserts at,
     /// captured from the edit's cursor; `None` appends at the end.
     caret: Option<usize>,
@@ -132,6 +135,7 @@ impl Default for FindState {
     fn default() -> Self {
         FindState {
             open: false,
+            query_edit_id: None,
             caret: None,
             status: FindStatus::Idle,
             session: FindSession::default(),
@@ -140,8 +144,9 @@ impl Default for FindState {
 }
 
 /// Insert `code` into the query at the captured caret (CHAR index),
-/// appending at the end when the edit never reported one.
-pub(crate) fn insert_code(query: &mut String, caret: Option<usize>, code: &str) {
+/// appending at the end when the edit never reported one. Returns
+/// the caret position just past the inserted code.
+pub(crate) fn insert_code(query: &mut String, caret: Option<usize>, code: &str) -> usize {
     let at = caret.unwrap_or_else(|| query.chars().count());
     let byte = query
         .char_indices()
@@ -149,6 +154,24 @@ pub(crate) fn insert_code(query: &mut String, caret: Option<usize>, code: &str) 
         .map(|(b, _)| b)
         .unwrap_or(query.len());
     query.insert_str(byte, code);
+    at + code.chars().count()
+}
+
+/// Park egui's OWN edit cursor past the inserted code — a direct
+/// string mutation leaves the TextEdit's cursor where it was, so the
+/// next frame's `cursor_range` would drag the saved caret back and
+/// stack two inserts at one spot (CodeRabbit round on the #115 PR).
+pub(crate) fn advance_edit_cursor(ctx: &egui::Context, id: Option<egui::Id>, caret: usize) {
+    let Some(id) = id else { return };
+    if let Some(mut state) = egui::text_edit::TextEditState::load(ctx, id) {
+        let at = egui::text::CCursor::new(caret);
+        state.cursor.set_char_range(Some(egui::text::CCursorRange {
+            primary: at,
+            secondary: at,
+            h_pos: None,
+        }));
+        state.store(ctx, id);
+    }
 }
 
 /// The Special menu's caret codes, in spec 2's order.
@@ -174,8 +197,14 @@ pub(crate) fn window(ctx: &Context, state: &mut FindState) -> FindOutcome {
                     ui.label(what.clone());
                     let out = egui::TextEdit::singleline(&mut state.session.query)
                         .desired_width(ui.available_width() - 28.0)
+                        // Enter is the dialog's default button — the
+                        // explicit handler below owns it (a consumed
+                        // Enter surrenders focus and never fires;
+                        // CodeRabbit round on the #115 PR).
+                        .return_key(None)
                         .show(ui);
                     let re = out.response.response;
+                    state.query_edit_id = Some(re.id);
                     // Name the input (the Options dialog's rule —
                     // kittest's a11y check requires it).
                     re.widget_info(|| {
@@ -225,7 +254,9 @@ pub(crate) fn window(ctx: &Context, state: &mut FindState) -> FindOutcome {
                         ];
                         for (code, label) in SPECIAL_CODES.iter().zip(labels) {
                             if ui.add(egui::Button::new(label).small()).clicked() {
-                                insert_code(&mut state.session.query, state.caret, code);
+                                let at = insert_code(&mut state.session.query, state.caret, code);
+                                state.caret = Some(at);
+                                advance_edit_cursor(ui.ctx(), state.query_edit_id, at);
                             }
                         }
                     });

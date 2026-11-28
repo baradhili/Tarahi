@@ -892,6 +892,10 @@ save-the-stencil-planned = ذخیرهٔ شابلون — برنامه‌ریزی
 saved-path = { $path } ذخیره شد
 scale = مقیاس
 screen-96-dpi = نمایشگر (۹۶ dpi)
+scroll-left = اسکرول به چپ
+
+scroll-right = اسکرول به راست
+
 search = جستجو
 
 search-in = جستجو در

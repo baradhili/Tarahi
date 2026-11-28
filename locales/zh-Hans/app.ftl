@@ -836,6 +836,10 @@ save-the-stencil-planned = 保存模具 — 计划中
 saved-path = 已保存 { $path }
 scale = 比例
 screen-96-dpi = 屏幕（96 dpi）
+scroll-left = 向左滚动
+
+scroll-right = 向右滚动
+
 search = 搜索
 
 search-in = 搜索范围
@@ -892,7 +896,7 @@ shape-effects-planned = 形状效果 — 计划中
 shape-extensions = 形状延伸
 shape-fill-color = 形状填充颜色
 shape-handles = 形状手柄
-shape-id-fallback = 工作表.{ $id }
+shape-id-fallback = 形状.{ $id }
 
 shape-id-s-alignment-box = 形状 { $id } 的对齐框
 shape-id-s-connection-point = 形状 { $id } 的连接点

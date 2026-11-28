@@ -892,6 +892,10 @@ save-the-stencil-planned = Die Schablone speichern — geplant
 saved-path = { $path } gespeichert
 scale = Skalieren
 screen-96-dpi = Bildschirm (96 dpi)
+scroll-left = Nach links scrollen
+
+scroll-right = Nach rechts scrollen
+
 search = Suchen
 
 search-in = Suchen in

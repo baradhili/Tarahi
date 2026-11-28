@@ -88,7 +88,15 @@ impl App {
         // selection — the user's change — re-scopes.
         let selection = if sess.scope == crate::find_dlg::FindScopeKind::Selection {
             match (&sess.key, &sess.nav_sel) {
-                (Some(prev), Some(nav)) if &self.sel_set == nav => prev.selection.clone(),
+                // The hold applies only while the scope STAYS
+                // Selection: entering the scope fresh (after a
+                // Current/All-pages search left nav_sel equal to the
+                // live selection) must read that live selection, not
+                // the empty `prev.selection` (CodeRabbit round on
+                // the #115 PR).
+                (Some(prev), Some(nav)) if prev.scope == sess.scope && &self.sel_set == nav => {
+                    prev.selection.clone()
+                }
                 _ => self.sel_set.clone(),
             }
         } else {
@@ -258,6 +266,14 @@ impl App {
     /// replacement. A name match replaces nothing (NameU is
     /// authored, not replaceable text): the step still advances.
     fn do_replace(&mut self) {
+        // A live canvas text edit commits first (the spell dialog's
+        // rule): the replacement writes committed text, and the draft
+        // cannot later overwrite it (CodeRabbit round on the #115
+        // PR). The commit bumps the revision, so the stale rule
+        // below then governs the (now recomputed) match.
+        if self.text_edit.is_some() {
+            self.end_text_edit(true);
+        }
         // A stale CURRENT match must never splice: the modeless
         // window sits over an editable canvas, so the document (or
         // the query/options) may have moved since Find Next
@@ -318,6 +334,11 @@ impl App {
     /// `Macro`), reported on the status bar. Name matches are not
     /// replaceable and are skipped.
     fn do_replace_all(&mut self) {
+        // A live canvas text edit commits first — same rule as
+        // Replace (CodeRabbit round on the #115 PR).
+        if self.text_edit.is_some() {
+            self.end_text_edit(true);
+        }
         let mut sess = std::mem::take(&mut self.repl.session);
         self.refresh_session(&mut sess);
         let matches = sess.matches.clone();
@@ -435,7 +456,6 @@ fn resume_index(matches: &[dc_core::FindMatch], rp: &ResumePoint) -> usize {
             dc_core::FindTarget::UserCell { row, .. } => (3, Some(row.as_str())),
         }
     }
-    let replaced_rank = rank(m);
     if let Some(block) = matches
         .iter()
         .position(|x| x.page == m.page && x.shape == m.shape)
@@ -445,14 +465,28 @@ fn resume_index(matches: &[dc_core::FindMatch], rp: &ResumePoint) -> usize {
             .rposition(|x| x.page == m.page && x.shape == m.shape)
             .map(|e| e + 1)
             .unwrap_or(matches.len());
-        if let Some(hit) = matches[block..end]
+        // EMISSION order, not name order: a shape's matches are
+        // class-grouped, and each row's spans are contiguous in the
+        // section's stored row order (`find_matches` emits rows as
+        // the sheet stores them — M, A, Z stays M, A, Z). Resume at
+        // the first match after the replaced TARGET's own group:
+        // same group needs `past`, any later group (or later row in
+        // stored order) resumes as-is (CodeRabbit round on the #115
+        // PR).
+        let replaced_rank = rank(m);
+        let group_start = matches[block..end]
+            .iter()
+            .position(|x| rank(x) == replaced_rank)
+            .map(|i| block + i)
+            .unwrap_or(block);
+        if let Some(hit) = matches[group_start..end]
             .iter()
             .enumerate()
             .find(|(_, x)| {
                 let r = rank(x);
-                r > replaced_rank || (r == replaced_rank && span_start(x) >= rp.past)
+                r != replaced_rank || span_start(x) >= rp.past
             })
-            .map(|(i, _)| block + i)
+            .map(|(i, _)| group_start + i)
         {
             return hit;
         }

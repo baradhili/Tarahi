@@ -954,6 +954,10 @@ save-the-stencil-planned = Save the stencil — planned
 saved-path = saved { $path }
 scale = Scale
 screen-96-dpi = Screen (96 dpi)
+scroll-left = Scroll left
+
+scroll-right = Scroll right
+
 search = Search
 
 search-in = Search in

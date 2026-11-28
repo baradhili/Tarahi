@@ -13,7 +13,9 @@
 use egui::Context;
 
 use crate::app::{dialog_dir, row};
-use crate::find_dlg::{insert_code, FindScopeKind, FindSession, SPECIAL_CODES};
+use crate::find_dlg::{
+    advance_edit_cursor, insert_code, FindScopeKind, FindSession, SPECIAL_CODES,
+};
 
 /// What the dialog asked the app for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +34,10 @@ pub(crate) enum ReplaceOutcome {
 pub(crate) struct ReplaceState {
     pub open: bool,
     pub replacement: String,
+    /// Each field's widget id — the Special menu parks egui's own
+    /// cursor past an inserted code in whichever field holds it.
+    query_edit_id: Option<egui::Id>,
+    repl_edit_id: Option<egui::Id>,
     /// The caret (CHAR index) the Special menu inserts at, and which
     /// field it belongs to (`false` Find what, `true` Replace with) —
     /// spec 3: the menu "targets whichever text box currently has
@@ -48,6 +54,8 @@ impl Default for ReplaceState {
         ReplaceState {
             open: false,
             replacement: String::new(),
+            query_edit_id: None,
+            repl_edit_id: None,
             caret: None,
             caret_in_replacement: false,
             repl_history: Vec::new(),
@@ -97,8 +105,17 @@ pub(crate) fn window(ctx: &Context, state: &mut ReplaceState) -> ReplaceOutcome 
                         ui.label(label.clone());
                         let out = egui::TextEdit::singleline(buffer)
                             .desired_width(ui.available_width() - 28.0)
+                            // Enter is the dialog's default button —
+                            // the explicit handler below owns it
+                            // (CodeRabbit round on the #115 PR).
+                            .return_key(None)
                             .show(ui);
                         let re = out.response.response;
+                        if is_repl {
+                            state.repl_edit_id = Some(re.id);
+                        } else {
+                            state.query_edit_id = Some(re.id);
+                        }
                         // Name the input (the Options dialog's rule —
                         // kittest's a11y check requires it).
                         re.widget_info(|| {
@@ -152,12 +169,14 @@ pub(crate) fn window(ctx: &Context, state: &mut ReplaceState) -> ReplaceOutcome 
                         ];
                         for (code, label) in SPECIAL_CODES.iter().zip(labels) {
                             if ui.add(egui::Button::new(label).small()).clicked() {
-                                let buffer = if state.caret_in_replacement {
-                                    &mut state.replacement
+                                let (buffer, id) = if state.caret_in_replacement {
+                                    (&mut state.replacement, state.repl_edit_id)
                                 } else {
-                                    &mut state.session.query
+                                    (&mut state.session.query, state.query_edit_id)
                                 };
-                                insert_code(buffer, state.caret, code);
+                                let at = insert_code(buffer, state.caret, code);
+                                state.caret = Some(at);
+                                advance_edit_cursor(ui.ctx(), id, at);
                             }
                         }
                     });

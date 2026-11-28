@@ -11083,9 +11083,30 @@ fn find_dialog_cycles_matches_and_reports_the_location() {
 #[test]
 fn find_dialog_reports_a_miss_in_the_status_area() {
     use egui_kittest::kittest::Queryable;
-    let mut h = find_harness();
+    // The standard 1280px harness ON PURPOSE (the PR review round):
+    // the Editing group sits past the row's edge at this width — the
+    // scroll arrows (observed Visio: the row scrolls once it no
+    // longer fits) must walk it into reach.
+    let mut h = find_harness_with_width(1280.0);
     place_shape_with_text(&mut h, "nothing to see");
 
+    // Walk the row right until the Editing group is on screen.
+    for _ in 0..10 {
+        // Walk the row right until the Editing group is on screen.
+        // (Click-by-position: the query's borrow outlives the
+        // click.)
+        let pos = h
+            .query_all_by_label_contains("Scroll right")
+            .next()
+            .map(|a| a.rect().center());
+        match pos {
+            Some(p) => {
+                click_at(&mut h, p, egui::PointerButton::Primary);
+                h.run();
+            }
+            None => break,
+        }
+    }
     open_find_dialog(&mut h);
     h.get(
         egui_kittest::kittest::By::default()

@@ -837,6 +837,10 @@ save-the-stencil-planned = 스텐실 저장 — 예정
 saved-path = { $path }을(를) 저장했습니다
 scale = 배율
 screen-96-dpi = 화면(96dpi)
+scroll-left = 왼쪽으로 스크롤
+
+scroll-right = 오른쪽으로 스크롤
+
 search = 검색
 
 search-in = 검색 위치

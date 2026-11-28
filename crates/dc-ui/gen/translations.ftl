@@ -895,6 +895,10 @@ save-the-stencil-planned = Die Schablone speichern — geplant
 saved-path = { $path } gespeichert
 scale = Skalieren
 screen-96-dpi = Bildschirm (96 dpi)
+scroll-left = Nach links scrollen
+
+scroll-right = Nach rechts scrollen
+
 search = Suchen
 
 search-in = Suchen in
@@ -2241,6 +2245,10 @@ save-the-stencil-planned = Save the stencil — planned
 saved-path = saved { $path }
 scale = Scale
 screen-96-dpi = Screen (96 dpi)
+scroll-left = Scroll left
+
+scroll-right = Scroll right
+
 search = Search
 
 search-in = Search in
@@ -3598,6 +3606,10 @@ save-the-stencil-planned = Guardar la galería — planeado
 saved-path = se guardó { $path }
 scale = Escala
 screen-96-dpi = Pantalla (96 ppp)
+scroll-left = Desplazar a la izquierda
+
+scroll-right = Desplazar a la derecha
+
 search = Buscar
 
 search-in = Buscar en
@@ -4897,6 +4909,10 @@ save-the-stencil-planned = ذخیرهٔ شابلون — برنامه‌ریزی
 saved-path = { $path } ذخیره شد
 scale = مقیاس
 screen-96-dpi = نمایشگر (۹۶ dpi)
+scroll-left = اسکرول به چپ
+
+scroll-right = اسکرول به راست
+
 search = جستجو
 
 search-in = جستجو در
@@ -6125,6 +6141,10 @@ save-the-stencil-planned = ステンシルの保存 — 予定
 saved-path = { $path } を保存しました
 scale = 縮尺
 screen-96-dpi = 画面（96 dpi）
+scroll-left = 左にスクロール
+
+scroll-right = 右にスクロール
+
 search = 検索
 
 search-in = 検索場所
@@ -7308,6 +7328,10 @@ save-the-stencil-planned = 스텐실 저장 — 예정
 saved-path = { $path }을(를) 저장했습니다
 scale = 배율
 screen-96-dpi = 화면(96dpi)
+scroll-left = 왼쪽으로 스크롤
+
+scroll-right = 오른쪽으로 스크롤
+
 search = 검색
 
 search-in = 검색 위치
@@ -8490,6 +8514,10 @@ save-the-stencil-planned = 保存模具 — 计划中
 saved-path = 已保存 { $path }
 scale = 比例
 screen-96-dpi = 屏幕（96 dpi）
+scroll-left = 向左滚动
+
+scroll-right = 向右滚动
+
 search = 搜索
 
 search-in = 搜索范围
@@ -8546,7 +8574,7 @@ shape-effects-planned = 形状效果 — 计划中
 shape-extensions = 形状延伸
 shape-fill-color = 形状填充颜色
 shape-handles = 形状手柄
-shape-id-fallback = 工作表.{ $id }
+shape-id-fallback = 形状.{ $id }
 
 shape-id-s-alignment-box = 形状 { $id } 的对齐框
 shape-id-s-connection-point = 形状 { $id } 的连接点

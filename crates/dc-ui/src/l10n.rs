@@ -5350,6 +5350,20 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "scroll-left",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "scroll-right",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "search",
         attribute: None,
         vars: &[],
@@ -7653,13 +7667,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..53137,
-            Self::En => 53137..104405,
-            Self::Es => 104405..160792,
-            Self::Fa => 160792..227901,
-            Self::Ja => 227901..284876,
-            Self::Ko => 284876..337375,
-            Self::ZhHans => 337375..383344,
+            Self::De => 0..53209,
+            Self::En => 53209..104533,
+            Self::Es => 104533..160999,
+            Self::Fa => 160999..228189,
+            Self::Ja => 228189..285239,
+            Self::Ko => 285239..337818,
+            Self::ZhHans => 337818..383841,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -10595,6 +10609,12 @@ impl L10nLanguage {
     }
     pub fn msg_screen_96_dpi(&self) -> String {
         self.0.msg("screen-96-dpi", None).unwrap()
+    }
+    pub fn msg_scroll_left(&self) -> String {
+        self.0.msg("scroll-left", None).unwrap()
+    }
+    pub fn msg_scroll_right(&self) -> String {
+        self.0.msg("scroll-right", None).unwrap()
     }
     pub fn msg_search(&self) -> String {
         self.0.msg("search", None).unwrap()

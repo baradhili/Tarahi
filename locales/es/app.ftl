@@ -947,6 +947,10 @@ save-the-stencil-planned = Guardar la galería — planeado
 saved-path = se guardó { $path }
 scale = Escala
 screen-96-dpi = Pantalla (96 ppp)
+scroll-left = Desplazar a la izquierda
+
+scroll-right = Desplazar a la derecha
+
 search = Buscar
 
 search-in = Buscar en

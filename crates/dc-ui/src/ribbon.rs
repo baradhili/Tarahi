@@ -2065,11 +2065,40 @@ pub fn content_row(
 ) {
     let t = theme::shell_tokens(ui.visuals());
     let mut spans: Vec<(String, f32, f32, bool)> = Vec::new();
+    // Narrow-width overflow (observed Visio 2016, owner ruling on
+    // the #115 PR): once the window can no longer fit the tab's
+    // groups, the row SCROLLS — chevron arrows at both ends walk it
+    // — instead of clipping the last group (which carries the
+    // working Find/Replace commands). The offset and the content
+    // width live in retained egui data keyed by the tab's last group
+    // label; the first frame at a new width measures and clips once.
+    let scroll_key = ui
+        .make_persistent_id(egui::IdSalt::new("dc-ribbon-row-scroll"))
+        .with(groups.last().map(|g| g.label.as_str()).unwrap_or(""));
+    let (mut offset, mut content_w): (f32, f32) = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(scroll_key).unwrap_or((0.0, 0.0)));
+    let row_avail = ui.available_width();
+    let overflow = content_w > row_avail + 1.0;
+    if !overflow {
+        offset = 0.0;
+    }
+    // In the mirrored chrome the groups run right-to-left, so the
+    // offset shifts the row the other way.
+    let rtl = crate::i18n::rtl();
+    let shift = if rtl { offset } else { -offset };
+    let mut row_rect = egui::Rect::NOTHING;
     ui.vertical(|ui| {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
+            row_rect = ui.available_rect_before_wrap();
             ui.set_min_height(CONTENT_H);
             ui.add_space(6.0);
+            if shift != 0.0 {
+                // A horizontal layout's add_space advances x; the
+                // negative walks the row left under the clip.
+                ui.add_space(shift);
+            }
             for (i, g) in groups.iter().enumerate() {
                 let x0 = ui.next_widget_position().x;
                 // top-aligned group content (small stacks align with the
@@ -2093,7 +2122,96 @@ pub fn content_row(
                     ui.add_space(6.0);
                 }
             }
+            // This frame's measurement for the next frame's arrows:
+            // the row's extent past the leading pad.
+            let content_right = ui.next_widget_position().x - ui.spacing().item_spacing.x;
+            content_w = (content_right - (6.0 + shift)).max(0.0);
         });
+        // The scroll arrows (both ends once the row overflows; the
+        // trailing one only once scrolled) — small overlay chevrons
+        // that walk the row by ~one group per click.
+        let max_off = (content_w - row_avail).max(0.0);
+        offset = offset.clamp(0.0, max_off);
+        if overflow && max_off > 0.0 {
+            let strs = crate::i18n::strs();
+            let step = 140.0;
+            let h = CONTENT_H;
+            let mk = |x0: f32, dir: f32, id: &'static str, tip: String| {
+                let r =
+                    egui::Rect::from_min_size(egui::pos2(x0, row_rect.top()), egui::vec2(20.0, h));
+                (r, dir, id, tip)
+            };
+            let (rr, dir_r) = if rtl {
+                (
+                    mk(
+                        row_rect.left(),
+                        -1.0,
+                        "dc-ribbon-scroll-fwd",
+                        strs.msg_scroll_left(),
+                    ),
+                    -1.0,
+                )
+            } else {
+                (
+                    mk(
+                        row_rect.right() - 20.0,
+                        1.0,
+                        "dc-ribbon-scroll-fwd",
+                        strs.msg_scroll_right(),
+                    ),
+                    1.0,
+                )
+            };
+            let arrow = |ui: &mut Ui, r: egui::Rect, dir: f32, id: &'static str, tip: String| {
+                let resp = ui.interact(
+                    r,
+                    ui.make_persistent_id(egui::IdSalt::new(id)),
+                    Sense::click(),
+                );
+                resp.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::Button, true, tip.as_str())
+                });
+                let resp = resp.on_hover_text(tip.clone());
+                let fill = if resp.hovered() {
+                    t.ribbon_hover
+                } else {
+                    egui::Color32::from_gray(0xf3)
+                };
+                ui.painter().rect_filled(r, 2.0, fill);
+                let c = r.center();
+                let dx = 3.5 * dir;
+                ui.painter().add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(c.x - dx, c.y - 4.0),
+                        egui::pos2(c.x - dx, c.y + 4.0),
+                        egui::pos2(c.x + dx, c.y),
+                    ],
+                    t.label,
+                    egui::Stroke::NONE,
+                ));
+                resp
+            };
+            let fwd = arrow(ui, rr.0, dir_r, rr.2, rr.3);
+            if fwd.clicked() {
+                offset = (offset + step).min(max_off);
+            }
+            // The back arrow appears only once scrolled.
+            if offset > 0.0 {
+                let (lr, dir_l, tip) = if rtl {
+                    (row_rect.right() - 20.0, 1.0, strs.msg_scroll_right())
+                } else {
+                    (row_rect.left(), -1.0, strs.msg_scroll_left())
+                };
+                let r =
+                    egui::Rect::from_min_size(egui::pos2(lr, row_rect.top()), egui::vec2(20.0, h));
+                let back = arrow(ui, r, dir_l, "dc-ribbon-scroll-back", tip);
+                if back.clicked() {
+                    offset = (offset - step).max(0.0);
+                }
+            }
+        }
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(scroll_key, (offset, content_w)));
         let (strip, _) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), LABEL_H), Sense::hover());
         for (label, x0, x1, launcher) in &spans {

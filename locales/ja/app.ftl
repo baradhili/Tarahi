@@ -836,6 +836,10 @@ save-the-stencil-planned = ステンシルの保存 — 予定
 saved-path = { $path } を保存しました
 scale = 縮尺
 screen-96-dpi = 画面（96 dpi）
+scroll-left = 左にスクロール
+
+scroll-right = 右にスクロール
+
 search = 検索
 
 search-in = 検索場所
