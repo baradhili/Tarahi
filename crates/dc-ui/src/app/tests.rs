@@ -405,6 +405,119 @@ fn rotated_connector_joins_the_jump_lines() {
     assert!(jumps[0].dir.1.abs() < 1e-6, "the axis line hops");
 }
 
+/// #336: the canvas overlay draws from THE crossing set — the same
+/// `page_jumps` computation as the export and the reconciliation, never
+/// a canvas-private re-crossing. A palette-index jumper (`LineColor`
+/// value `2` = red, the [MS-VSDX] color table) hops in RED, not the
+/// hex-fallback gray the old private builder drew; a connector on a
+/// hidden layer leaves the set; hop for hop the overlay equals the
+/// export; a zero radius paints nothing.
+#[test]
+fn canvas_jump_overlay_is_the_export_crossing_set() {
+    let connector = |id: i64, pin: (f64, f64), w: f64, angle: f64, color: Option<&str>| {
+        let mut s = vsdx::model::Shape {
+            id,
+            type_: Some("Shape".into()),
+            ..vsdx::model::Shape::default()
+        };
+        for (n, v) in [
+            ("PinX", pin.0),
+            ("PinY", pin.1),
+            ("Width", w),
+            ("Height", 0.0),
+            ("LocPinX", w / 2.0),
+            ("LocPinY", 0.0),
+            ("Angle", angle),
+            ("ObjType", 2.0),
+        ] {
+            s.sheet.set_cell(n, vsdx::Cell::value(format!("{v}")));
+        }
+        if let Some(c) = color {
+            s.sheet.set_cell("LineColor", vsdx::Cell::value(c));
+        }
+        let mut sec = vsdx::model::Section {
+            name: "Geometry".into(),
+            ix: 0,
+            ..vsdx::model::Section::default()
+        };
+        sec.rows = vec![
+            vsdx::model::Row {
+                t: Some("MoveTo".into()),
+                ix: 1,
+                cells: vec![
+                    ("X".to_string(), vsdx::Cell::value("0")),
+                    ("Y".to_string(), vsdx::Cell::value("0")),
+                ],
+                ..vsdx::model::Row::default()
+            },
+            vsdx::model::Row {
+                t: Some("LineTo".into()),
+                ix: 2,
+                cells: vec![
+                    ("X".to_string(), vsdx::Cell::value(format!("{w}"))),
+                    ("Y".to_string(), vsdx::Cell::value("0")),
+                ],
+                ..vsdx::model::Row::default()
+            },
+        ];
+        s.sheet.children.push(vsdx::model::SheetChild::Section(sec));
+        s
+    };
+    let mut ed = dc_core::Editor::new_blank();
+    // The horizontal jumper carries the palette-index LineColor; the
+    // 45° line through pin (3, 2.5) crosses it at (3.5, 3).
+    ed.doc.pages[0]
+        .shapes
+        .push(connector(1, (3.0, 3.0), 4.0, 0.0, Some("2")));
+    ed.doc.pages[0].shapes.push(connector(
+        2,
+        (3.0, 2.5),
+        2.8284271,
+        std::f64::consts::FRAC_PI_4,
+        None,
+    ));
+    let mut app = App::with_doc_opt(None);
+    app.ed = Some(ed);
+    app.page_idx = 0;
+    let radius = (0.0328084, 0.0328084);
+    let fx = app.jump_fx(radius, &[]);
+    assert_eq!(fx.len(), 1, "one hop on the crossing: {fx:?}");
+    assert_eq!(
+        fx[0].color,
+        egui::Color32::from_rgb(255, 0, 0),
+        "palette index 2 hops red, not the #424242 gray"
+    );
+    // Hop for hop, the overlay IS the export's crossing set: position,
+    // ink color, and the per-axis radius the svg overlay's rule picks.
+    let doc = &app.ed.as_ref().unwrap().doc;
+    let page = &doc.pages[0];
+    let export = dc::geom::page_jumps(doc, page, &[]);
+    assert_eq!(fx.len(), export.len(), "no drift in the hop count");
+    for (f, j) in fx.iter().zip(&export) {
+        assert_eq!(f.at, j.at);
+        assert_eq!(
+            f.color,
+            egui::Color32::from_rgb(j.color.0, j.color.1, j.color.2)
+        );
+        let want = if j.dir.0.abs() >= j.dir.1.abs() {
+            radius.0
+        } else {
+            radius.1
+        };
+        assert!((f.radius_in as f64 - want).abs() < 1e-9);
+    }
+    // A hidden-layer member leaves the crossing set — the list the
+    // frame already hands the compositor is the list the overlay
+    // skips.
+    app.ed.as_mut().unwrap().doc.pages[0].shapes[1]
+        .sheet
+        .set_cell("LayerMember", vsdx::Cell::value("2"));
+    let fx = app.jump_fx(radius, &[2]);
+    assert!(fx.is_empty(), "a hidden under-line crosses nothing: {fx:?}");
+    // Radius 0 paints nothing (the overlay's own gate).
+    assert!(app.jump_fx((0.0, 0.0), &[]).is_empty());
+}
+
 #[test]
 fn dialog_pending_keeps_polling() {
     let ctx = Context::default();

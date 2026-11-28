@@ -1350,6 +1350,45 @@ mod tests {
         assert_eq!(on_h(4).len(), 0, "neither");
     }
 
+    /// #336: the shared builder resolves jump colors like the
+    /// renderer — a legacy palette-index `LineColor` (value `2` = red,
+    /// the [MS-VSDX] color table; the #218 review's common case) paints
+    /// its hop red, not the hex-fallback gray — and a hidden-layer
+    /// member leaves the crossing set entirely. The canvas overlay and
+    /// the stored-jump reconciliation consume this same set, so this is
+    /// their contract too.
+    #[test]
+    fn page_jumps_resolves_palette_colors_and_skips_hidden_layers() {
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        // The horizontal jumper carries the palette-index LineColor.
+        let a = straight_connector(1, (1.0, 1.0), (5.0, 1.0), Some("2"));
+        let mut b = straight_connector(2, (3.0, 0.0), (3.0, 2.0), None);
+        page.shapes.push(a);
+        page.shapes.push(b.clone());
+        let doc = vsdx::Document::default();
+        let js = page_jumps(&doc, &page, &[]);
+        assert_eq!(js.len(), 1, "the crossing hops once: {js:?}");
+        assert_eq!(js[0].jumper, 1, "the flatter line hops: {js:?}");
+        assert_eq!(
+            js[0].color,
+            (255, 0, 0),
+            "palette index 2 is red, not the #424242 fallback: {js:?}"
+        );
+        // A hidden-layer member leaves the crossing set: the visible
+        // connector no longer hops over it.
+        b.sheet.set_cell("LayerMember", Cell::value("2"));
+        page.shapes[1] = b;
+        let js = page_jumps(&doc, &page, &[2]);
+        assert!(js.is_empty(), "a hidden under-line crosses nothing: {js:?}");
+        // Re-showing the layer restores the hop.
+        let js = page_jumps(&doc, &page, &[]);
+        assert_eq!(js.len(), 1, "visible again: {js:?}");
+    }
+
     /// `page_jump_style` reads the page's `LineJumpStyle` through the
     /// style chain, and a connector's nonzero `ConLineJumpStyle`
     /// overrides it per jumper (#324 phase 4).
