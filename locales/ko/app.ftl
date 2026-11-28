@@ -236,6 +236,8 @@ document-closed = 문서를 닫았습니다
 document-inspection-arrives-with = 문서 검사는 이후 마일스톤에서 제공됩니다
 document-masters = 문서 마스터
 document-protection-arrives-with = 문서 보호는 이후 마일스톤에서 제공됩니다
+document-recovery = 문서 복구
+
 document-shapesheet = 문서 ShapeSheet
 document-sheet-name = 문서
 document-stencil = 문서 스텐실
@@ -771,6 +773,11 @@ rail-new = 새로 만들기
 rail-print = 인쇄
 re-layout-page = 페이지 다시 레이아웃
 recent = 최근
+recovery-discard = 버림
+recovery-description = 다음 문서가 복구되었습니다. 계속 작업하려면 복원하고, 복구된 복사본을 삭제하려면 버리십시오.
+recovery-recovered-at = 복구 시각: { $ts }
+recovery-restore = 복원
+
 rectangle-tool = 사각형 도구
 rectangle-tool-planned = 사각형 도구 — 예정
 redo-ctrl-y = 다시 실행(Ctrl+Y)

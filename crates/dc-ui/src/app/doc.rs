@@ -88,10 +88,17 @@ impl App {
                 if ed.pages.is_empty() {
                     self.status =
                         crate::i18n::strs().msg_open_failed_no_pages(path.display().to_string());
+                    self.abort_restore_landing();
                     return false;
                 }
                 self.status = crate::i18n::strs().msg_opened_path(path.display().to_string());
-                self.recent.record(&path);
+                // #213: a RESTORE's landing records nothing — the MRU
+                // keeps real documents, not recovery snapshots (the
+                // landing is consumed at the end of this arm, after
+                // the state swap below).
+                if self.restore_landing.is_none() {
+                    self.recent.record(&path);
+                }
                 // #192 spec: opening ADDS a document — the active one
                 // (if any) becomes an inactive session first. The
                 // live text edit commits against the OLD document
@@ -158,12 +165,37 @@ impl App {
                 self.reorder_open = false;
                 self.comment_target = None;
                 self.comment_edit = None;
+                // #213: a RESTORE's landing — the snapshot's content
+                // landed through the normal open path, but the
+                // document presents as the ORIGINAL file (or untitled
+                // when no sidecar named one) and stays DIRTY — it
+                // behaves like an unsaved document — and the recovery
+                // files are deleted now that their content is in.
+                // This runs AFTER the swap above so its dirty flag
+                // survives (the swap clears it for a fresh open).
+                if let Some(landing) = self.restore_landing.take() {
+                    self.path = landing.original.unwrap_or_default();
+                    self.dirty = true;
+                    crate::autorecover::clear_files(&crate::autorecover::entry_files(
+                        &landing.entry,
+                    ));
+                }
                 true
             }
             Err(e) => {
+                self.abort_restore_landing();
                 self.status = crate::i18n::strs().msg_open_failed_e(e);
                 false
             }
+        }
+    }
+
+    /// #213: a failed restore (a corrupt snapshot, the #263 no-pages
+    /// rejection) keeps the recovery files and re-offers the entry —
+    /// the snapshot is the user's to Discard, not ours to drop.
+    fn abort_restore_landing(&mut self) {
+        if let Some(landing) = self.restore_landing.take() {
+            self.recoveries.push(landing.entry);
         }
     }
 
@@ -206,7 +238,10 @@ impl App {
             // must not enter it — its drain would overwrite the error
             // status with "opened …" (#218 review).
             if loaded {
-                self.rendering = Some((path, load.started));
+                // self.path, not the flight's path: a RESTORE's landing
+                // (#213) presents the original file, so the scrim's
+                // final status names it, not the snapshot.
+                self.rendering = Some((self.path.clone(), load.started));
             }
             return None;
         }

@@ -576,6 +576,25 @@ pub struct App {
     /// captures (collected during ribbon layout, painted after the
     /// ribbon panels close — see `crate::keytips`).
     keytips: crate::keytips::Keytips,
+    /// #213 AutoRecover: the last autosave tick's moment — the global
+    /// deadline clock. Every dirty PATHED document (active + inactive
+    /// sessions) snapshots when the interval elapses; untitled
+    /// documents never autosave (owner decision 2026-11-28 — no stem
+    /// to key a recovery file on).
+    autosave_last: std::time::Instant,
+    /// #213: the startup scan's recoverable documents (production ctor
+    /// only) — the Document Recovery pane's entries until each is
+    /// restored or discarded.
+    recoveries: Vec<crate::autorecover::RecoveryEntry>,
+    /// #213: Esc dismissed the recovery pane for this session — the
+    /// files stay and the next start offers them again.
+    recovery_dismissed: bool,
+    /// #213: a Restore's pending landing — the recovery file is
+    /// loading through the normal open path; when it lands, the
+    /// document presents as the original (or untitled), dirty, and
+    /// the recovery files are deleted. A failed load re-offers the
+    /// entry.
+    restore_landing: Option<crate::autorecover::RestoreLanding>,
 }
 
 /// Which cell a ribbon palette click targets.
@@ -1051,25 +1070,11 @@ fn write_png(path: &std::path::Path, img: &egui::ColorImage) -> anyhow::Result<(
     Ok(())
 }
 
-/// Current UTC date as `YYYY-MM-DD` — zero-dep civil-from-days
-/// (Hinnant's algorithm) over the Unix epoch seconds.
+/// Current UTC date as `YYYY-MM-DD` — the shared zero-dep
+/// civil-from-days conversion lives in `autorecover` (#213's
+/// timestamps and the comment dates are the same algorithm).
 fn format_now_utc() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let days = secs.div_euclid(86_400);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}")
+    crate::autorecover::utc_date_string(crate::autorecover::epoch_secs_now())
 }
 
 /// Whether a key carries a single-character name — in this egui's

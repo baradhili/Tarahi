@@ -38,6 +38,17 @@ impl App {
         // #268: the persisted options (user name/initials, the Save
         // page's AutoRecover settings) — headless ctors stay ephemeral.
         app.options_store = crate::options::Options::open();
+        // #213: the startup recovery scan — snapshots newer than their
+        // originals (or with the original gone) become the Document
+        // Recovery pane's entries. Production entry only; the headless
+        // ctors stay clean so kittest never reads the user's config.
+        {
+            let dirs = crate::autorecover::recovery_dirs(
+                crate::recent::config_base().as_deref(),
+                &app.options_store.autorecover_dir,
+            );
+            app.recoveries = crate::autorecover::scan(&dirs);
+        }
         // #300: a persisted manual theme choice overrides the detected
         // mode BEFORE the first frame — both slots are installed above,
         // so selecting is the whole override (no light flash at boot
@@ -254,6 +265,14 @@ impl App {
             stencil_extract: None,
             os_theme: None,
             keytips: crate::keytips::Keytips::new(),
+            // #213 AutoRecover: headless defaults — the tick's clock
+            // starts now (an ephemeral store keeps the tick inert:
+            // `poll_autosave` runs only for a persisting store), and
+            // no startup scan (tests plant recovery files explicitly).
+            autosave_last: std::time::Instant::now(),
+            recoveries: Vec::new(),
+            recovery_dismissed: false,
+            restore_landing: None,
         };
         if let Some(p) = path {
             // Headless: no frame loop to pump the poll — land the
@@ -414,6 +433,26 @@ impl App {
     #[doc(hidden)]
     pub fn set_options_store_for_test(&mut self, o: crate::options::Options) {
         self.options_store = o;
+    }
+    /// kittest (#213): run the recovery scan against `dir` and install
+    /// the result — the production ctor scans the real config dirs;
+    /// the tests plant snapshots and point this at them.
+    #[doc(hidden)]
+    pub fn scan_recoveries_for_test(&mut self, dir: &std::path::Path) {
+        self.recoveries = crate::autorecover::scan(&[dir.to_path_buf()]);
+    }
+    /// kittest (#213): the plain Save (a pathed document's Ctrl+S
+    /// path) — the autosave test asserts the clean save clears the
+    /// recovery copy.
+    #[doc(hidden)]
+    pub fn debug_save_for_test(&mut self) {
+        self.do_save(false);
+    }
+    /// kittest (#213): the document's path — the Restore landing
+    /// presents the recovered content as the original file.
+    #[doc(hidden)]
+    pub fn debug_doc_path(&self) -> String {
+        self.path.display().to_string()
     }
     /// kittest (#304): the avatar-initials fit — (text, font size);
     /// a long configured string must truncate into the 16pt circle.

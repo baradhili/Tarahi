@@ -234,6 +234,8 @@ document-closed = 文档已关闭
 document-inspection-arrives-with = 文档检查将在后期里程碑提供
 document-masters = 文档主形状
 document-protection-arrives-with = 文档保护将在后期里程碑提供
+document-recovery = 文档恢复
+
 document-shapesheet = 文档 ShapeSheet
 document-sheet-name = 文档
 document-stencil = 文档模具
@@ -770,6 +772,11 @@ rail-new = 新建
 rail-print = 打印
 re-layout-page = 重新布局页面
 recent = 最近
+recovery-discard = 放弃
+recovery-description = 已恢复以下文档。若要继续处理，请将其还原；若要删除恢复的副本，请将其放弃。
+recovery-recovered-at = 恢复时间：{ $ts }
+recovery-restore = 还原
+
 rectangle-tool = 矩形工具
 rectangle-tool-planned = 矩形工具 — 计划中
 redo-ctrl-y = 恢复 (Ctrl+Y)

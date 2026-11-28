@@ -328,6 +328,14 @@ impl App {
     /// `ViewportCommand::Close` as next frame's close-requested
     /// input — passes through instead of being re-prompted (#65).
     pub(super) fn issue_close(&mut self, ctx: &Context) {
+        // #213: the app closes — the ACTIVE document's recovery copy
+        // is removed (it closed cleanly: saved, or explicitly
+        // discarded by the close prompt). Inactive sessions keep
+        // theirs: their unsaved changes were never decided, and the
+        // next start offers them.
+        if !self.path.as_os_str().is_empty() {
+            self.clear_recovery_copy_for(&self.path);
+        }
         self.closing = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         self.debug_close_issued += 1;
@@ -429,6 +437,12 @@ impl App {
         // rule as activate_doc (CodeRabbit PR review).
         if self.text_edit.is_some() {
             self.end_text_edit(true);
+        }
+        // #213: the document closed (saved or explicitly discarded) —
+        // its recovery copy goes with it; the next start must not
+        // resurrect it.
+        if !self.path.as_os_str().is_empty() {
+            self.clear_recovery_copy_for(&self.path);
         }
         self.ed = None;
         self.path = PathBuf::new();

@@ -235,6 +235,8 @@ document-closed = ドキュメントを閉じました
 document-inspection-arrives-with = ドキュメントの検査は後のマイルストーンで提供されます
 document-masters = ドキュメント マスター
 document-protection-arrives-with = ドキュメントの保護は後のマイルストーンで提供されます
+document-recovery = ドキュメントの回復
+
 document-shapesheet = ドキュメントの ShapeSheet
 document-sheet-name = ドキュメント
 document-stencil = ドキュメント ステンシル
@@ -770,6 +772,11 @@ rail-new = 新規
 rail-print = 印刷
 re-layout-page = ページの再レイアウト
 recent = 最近
+recovery-discard = 破棄
+recovery-description = 次のドキュメントが回復されました。作業を続けるにはドキュメントを回復し、回復したコピーを削除するには破棄してください。
+recovery-recovered-at = 回復日時: { $ts }
+recovery-restore = 回復
+
 rectangle-tool = 四角形ツール
 rectangle-tool-planned = 四角形ツール — 予定
 redo-ctrl-y = 繰り返し（Ctrl+Y）

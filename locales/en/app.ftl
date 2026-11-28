@@ -271,6 +271,8 @@ document-closed = document closed
 document-inspection-arrives-with = Document inspection arrives with a later milestone
 document-masters = Document Masters
 document-protection-arrives-with = Document protection arrives with a later milestone
+document-recovery = Document Recovery
+
 document-shapesheet = Document ShapeSheet
 document-sheet-name = Document
 document-stencil = Document Stencil
@@ -882,6 +884,12 @@ rail-new = New
 rail-print = Print
 re-layout-page = Re-layout Page
 recent = Recent
+recovery-discard = Discard
+recovery-description = The following documents were recovered. Restore one to keep working on it, or discard it to delete the recovered copy.
+# $ts (String) - the snapshot's recovery timestamp (UTC, YYYY-MM-DD HH:MM)
+recovery-recovered-at = Recovered { $ts }
+recovery-restore = Restore
+
 rectangle-tool = Rectangle Tool
 rectangle-tool-planned = Rectangle tool — planned
 redo-ctrl-y = Redo (Ctrl+Y)

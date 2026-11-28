@@ -204,6 +204,12 @@ impl App {
         self.update_drag(&ctx);
         self.poll_dialog(&ctx);
         self.poll_stencil_extraction(&ctx);
+        // #213 AutoRecover: the interval autosave tick (deadline check
+        // + worker snapshot writes) and the startup Document Recovery
+        // pane — both run before the slideshow/backstage early
+        // returns, so every shell state drives them.
+        self.poll_autosave(&ctx);
+        self.poll_recovery(&ctx);
         // Backstage Export worker (#35): the finished file count (or
         // the failure) lands in the pane's note and the status bar.
         if let Some(result) = self.export_pane.poll() {

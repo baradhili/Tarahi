@@ -5,6 +5,7 @@
 
 pub mod align;
 pub mod app;
+pub mod autorecover;
 pub mod canvas;
 pub mod cmd;
 pub mod connectors;

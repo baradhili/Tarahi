@@ -250,6 +250,8 @@ document-closed = سند بسته شد
 document-inspection-arrives-with = بازرسی سند با نقطهٔ عطف بعدی عرضه می‌شود
 document-masters = استادهای سند
 document-protection-arrives-with = حفاظت سند با نقطهٔ عطف بعدی عرضه می‌شود
+document-recovery = بازیابی سند
+
 document-shapesheet = ShapeSheet سند
 document-sheet-name = سند
 document-stencil = شابلون سند
@@ -824,6 +826,11 @@ rail-new = جدید
 rail-print = چاپ
 re-layout-page = چیدمان دوبارهٔ صفحه
 recent = اخیر
+recovery-discard = نادیده‌گرفتن
+recovery-description = سندهای زیر بازیابی شدند. برای ادامهٔ کار روی یکی از آن‌ها آن را بازیابی کنید، یا برای حذف نسخهٔ بازیابی‌شده آن را نادیده بگیرید.
+recovery-recovered-at = بازیابی‌شده: { $ts }
+recovery-restore = بازیابی
+
 rectangle-tool = ابزار مستطیل
 rectangle-tool-planned = ابزار مستطیل — برنامه‌ریزی شده
 redo-ctrl-y = اجرای دوباره (Ctrl+Y)
