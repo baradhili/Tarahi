@@ -319,7 +319,9 @@ fn fmt_field(v: f64) -> String {
 
 /// Parse an entered number (a decimal comma is accepted; a trailing
 /// unit word is ignored — the field's unit is the label beside it).
-fn parse_field(s: &str) -> Option<f64> {
+/// `pub(super)`: the Pan & Zoom percent entry parses the same way
+/// (#211).
+pub(super) fn parse_field(s: &str) -> Option<f64> {
     let t = s.trim().replace(',', ".");
     let num: String = t
         .chars()

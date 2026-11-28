@@ -42,7 +42,6 @@ pub struct TabCtx {
     pub show_rulers: bool,
     pub show_grid: bool,
     pub show_comments: bool,
-    pub size_pos_open: bool,
     pub dynamic_grid: bool,
     pub snap_dlg_open: bool,
     /// #209 step 2: the document's AutoConnect toggle.
@@ -195,6 +194,11 @@ pub enum Action {
     ToggleComments,
     /// #210: the Size & Position window.
     ToggleSizePosition,
+    /// #211: the Pan & Zoom window (View ▸ Task Panes ▸ Pan & Zoom).
+    TogglePanZoom,
+    /// #211: open the View ▸ Task Panes dropdown (the anchor is the
+    /// dispatch frame's pointer position — `App::pointer_last`).
+    TaskPanesMenu,
     ToggleUnits,
     ToggleDynamicGrid,
     SnapGlue,
@@ -1817,9 +1821,9 @@ impl RibbonButton {
             egui::FontId::proportional(11.5),
             self.label_color(ui),
         );
-        let w = self
-            .width
-            .unwrap_or_else(|| 16.0 + 4.0 + gal.size().x + 8.0);
+        let w = self.width.unwrap_or_else(|| {
+            16.0 + 4.0 + gal.size().x + 8.0 + if self.split { 8.0 } else { 0.0 }
+        });
         let (r, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
         on_rect(self, r);
         // Painted galley caption — name the control (GitHub #56); the
@@ -1836,6 +1840,26 @@ impl RibbonButton {
             gal,
             egui::Color32::WHITE,
         );
+        if self.split && !self.combo {
+            // #211: a split-button dropdown caret (Visio's Task Panes
+            // opens a menu below; the menu itself is app-owned — the
+            // action dispatches with the pointer as the anchor).
+            let t = theme::shell_tokens(ui.visuals());
+            let cx = r.right() - 6.0;
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    Pos2::new(cx - 2.5, r.center().y - 1.0),
+                    Pos2::new(cx + 2.5, r.center().y - 1.0),
+                    Pos2::new(cx, r.center().y + 2.0),
+                ],
+                if self.enabled {
+                    t.tab_text_inactive
+                } else {
+                    Color32::from_gray(185)
+                },
+                Stroke::NONE,
+            ));
+        }
         if self.combo {
             let t = theme::shell_tokens(ui.visuals());
             // Office combobox: visible input border around the control

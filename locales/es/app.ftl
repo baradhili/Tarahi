@@ -794,6 +794,8 @@ painter-cells-sticky = { $n } celdas de formato copiadas a la forma { $to } (hag
 pan = Panorámica
 pan-off = herramienta de panorámica desactivada
 pan-tip = Herramienta Panorámica — arrastre la página para mover la vista (Esc vuelve al puntero)
+pan-zoom = Panorámica y zoom
+pan-zoom-tip = Vista general de la página: arrastre el rectángulo de vista para desplazarse; haga clic en otro lugar para centrar
 
 paragraph = Párrafo
 paste = Pegar
@@ -1101,7 +1103,7 @@ symbol-planned = Símbolo — planeado
 # $version - argumento
 tarahi-v-cargo-pkg-version-clean = Tarahi v{ $version } — diagramación compatible con Visio sin copias de Microsoft
 task-panes = Paneles de tareas
-task-panes-shapes-pan-zoom-plann = Paneles de tareas (Formas, Panorámica y zoom…) — planeado
+task-panes-tip = Mostrar u ocultar paneles de tareas (Panorámica y zoom, Tamaño y posición)
 tell-me = ¿Qué quieres hacer?
 tell-me-tip = ¿Qué quieres hacer? (Alt+Q)
 tell-me-what-you-want-to-do = ¿Qué quieres hacer?

@@ -158,6 +158,12 @@ impl App {
             self.group_edit.truncate(ok);
         }
         let ctx = ui.ctx().clone();
+        // #211: the pointer's per-frame position — the anchor dispatch
+        // reads when the Task Panes menu opens (dispatch has no
+        // Context; `mouse_page` is the same capture pattern).
+        if let Some(p) = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos())) {
+            self.pointer_last = p;
+        }
         // #130: a fullscreen toggle decided without a Context (the
         // Presentation Mode dispatch / the Slide Show entry and exit)
         // rides the next frame, like `os_clipboard_text`.
@@ -219,6 +225,10 @@ impl App {
         self.comment_window(&ctx);
         self.shape_data_window(&ctx);
         self.size_pos_window(&ctx);
+        // #211: the Pan & Zoom window and the View ▸ Task Panes
+        // dropdown that opens it.
+        self.panzoom_window(&ctx);
+        self.task_panes_menu(&ctx);
         self.color_palette_window(&ctx);
 
         // The eframe root Ui paints no background and eframe's clear
@@ -417,6 +427,20 @@ impl App {
         // AUTOMATICALLY ARRANGE (equal tiles) to fit — any change of
         // the child count re-fires the arrangement.
         self.central(ui);
+        // #211 (PR #413 review): wheel zoom/scroll, Fit Page and the
+        // zoom chrome (ribbon buttons, status slider) write the view
+        // AFTER the Pan & Zoom overview painted this frame, and a
+        // discrete write carries no follow-up input event — the
+        // rectangle would sit one interaction behind. One repaint
+        // whenever the end-of-frame view disagrees with what the
+        // overview drew catches every write path; the follow-up frame
+        // redraws the rectangle fresh and the comparison goes quiet
+        // (zero cost on idle frames). The overview keeps its place
+        // BEFORE the canvas on purpose: a thumb drag's writes must
+        // reach the canvas the same frame.
+        if self.panzoom_view_lags() {
+            ui.ctx().request_repaint();
+        }
         let drawing_open = self.ed.is_some();
         let n_children = drawing_open as usize + self.shapesheets.len();
         if n_children != self.mdi_last_count {

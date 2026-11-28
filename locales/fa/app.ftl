@@ -742,6 +742,8 @@ painter-cells-sticky = { $n } سلول قالب‌بندی به شکل { $to } �
 pan = جابه‌جایی
 pan-off = ابزار جابه‌جایی خاموش است
 pan-tip = ابزار جابه‌جایی — برای حرکت دادن نما، صفحه را بکشید (Esc به اشاره‌گر بازمی‌گردد)
+pan-zoom = پان و بزرگ‌نمایی
+pan-zoom-tip = نمای کلی صفحه — مستطیل نما را بکشید تا جابه‌جا شود؛ جای دیگر را کلیک کنید تا آنجا مرکز شود
 
 paragraph = بند
 paste = چسباندن
@@ -1032,7 +1034,7 @@ symbol = نماد
 symbol-planned = نماد — برنامه‌ریزی شده
 tarahi-v-cargo-pkg-version-clean = طارحی نسخهٔ { $version } — نقاشیِ سازگار با Visio به روش Cleanroom
 task-panes = قاب‌های کاری
-task-panes-shapes-pan-zoom-plann = قاب‌های کاری (Shapes، Pan و Zoom…) — برنامه‌ریزی شده
+task-panes-tip = نمایش یا پنهان‌سازی قاب‌های کاری (پان و بزرگ‌نمایی، اندازه و موقعیت)
 tell-me = Tell Me
 tell-me-tip = Tell Me (Alt+Q)
 tell-me-what-you-want-to-do = بگویید چه کاری می‌خواهید بکنید

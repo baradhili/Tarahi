@@ -118,6 +118,34 @@ impl App {
     pub fn debug_view_zoom(&self) -> f32 {
         self.view.zoom
     }
+    /// #211 kittest: the Pan & Zoom window's thumbnail paper and the
+    /// viewport rectangle it drew (screen px; NOTHING while closed) —
+    /// the drag targets for the thumb-gesture tests.
+    #[doc(hidden)]
+    pub fn debug_panzoom_thumb(&self) -> Rect {
+        self.panzoom_thumb
+    }
+    #[doc(hidden)]
+    pub fn debug_panzoom_vp(&self) -> Rect {
+        self.panzoom_vp
+    }
+    /// #211 (PR #413 review) kittest: whether the overview's rectangle
+    /// lags the live view — the end-of-frame comparison `draw` turns
+    /// into the catch-up repaint (kittest's `run()` forces frames, so
+    /// the DETECTION is what a test can pin).
+    #[doc(hidden)]
+    pub fn debug_panzoom_view_lags(&self) -> bool {
+        self.panzoom_view_lags()
+    }
+    /// #211 kittest: the undo-history depth — the Pan & Zoom contract
+    /// is that its pan/zoom writes are view-only and never land here.
+    #[doc(hidden)]
+    pub fn debug_undo_len(&self) -> usize {
+        self.ed
+            .as_ref()
+            .map(|e| e.history.undo_labels().len())
+            .unwrap_or(0)
+    }
     /// kittest: the open in-place editor session as (page, shape)
     /// (#22).
     #[doc(hidden)]
