@@ -112,13 +112,15 @@ cancel = لغو
 # $f - فرمول نگهبان
 cell-is-formula-driven = { $name } فرمول‌محور است ({ $f })
 center = وسط
+change-shape = تغییر شکل
+
+change-shape-planned = تغییر شکل — برنامه‌ریزی‌شده (#131)
+
 chart = نمودار
 charts-planned-later-milestone = نمودارها — برنامه‌ریزی شده (نقطهٔ عطف بعدی)
 checking-the-clipboard-for-a-pic = بررسی کلیپ‌بورد برای تصویر…
 choose-the-display-language-for = زبان نمایش نوار، منوها و گفت‌وگوها را انتخاب کنید
 classic-arrow = پیکان کلاسیک
-clear = پاک‌کردن
-clear-planned-later-milestone = پاک‌کردن — برنامه‌ریزی شده (نقطهٔ عطف بعدی)
 click-a-shape-to-add-a-connectio = برای افزودن نقطهٔ اتصال روی یک شکل کلیک کنید
 clipboard = کلیپ‌بورد
 clipboard-image-could-not-be-enc = تصویر کلیپ‌بورد کدگذاری نشد
@@ -580,6 +582,10 @@ layer = لایه
 layer-composite-failed = لایهٔ { $id }: { $e }
 # $ix - شاخص سطر لایه
 layer-ix-fallback = لایهٔ { $ix }
+layers = لایه‌ها
+
+layers-planned = لایه‌ها — برنامه‌ریزی‌شده
+
 layout = چیدمان
 layout-options = گزینه‌های چیدمان
 layout-options-planned = گزینه‌های چیدمان — برنامه‌ریزی شده
@@ -1099,8 +1105,16 @@ text = متن
 text-align-left = تراز چپ
 text-align-right = تراز راست
 text-box = جعبهٔ متن
+text-case = تغییر مورد
+
+text-case-planned = تغییر مورد — برنامه‌ریزی‌شده
+
 text-color = رنگ متن
 text-color-tip = رنگ متن انتخاب
+text-direction = جهت متن
+
+text-direction-planned = جهت متن — برنامه‌ریزی‌شده
+
 text-field = فیلد متنی
 text-formatting-arrives-with-a-l = قالب‌بندی متن با نقطهٔ عطف بعدی می‌آید
 text-shapes-planned = شکل‌های متنی — برنامه‌ریزی شده

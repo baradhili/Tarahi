@@ -115,13 +115,15 @@ cancel = Abbrechen
 # $f - die schützende Formel
 cell-is-formula-driven = { $name } ist formelgetrieben ({ $f })
 center = Mitte
+change-shape = Shape ändern
+
+change-shape-planned = Shape ändern — geplant (#131)
+
 chart = Diagramm
 charts-planned-later-milestone = Diagramme — geplant (späterer Meilenstein)
 checking-the-clipboard-for-a-pic = Die Zwischenablage wird auf ein Bild geprüft …
 choose-the-display-language-for = Die Anzeigesprache für Menüband, Menüs und Dialoge wählen
 classic-arrow = Klassischer Pfeil
-clear = Löschen
-clear-planned-later-milestone = Löschen — geplant (späterer Meilenstein)
 click-a-shape-to-add-a-connectio = Klicken Sie auf eine Form, um einen Verbindungspunkt hinzuzufügen
 clipboard = Zwischenablage
 clipboard-image-could-not-be-enc = Das Zwischenablage-Bild konnte nicht kodiert werden
@@ -583,6 +585,10 @@ layer = Ebene
 layer-composite-failed = Layer { $id }: { $e }
 # $ix - Layer-Zeilenindex
 layer-ix-fallback = Layer { $ix }
+layers = Ebenen
+
+layers-planned = Ebenen — geplant
+
 layout = Layout
 layout-options = Layoutoptionen
 layout-options-planned = Layoutoptionen — geplant
@@ -1102,8 +1108,16 @@ text = Text
 text-align-left = Linksbündig
 text-align-right = Rechtsbündig
 text-box = Textfeld
+text-case = Groß-/Kleinschreibung
+
+text-case-planned = Groß-/Kleinschreibung — geplant
+
 text-color = Textfarbe
 text-color-tip = Textfarbe der Auswahl
+text-direction = Textrichtung
+
+text-direction-planned = Textrichtung — geplant
+
 text-field = Textfeld (Feld)
 text-formatting-arrives-with-a-l = Textformatierung kommt in einem späteren Meilenstein
 text-shapes-planned = Textformen — geplant
@@ -1391,13 +1405,15 @@ cancel = Cancel
 # $f (String) - the guarding formula
 cell-is-formula-driven = { $name } is formula-driven ({ $f })
 center = Center
+change-shape = Change Shape
+
+change-shape-planned = Change Shape — planned (#131)
+
 chart = Chart
 charts-planned-later-milestone = Charts — planned (later milestone)
 checking-the-clipboard-for-a-pic = checking the clipboard for a picture…
 choose-the-display-language-for = Choose the display language for the ribbon, menus, and dialogs
 classic-arrow = Classic Arrow
-clear = Clear
-clear-planned-later-milestone = Clear — planned (later milestone)
 click-a-shape-to-add-a-connectio = click a shape to add a connection point
 clipboard = Clipboard
 clipboard-image-could-not-be-enc = clipboard image could not be encoded
@@ -1891,6 +1907,10 @@ layer = Layer
 layer-composite-failed = layer { $id }: { $e }
 # $ix (Number) - layer row index
 layer-ix-fallback = layer { $ix }
+layers = Layers
+
+layers-planned = Layers — planned
+
 layout = Layout
 layout-options = Layout Options
 layout-options-planned = Layout options — planned
@@ -2451,8 +2471,16 @@ text = Text
 text-align-left = Align Left
 text-align-right = Align Right
 text-box = Text Box
+text-case = Change Case
+
+text-case-planned = Change Case — planned
+
 text-color = Text Color
 text-color-tip = Text color of the selection
+text-direction = Text Direction
+
+text-direction-planned = Text Direction — planned
+
 text-field = Text Field
 text-formatting-arrives-with-a-l = Text formatting arrives with a later milestone
 text-shapes-planned = Text shapes — planned
@@ -2740,13 +2768,15 @@ cancel = Cancelar
 # $f - la fórmula protectora
 cell-is-formula-driven = { $name } está controlado por una fórmula ({ $f })
 center = Centro
+change-shape = Cambiar forma
+
+change-shape-planned = Cambiar forma — previsto (#131)
+
 chart = Gráfico
 charts-planned-later-milestone = Gráficos — planeado (hito posterior)
 checking-the-clipboard-for-a-pic = comprobando el portapapeles en busca de una imagen…
 choose-the-display-language-for = Elija el idioma de presentación de la cinta de opciones, los menús y los cuadros de diálogo
 classic-arrow = Flecha clásica
-clear = Borrar
-clear-planned-later-milestone = Borrar — planeado (hito posterior)
 click-a-shape-to-add-a-connectio = haga clic en una forma para agregar un punto de conexión
 clipboard = Portapapeles
 clipboard-image-could-not-be-enc = no se pudo codificar la imagen del portapapeles
@@ -3236,6 +3266,10 @@ layer = Capa
 layer-composite-failed = capa { $id }: { $e }
 # $ix - índice de la fila de capa
 layer-ix-fallback = capa { $ix }
+layers = Capas
+
+layers-planned = Capas — previsto
+
 layout = Diseño
 layout-options = Opciones de diseño
 layout-options-planned = Opciones de diseño — planeado
@@ -3791,8 +3825,16 @@ text = Texto
 text-align-left = Alinear a la izquierda
 text-align-right = Alinear a la derecha
 text-box = Cuadro de texto
+text-case = Cambiar mayús./minús.
+
+text-case-planned = Cambiar mayús./minús. — previsto
+
 text-color = Color de texto
 text-color-tip = Color de texto de la selección
+text-direction = Dirección del texto
+
+text-direction-planned = Dirección del texto — previsto
+
 text-field = Campo de texto
 text-formatting-arrives-with-a-l = El formato de texto llega con un hito posterior
 text-shapes-planned = Formas de texto — planeado
@@ -4075,13 +4117,15 @@ cancel = لغو
 # $f - فرمول نگهبان
 cell-is-formula-driven = { $name } فرمول‌محور است ({ $f })
 center = وسط
+change-shape = تغییر شکل
+
+change-shape-planned = تغییر شکل — برنامه‌ریزی‌شده (#131)
+
 chart = نمودار
 charts-planned-later-milestone = نمودارها — برنامه‌ریزی شده (نقطهٔ عطف بعدی)
 checking-the-clipboard-for-a-pic = بررسی کلیپ‌بورد برای تصویر…
 choose-the-display-language-for = زبان نمایش نوار، منوها و گفت‌وگوها را انتخاب کنید
 classic-arrow = پیکان کلاسیک
-clear = پاک‌کردن
-clear-planned-later-milestone = پاک‌کردن — برنامه‌ریزی شده (نقطهٔ عطف بعدی)
 click-a-shape-to-add-a-connectio = برای افزودن نقطهٔ اتصال روی یک شکل کلیک کنید
 clipboard = کلیپ‌بورد
 clipboard-image-could-not-be-enc = تصویر کلیپ‌بورد کدگذاری نشد
@@ -4543,6 +4587,10 @@ layer = لایه
 layer-composite-failed = لایهٔ { $id }: { $e }
 # $ix - شاخص سطر لایه
 layer-ix-fallback = لایهٔ { $ix }
+layers = لایه‌ها
+
+layers-planned = لایه‌ها — برنامه‌ریزی‌شده
+
 layout = چیدمان
 layout-options = گزینه‌های چیدمان
 layout-options-planned = گزینه‌های چیدمان — برنامه‌ریزی شده
@@ -5062,8 +5110,16 @@ text = متن
 text-align-left = تراز چپ
 text-align-right = تراز راست
 text-box = جعبهٔ متن
+text-case = تغییر مورد
+
+text-case-planned = تغییر مورد — برنامه‌ریزی‌شده
+
 text-color = رنگ متن
 text-color-tip = رنگ متن انتخاب
+text-direction = جهت متن
+
+text-direction-planned = جهت متن — برنامه‌ریزی‌شده
+
 text-field = فیلد متنی
 text-formatting-arrives-with-a-l = قالب‌بندی متن با نقطهٔ عطف بعدی می‌آید
 text-shapes-planned = شکل‌های متنی — برنامه‌ریزی شده
@@ -5337,13 +5393,15 @@ callouts-planned = 吹き出し — 予定
 cancel = キャンセル
 cell-is-formula-driven = { $name } は数式で管理されています（{ $f }）
 center = 中央
+change-shape = 図形の変更
+
+change-shape-planned = 図形の変更 — 計画中（#131）
+
 chart = チャート
 charts-planned-later-milestone = チャート — 予定（後のマイルストーン）
 checking-the-clipboard-for-a-pic = クリップボードの画像を確認しています…
 choose-the-display-language-for = リボン、メニュー、ダイアログの表示言語を選択します
 classic-arrow = クラシック矢印
-clear = 消去
-clear-planned-later-milestone = 消去 — 予定（後のマイルストーン）
 click-a-shape-to-add-a-connectio = 図形をクリックして接続点を追加します
 clipboard = クリップボード
 clipboard-image-could-not-be-enc = クリップボードの画像をエンコードできませんでした
@@ -5782,6 +5840,10 @@ last-page = 最終ページ
 layer = レイヤー
 layer-composite-failed = レイヤー { $id }: { $e }
 layer-ix-fallback = レイヤー { $ix }
+layers = レイヤー
+
+layers-planned = レイヤー — 計画中
+
 layout = レイアウト
 layout-options = レイアウト オプション
 layout-options-planned = レイアウト オプション — 予定
@@ -6264,8 +6326,16 @@ text = 文字
 text-align-left = 左揃え
 text-align-right = 右揃え
 text-box = テキスト ボックス
+text-case = 文字種の変更
+
+text-case-planned = 文字種の変更 — 計画中
+
 text-color = 文字の色
 text-color-tip = 選択範囲の文字色
+text-direction = 文字の方向
+
+text-direction-planned = 文字の方向 — 計画中
+
 text-field = 文字フィールド
 text-formatting-arrives-with-a-l = 文字書式は後のマイルストーンで提供されます
 text-shapes-planned = 文字図形 — 予定
@@ -6506,13 +6576,15 @@ callouts-planned = 설명선 — 예정
 cancel = 취소
 cell-is-formula-driven = { $name }은(는) 수식으로 관리됩니다({ $f })
 center = 가운데
+change-shape = 도형 변경
+
+change-shape-planned = 도형 변경 — 계획됨(#131)
+
 chart = 차트
 charts-planned-later-milestone = 차트 — 예정(이후 마일스톤)
 checking-the-clipboard-for-a-pic = 클립보드에서 그림을 확인하는 중…
 choose-the-display-language-for = 리본, 메뉴, 대화 상자의 표시 언어를 선택합니다
 classic-arrow = 클래식 화살표
-clear = 지우기
-clear-planned-later-milestone = 지우기 — 예정(이후 마일스톤)
 click-a-shape-to-add-a-connectio = 셰이프를 클릭하여 연결 지점을 추가합니다
 clipboard = 클립보드
 clipboard-image-could-not-be-enc = 클립보드 이미지를 인코딩하지 못했습니다
@@ -6951,6 +7023,10 @@ last-page = 마지막 페이지
 layer = 레이어
 layer-composite-failed = 레이어 { $id }: { $e }
 layer-ix-fallback = 레이어 { $ix }
+layers = 레이어
+
+layers-planned = 레이어 — 계획됨
+
 layout = 레이아웃
 layout-options = 레이아웃 옵션
 layout-options-planned = 레이아웃 옵션 — 예정
@@ -7433,8 +7509,16 @@ text = 텍스트
 text-align-left = 왼쪽 맞춤
 text-align-right = 오른쪽 맞춤
 text-box = 텍스트 상자
+text-case = 대/소문자 변경
+
+text-case-planned = 대/소문자 변경 — 계획됨
+
 text-color = 글자 색
 text-color-tip = 선택 영역의 글자 색
+text-direction = 텍스트 방향
+
+text-direction-planned = 텍스트 방향 — 계획됨
+
 text-field = 텍스트 필드
 text-formatting-arrives-with-a-l = 텍스트 서식은 이후 마일스톤에서 제공됩니다
 text-shapes-planned = 텍스트 셰이프 — 예정
@@ -7673,13 +7757,15 @@ callouts-planned = 标注 — 计划中
 cancel = 取消
 cell-is-formula-driven = { $name }由公式驱动（{ $f }）
 center = 居中
+change-shape = 更改形状
+
+change-shape-planned = 更改形状 — 已计划（#131）
+
 chart = 图表
 charts-planned-later-milestone = 图表 — 计划中（后期里程碑）
 checking-the-clipboard-for-a-pic = 正在检查剪贴板中的图片…
 choose-the-display-language-for = 选择功能区、菜单和对话框的显示语言
 classic-arrow = 经典箭头
-clear = 清除
-clear-planned-later-milestone = 清除 — 计划中（后期里程碑）
 click-a-shape-to-add-a-connectio = 单击形状以添加连接点
 clipboard = 剪贴板
 clipboard-image-could-not-be-enc = 剪贴板图像无法编码
@@ -8119,6 +8205,10 @@ last-page = 最后一页
 layer = 图层
 layer-composite-failed = 图层 { $id }：{ $e }
 layer-ix-fallback = 图层 { $ix }
+layers = 图层
+
+layers-planned = 图层 — 已计划
+
 layout = 布局
 layout-options = 布局选项
 layout-options-planned = 布局选项 — 计划中
@@ -8606,8 +8696,16 @@ text = 文本
 text-align-left = 文本左对齐
 text-align-right = 文本右对齐
 text-box = 文本框
+text-case = 更改大小写
+
+text-case-planned = 更改大小写 — 已计划
+
 text-color = 文本颜色
 text-color-tip = 选定内容的文本颜色
+text-direction = 文字方向
+
+text-direction-planned = 文字方向 — 已计划
+
 text-field = 域
 text-formatting-arrives-with-a-l = 文本格式设置将在后期里程碑提供
 text-shapes-planned = 文本形状 — 计划中

@@ -432,6 +432,16 @@ pub enum Icon {
     /// #396: the Options ▸ Language page header (MDI translate; the
     /// asset has been vendored since #246, now mapped).
     Translate,
+    /// #115 phase 4: Home ▸ Editing ▸ Change Shape (MDI shape-plus —
+    /// the shape gallery placeholder; the real swap is #131).
+    ChangeShape,
+    /// #115 phase 4: Home ▸ Editing ▸ Layers (MDI layers).
+    Layers,
+    /// #115 phase 4: Home ▸ Font ▸ Text Case (MDI format-letter-case).
+    TextCase,
+    /// #115 phase 4: Home ▸ Paragraph ▸ Text Direction (MDI
+    /// format-text-rotation-none).
+    TextDirection,
 }
 
 impl Icon {
@@ -536,6 +546,10 @@ impl Icon {
             Icon::DockTop => "dock-top",
             Icon::Puzzle => "puzzle",
             Icon::Translate => "translate",
+            Icon::ChangeShape => "shape-plus",
+            Icon::Layers => "layers",
+            Icon::TextCase => "format-letter-case",
+            Icon::TextDirection => "format-text-rotation-none",
         };
         Some(a)
     }
@@ -1655,6 +1669,11 @@ impl Icon {
             | Icon::DockTop
             | Icon::Puzzle
             | Icon::Translate => {
+                p.rect_filled(r.shrink(6.0), 2.0, gray);
+            }
+            // Texture-backed placeholders (#115 phase 4): a plain chip
+            // if the MDI raster ever fails — the asset is the glyph.
+            Icon::ChangeShape | Icon::Layers | Icon::TextCase | Icon::TextDirection => {
                 p.rect_filled(r.shrink(6.0), 2.0, gray);
             }
         }

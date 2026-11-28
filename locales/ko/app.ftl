@@ -105,13 +105,15 @@ callouts-planned = 설명선 — 예정
 cancel = 취소
 cell-is-formula-driven = { $name }은(는) 수식으로 관리됩니다({ $f })
 center = 가운데
+change-shape = 도형 변경
+
+change-shape-planned = 도형 변경 — 계획됨(#131)
+
 chart = 차트
 charts-planned-later-milestone = 차트 — 예정(이후 마일스톤)
 checking-the-clipboard-for-a-pic = 클립보드에서 그림을 확인하는 중…
 choose-the-display-language-for = 리본, 메뉴, 대화 상자의 표시 언어를 선택합니다
 classic-arrow = 클래식 화살표
-clear = 지우기
-clear-planned-later-milestone = 지우기 — 예정(이후 마일스톤)
 click-a-shape-to-add-a-connectio = 셰이프를 클릭하여 연결 지점을 추가합니다
 clipboard = 클립보드
 clipboard-image-could-not-be-enc = 클립보드 이미지를 인코딩하지 못했습니다
@@ -550,6 +552,10 @@ last-page = 마지막 페이지
 layer = 레이어
 layer-composite-failed = 레이어 { $id }: { $e }
 layer-ix-fallback = 레이어 { $ix }
+layers = 레이어
+
+layers-planned = 레이어 — 계획됨
+
 layout = 레이아웃
 layout-options = 레이아웃 옵션
 layout-options-planned = 레이아웃 옵션 — 예정
@@ -1032,8 +1038,16 @@ text = 텍스트
 text-align-left = 왼쪽 맞춤
 text-align-right = 오른쪽 맞춤
 text-box = 텍스트 상자
+text-case = 대/소문자 변경
+
+text-case-planned = 대/소문자 변경 — 계획됨
+
 text-color = 글자 색
 text-color-tip = 선택 영역의 글자 색
+text-direction = 텍스트 방향
+
+text-direction-planned = 텍스트 방향 — 계획됨
+
 text-field = 텍스트 필드
 text-formatting-arrives-with-a-l = 텍스트 서식은 이후 마일스톤에서 제공됩니다
 text-shapes-planned = 텍스트 셰이프 — 예정

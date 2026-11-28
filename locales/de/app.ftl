@@ -112,13 +112,15 @@ cancel = Abbrechen
 # $f - die schützende Formel
 cell-is-formula-driven = { $name } ist formelgetrieben ({ $f })
 center = Mitte
+change-shape = Shape ändern
+
+change-shape-planned = Shape ändern — geplant (#131)
+
 chart = Diagramm
 charts-planned-later-milestone = Diagramme — geplant (späterer Meilenstein)
 checking-the-clipboard-for-a-pic = Die Zwischenablage wird auf ein Bild geprüft …
 choose-the-display-language-for = Die Anzeigesprache für Menüband, Menüs und Dialoge wählen
 classic-arrow = Klassischer Pfeil
-clear = Löschen
-clear-planned-later-milestone = Löschen — geplant (späterer Meilenstein)
 click-a-shape-to-add-a-connectio = Klicken Sie auf eine Form, um einen Verbindungspunkt hinzuzufügen
 clipboard = Zwischenablage
 clipboard-image-could-not-be-enc = Das Zwischenablage-Bild konnte nicht kodiert werden
@@ -580,6 +582,10 @@ layer = Ebene
 layer-composite-failed = Layer { $id }: { $e }
 # $ix - Layer-Zeilenindex
 layer-ix-fallback = Layer { $ix }
+layers = Ebenen
+
+layers-planned = Ebenen — geplant
+
 layout = Layout
 layout-options = Layoutoptionen
 layout-options-planned = Layoutoptionen — geplant
@@ -1099,8 +1105,16 @@ text = Text
 text-align-left = Linksbündig
 text-align-right = Rechtsbündig
 text-box = Textfeld
+text-case = Groß-/Kleinschreibung
+
+text-case-planned = Groß-/Kleinschreibung — geplant
+
 text-color = Textfarbe
 text-color-tip = Textfarbe der Auswahl
+text-direction = Textrichtung
+
+text-direction-planned = Textrichtung — geplant
+
 text-field = Textfeld (Feld)
 text-formatting-arrives-with-a-l = Textformatierung kommt in einem späteren Meilenstein
 text-shapes-planned = Textformen — geplant

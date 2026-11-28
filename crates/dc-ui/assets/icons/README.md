@@ -54,6 +54,10 @@ File names map 1:1 to the `Icon` enum asset stems in
 | grid | grid |
 | rulers | ruler-square |
 | shapes | shape |
+| shape-plus | shape-plus (Change Shape, #115 phase 4, 2026-11-28) |
+| layers | layers (Editing ▸ Layers, #115 phase 4, 2026-11-28) |
+| format-letter-case | format-letter-case (Text Case, #115 phase 4, 2026-11-28) |
+| format-text-rotation-none | format-text-rotation-none (Text Direction, #115 phase 4, 2026-11-28) |
 | macro | script-text-outline |
 | shapesheet | table-edit |
 | units | swap-horizontal |

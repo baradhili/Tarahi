@@ -118,13 +118,15 @@ cancel = Cancel
 # $f (String) - the guarding formula
 cell-is-formula-driven = { $name } is formula-driven ({ $f })
 center = Center
+change-shape = Change Shape
+
+change-shape-planned = Change Shape — planned (#131)
+
 chart = Chart
 charts-planned-later-milestone = Charts — planned (later milestone)
 checking-the-clipboard-for-a-pic = checking the clipboard for a picture…
 choose-the-display-language-for = Choose the display language for the ribbon, menus, and dialogs
 classic-arrow = Classic Arrow
-clear = Clear
-clear-planned-later-milestone = Clear — planned (later milestone)
 click-a-shape-to-add-a-connectio = click a shape to add a connection point
 clipboard = Clipboard
 clipboard-image-could-not-be-enc = clipboard image could not be encoded
@@ -618,6 +620,10 @@ layer = Layer
 layer-composite-failed = layer { $id }: { $e }
 # $ix (Number) - layer row index
 layer-ix-fallback = layer { $ix }
+layers = Layers
+
+layers-planned = Layers — planned
+
 layout = Layout
 layout-options = Layout Options
 layout-options-planned = Layout options — planned
@@ -1178,8 +1184,16 @@ text = Text
 text-align-left = Align Left
 text-align-right = Align Right
 text-box = Text Box
+text-case = Change Case
+
+text-case-planned = Change Case — planned
+
 text-color = Text Color
 text-color-tip = Text color of the selection
+text-direction = Text Direction
+
+text-direction-planned = Text Direction — planned
+
 text-field = Text Field
 text-formatting-arrives-with-a-l = Text formatting arrives with a later milestone
 text-shapes-planned = Text shapes — planned

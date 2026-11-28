@@ -117,13 +117,15 @@ cancel = Cancelar
 # $f - la fórmula protectora
 cell-is-formula-driven = { $name } está controlado por una fórmula ({ $f })
 center = Centro
+change-shape = Cambiar forma
+
+change-shape-planned = Cambiar forma — previsto (#131)
+
 chart = Gráfico
 charts-planned-later-milestone = Gráficos — planeado (hito posterior)
 checking-the-clipboard-for-a-pic = comprobando el portapapeles en busca de una imagen…
 choose-the-display-language-for = Elija el idioma de presentación de la cinta de opciones, los menús y los cuadros de diálogo
 classic-arrow = Flecha clásica
-clear = Borrar
-clear-planned-later-milestone = Borrar — planeado (hito posterior)
 click-a-shape-to-add-a-connectio = haga clic en una forma para agregar un punto de conexión
 clipboard = Portapapeles
 clipboard-image-could-not-be-enc = no se pudo codificar la imagen del portapapeles
@@ -613,6 +615,10 @@ layer = Capa
 layer-composite-failed = capa { $id }: { $e }
 # $ix - índice de la fila de capa
 layer-ix-fallback = capa { $ix }
+layers = Capas
+
+layers-planned = Capas — previsto
+
 layout = Diseño
 layout-options = Opciones de diseño
 layout-options-planned = Opciones de diseño — planeado
@@ -1168,8 +1174,16 @@ text = Texto
 text-align-left = Alinear a la izquierda
 text-align-right = Alinear a la derecha
 text-box = Cuadro de texto
+text-case = Cambiar mayús./minús.
+
+text-case-planned = Cambiar mayús./minús. — previsto
+
 text-color = Color de texto
 text-color-tip = Color de texto de la selección
+text-direction = Dirección del texto
+
+text-direction-planned = Dirección del texto — previsto
+
 text-field = Campo de texto
 text-formatting-arrives-with-a-l = El formato de texto llega con un hito posterior
 text-shapes-planned = Formas de texto — planeado

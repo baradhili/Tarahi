@@ -103,13 +103,15 @@ callouts-planned = 标注 — 计划中
 cancel = 取消
 cell-is-formula-driven = { $name }由公式驱动（{ $f }）
 center = 居中
+change-shape = 更改形状
+
+change-shape-planned = 更改形状 — 已计划（#131）
+
 chart = 图表
 charts-planned-later-milestone = 图表 — 计划中（后期里程碑）
 checking-the-clipboard-for-a-pic = 正在检查剪贴板中的图片…
 choose-the-display-language-for = 选择功能区、菜单和对话框的显示语言
 classic-arrow = 经典箭头
-clear = 清除
-clear-planned-later-milestone = 清除 — 计划中（后期里程碑）
 click-a-shape-to-add-a-connectio = 单击形状以添加连接点
 clipboard = 剪贴板
 clipboard-image-could-not-be-enc = 剪贴板图像无法编码
@@ -549,6 +551,10 @@ last-page = 最后一页
 layer = 图层
 layer-composite-failed = 图层 { $id }：{ $e }
 layer-ix-fallback = 图层 { $ix }
+layers = 图层
+
+layers-planned = 图层 — 已计划
+
 layout = 布局
 layout-options = 布局选项
 layout-options-planned = 布局选项 — 计划中
@@ -1036,8 +1042,16 @@ text = 文本
 text-align-left = 文本左对齐
 text-align-right = 文本右对齐
 text-box = 文本框
+text-case = 更改大小写
+
+text-case-planned = 更改大小写 — 已计划
+
 text-color = 文本颜色
 text-color-tip = 选定内容的文本颜色
+text-direction = 文字方向
+
+text-direction-planned = 文字方向 — 已计划
+
 text-field = 域
 text-formatting-arrives-with-a-l = 文本格式设置将在后期里程碑提供
 text-shapes-planned = 文本形状 — 计划中

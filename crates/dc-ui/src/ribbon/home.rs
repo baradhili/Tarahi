@@ -5,11 +5,11 @@
 //! dropdown; Sub/Superscript, Clear Formatting and Line Spacing moved
 //! to the text dialog's tabs per the #252 disposition. Compact tiers
 //! (icon-only tool grid, 2-wide Arrange clusters) keep the WIRED
-//! groups inside a 1280 px window; the all-placeholder Editing group
-//! is last and may clip on narrow windows, as Visio's own collapsed
-//! tier does.
+//! groups inside a 1280 px window; the Editing group (#115 phase 4)
+//! carries the FS 1 layout — Change Shape placeholder plus the
+//! Find/Layers dropdown stack.
 
-use super::{Action, Group, Icon, RibbonButton, TabCtx, big, grid, stack};
+use super::{big, grid, stack, Action, Group, Icon, RibbonButton, TabCtx};
 use crate::app::Tool;
 
 pub(crate) fn groups(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<Group> {
@@ -19,37 +19,52 @@ pub(crate) fn groups(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec
     vec![
         Group::new(s.msg_clipboard(), clipboard_cols(s, ctx, has_sel)),
         Group::new(s.msg_font(), vec![font_grid(s, has_sel)]).with_launcher(),
-        Group::new(s.msg_paragraph(), vec![paragraph_grid(s, )]).with_launcher(),
+        Group::new(s.msg_paragraph(), paragraph_grid(s)).with_launcher(),
         Group::new(s.msg_tools(), tools_cols(s, ctx)),
         Group::new(s.msg_shape_styles(), shape_styles_cols(s, has_sel)),
         Group::new(s.msg_arrange(), arrange_cols(s, ctx, multi_sel, tri_sel)),
-        // Visio's Editing group (FS 1, #115): Find is the spec's
-        // dropdown button — Find… opens the Find dialog (#115 phase
-        // 2), Replace… lands with phase 3 and keeps its planned-later
-        // tip. Clear stays a placeholder (out of scope, #252); Select
-        // stays beside Clipboard until the Select dropdown lands.
-        Group::new(
-            s.msg_editing(),
-            vec![grid(vec![
-                vec![
-                    RibbonButton::new(Icon::Find, "", Action::FindMenu)
-                        .alt(s.msg_find())
-                        .enabled(ctx.has_doc)
-                        .split()
-                        .tip(s.msg_find()),
-                ],
-                vec![
-                    RibbonButton::new(Icon::Eraser, "", Action::Macros)
-                        .alt(s.msg_clear())
-                        .enabled(false)
-                        .tip(s.msg_clear_planned_later_milestone()),
-                ],
-            ])],
-        ),
+        // Visio's Editing group (FS 1, #115 phase 4's fidelity pass):
+        // Change Shape as the large split button — the placeholder
+        // chrome now, the real swap-master gallery is #131 — beside
+        // the small dropdown stack. Find… opens the Find dialog
+        // (#115 phase 2) with Replace… behind it (phase 3); Layers is
+        // the spec's third dropdown, a placeholder until its issue.
+        // Select stays beside Clipboard until the Select dropdown
+        // lands (#252 note); Clear is not in the spec's group.
+        Group::new(s.msg_editing(), editing_cols(s, ctx)),
     ]
 }
 
-fn clipboard_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx, has_sel: bool) -> Vec<super::Col> {
+/// FS 1 §3.1–3.2: the large Change Shape split button, then the small
+/// dropdown stack (Find, Layers).
+fn editing_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<super::Col> {
+    vec![
+        big(
+            RibbonButton::new(Icon::ChangeShape, s.msg_change_shape(), Action::Macros)
+                .enabled(false)
+                .split()
+                .tip(s.msg_change_shape_planned()),
+        ),
+        stack(vec![
+            RibbonButton::new(Icon::Find, "", Action::FindMenu)
+                .alt(s.msg_find())
+                .enabled(ctx.has_doc)
+                .split()
+                .tip(s.msg_find()),
+            RibbonButton::new(Icon::Layers, "", Action::Macros)
+                .alt(s.msg_layers())
+                .enabled(false)
+                .split()
+                .tip(s.msg_layers_planned()),
+        ]),
+    ]
+}
+
+fn clipboard_cols(
+    s: &'static crate::l10n::L10nLanguage,
+    ctx: &TabCtx,
+    has_sel: bool,
+) -> Vec<super::Col> {
     vec![
         big(
             RibbonButton::new(Icon::Paste, s.msg_paste(), Action::Macros)
@@ -68,17 +83,15 @@ fn clipboard_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx, has_sel: 
                     .enabled(false)
                     .tip(s.msg_copy_planned()),
             ],
-            vec![RibbonButton::new(
-                Icon::Painter,
-                s.msg_format_painter(),
-                Action::FormatPainter,
-            )
-            .enabled(has_sel)
-            .selected(ctx.painter_armed)
-            .tip(
-                "Copy the selection's formatting to the next shape you click; \
+            vec![
+                RibbonButton::new(Icon::Painter, s.msg_format_painter(), Action::FormatPainter)
+                    .enabled(has_sel)
+                    .selected(ctx.painter_armed)
+                    .tip(
+                        "Copy the selection's formatting to the next shape you click; \
              double-click to keep painting until Esc",
-            )],
+                    ),
+            ],
         ]),
         // Visio folds these into the Editing group's Select dropdown;
         // they stay a painted cluster beside Clipboard until that
@@ -139,11 +152,17 @@ fn font_grid(s: &'static crate::l10n::L10nLanguage, has_sel: bool) -> super::Col
             RibbonButton::new(Icon::Underline, "", Action::Macros)
                 .alt(s.msg_underline())
                 .enabled(false)
+                .split()
                 .tip(s.msg_underline_planned()),
             RibbonButton::new(Icon::Strike, "", Action::Macros)
                 .alt(s.msg_strikethrough())
                 .enabled(false)
                 .tip(s.msg_strikethrough_planned()),
+            RibbonButton::new(Icon::TextCase, "", Action::Macros)
+                .alt(s.msg_text_case())
+                .enabled(false)
+                .split()
+                .tip(s.msg_text_case_planned()),
             // #150: wired to the shared palette like Fill/Line — a
             // pick writes the Character row-0 Color cell across the
             // selection (#73's ColorTarget::Text path).
@@ -155,45 +174,60 @@ fn font_grid(s: &'static crate::l10n::L10nLanguage, has_sel: bool) -> super::Col
     ])
 }
 
-fn paragraph_grid(s: &'static crate::l10n::L10nLanguage) -> super::Col {
-    grid(vec![
-        vec![
-            RibbonButton::new(Icon::Align, "", Action::Macros)
-                .alt(s.msg_text_align_left())
-                .enabled(false)
-                .tip(s.msg_align_left_planned()),
-            RibbonButton::new(Icon::AlignCenter, "", Action::Macros)
-                .alt(s.msg_align_center())
-                .enabled(false)
-                .tip(s.msg_align_center_planned()),
-            RibbonButton::new(Icon::AlignRight, "", Action::Macros)
-                .alt(s.msg_text_align_right())
-                .enabled(false)
-                .tip(s.msg_align_right_planned()),
-            RibbonButton::new(Icon::Justify, "", Action::Macros)
-                .alt(s.msg_justify())
-                .enabled(false)
-                .tip(s.msg_justify_planned()),
-        ],
-        vec![
-            RibbonButton::new(Icon::Bullets, "", Action::Macros)
-                .alt(s.msg_bullets())
-                .enabled(false)
-                .tip(s.msg_bullets_planned()),
-            RibbonButton::new(Icon::Numbering, "", Action::Macros)
-                .alt(s.msg_numbering())
-                .enabled(false)
-                .tip(s.msg_numbering_planned()),
-            RibbonButton::new(Icon::IndentLess, "", Action::Macros)
-                .alt(s.msg_decrease_indent())
-                .enabled(false)
-                .tip(s.msg_decrease_indent_planned()),
-            RibbonButton::new(Icon::IndentMore, "", Action::Macros)
-                .alt(s.msg_increase_indent())
-                .enabled(false)
-                .tip(s.msg_increase_indent_planned()),
-        ],
-    ])
+fn paragraph_grid(s: &'static crate::l10n::L10nLanguage) -> Vec<super::Col> {
+    // The reference layout (#115 phase 4): top row Align Left /
+    // Center / Right / Bullets, bottom row Justify / Numbering /
+    // Decrease / Increase Indent, Text Direction at the far right.
+    vec![
+        grid(vec![
+            vec![
+                RibbonButton::new(Icon::Align, "", Action::Macros)
+                    .alt(s.msg_text_align_left())
+                    .enabled(false)
+                    .tip(s.msg_align_left_planned()),
+                RibbonButton::new(Icon::AlignCenter, "", Action::Macros)
+                    .alt(s.msg_align_center())
+                    .enabled(false)
+                    .tip(s.msg_align_center_planned()),
+                RibbonButton::new(Icon::AlignRight, "", Action::Macros)
+                    .alt(s.msg_text_align_right())
+                    .enabled(false)
+                    .tip(s.msg_align_right_planned()),
+                RibbonButton::new(Icon::Bullets, "", Action::Macros)
+                    .alt(s.msg_bullets())
+                    .enabled(false)
+                    .split()
+                    .tip(s.msg_bullets_planned()),
+            ],
+            vec![
+                RibbonButton::new(Icon::Justify, "", Action::Macros)
+                    .alt(s.msg_justify())
+                    .enabled(false)
+                    .tip(s.msg_justify_planned()),
+                RibbonButton::new(Icon::Numbering, "", Action::Macros)
+                    .alt(s.msg_numbering())
+                    .enabled(false)
+                    .split()
+                    .tip(s.msg_numbering_planned()),
+                RibbonButton::new(Icon::IndentLess, "", Action::Macros)
+                    .alt(s.msg_decrease_indent())
+                    .enabled(false)
+                    .tip(s.msg_decrease_indent_planned()),
+                RibbonButton::new(Icon::IndentMore, "", Action::Macros)
+                    .alt(s.msg_increase_indent())
+                    .enabled(false)
+                    .tip(s.msg_increase_indent_planned()),
+            ],
+        ]),
+        stack(vec![RibbonButton::new(
+            Icon::TextDirection,
+            "",
+            Action::Macros,
+        )
+        .alt(s.msg_text_direction())
+        .enabled(false)
+        .tip(s.msg_text_direction_planned())]),
+    ]
 }
 
 fn tools_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<super::Col> {
@@ -226,12 +260,10 @@ fn tools_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<super:
         ]),
         // #283: Visio's pan affordance as a discoverable tool — the
         // two-button-mouse/trackpad case the shell never covered.
-        stack(vec![
-            RibbonButton::new(Icon::Hand, "", Action::PanTool)
-                .alt(s.msg_pan())
-                .selected(ctx.tool == Tool::Pan)
-                .tip(s.msg_pan_tip()),
-        ]),
+        stack(vec![RibbonButton::new(Icon::Hand, "", Action::PanTool)
+            .alt(s.msg_pan())
+            .selected(ctx.tool == Tool::Pan)
+            .tip(s.msg_pan_tip())]),
         // Visio's shape-drawing tools, compact icon tier (planned).
         grid(vec![
             vec![
@@ -254,12 +286,10 @@ fn tools_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx) -> Vec<super:
                     .enabled(false)
                     .tip(s.msg_line_tool_planned()),
             ],
-            vec![
-                RibbonButton::new(Icon::Stamp, "", Action::Macros)
-                    .alt(s.msg_stamp_tool())
-                    .enabled(false)
-                    .tip(s.msg_stamp_tool_planned()),
-            ],
+            vec![RibbonButton::new(Icon::Stamp, "", Action::Macros)
+                .alt(s.msg_stamp_tool())
+                .enabled(false)
+                .tip(s.msg_stamp_tool_planned())],
         ]),
     ]
 }
@@ -285,7 +315,12 @@ fn shape_styles_cols(s: &'static crate::l10n::L10nLanguage, has_sel: bool) -> Ve
     ]
 }
 
-fn arrange_cols(s: &'static crate::l10n::L10nLanguage, ctx: &TabCtx, multi_sel: bool, tri_sel: bool) -> Vec<super::Col> {
+fn arrange_cols(
+    s: &'static crate::l10n::L10nLanguage,
+    ctx: &TabCtx,
+    multi_sel: bool,
+    tri_sel: bool,
+) -> Vec<super::Col> {
     vec![
         stack(vec![
             RibbonButton::new(Icon::BringFront, "", Action::Macros)

@@ -27,11 +27,22 @@ fn strip_bidi(s: &str) -> String {
 }
 
 fn harness_with_blank() -> Harness<'static, App> {
+    find_harness_with_width(1280.0)
+}
+
+/// The Find/Replace dialog tests' harness: the Editing group clips
+/// off a 1280px ribbon (#115 phase 4's FS 1 layout is wider), and
+/// their flows drive the real ribbon dropdown.
+fn find_harness() -> Harness<'static, App> {
+    find_harness_with_width(1680.0)
+}
+
+fn find_harness_with_width(w: f32) -> Harness<'static, App> {
     // Goldens/steps must be machine-independent: pin text to the
     // embedded Carlito rather than this machine's installed fonts.
     dc_ui::svgimg::pin_determinism_for_tests();
     Harness::builder()
-        .with_size(egui::vec2(1280.0, 800.0))
+        .with_size(egui::vec2(w, 800.0))
         // #203 review: the settle-gate repaint (#124 item 6.2) keeps
         // frames alive until the zoom bucket holds after open — give
         // run() the steps it needs.
@@ -11023,7 +11034,7 @@ fn open_find_dialog(h: &mut Harness<'_, App>) {
 #[test]
 fn find_dialog_cycles_matches_and_reports_the_location() {
     use egui_kittest::kittest::Queryable;
-    let mut h = harness_with_blank();
+    let mut h = find_harness();
     let first = place_shape_with_text(&mut h, "alpha widget");
     let second = place_shape_with_text(&mut h, "beta widget");
 
@@ -11072,7 +11083,7 @@ fn find_dialog_cycles_matches_and_reports_the_location() {
 #[test]
 fn find_dialog_reports_a_miss_in_the_status_area() {
     use egui_kittest::kittest::Queryable;
-    let mut h = harness_with_blank();
+    let mut h = find_harness();
     place_shape_with_text(&mut h, "nothing to see");
 
     open_find_dialog(&mut h);
@@ -11110,7 +11121,7 @@ fn find_dialog_reports_a_miss_in_the_status_area() {
 #[test]
 fn find_dialog_selection_scope_cycles_all_selected_shapes() {
     use egui_kittest::kittest::Queryable;
-    let mut h = harness_with_blank();
+    let mut h = find_harness();
     let first = place_shape_with_text(&mut h, "alpha token");
     // The second shape lands clear of the first (the helper always
     // drops at the canvas center, where it would cover shape one).
@@ -11218,7 +11229,7 @@ fn fill_replace_fields(h: &mut Harness<'_, App>, find: &str, with: &str) {
 #[test]
 fn replace_dialog_replaces_the_current_match_then_advances() {
     use egui_kittest::kittest::Queryable;
-    let mut h = harness_with_blank();
+    let mut h = find_harness();
     let first = place_shape_with_text(&mut h, "alpha token");
     let second = place_shape_with_text(&mut h, "beta token");
 
@@ -11279,7 +11290,7 @@ fn replace_dialog_replaces_the_current_match_then_advances() {
 #[test]
 fn replace_all_sweeps_every_match_in_one_undo_step() {
     use egui_kittest::kittest::Queryable;
-    let mut h = harness_with_blank();
+    let mut h = find_harness();
     let first = place_shape_with_text(&mut h, "token one token");
     let second = place_shape_with_text(&mut h, "token two");
 

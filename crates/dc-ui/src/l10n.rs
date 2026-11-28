@@ -695,6 +695,20 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "change-shape",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "change-shape-planned",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "chart",
         attribute: None,
         vars: &[],
@@ -724,20 +738,6 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "classic-arrow",
-        attribute: None,
-        vars: &[],
-        bool_vars: &[],
-        elements: &[],
-    },
-    MessageContract {
-        message: "clear",
-        attribute: None,
-        vars: &[],
-        bool_vars: &[],
-        elements: &[],
-    },
-    MessageContract {
-        message: "clear-planned-later-milestone",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -3435,6 +3435,20 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         message: "layer-ix-fallback",
         attribute: None,
         vars: &["ix"],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "layers",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "layers-planned",
+        attribute: None,
+        vars: &[],
         bool_vars: &[],
         elements: &[],
     },
@@ -6715,6 +6729,20 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
         elements: &[],
     },
     MessageContract {
+        message: "text-case",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "text-case-planned",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
         message: "text-color",
         attribute: None,
         vars: &[],
@@ -6723,6 +6751,20 @@ pub static MESSAGE_CONTRACTS: &[MessageContract] = &[
     },
     MessageContract {
         message: "text-color-tip",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "text-direction",
+        attribute: None,
+        vars: &[],
+        bool_vars: &[],
+        elements: &[],
+    },
+    MessageContract {
+        message: "text-direction-planned",
         attribute: None,
         vars: &[],
         bool_vars: &[],
@@ -7611,13 +7653,13 @@ impl L10n {
 
     fn byte_range(&self) -> std::ops::Range<usize> {
         match self {
-            Self::De => 0..52916,
-            Self::En => 52916..103971,
-            Self::Es => 103971..160107,
-            Self::Fa => 160107..226869,
-            Self::Ja => 226869..283602,
-            Self::Ko => 283602..335861,
-            Self::ZhHans => 335861..381609,
+            Self::De => 0..53137,
+            Self::En => 53137..104405,
+            Self::Es => 104405..160792,
+            Self::Fa => 160792..227851,
+            Self::Ja => 227851..284826,
+            Self::Ko => 284826..337325,
+            Self::ZhHans => 337325..383294,
         }
     }
     /// Load a L10nLanguage from the embedded data.
@@ -8038,6 +8080,12 @@ impl L10nLanguage {
     pub fn msg_center(&self) -> String {
         self.0.msg("center", None).unwrap()
     }
+    pub fn msg_change_shape(&self) -> String {
+        self.0.msg("change-shape", None).unwrap()
+    }
+    pub fn msg_change_shape_planned(&self) -> String {
+        self.0.msg("change-shape-planned", None).unwrap()
+    }
     pub fn msg_chart(&self) -> String {
         self.0.msg("chart", None).unwrap()
     }
@@ -8054,12 +8102,6 @@ impl L10nLanguage {
     }
     pub fn msg_classic_arrow(&self) -> String {
         self.0.msg("classic-arrow", None).unwrap()
-    }
-    pub fn msg_clear(&self) -> String {
-        self.0.msg("clear", None).unwrap()
-    }
-    pub fn msg_clear_planned_later_milestone(&self) -> String {
-        self.0.msg("clear-planned-later-milestone", None).unwrap()
     }
     pub fn msg_click_a_shape_to_add_a_connectio(&self) -> String {
         self.0
@@ -9506,6 +9548,12 @@ impl L10nLanguage {
         let mut _args = FluentArgs::new();
         _args.set("ix", ix.into());
         self.0.msg("layer-ix-fallback", Some(_args)).unwrap()
+    }
+    pub fn msg_layers(&self) -> String {
+        self.0.msg("layers", None).unwrap()
+    }
+    pub fn msg_layers_planned(&self) -> String {
+        self.0.msg("layers-planned", None).unwrap()
     }
     pub fn msg_layout(&self) -> String {
         self.0.msg("layout", None).unwrap()
@@ -11284,11 +11332,23 @@ impl L10nLanguage {
     pub fn msg_text_box(&self) -> String {
         self.0.msg("text-box", None).unwrap()
     }
+    pub fn msg_text_case(&self) -> String {
+        self.0.msg("text-case", None).unwrap()
+    }
+    pub fn msg_text_case_planned(&self) -> String {
+        self.0.msg("text-case-planned", None).unwrap()
+    }
     pub fn msg_text_color(&self) -> String {
         self.0.msg("text-color", None).unwrap()
     }
     pub fn msg_text_color_tip(&self) -> String {
         self.0.msg("text-color-tip", None).unwrap()
+    }
+    pub fn msg_text_direction(&self) -> String {
+        self.0.msg("text-direction", None).unwrap()
+    }
+    pub fn msg_text_direction_planned(&self) -> String {
+        self.0.msg("text-direction-planned", None).unwrap()
     }
     pub fn msg_text_field(&self) -> String {
         self.0.msg("text-field", None).unwrap()

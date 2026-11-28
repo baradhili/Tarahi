@@ -104,13 +104,15 @@ callouts-planned = 吹き出し — 予定
 cancel = キャンセル
 cell-is-formula-driven = { $name } は数式で管理されています（{ $f }）
 center = 中央
+change-shape = 図形の変更
+
+change-shape-planned = 図形の変更 — 計画中（#131）
+
 chart = チャート
 charts-planned-later-milestone = チャート — 予定（後のマイルストーン）
 checking-the-clipboard-for-a-pic = クリップボードの画像を確認しています…
 choose-the-display-language-for = リボン、メニュー、ダイアログの表示言語を選択します
 classic-arrow = クラシック矢印
-clear = 消去
-clear-planned-later-milestone = 消去 — 予定（後のマイルストーン）
 click-a-shape-to-add-a-connectio = 図形をクリックして接続点を追加します
 clipboard = クリップボード
 clipboard-image-could-not-be-enc = クリップボードの画像をエンコードできませんでした
@@ -549,6 +551,10 @@ last-page = 最終ページ
 layer = レイヤー
 layer-composite-failed = レイヤー { $id }: { $e }
 layer-ix-fallback = レイヤー { $ix }
+layers = レイヤー
+
+layers-planned = レイヤー — 計画中
+
 layout = レイアウト
 layout-options = レイアウト オプション
 layout-options-planned = レイアウト オプション — 予定
@@ -1031,8 +1037,16 @@ text = 文字
 text-align-left = 左揃え
 text-align-right = 右揃え
 text-box = テキスト ボックス
+text-case = 文字種の変更
+
+text-case-planned = 文字種の変更 — 計画中
+
 text-color = 文字の色
 text-color-tip = 選択範囲の文字色
+text-direction = 文字の方向
+
+text-direction-planned = 文字の方向 — 計画中
+
 text-field = 文字フィールド
 text-formatting-arrives-with-a-l = 文字書式は後のマイルストーンで提供されます
 text-shapes-planned = 文字図形 — 予定
