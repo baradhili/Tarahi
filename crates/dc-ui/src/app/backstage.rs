@@ -333,8 +333,9 @@ impl App {
         // discarded by the close prompt). Inactive sessions keep
         // theirs: their unsaved changes were never decided, and the
         // next start offers them.
-        if !self.path.as_os_str().is_empty() {
-            self.clear_recovery_copy_for(&self.path);
+        let old = self.path.clone();
+        if !old.as_os_str().is_empty() {
+            self.clear_recovery_copy_for(&old);
         }
         self.closing = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -441,8 +442,9 @@ impl App {
         // #213: the document closed (saved or explicitly discarded) —
         // its recovery copy goes with it; the next start must not
         // resurrect it.
-        if !self.path.as_os_str().is_empty() {
-            self.clear_recovery_copy_for(&self.path);
+        let old = self.path.clone();
+        if !old.as_os_str().is_empty() {
+            self.clear_recovery_copy_for(&old);
         }
         self.ed = None;
         self.path = PathBuf::new();
@@ -532,7 +534,15 @@ impl App {
                         } else {
                             let p = self.path.clone();
                             self.save_to(&p);
-                            self.start_new();
+                            // Only a SUCCESSFUL save starts the new
+                            // document (the cleared dirty flag says
+                            // so — the same guard the close prompt's
+                            // Save path uses): a failed save keeps
+                            // the document and its recovery copy
+                            // (PR #419 review).
+                            if !self.dirty {
+                                self.start_new();
+                            }
                         }
                     }
                     if ui.button(crate::i18n::strs().msg_discard_new()).clicked() {

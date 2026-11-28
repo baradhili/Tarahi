@@ -595,6 +595,11 @@ pub struct App {
     /// the recovery files are deleted. A failed load re-offers the
     /// entry.
     restore_landing: Option<crate::autorecover::RestoreLanding>,
+    /// #213 (PR #419 review): the recovery files a COMPLETED restore
+    /// left on disk — they outlive the restore until the document is
+    /// saved or dropped, and the decision sites delete them exactly
+    /// (the identity clear only reaches currently-configured dirs).
+    restored: Option<crate::autorecover::RestoredCopy>,
 }
 
 /// Which cell a ribbon palette click targets.

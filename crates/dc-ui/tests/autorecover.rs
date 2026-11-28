@@ -3,7 +3,8 @@
 //! `DC_UI_AUTORECOVER_SECS` knob; untitled documents never autosave),
 //! a clean save removes the copy, and the startup Document Recovery
 //! pane restores (through the normal open path — the document lands
-//! as the original, dirty) or discards a planted snapshot.
+//! as the original, dirty, and the recovery files STAY until that
+//! decision saves or drops it) or discards a planted snapshot.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -13,7 +14,7 @@ use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
 /// The env knob is process-global: the tests in this binary
-/// serialize their env writes on this lock.
+/// serialize their env writes on this lock (held per test).
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn harness_with(app: App) -> Harness<'static, App> {
@@ -29,20 +30,18 @@ fn harness_with(app: App) -> Harness<'static, App> {
         )
 }
 
-/// Plant a recovery snapshot + sidecar pair for `stem`, sidecar
-/// pointing at `original` (which these tests leave GONE, forcing the
-/// scan's "originals gone" offer rule).
-fn plant(
-    dir: &std::path::Path,
-    stem: &str,
-    original: &std::path::Path,
-) -> (std::path::PathBuf, std::path::PathBuf) {
-    let snap = dir.join(format!("{stem}.autorecover.vsdx"));
-    let side = dir.join(format!("{stem}.autorecover.json"));
-    dc_core::Editor::new_blank().save_as(&snap).unwrap();
-    let meta = serde_json::json!({"version": 1, "original": original.display().to_string()});
-    std::fs::write(&side, meta.to_string()).unwrap();
-    (snap, side)
+/// Plant a recovery snapshot + sidecar pair for `original` through
+/// the REAL write path (production naming: the identity hash rides
+/// the file name); `original` stays GONE, forcing the scan's
+/// "originals gone" offer rule. Returns the pair's paths.
+fn plant(dir: &std::path::Path, original: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let doc = dc_core::Editor::new_blank().doc;
+    assert!(dc_ui::autorecover::write_snapshot_for_test(
+        doc,
+        original.to_path_buf(),
+        dir.to_path_buf()
+    ));
+    dc_ui::autorecover::recovery_paths_for_test(dir, original)
 }
 
 /// Step frames (with real sleeps — the autosave deadline and the
@@ -55,7 +54,10 @@ fn wait_until(h: &mut Harness<'_, App>, probe: impl Fn(&App) -> bool) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    panic!("the awaited condition never arrived");
+    panic!(
+        "the awaited condition never arrived (status: {:?})",
+        h.state().debug_status()
+    );
 }
 
 #[test]
@@ -66,8 +68,7 @@ fn dirty_doc_autosaves_within_the_interval_and_a_clean_save_clears_it() {
     let doc_path = dir.path().join("report.vsdx");
     dc_core::Editor::new_blank().save_as(&doc_path).unwrap();
     let rec_dir = dir.path().join("rec");
-    let snap = rec_dir.join("report.autorecover.vsdx");
-    let side = rec_dir.join("report.autorecover.json");
+    let (snap, side) = dc_ui::autorecover::recovery_paths_for_test(&rec_dir, &doc_path);
     // A persisting store with the recovery location aimed at the
     // tempdir (an ephemeral store keeps the tick inert — kittest must
     // never write into the user's real config).
@@ -108,18 +109,15 @@ fn untitled_documents_never_autosave() {
     h.run();
     h.state_mut().simulate_edit_for_test();
     // Well past the interval: nothing may land (owner decision
-    // 2026-11-28 — no stem to key a recovery file on).
+    // 2026-11-28 — no original, no identity).
     for _ in 0..30 {
         h.run();
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(
-        !rec_dir.join("drawing.autorecover.vsdx").exists()
-            && std::fs::read_dir(&rec_dir)
-                .map(|d| d.count() == 0)
-                .unwrap_or(true),
-        "an untitled document writes nothing"
-    );
+    let any = std::fs::read_dir(&rec_dir)
+        .map(|d| d.count())
+        .unwrap_or(0);
+    assert_eq!(any, 0, "an untitled document writes nothing");
     std::env::remove_var("DC_UI_AUTORECOVER_SECS");
 }
 
@@ -127,7 +125,7 @@ fn untitled_documents_never_autosave() {
 fn planted_recovery_file_prompts_and_restore_opens_the_original() {
     let dir = tempfile::tempdir().unwrap();
     let original = dir.path().join("report.vsdx"); // never written: gone
-    let (snap, side) = plant(dir.path(), "report", &original);
+    let (snap, side) = plant(dir.path(), &original);
     let mut app = App::with_blank();
     app.scan_recoveries_for_test(dir.path());
     let mut h = harness_with(app);
@@ -137,24 +135,31 @@ fn planted_recovery_file_prompts_and_restore_opens_the_original() {
     assert!(h.query_by_label_contains("report.vsdx").is_some());
 
     // Restore: the snapshot opens through the normal (async, scrimmed)
-    // load path; the landing deletes the recovery files and the
-    // document presents as the ORIGINAL, dirty.
+    // load path; the landing presents the ORIGINAL, dirty — and the
+    // recovery files STAY until that decision is saved or dropped
+    // (a crash before the next save must not lose the recovered
+    // changes, PR #419 review).
     h.get_by_label("Restore").click();
+    wait_until(&mut h, |a| a.debug_dirty());
+    assert!(h.state().debug_doc_open());
+    assert_eq!(h.state().debug_doc_path(), original.display().to_string());
+    assert!(
+        snap.exists() && side.exists(),
+        "the recovery files outlive the restore until a save or drop"
+    );
+
+    // The decision: saving the restored document clears them.
+    h.state_mut().debug_save_for_test();
+    h.run();
     wait_until(&mut h, |_| !snap.exists());
     assert!(!side.exists(), "the sidecar goes with the snapshot");
-    assert!(h.state().debug_doc_open());
-    assert!(
-        h.state().debug_dirty(),
-        "a restored document behaves like an unsaved doc"
-    );
-    assert_eq!(h.state().debug_doc_path(), original.display().to_string());
 }
 
 #[test]
 fn planted_recovery_file_discard_deletes_the_copy() {
     let dir = tempfile::tempdir().unwrap();
     let original = dir.path().join("notes.vsdx");
-    let (snap, side) = plant(dir.path(), "notes", &original);
+    let (snap, side) = plant(dir.path(), &original);
     let mut app = App::with_blank();
     app.scan_recoveries_for_test(dir.path());
     let mut h = harness_with(app);
@@ -169,7 +174,7 @@ fn planted_recovery_file_discard_deletes_the_copy() {
 fn escape_dismisses_the_pane_and_keeps_the_files() {
     let dir = tempfile::tempdir().unwrap();
     let original = dir.path().join("kept.vsdx");
-    let (snap, side) = plant(dir.path(), "kept", &original);
+    let (snap, side) = plant(dir.path(), &original);
     let mut app = App::with_blank();
     app.scan_recoveries_for_test(dir.path());
     let mut h = harness_with(app);

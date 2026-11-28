@@ -169,16 +169,29 @@ impl App {
                 // landed through the normal open path, but the
                 // document presents as the ORIGINAL file (or untitled
                 // when no sidecar named one) and stays DIRTY — it
-                // behaves like an unsaved document — and the recovery
-                // files are deleted now that their content is in.
+                // behaves like an unsaved document. The recovery
+                // files STAY on disk: a crash before the next save
+                // must not lose the recovered changes (PR #419
+                // review). The existing clears are the decision —
+                // save_to, or the close/new teardowns when the
+                // document is dropped — and the restored document's
+                // own autosave replaces the pair in the meantime.
                 // This runs AFTER the swap above so its dirty flag
                 // survives (the swap clears it for a fresh open).
                 if let Some(landing) = self.restore_landing.take() {
-                    self.path = landing.original.unwrap_or_default();
+                    self.path = landing.original.clone().unwrap_or_default();
                     self.dirty = true;
-                    crate::autorecover::clear_files(&crate::autorecover::entry_files(
-                        &landing.entry,
-                    ));
+                    // The exact files ride along for the decision
+                    // sites (save / close / new / exit) to delete —
+                    // the identity clear alone can miss a snapshot
+                    // restored from a since-unconfigured dir
+                    // (PR #419 review round 2).
+                    self.restored = Some(crate::autorecover::RestoredCopy {
+                        key: landing.original.as_ref().map(|p| {
+                            crate::autorecover::key_of(p)
+                        }),
+                        files: crate::autorecover::entry_files(&landing.entry),
+                    });
                 }
                 true
             }

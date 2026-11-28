@@ -273,6 +273,7 @@ impl App {
             recoveries: Vec::new(),
             recovery_dismissed: false,
             restore_landing: None,
+            restored: None,
         };
         if let Some(p) = path {
             // Headless: no frame loop to pump the poll — land the

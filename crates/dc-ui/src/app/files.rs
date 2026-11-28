@@ -237,8 +237,9 @@ impl App {
         self.close_after_save = None;
         // #213: the outgoing document is abandoned here (or was clean)
         // — its recovery copy goes with it.
-        if !self.path.as_os_str().is_empty() {
-            self.clear_recovery_copy_for(&self.path);
+        let old = self.path.clone();
+        if !old.as_os_str().is_empty() {
+            self.clear_recovery_copy_for(&old);
         }
         self.ed = Some(Editor::new_blank());
         self.reload_snap_settings();
@@ -461,8 +462,9 @@ impl App {
                 // #213: saving cleanly removes the recovery copies —
                 // the document's pre-save stem (a Save As moved it)
                 // and the saved name's.
-                if !self.path.as_os_str().is_empty() {
-                    self.clear_recovery_copy_for(&self.path);
+                let old = self.path.clone();
+                if !old.as_os_str().is_empty() {
+                    self.clear_recovery_copy_for(&old);
                 }
                 self.path = path.to_path_buf();
                 self.clear_recovery_copy_for(path);
@@ -474,19 +476,23 @@ impl App {
 
     // -- AutoRecover (#213) -------------------------------------------------
 
-    /// #213: clear one document's recovery snapshot (its stem's pair
-    /// in the write dir). Untitled documents have no copy — no stem,
-    /// never autosaved (owner decision 2026-11-28).
-    pub(super) fn clear_recovery_copy_for(&self, path: &Path) {
-        let Some(stem) = crate::autorecover::stem_of(path) else {
-            return;
-        };
+    /// #213: clear one document's recovery snapshot from EVERY
+    /// recognized recovery dir (the custom Save-page location and the
+    /// app default can each hold a pair written while it was the
+    /// write dir), invalidating any in-flight snapshot worker — and
+    /// delete the exact files a completed RESTORE left on disk (they
+    /// outlive the restore until this decision; the identity clear
+    /// alone can miss a snapshot from a since-unconfigured dir,
+    /// PR #419 review round 2). Untitled documents have no copy — no
+    /// original, never autosaved (owner decision 2026-11-28).
+    pub(super) fn clear_recovery_copy_for(&mut self, path: &Path) {
         let dirs = crate::autorecover::recovery_dirs(
             crate::recent::config_base().as_deref(),
             &self.options_store.autorecover_dir,
         );
-        if let Some(dir) = dirs.first() {
-            crate::autorecover::clear_stem(dir, &stem);
+        crate::autorecover::clear_original(path, &dirs);
+        if let Some(r) = self.restored.take() {
+            crate::autorecover::clear_restored(&r);
         }
     }
 
@@ -542,7 +548,10 @@ impl App {
                 if !dirty || path.as_os_str().is_empty() {
                     continue;
                 }
-                crate::autorecover::spawn_snapshot_write(
+                // dispatch_snapshot bumps the document's generation
+                // (its publish is generation-checked, so a clear that
+                // races this worker wins) and writes on the worker.
+                crate::autorecover::dispatch_snapshot(
                     ed.doc.clone(),
                     path.to_path_buf(),
                     dir.clone(),
