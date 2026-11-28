@@ -101,8 +101,11 @@ const SETTLE_FRAMES: u32 = 3;
 /// device scale pays 4× bytes per texture, and
 /// [`degrade_to_budget`] lowers the effective ppi of a visible set
 /// whose full-density textures would bust this — the budget, not the
-/// texture-dimension ceiling, is the real memory guardrail.
-const TEXTURE_BUDGET_BYTES: u64 = 768 * 1024 * 1024;
+/// texture-dimension ceiling, is the real memory guardrail. The
+/// budget is JOINT with the other on-canvas texture path: the
+/// background-page underlays reserve their live bytes against it
+/// (PR #415 review), so neither path can spend it independently.
+pub(crate) const TEXTURE_BUDGET_BYTES: u64 = 768 * 1024 * 1024;
 
 /// The pixel rect a patch job will replace inside its entry's existing
 /// texture (#219) — texture coordinates, computed when the job is
@@ -206,6 +209,15 @@ pub struct ShapeLayers {
     stamp: u64,
     tex_bytes: u64,
     budget_bytes: u64,
+    /// Canvas texture bytes held OUTSIDE this store (the background
+    /// underlays, PR #415 review): subtracted from the budget before
+    /// both the request-density degradation and the landed eviction,
+    /// so the underlay path and the layer path share ONE budget and
+    /// can never spend it independently. Written by
+    /// [`ShapeLayers::reserve_budget`] at the end of each
+    /// `build_bg_underlays` pass — the same frame sequence that runs
+    /// `composite` — so it is always fresh whenever it is read.
+    reserved_bytes: u64,
     /// Shapes drawn THIS frame — the budget never evicts a texture
     /// the current frame is about to show (the just-landed one
     /// included; they are re-bumped next frame anyway).
@@ -254,6 +266,7 @@ impl Default for ShapeLayers {
             stamp: 0,
             tex_bytes: 0,
             budget_bytes: TEXTURE_BUDGET_BYTES,
+            reserved_bytes: 0,
             drawn: Default::default(),
             pending_damage: HashMap::new(),
             pending_full: Default::default(),
@@ -728,7 +741,7 @@ impl ShapeLayers {
     /// released entries keep their SVG/tree, so re-showing them is a
     /// re-render, not a re-raster from scratch.
     fn enforce_budget(&mut self, just_landed: i64) {
-        if self.tex_bytes <= self.budget_bytes {
+        if self.tex_bytes <= self.effective_budget() {
             return;
         }
         let drawn = &self.drawn;
@@ -740,7 +753,7 @@ impl ShapeLayers {
             .collect();
         order.sort_unstable();
         for (_, id) in order {
-            if self.tex_bytes <= self.budget_bytes {
+            if self.tex_bytes <= self.effective_budget() {
                 break;
             }
             let Some(entry) = self.entries.get_mut(&id) else {
@@ -788,7 +801,39 @@ impl ShapeLayers {
     /// the LRU budget's volume probe.
     #[doc(hidden)]
     pub fn tex_bytes_for_test(&self) -> u64 {
+        self.texture_bytes()
+    }
+
+    /// Live RGBA bytes of the cached layer textures (#414/PR #415
+    /// review) — the foreground's share of the JOINT texture budget,
+    /// read by the background-underlay path before it sizes its own
+    /// rasters.
+    pub fn texture_bytes(&self) -> u64 {
         self.tex_bytes
+    }
+
+    /// Canvas texture bytes held outside this store (the background
+    /// underlays), subtracted from the budget before both the
+    /// request-density degradation and the landed eviction (PR #415
+    /// review): the underlay path calls this with its retained
+    /// handles' own sizes at the end of each build pass.
+    pub fn reserve_budget(&mut self, bytes: u64) {
+        self.reserved_bytes = bytes;
+    }
+
+    /// The budget this store may spend on ITS textures: the pinned
+    /// budget minus the reserved external bytes (saturating — a
+    /// pathological reservation never yields an invalid budget).
+    fn effective_budget(&self) -> u64 {
+        self.budget_bytes.saturating_sub(self.reserved_bytes)
+    }
+
+    /// kittest (PR #415 review): the bytes currently reserved for
+    /// canvas textures outside this store (the underlay chain).
+    #[doc(hidden)]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn reserved_bytes_for_test(&self) -> u64 {
+        self.reserved_bytes
     }
 
     /// kittest (#124 item 4): pin the texture byte budget for an
@@ -1011,7 +1056,7 @@ impl ShapeLayers {
         // never missing or clipped (content is never lost). Bytes
         // scale with the SQUARE of density, so the squeeze is gentle;
         // typical pages never trip it and keep their ppi exactly.
-        let ppi = degrade_to_budget(ppi, &vis, self.budget_bytes);
+        let ppi = degrade_to_budget(ppi, &vis, self.effective_budget());
         let bucket = (ppi * 4.0).round().max(4.0) as u32; // ±0.25 ppi
                                                           // Bucket-settle state (#124 item 6.2): how many consecutive
                                                           // frames this exact bucket has held. First fills and content
@@ -1434,8 +1479,10 @@ fn projected_bytes(vis: &[(i64, Rect)], d: f32) -> u64 {
 /// gets its texture and its quad still covers its bounds. The
 /// early return keeps the common case's ppi bit-identical, so pages
 /// that fit the budget (all of them, at sane zooms) never see a byte
-/// of difference.
-fn degrade_to_budget(ppi: f32, vis: &[(i64, Rect)], budget: u64) -> f32 {
+/// of difference. Shared with the background-underlay path (PR #415
+/// review): its page rects enter as the "visible set" against
+/// `TEXTURE_BUDGET_BYTES` minus the foreground's live bytes.
+pub(crate) fn degrade_to_budget(ppi: f32, vis: &[(i64, Rect)], budget: u64) -> f32 {
     if projected_bytes(vis, ppi) <= budget {
         return ppi;
     }
@@ -1710,6 +1757,41 @@ mod tests {
         assert!(
             layers.tex_bytes_for_test() <= 64 * 1024 + 4096,
             "the settled volume is within the budget (+ ceil slack): {}",
+            layers.tex_bytes_for_test()
+        );
+    }
+
+    /// PR #415 review: bytes held outside the store (the background
+    /// underlay chain) come off the budget before BOTH the density
+    /// decision and the landed eviction — the two canvas texture
+    /// paths share ONE budget and can never spend it independently.
+    #[test]
+    fn reserved_bytes_tighten_the_degradation() {
+        let doc = plain_group_doc();
+        let mut layers = ShapeLayers::default();
+        layers.set_page(0);
+        let ctx = egui::Context::default();
+        fill_ppi(&doc, &mut layers, &ctx, 192.0);
+        let [w_full, _] = layers.tex_size_for_test(1).expect("the group layer landed");
+        // Reserve all but 32 KiB for the underlay path: the visible
+        // set (~100 KB at 192 ppi) must degrade to fit what is LEFT.
+        layers.reserve_budget(TEXTURE_BUDGET_BYTES - 32 * 1024);
+        for _ in 0..(SETTLE_FRAMES + 2) {
+            fill_ppi(&doc, &mut layers, &ctx, 192.0);
+        }
+        assert_eq!(
+            layers.landed_count_for_test(),
+            2,
+            "the squeeze stays soft — no layer is dropped"
+        );
+        let [w_deg, _] = layers.tex_size_for_test(1).expect("the group layer re-landed");
+        assert!(
+            w_deg < w_full,
+            "the reservation degrades the density ({w_deg} vs {w_full})"
+        );
+        assert!(
+            layers.tex_bytes_for_test() <= 32 * 1024 + 4096,
+            "the settled volume respects the reserved share (+ ceil slack): {}",
             layers.tex_bytes_for_test()
         );
     }

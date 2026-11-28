@@ -748,3 +748,72 @@ fn jump_overlay_is_cached_until_the_document_changes() {
         assert_eq!(fx.gap_color, egui::Color32::from_rgb(gr, gg, gb));
     }
 }
+
+/// PR #415 review: the background-underlay chain shares the JOINT
+/// texture budget with the foreground layers — the chain degrades
+/// against what the store holds (the starvation math is pinned by
+/// `pages::tests::underlay_chain_ppi_shares_the_joint_budget`; it
+/// only binds on real devices, where the 8192 ceiling and a fat
+/// foreground push the chain past the budget), and the bytes the
+/// chain RETAINS are re-reserved so the store's own degradation sees
+/// them. This test pins the wiring end-to-end: the builder lands the
+/// chain at full density when the budget is healthy, and its live
+/// bytes land in the store's reservation.
+#[test]
+fn underlay_chain_reserves_its_bytes_against_the_store_budget() {
+    let mut app = App::with_blank();
+    // One background page under the current page (no PageWidth cells
+    // → the builder's 8.5×11 defaults; an empty page renders its
+    // paper, which is all the raster needs).
+    let doc = vsdx::Document {
+        pages: vec![
+            vsdx::model::Page {
+                id: 0,
+                name: "BG".into(),
+                ..Default::default()
+            },
+            vsdx::model::Page {
+                id: 1,
+                name: "FG".into(),
+                attrs: vec![("BackPage".to_string(), "0".to_string())],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    app.ed = Some(dc_core::Editor::new(doc));
+    app.page_idx = 1;
+    let ctx = egui::Context::default();
+    let out = app.build_bg_underlays(&ctx);
+    assert_eq!(out.len(), 1, "the chain's one background still lands");
+    // A healthy budget keeps full density: 8.5 in at 96 ppi ≈ 816 px
+    // (the early return never touches the ppi).
+    let [w, h] = app.bg_underlays[0].3.size();
+    assert!(w > 700 && h > 900, "full-density underlay: {w}×{h}");
+    // The chain's landed bytes are re-reserved for the foreground's
+    // next degradation decision — the store sees exactly what the
+    // retained handles hold.
+    let held = (w * h * 4) as u64;
+    assert_eq!(
+        app.layers.reserved_bytes_for_test(),
+        held,
+        "the held reservation matches the texture's own bytes"
+    );
+    // Rebuilding is stable: the cache hit keeps the texture and the
+    // reservation idempotent.
+    let out = app.build_bg_underlays(&ctx);
+    assert_eq!(out.len(), 1);
+    assert_eq!(app.bg_underlays[0].3.size(), [w, h]);
+    assert_eq!(app.layers.reserved_bytes_for_test(), held);
+    // Dropping the background (attrs change) empties the chain, and
+    // the reservation follows it to zero — a stale reservation would
+    // starve the foreground forever.
+    app.ed.as_mut().unwrap().doc.pages[1].attrs.clear();
+    let out = app.build_bg_underlays(&ctx);
+    assert!(out.is_empty(), "no chain, no underlays");
+    assert_eq!(
+        app.layers.reserved_bytes_for_test(),
+        0,
+        "the reservation drops with the chain"
+    );
+}
