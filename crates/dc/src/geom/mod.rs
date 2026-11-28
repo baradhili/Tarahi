@@ -1524,6 +1524,39 @@ mod tests {
         assert_eq!(js.len(), 1, "visible again: {js:?}");
     }
 
+    /// #333: a malformed non-ASCII `LineColor` (`#aé000` — six BYTES,
+    /// a multi-byte character inside the fixed byte slices) degrades
+    /// to the gray fallback instead of panicking the crossing walk —
+    /// every consumer of the shared set (export overlay, canvas,
+    /// `ReconcileLineJumps` on every edit) runs through here. The
+    /// healthy side of the hop keeps its own color.
+    #[test]
+    fn page_jumps_degrades_malformed_line_color() {
+        let mut page = vsdx::Page {
+            id: 0,
+            name: "T".into(),
+            ..vsdx::Page::default()
+        };
+        let a = straight_connector(1, (1.0, 1.0), (5.0, 1.0), Some("#00ff00"));
+        let b = straight_connector(2, (3.0, 0.0), (3.0, 2.0), Some("#aé000"));
+        page.shapes.push(a);
+        page.shapes.push(b);
+        let doc = vsdx::Document::default();
+        let js = page_jumps(&doc, &page, &[]);
+        assert_eq!(js.len(), 1, "the crossing still hops: {js:?}");
+        assert_eq!(js[0].jumper, 1, "the flatter line hops: {js:?}");
+        assert_eq!(
+            js[0].color,
+            (0, 255, 0),
+            "the healthy jumper keeps its green: {js:?}"
+        );
+        assert_eq!(
+            js[0].under_color,
+            (0x42, 0x42, 0x42),
+            "the malformed under line takes the gray fallback: {js:?}"
+        );
+    }
+
     /// `page_jump_style` reads the page's `LineJumpStyle` through the
     /// style chain, and a connector's nonzero `ConLineJumpStyle`
     /// overrides it per jumper (#324 phase 4).

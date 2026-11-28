@@ -812,9 +812,12 @@ pub fn line_jumps_with(
 }
 
 /// Parse a `#rrggbb` line-color cell into the overlay's (r, g, b).
+/// Six BYTES with a multi-byte character inside (a hand-edited or
+/// damaged `#aé000`) would otherwise slice mid-character and panic
+/// — ASCII-only joins the gray fallback instead (#333).
 fn parse_hex_rgb(v: &str) -> Option<(u8, u8, u8)> {
     let hex = v.strip_prefix('#')?;
-    if hex.len() != 6 {
+    if hex.len() != 6 || !hex.is_ascii() {
         return None;
     }
     Some((
